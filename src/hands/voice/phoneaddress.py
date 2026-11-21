@@ -14,6 +14,7 @@ import ipaddress
 import json
 import os
 import shutil
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,16 +40,17 @@ RENEW_DAYS = 30
 
 @dataclass(frozen=True)
 class Tailnet:
-    """This machine's name on the tailnet, and the certificate Tailscale issued for it."""
+    """This machine's name on the tailnet, and the certificate Tailscale issued for it, loaded: the context a phone
+    asking for that name is shown, and the time that certificate ends."""
 
     name: str
-    cert: Path
-    key: Path
+    context: ssl.SSLContext
+    not_after: datetime.datetime
 
 
 @dataclass(frozen=True)
 class Untailed:
-    """Why hands has no tailnet name to serve the page under: said in the log, and the page served on the LAN alone."""
+    """Why hands has no tailnet name to serve the page under, in Tailscale's words or the certificate's."""
 
     reason: str
 
@@ -59,17 +61,23 @@ async def tailnet_name(clock: Clock) -> str | Untailed:
     match status:
         case Untailed():
             return status
-        case str():
+        case bytes():
             pass
     try:
         described: object = json.loads(status)
-    except json.JSONDecodeError as error:
+    except ValueError as error:
         return Untailed(f"tailscale status said something that is not JSON: {error}")
+    # [LAW:no-silent-failure] a certificate name is read only off a Tailscale connected to the tailnet; one that is not
+    # says its state, whatever names it still lists.
     match described:
-        case {"CertDomains": [str(name), *_]}:  # pyright: ignore[reportUnknownVariableType]  (the first name is all that is read)
+        case {"BackendState": "Running", "CertDomains": [str(name), *_]}:  # pyright: ignore[reportUnknownVariableType]  (the first name is all that is read)
             return name
-        case _:
+        case {"BackendState": "Running"}:
             return Untailed("the tailnet has HTTPS certificates turned off, so Tailscale issues none for this machine")
+        case {"BackendState": str(state)}:
+            return Untailed(f"Tailscale is not connected to the tailnet: its state is {state}")
+        case _:
+            return Untailed(f"tailscale status said no state of its own: {status[:200].decode(errors='replace')}")
 
 
 async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
@@ -80,18 +88,38 @@ async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
             return name
         case str():
             pass
-    found = Tailnet(name, home.phone / "tailnet.crt", home.phone / "tailnet.key")
+    cert, key = home.phone / "tailnet.crt", home.phone / "tailnet.key"
     home.phone.mkdir(parents=True, exist_ok=True)
     # Tailscale keeps the certificate and renews it when it is due, so asking again is cheap.
-    issued = await _tailscale(clock, "cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
+    issued = await _tailscale(clock, "cert", "--cert-file", str(cert), "--key-file", str(key), name)
     match issued:
         case Untailed():
             return issued
-        case str():
-            return found
+        case bytes():
+            pass
+    # [LAW:parse-dont-validate] a Tailnet is a pair that has loaded: one Tailscale wrote torn, or out of step, is Untailed.
+    # Tailscale writes these files only when hands asks it to, so the chain loaded and the one read are the same.
+    try:
+        context = server_context(cert, key)
+        ends = not_after(cert.read_bytes())
+    except (OSError, ValueError) as error:
+        return Untailed(f"the certificate tailscale cert wrote does not load: {error}")
+    return Tailnet(name, context, ends)
 
 
-async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> str | Untailed:
+def server_context(cert: Path, key: Path) -> ssl.SSLContext:
+    """[LAW:one-source-of-truth] the one making of the context a phone's handshake is answered with."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    return context
+
+
+def not_after(cert: bytes) -> datetime.datetime:
+    """[LAW:one-source-of-truth] the one reading of when a PEM certificate ends."""
+    return x509.load_pem_x509_certificate(cert).not_valid_after_utc
+
+
+async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> bytes | Untailed:
     """What `tailscale subcommand` said, or why it said nothing."""
     # [LAW:one-source-of-truth] the one place the command is found: every asking runs the same tailscale.
     command = shutil.which("tailscale")
@@ -99,15 +127,15 @@ async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> str | Un
         return Untailed("the tailscale command is not on the PATH")
     asked = f"tailscale {subcommand}"
     try:
-        # [LAW:single-enforcer] ended where every child of hands is: killed and reaped on a timeout, and on a shutdown.
+        # [LAW:single-enforcer] ended as `run` ends each child it runs: killed and reaped on a timeout, and on a shutdown.
         ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS, clock=clock)
     except TimeoutError:
         return Untailed(f"{asked} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
     except OSError as error:
         return Untailed(f"cannot run {asked}: {error}")
     if ran.returncode != 0:
-        return Untailed(f"{asked} failed ({ran.returncode}): {ran.err.decode().strip()}")
-    return ran.out.decode()
+        return Untailed(f"{asked} failed ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
+    return ran.out
 
 
 def _private(clock: Clock, path: Path, data: bytes) -> Path:
@@ -126,7 +154,7 @@ def own_certificate(clock: Clock, home: Home) -> tuple[Path, Path]:
     cert, key = home.phone / "own.crt", home.phone / "own.key"
     now = clock.wall()
     if cert.exists() and key.exists():
-        ends = x509.load_pem_x509_certificate(cert.read_bytes()).not_valid_after_utc
+        ends = not_after(cert.read_bytes())
         if ends - now > datetime.timedelta(days=RENEW_DAYS):
             return cert, key
     private = ec.generate_private_key(ec.SECP256R1())

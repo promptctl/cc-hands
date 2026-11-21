@@ -10,14 +10,14 @@ import pytest
 from hands.clock import SYSTEM
 from hands.sessions.home import Home
 from hands.voice import phoneaddress
-from hands.voice.phoneaddress import Tailnet, Untailed, tailnet, tailnet_name
+from hands.voice.phoneaddress import Tailnet, Untailed, not_after, own_certificate, tailnet, tailnet_name
 
 
 pytestmark = pytest.mark.outside
 
 NAMED = """#!/bin/sh
 case "$1" in
-status) echo '{"CertDomains": ["hands.example.ts.net"]}' ;;
+status) echo '{"BackendState": "Running", "CertDomains": ["hands.example.ts.net"]}' ;;
 *) %s ;;
 esac
 """
@@ -37,16 +37,45 @@ def command(directory: Path, script: str) -> str:
     return f"{written.parent}{os.pathsep}{os.environ['PATH']}"
 
 
+def issuing(cert: Path, key: Path) -> str:
+    """What a `tailscale cert --cert-file C --key-file K name` runs to write `cert` and `key` where it is asked to."""
+    return f'cp {cert} "$3" && cp {key} "$5"'
+
+
 async def test_the_tailnet_is_the_name_tailscale_says_and_the_certificate_it_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PATH", tailscale(tmp_path, "exit 0"))
-    home = Home(tmp_path)
+    cert, key = own_certificate(SYSTEM, Home(tmp_path / "issued"))
+    monkeypatch.setenv("PATH", tailscale(tmp_path, issuing(cert, key)))
     assert await tailnet_name(SYSTEM) == "hands.example.ts.net"
-    assert await tailnet(SYSTEM, home) == Tailnet("hands.example.ts.net", home.phone / "tailnet.crt", home.phone / "tailnet.key")
+    match await tailnet(SYSTEM, Home(tmp_path)):
+        case Tailnet(name=name, not_after=ends):
+            assert name == "hands.example.ts.net" and ends == not_after(cert.read_bytes())
+        case untailed:
+            raise AssertionError(f"untailed: {untailed}")
+
+
+async def test_a_certificate_and_key_out_of_step_are_untailed_rather_than_served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (cert, _), (_, key) = own_certificate(SYSTEM, Home(tmp_path / "one")), own_certificate(SYSTEM, Home(tmp_path / "other"))
+    monkeypatch.setenv("PATH", tailscale(tmp_path, issuing(cert, key)))
+    match await tailnet(SYSTEM, Home(tmp_path)):
+        case Untailed(reason=reason):
+            assert reason.startswith("the certificate tailscale cert wrote does not load: [X509: KEY_VALUES_MISMATCH]")
+        case served:
+            raise AssertionError(f"served {served}")
+
+
+async def test_a_tailscale_not_connected_says_its_state_whatever_names_it_still_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", command(tmp_path, "#!/bin/sh\necho '{\"BackendState\": \"NeedsLogin\", \"CertDomains\": [\"hands.example.ts.net\"]}'\n"))
+    assert await tailnet_name(SYSTEM) == Untailed("Tailscale is not connected to the tailnet: its state is NeedsLogin")
 
 
 async def test_a_certificate_tailscale_refuses_is_untailed_in_its_words(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", tailscale(tmp_path, "echo 'not logged in' >&2; exit 3"))
     assert await tailnet(SYSTEM, Home(tmp_path)) == Untailed("tailscale cert failed (3): not logged in")
+
+
+async def test_a_tailscale_not_on_the_path_is_untailed_saying_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert await tailnet(SYSTEM, Home(tmp_path)) == Untailed("the tailscale command is not on the PATH")
 
 
 async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

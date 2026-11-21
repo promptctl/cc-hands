@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+import itertools
 import json
 import ssl
 from collections.abc import AsyncGenerator, Callable
@@ -17,13 +18,14 @@ import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestClient, TestServer
 from loguru import logger
+from cryptography import x509
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerConnection, RTCSessionDescription
 from av import AudioFrame
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioTransportParams
 
 from hands.virtualclock import VirtualClock
-from hands.clock import SYSTEM, Clock
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
@@ -36,10 +38,10 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.brainwork import BrainWork, Idle, NotWorking, StopOutcome
 from hands.sessions.summaries import Summaries
-from hands.sessions.wide import WideEvent, begun
+from hands.sessions.wide import WideEvent, begun, unit
 from hands.core.bearer import bearer
 from hands.voice import phonepage
-from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
+from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, not_after, own_certificate, phone_key, server_context
 from hands.voice.phonepage import phone_pages
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
@@ -624,56 +626,142 @@ class IdleBrain:
         return NotWorking()
 
 
-async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.MonkeyPatch) -> list[Entry]:
-    """What serving the page records, on a loopback port the system picks, with Tailscale answering `net`."""
+TAILNET = "hands.example.ts.net"
 
-    async def asked(_clock: Clock, _home: Home) -> Tailnet | Untailed:
-        return net
+
+def _tailnet(pair: tuple[Path, Path]) -> Tailnet:
+    """What Tailscale answers for TAILNET, having issued `pair`."""
+    return Tailnet(TAILNET, server_context(*pair), not_after(pair[0].read_bytes()))
+
+
+def _der(pair: tuple[Path, Path]) -> bytes:
+    return ssl.PEM_cert_to_DER_cert(pair[0].read_text())
+
+
+async def _shown(port: int, server_name: str | None) -> bytes:
+    """The certificate a phone asking for `server_name` is shown by the page served on `port`, as DER."""
+    client = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    client.check_hostname = False
+    client.verify_mode = ssl.CERT_NONE
+    _, writer = await asyncio.open_connection("127.0.0.1", port, ssl=client, server_hostname=server_name)
+    shown = cast(ssl.SSLObject, writer.get_extra_info("ssl_object")).getpeercert(binary_form=True)
+    writer.close()
+    await writer.wait_closed()
+    assert shown is not None
+    return shown
+
+
+async def _asked_at(clock: VirtualClock, due: float) -> None:
+    """Once the page waits to ask Tailscale again at `due`; said with every wait it began, if it never does."""
+    try:
+        async with asyncio.timeout(5):
+            await clock.sleeping(due)
+    except TimeoutError:
+        raise AssertionError(f"Tailscale was not to be asked again at {due}s: the waits begun were {clock.begun}") from None
+
+
+async def _served(home: Home, answers: list[Tailnet | Untailed], waits: list[float], monkeypatch: pytest.MonkeyPatch) -> tuple[list[Entry], dict[str | None, bytes]]:
+    """What serving the page records, on a loopback port the system picks, while Tailscale answers `answers`: the first
+    as the page comes up and one each renewal after it, each renewal `waits` seconds after the ask before it, the page
+    served from inside a unit of work of its own; and the certificate then shown to a phone asking for TAILNET, and for
+    no name."""
+    clock = VirtualClock()
+    asking = iter(answers)
+
+    async def asked() -> Tailnet | Untailed:
+        return next(asking)
 
     monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
     monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
-    monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery()), home, recorded.append))
+    pages = phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery())
+    with unit("hands.start", recorded.append, begun(clock)):
+        serving = asyncio.create_task(phonepage.serve_phone(clock, pages, home, asked, recorded.append))
     async with asyncio.timeout(5):
-        while not recorded:
+        while not events(recorded, "phone.served"):
             await asyncio.sleep(0.01)
+    # A wait after each answer: the last is the one the page is left waiting out.
+    *renewals, left = itertools.accumulate(waits)
+    for due in renewals:
+        await _asked_at(clock, due)
+        clock.advance_to(due)
+    await _asked_at(clock, left)
+    [served] = events(recorded, "phone.served")
+    port = served.facts["port"]
+    assert isinstance(port, int)
+    shown = {name: await _shown(port, name) for name in (TAILNET, None)}
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await serving
     await phone.stop()
-    return recorded
+    renewed = events(recorded, "phone.renewed")
+    # Each renewal is the root of a trace of its own, whatever was open where the page was served.
+    assert len(renewed) == len(answers) - 1 and all(event.parent_id is None for event in renewed) and len({event.trace_id for event in renewed}) == len(renewed)
+    return recorded, shown
+
+
+DAY = 24 * 60 * 60.0
 
 
 @pytest.mark.outside
-async def test_the_page_served_under_the_tailnet_name_is_one_event_naming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_page_served_under_the_tailnet_name_is_one_event_naming_it_and_when_its_certificate_ends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
-    cert, key = own_certificate(SYSTEM, home)
-    [event] = await _served(home, Tailnet("hands.example.ts.net", cert, key), monkeypatch)
-    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("phone.served", "ok")
-    # The port the system bound, not the 0 it was asked for.
+    issued = own_certificate(SYSTEM, Home(tmp_path / "issued"))
+    recorded, shown = await _served(home, [_tailnet(issued)], [DAY], monkeypatch)
+    [event] = events(recorded, "phone.served")
+    assert event.outcome == "ok"
+    # The port the system bound, not the 0 it was asked for; and the end of the certificate a phone is shown.
     port = event.facts["port"]
-    assert dict(event.facts) == {"port": port, "tailnet": "hands.example.ts.net"} and isinstance(port, int) and port > 0
+    ends = x509.load_der_x509_certificate(shown[TAILNET]).not_valid_after_utc
+    assert dict(event.facts) == {"port": port, "tailnet": TAILNET, "tailnet_not_after": ends, "asked_again_in": datetime.timedelta(days=1)} and isinstance(port, int) and port > 0
+    assert shown == {TAILNET: _der(issued), None: _der((home.phone / "own.crt", home.phone / "own.key"))}
 
 
 @pytest.mark.outside
-async def test_the_page_served_on_the_lan_alone_is_one_event_saying_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    [event] = await _served(Home(tmp_path), Untailed("the tailscale command is not on the PATH"), monkeypatch)
-    assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("phone.served", "ok")
-    port = event.facts["port"]
-    assert dict(event.facts) == {"port": port, "untailed": "the tailscale command is not on the PATH"} and isinstance(port, int) and port > 0
+async def test_each_renewal_of_the_tailnet_certificate_is_one_event_and_one_tailscale_refuses_keeps_the_chain_served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first, renewed = (own_certificate(SYSTEM, Home(tmp_path / name)) for name in ("first", "renewed"))
+    recorded, shown = await _served(Home(tmp_path), [_tailnet(first), _tailnet(renewed), Untailed("tailscale cert failed (1): rate limited")], [DAY, DAY, DAY], monkeypatch)
+    ok, failed = events(recorded, "phone.renewed")
+    served = {"tailnet": TAILNET, "tailnet_not_after": x509.load_der_x509_certificate(shown[TAILNET]).not_valid_after_utc, "asked_again_in": datetime.timedelta(days=1)}
+    assert (ok.outcome, dict(ok.facts)) == ("ok", served)
+    # The refusal says why, and names the chain still served, and when it ends: it is asked again a day on, as ever.
+    assert (failed.outcome, failed.error, dict(failed.facts)) == ("failed", "tailscale cert failed (1): rate limited", served)
+    assert shown[TAILNET] == _der(renewed)
+
+
+@pytest.mark.outside
+async def test_a_page_tailscale_refused_at_the_start_is_served_under_the_tailnet_name_within_a_minute_of_it_giving_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    issued = own_certificate(SYSTEM, Home(tmp_path / "issued"))
+    refused = "Tailscale is not connected to the tailnet: its state is Starting"
+    recorded, shown = await _served(Home(tmp_path), [Untailed(refused), _tailnet(issued)], [60.0, DAY], monkeypatch)
+    [served] = events(recorded, "phone.served")
+    port = served.facts["port"]
+    assert (served.outcome, served.error, dict(served.facts)) == ("failed", refused, {"port": port, "asked_again_in": datetime.timedelta(minutes=1)})
+    [renewed] = events(recorded, "phone.renewed")
+    assert (renewed.outcome, dict(renewed.facts)) == ("ok", {"tailnet": TAILNET, "tailnet_not_after": not_after(issued[0].read_bytes()), "asked_again_in": datetime.timedelta(days=1)})
+    assert shown[TAILNET] == _der(issued)
+
+
+@pytest.mark.outside
+async def test_a_tailscale_that_goes_on_refusing_is_asked_again_ever_less_often_down_to_once_a_day(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A machine whose Tailscale is never there: each ask fails its event, and the asks back off to the daily renewal.
+    waits = [60.0, 120.0, 240.0, 480.0, 960.0, 1920.0, 3840.0, 7680.0, 15360.0, 30720.0, 61440.0, DAY, DAY]
+    recorded, shown = await _served(Home(tmp_path), [Untailed("the tailscale command is not on the PATH")] * len(waits), waits, monkeypatch)
+    asked = events(recorded, "phone.served") + events(recorded, "phone.renewed")
+    assert [(event.outcome, event.error) for event in asked] == [("failed", "the tailscale command is not on the PATH")] * len(waits)
+    assert [event.facts["asked_again_in"] for event in asked] == [datetime.timedelta(seconds=wait) for wait in waits]
+    assert shown[TAILNET] == shown[None]
 
 
 @pytest.mark.outside
 async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_the_brain_conversation_and_backlog_are_served_beside_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The page's requests run in a context copied inside `phone.served`, which ended as the page came up.
-    async def asked(_clock: Clock, _home: Home) -> Untailed:
+    async def asked() -> Untailed:
         return Untailed("the tailscale command is not on the PATH")
 
     monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
     monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
-    monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
     typed: list[str] = []
@@ -683,7 +771,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
 
     home = Home(tmp_path)
     key = phone_key(SYSTEM, home)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery()), home, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery()), home, asked, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -741,5 +829,5 @@ def test_hands_own_certificate_is_kept_until_near_its_end_and_made_again_then(tm
     own_certificate(VirtualClock(made + datetime.timedelta(days=397 - RENEW_DAYS + 1)), home)
     assert cert.read_bytes() != first
     # The certificate and its key are a pair a server loads.
-    ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
+    server_context(cert, key)
     assert key.stat().st_mode & 0o777 == 0o600
