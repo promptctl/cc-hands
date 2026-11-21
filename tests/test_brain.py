@@ -38,7 +38,7 @@ from hands.sessions.audit import Entry, segment
 from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, unread
 import turns
 from turns import RECORDINGS, prompts, stops
-from brains import dialogs, failures, permissions, unasked
+from brains import dialogs, permissions, said, taken, unasked  # pyright: ignore[reportUnusedImport]
 
 from hands.brain.stage import BrainStage
 from hands.core.session import Keystroke, PromptText, SessionId, Submit, pasted
@@ -122,10 +122,9 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
 
 
 @pytest.mark.outside
-async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error() -> None:
+async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error(said: list[str]) -> None:
     recorded: list[Entry] = []
     server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append), audited(SYSTEM, tool(broken), recorded.append)], recorded.append, CallSpans())
-    errors, sink = failures()
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
         refusal = "echo was called with the wrong arguments: missing a required argument: 'text'"
@@ -134,7 +133,7 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         _, failed = await rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "broken"}})
         assert failed == {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "broken failed: RuntimeError: the transcript went away"}], "isError": True}}
         # What the tool raised ends where the model is told, so it is said there, on the terminal, once.
-        assert errors == ["broken failed: RuntimeError: the transcript went away"]
+        assert taken(said) == ["broken failed: RuntimeError: the transcript went away"]
         _, unknown = await rpc(server, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "resume"}})
         assert unknown == {"jsonrpc": "2.0", "id": 3, "error": {"code": -32602, "message": "no tool resume taking arguments None"}}
         _, unshaped = await rpc(server, {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "echo", "arguments": '{"text": "hi"}'}})
@@ -160,7 +159,6 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent)][-1:]
         assert garbled_event.error is not None and garbled_event.error.startswith("not JSON: ")
     finally:
-        logger.remove(sink)
         await server.close()
 
 
@@ -346,8 +344,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     # Behind a space, so a turn that opens with a slash is the words it is and not a command.
     assert typed(tmp_path) == [["prompt", " what is running?"], ["prompt", " /and now?"]]
     # Each event the model applies to the brain's session is one of its own (`applied`), as a working session's is, beside these.
-    launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
-    assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
+    launched, first, second, ran, shutdown = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
+    assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent) and isinstance(shutdown, WideEvent)
     # Each turn is its own, with the prompt Claude Code took it as, typed at the first settled look at a screen showing
     # its prompt, however long that look took.
     assert all(isinstance(turn.facts["at_prompt_after"], float) for turn in (first, second))
@@ -366,6 +364,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     # Its run is a part of its launch, from its input coming up to its process's end.
     assert (ran.event, ran.outcome, ran.trace_id, ran.parent_id) == ("brain.run", "ok", launched.trace_id, launched.span_id)
     assert ran.facts["pid"] == brain.pid and isinstance(ran.facts["code"], int) and isinstance(ran.facts["shown"], str)
+    # Its stop is a part of its launch too, and ended none of the brain's own work: both turns' was done.
+    assert (shutdown.event, shutdown.outcome, shutdown.parent_id, shutdown.facts) == ("brain.shutdown", "ok", launched.span_id, {"ended": "hands stopped it", "cancelled": 0})
 
 
 def transcript(config_dir: Path, session: str) -> None:
@@ -662,18 +662,16 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
 
 
 @pytest.mark.outside
-async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_still_ends_its_turn(tmp_path: Path, fake_claude: Path) -> None:
+async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_still_ends_its_turn(tmp_path: Path, fake_claude: Path, said: list[str]) -> None:
     # Both only narrate the failure: refusing the hook over either would leave the turn waiting on an end already posted.
     brain = await start(SYSTEM, launch(tmp_path), list[Entry]().append)
-    said, sink = failures()
     try:
         assert await brain.ask("fail blank", unasked) == BrainAnswered("p1", StopFailed("authentication_failed", None))
         assert await brain.ask("fail odd", unasked) == BrainAnswered("p2", StopFailed("server_error", None))
         assert await brain.ask("fail unnamed", unasked) == BrainAnswered("p3", StopFailed(None, None))
     finally:
-        logger.remove(sink)
         await brain.stop()
-    assert said == ["StopFailure carried last_assistant_message as dict, not a string, so its turn is told without it"]
+    assert taken(said) == ["StopFailure carried last_assistant_message as dict, not a string, so its turn is told without it"]
 
 
 @pytest.mark.outside
@@ -1039,11 +1037,10 @@ async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_
 
 @pytest.mark.outside
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path
+    tmp_path: Path, fake_claude: Path, said: list[str]
 ) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
-    said, sink = failures()
     try:
         typist = brain._typist  # pyright: ignore[reportPrivateUsage]
         brain._typist = _Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
@@ -1052,9 +1049,8 @@ async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_on
         brain._typist = typist  # pyright: ignore[reportPrivateUsage]
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p1", None)
     finally:
-        logger.remove(sink)
         await brain.stop()
-    assert said == ["the brain's own work failed: OSError('jammed')"]
+    assert taken(said) == ["the brain's own work failed: OSError('jammed')"]
     failed, _ = events(recorded, "brain.turn")
     assert (failed.outcome, failed.error) == ("failed", "OSError: jammed")
 
@@ -1073,27 +1069,25 @@ async def _fails_as_it_is_ended(_take: float) -> None:
 @pytest.mark.outside
 @pytest.mark.parametrize(("sleep", "typed"), [(_fails_at_once, "deaf"), (_fails_as_it_is_ended, "wait")])
 async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_is_never_called_untaken(
-    tmp_path: Path, fake_claude: Path, sleep: Callable[[float], Awaitable[None]], typed: str
+    tmp_path: Path, fake_claude: Path, sleep: Callable[[float], Awaitable[None]], typed: str, said: list[str]
 ) -> None:
     # A sleep that fails as the turn's taking ends it fails as surely as one that fails while it runs.
     recorded: list[Entry] = []
     brain = await start(taking(sleep), launch(tmp_path), recorded.append)
-    said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no clock"):
             await brain.ask(typed, unasked)
     finally:
-        logger.remove(sink)
         await brain.stop()
     # Each time the broken clock fails is said: the take's, and, for a turn that was taken, the wait of the stop that
     # ends it, which waits on the same clock.
-    assert said and set(said) == {"the brain's own work failed: RuntimeError('no clock')"}
+    assert (failures := taken(said)) and set(failures) == {"the brain's own work failed: RuntimeError('no clock')"}
     [failed] = events(recorded, "brain.turn")
     assert (failed.outcome, failed.error) == ("failed", "RuntimeError: no clock")
 
 
 @pytest.mark.outside
-async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path) -> None:
+async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path, said: list[str]) -> None:
     recorded: list[Entry] = []
     asked: list[Asked] = []
 
@@ -1102,7 +1096,6 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
         raise RuntimeError("no voice")
 
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
-    said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no voice"):
             await asyncio.wait_for(brain.ask("write", asks), 10)
@@ -1110,9 +1103,8 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
         await until(lambda: ["permission", "deny", BROKEN, True] in typed(tmp_path))
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p2", None)
     finally:
-        logger.remove(sink)
         await brain.stop()
-    assert said == ["the brain's own work failed: RuntimeError('no voice')"]
+    assert taken(said) == ["the brain's own work failed: RuntimeError('no voice')"]
     # The user's side is told the refusal the brain heard, which ends the turn, and the turn is stopped as an Escape stops it.
     assert [await held.decided() for held in asked] == [DenyAndInterrupt(BROKEN)]
     assert ["escape", ""] in typed(tmp_path)
@@ -1122,7 +1114,7 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
 
 
 @pytest.mark.outside
-async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path) -> None:
+async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path, said: list[str]) -> None:
     brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
     pressed: list[object] = []
 
@@ -1136,16 +1128,14 @@ async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_an
         brain._typist = Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
         raise RuntimeError("no voice")
 
-    said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no voice"):
             await asyncio.wait_for(brain.ask("write", asks), 5)
         await until(lambda: len(said) == 2)
     finally:
-        logger.remove(sink)
         await brain.stop()
     # A second stop would press Escape again, and its Ctrl-C would land inside Claude Code's exit window.
-    assert (pressed, said) == (["escape"], ["the brain's own work failed: RuntimeError('no voice')", "the brain's own work failed: OSError('jammed')"])
+    assert (pressed, taken(said)) == (["escape"], ["the brain's own work failed: RuntimeError('no voice')", "the brain's own work failed: OSError('jammed')"])
 
 
 @pytest.mark.outside
@@ -1670,15 +1660,16 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
         with pytest.raises(RuntimeError, match="joined the wire"), wire.joined(minded.llm):
             pass
-    assert isinstance(ran := recorded[-1], WideEvent) and ran.event == "brain.run"
+    assert [event.event for event in recorded[-2:] if isinstance(event, WideEvent)] == ["brain.run", "brain.shutdown"]
     # Gone with the brain: the wire forwards everything again.
     with wire.joined(minded.llm):
         pass
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
     transcript(tmp_path / "brain", str(launched.facts["session"]))
     async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
-        # Its usage is heard under the session it resumed, not one begun for it.
-        wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {}))
+        # Its usage is heard under the session it resumed, not one begun for it: a request that offers hands' tools, as
+        # each of the brain's does.
+        wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {"tools": [{"name": "mcp__hands__echo"}]}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
         assert isinstance(minded.llm, BrainStage)
         reported = await minded.llm._tools["mcp__hands__context_usage"].body()  # pyright: ignore[reportPrivateUsage]

@@ -1,6 +1,6 @@
 """What the brain's tests read a turn, a permission, or a failure by, whether the brain is a launched one or built bare."""
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import pytest
 from loguru import logger
@@ -26,6 +26,26 @@ def failures() -> tuple[list[str], int]:
     """What is said on the terminal as an error, as it is said, and the sink that hears it."""
     said: list[str] = []
     return said, logger.add(lambda message: said.append(message.record["message"]), level="ERROR")
+
+
+@pytest.fixture(autouse=True)
+def said() -> Iterator[list[str]]:
+    """[LAW:no-silent-failure] every error said while a brain's test runs, what the brain's own work raised among them
+    (`_broke`): one the test does not take (`taken`) fails it, so work that broke where the test did not look is never a
+    pass. Autouse in each test module that imports it."""
+    said, sink = failures()
+    try:
+        yield said
+    finally:
+        logger.remove(sink)
+    assert said == [], f"said and never asserted: {said}"
+
+
+def taken(said: list[str]) -> list[str]:
+    """What `said` holds, taken out of it, for the test to assert."""
+    lines = said[:]
+    said.clear()
+    return lines
 
 
 def dialogs(brain: Brain) -> tuple[Held, ...]:
