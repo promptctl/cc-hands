@@ -870,6 +870,10 @@ class OrderLost(Exception):
     timeout, or a Stop let go before it was decided. Which turn ran what is not guessed: every turn open then fails."""
 
 
+class Adrift(Exception):
+    """hands no longer knows which conversation the brain's Claude Code is in, or cannot hold it for the next start."""
+
+
 class SessionLeft(Exception):
     """The brain's Claude Code left the conversation its turns ran in, by a /clear or a /resume at its keyboard: nothing
     of them runs on there."""
@@ -1065,9 +1069,11 @@ class Brain:
         self._fritter = fritter
         self._config_dir = config_dir
         self._session = session
-        # [LAW:no-ambient-temporal-coupling] the launch's own start, once applied: whether its conversation was held, or
-        # what failed holding it. The launch is up only once it is (`start`).
-        self._launch_started: asyncio.Future[Unstartable | None] = asyncio.get_running_loop().create_future()
+        # [LAW:no-ambient-temporal-coupling] the launch's own start, once applied. The launch is up only once it is (`start`).
+        self._launch_started: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        # [LAW:no-silent-failure] failed once hands no longer knows which conversation the brain is in, or cannot hold it
+        # for the next start: the brain is answering nobody, and its run ends, saying why (`exited`).
+        self._adrift: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._typist = typist
         # The Claude Code fritter wrapped, and where it works: what its own hooks do not say of it.
         self._pid = typist.pid
@@ -1504,19 +1510,21 @@ class Brain:
 
     async def started(self, by: float) -> None:
         """Returns once the launch's own start is applied, the conversation it launched in held. Raises Unstartable,
-        saying which, when no start comes by `by`, the launch's deadline, or its conversation cannot be held: the next
-        start of hands would resume a conversation other than the one the brain is in."""
-        await wait(self._clock, {self._launch_started}, by - self._clock.now())
+        saying which, when no start comes by `by`, the launch's deadline, or the brain is adrift by then."""
+        await wait(self._clock, {self._launch_started, self._adrift}, by - self._clock.now())
+        if self._adrift.done():
+            raise Unstartable(str(self._adrift.exception()))
         if not self._launch_started.done():
             ended = f", {exited(self._exit.result())}" if self._exit.done() else ""
             raise Unstartable(f"the brain's Claude Code posted no start of its session within {START_SECONDS:.0f}s{ended}; it showed:\n{self._claude.shown()}")
-        if (unheld := self._launch_started.result()) is not None:
-            raise unheld
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many
-        wait. Raises what stopped the model reading the brain's turns, if that came first: no turn's end would be heard."""
-        await asyncio.wait({asyncio.shield(self._exit), self._reading}, return_when=asyncio.FIRST_COMPLETED)
+        wait. Raises what stopped the model reading the brain's turns, if that came first: no turn's end would be heard;
+        or that the brain is adrift (`_adrift`)."""
+        await asyncio.wait({asyncio.shield(self._exit), self._reading, asyncio.shield(self._adrift)}, return_when=asyncio.FIRST_COMPLETED)
+        if self._adrift.done():
+            self._adrift.result()
         if self._reading.done() and not self._reading.cancelled() and not self._exit.done():
             self._reading.result()
         return await asyncio.shield(self._exit)
@@ -1584,9 +1592,12 @@ class Brain:
                 # Answered once it is applied, whatever it says, as a working session's hook is (serve_hooks): Claude Code
                 # goes on only once the model has it, so nothing it writes after is read before it.
                 arrived = self._clock.now()
-                held = await self._reader.hooked(hook)
-                # [LAW:no-ambient-temporal-coupling] in the step the model applied it, with nothing awaited between.
-                self._moved_by(hook)
+                try:
+                    held = await self._reader.hooked(hook)
+                finally:
+                    # [LAW:no-ambient-temporal-coupling] in the step the model applied it, with nothing awaited between;
+                    # and applied whatever the model did with it, since Claude Code moved all the same.
+                    self._moved_by(hook)
                 await self._heard()
                 self._ordered(hook, held, self._clock.now() - arrived)
                 return {}
@@ -1606,20 +1617,25 @@ class Brain:
 
     def _entered(self, session: SessionId, source: StartSource | UnknownSource) -> None:
         """The brain's start step: Claude Code is in `session` now, and the next hands to start the brain resumes it. A
-        conversation that cannot be held is said, and the brain is in it all the same: Claude Code moved it there."""
+        conversation that cannot be held leaves the brain adrift: the brain is in it all the same, since Claude Code moved
+        it there, but the next start would resume the one held before."""
         # [LAW:nothing-unseen] each start is one event: the session left, the one entered, and whether it was held.
         with unit("brain.session", self._record, begun(self._clock)):
             left = self._session.enter(session)
             annotate(left=left, entered=session, source=source)
-            unheld: Unstartable | None = None
             try:
                 hold(self._config_dir, session)
             except OSError as error:
-                unheld = Unstartable(f"the brain's conversation {session} could not be held: {error}")
-                fail(f"the brain's conversation {session} could not be held, so the next start of hands will not resume it: {error}")
-        # The launch waits on its own start alone: a later one's failure is its event's.
+                why = f"the brain's conversation {session} could not be held, so the next start of hands would resume the one held before it: {error}"
+                fail(why)
+                self._adrift_by(why)
         if not self._launch_started.done():
-            self._launch_started.set_result(unheld)
+            self._launch_started.set_result(None)
+
+    def _adrift_by(self, why: str) -> None:
+        if not self._adrift.done():
+            logger.error(f"the brain is adrift: {why}")
+            self._adrift.set_exception(Adrift(why))
 
     def _ordered(self, hook: Hook, held: StopHeld | None, took: float) -> None:
         """[LAW:no-silent-failure] whether Claude Code waited on the hook as the order of the brain's turns needs
@@ -1629,7 +1645,7 @@ class Brain:
                 self._lost(f"the Stop of {prompt} was let go before it was decided")
             case Prompted(prompt=prompt) | Stopped(prompt=prompt) if took > TAKE_SECONDS:
                 self._lost(f"the {hook.name} hook of {prompt} was answered in {took:.1f}s, past the {TAKE_SECONDS:g}s hands has to answer it in")
-            case Ended(session=session) if took > TAKE_SECONDS:
+            case Ended(session=session, reason="clear" | "resume") if took > TAKE_SECONDS:
                 # Claude Code may have entered the next session before the model heard this one end.
                 self._lost(f"the end of session {session} was answered in {took:.1f}s, past the {TAKE_SECONDS:g}s hands has to answer it in")
             case _:
@@ -1653,16 +1669,16 @@ class Brain:
                 with unit("brain.permission", self._record, begun(self._clock)):
                     fail(f"hands could not read the permission request: {error}")
                 return hook_output(Deny(UNREAD))
-            case "UserPromptSubmit" | "Stop" | "SessionEnd" | "SessionStart":
-                # [LAW:no-silent-failure] a turn's opening, its Stop, the end of the session it ran in, or the start of the
-                # one Claude Code is in now, the model never heard: which turn a telling ends, and in which conversation,
-                # is no longer known (`ClaudeTurns`), and is not guessed.
+            case "SessionStart":
+                # [LAW:no-silent-failure] which conversation Claude Code is in now is no longer known, and is not guessed.
                 self._unheard(event, error)
-                self._lost(f"the brain's {event} hook does not parse: {error}")
+                self._adrift_by(f"the brain's SessionStart hook does not parse, so which conversation it is in is not known: {error}")
                 return {}
             case _:
-                # [LAW:nothing-unseen] any other hook unread is one event all the same.
+                # [LAW:no-silent-failure] every other hook the brain posts opens, ends or leaves a turn (BRAIN_HOOKS): one
+                # the model never heard leaves which turn a telling ends unknown (`ClaudeTurns`), and it is not guessed.
                 self._unheard(event, error)
+                self._lost(f"the brain's {event} hook does not parse: {error}")
                 return {}
 
     def _unheard(self, event: str, error: Rejected) -> None:
@@ -1936,8 +1952,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:one-source-of-truth] the brain's keybindings are hands' alone, written whole at every start from SUBMIT, the
         # chord hands types: a file that bound it to anything else would leave every turn unsent, or have it say yes.
         # Whole or not at all: Claude Code reloads the file as it changes, and a half-written one binds nothing.
-        (station.config_dir / "keybindings.json.new").write_text(json.dumps(KEYBINDINGS, indent=2) + "\n")
-        os.replace(station.config_dir / "keybindings.json.new", station.config_dir / "keybindings.json")
+        replace_whole(station.config_dir / "keybindings.json", json.dumps(KEYBINDINGS, indent=2) + "\n", 0o644)
         annotate(keybindings=SUBMIT)
         # [LAW:no-ambient-temporal-coupling] the listener is up before the brain is spawned, and the brain exists once
         # fritter has started its Claude Code: a hook posted between waits for the brain, behind no other hook. No turn
@@ -1963,12 +1978,9 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
             await _until(clock, running, by, partial(_input_up, typist))
             await brain.started(by)
         except BaseException as error:
-            if isinstance(error, Unstartable):
-                # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
-                # Claude Code keeps its transcript (it exits "No conversation found" on one it cannot read).
-                annotate(let_go=let_go(station.config_dir))
             # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
-            # its own, which nothing but hands' own end would hang up. A brain made lets go of all it holds as it stops.
+            # its own, which nothing but hands' own end would hang up. A brain made stops its listener as it stops, so no
+            # start it posts late moves what is let go below.
             if brain is not None:
                 await brain.stop()
             else:
@@ -1977,6 +1989,11 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
                 posting.cancel()
                 await listener.cleanup()
                 shutil.rmtree(sockets, ignore_errors=True)
+            if isinstance(error, Unstartable):
+                # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
+                # Claude Code keeps its transcript (it exits "No conversation found" on one it cannot read). A start only
+                # cancelled keeps it: a conversation with no transcript yet is begun anew all the same (`conversation`).
+                annotate(let_go=let_go(station.config_dir))
             raise
     return brain
 
@@ -2004,21 +2021,24 @@ async def _listen(posting: "asyncio.Future[Callable[[str, bytes], Awaitable[Mapp
     return runner, f"http://{host}:{port}"
 
 
-async def _until[T](clock: Clock, running: InTmux, by: float, ready: Callable[[], Awaitable[T | str]]) -> T:
-    """What `ready` finds once the brain's launch has it, asked again until `by` or the brain's end. `ready` answers what
-    it is still waiting for while it has nothing, which is what the launch fails saying."""
+class _NotYet(Exception):
+    """What a launch still waits for, said by what it asked."""
+
+
+async def _until[T](clock: Clock, running: InTmux, by: float, ready: Callable[[], Awaitable[T]]) -> T:
+    """What `ready` finds once the brain's launch has it, asked again until `by` or the brain's end. `ready` raises
+    _NotYet, saying what it still waits for, while it has nothing: what the launch fails saying."""
     waiting = "the brain had not started"
     while clock.now() < by and not running.exit.done():
-        match await ready():
-            case str() as still:
-                waiting = still
-            case found:
-                return found
+        try:
+            return await ready()
+        except _NotYet as still:
+            waiting = str(still)
         await clock.sleep(0.05)
     raise _unstarted(running, waiting)
 
 
-async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int] | str:
+async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int]:
     """The brain as fritter types into it: the socket fritter opened under `sockets`, and the claude it started; and that
     fritter's pid."""
     found = [path for path in sockets.rglob("*") if path.is_socket()]
@@ -2026,20 +2046,19 @@ async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int] | str:
     child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
     if found and wrapper is not None and child is not None:
         return Typist(found[0], child), wrapper
-    return "fritter had not started the brain and opened its socket"
+    raise _NotYet("fritter had not started the brain and opened its socket")
 
 
-async def _input_up(typist: Typist) -> None | str:
-    """None once the brain's input is up.
+async def _input_up(typist: Typist) -> None:
+    """Returns once the brain's input is up.
 
     [LAW:no-ambient-temporal-coupling] up is the brain's own word, the bracketed paste Claude Code turns on once it reads
     its input, not a guess at how long that takes: a turn typed into a terminal not yet raw has its Return made a newline,
     which Claude Code takes as one more line."""
     try:
         await asyncio.to_thread(typist.pasting)
-        return None
     except Untyped as error:
-        return f"the brain had not turned its input on ({error})"
+        raise _NotYet(f"the brain had not turned its input on ({error})") from error
 
 
 def _unstarted(running: InTmux, waiting: str) -> Unstartable:

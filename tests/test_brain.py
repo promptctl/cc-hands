@@ -34,7 +34,7 @@ from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
-from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
+from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed
 from hands.sessions.audit import Entry, Record, segment
 from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, unread
 import turns
@@ -292,7 +292,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert {event: hooks.pop(event) for event in waits} == {event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}", "timeout": wait}]}] for event, wait in waits.items()}
     # Claude Code runs no HTTP hook for a start: curl posts it, and prints hands' answer as the hook's, failing on any other.
     wait = TAKE_SECONDS + POST_TIMEOUT_SECONDS
-    assert hooks.pop("SessionStart") == [{"hooks": [{"type": "command", "command": "curl", "args": ["-sS", "--fail-with-body", "--max-time", f"{wait:g}", "-H", "Content-Type: application/json", "--data-binary", "@-", "http://127.0.0.1:7/SessionStart"], "timeout": wait}]}]
+    assert hooks.pop("SessionStart") == [{"hooks": [relayed("http://127.0.0.1:7/SessionStart", wait)]}]
     # A permission is held while the user is asked, as long as a working session's is.
     assert hooks == {"PermissionRequest": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/PermissionRequest", "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]}]}
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {

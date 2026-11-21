@@ -113,7 +113,8 @@ class Rig:
         url = f"http://127.0.0.1:{self._server.server_address[1]}"
         settings = {
             # [LAW:one-source-of-truth] each of the brain's hooks declared as the brain declares it, so a recorded start
-            # arrives as the brain's does, relayed a spawn later; the rest posted as a wrapped session's are.
+            # arrives as the brain's does, relayed a spawn later; the rest as plain HTTP hooks, each on the rig's clock as
+            # Claude Code fires it, not the shim's command a wrapped session runs.
             "hooks": {event: [{"hooks": [brain_hook(event, url) if event in BRAIN_HOOKS else {"type": "http", "url": f"{url}/{event}"}]}] for event in HOOKS},
             "permissions": {"allow": ["Bash(*)", "mcp__slow__wait"]},
         }

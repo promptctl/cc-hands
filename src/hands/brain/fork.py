@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
-from hands.brain.session import BrainSession
+from hands.brain.session import SessionView
 from hands.core.session import SessionId
 from hands.core.wire import (
     CLASS_HEADER,
@@ -110,7 +110,7 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
 class Newest:
     """The brain's newest main turn in each conversation, heard off the wire: the one thing a side question is forked from."""
 
-    def __init__(self, session: BrainSession) -> None:
+    def __init__(self, session: SessionView) -> None:
         # Which conversation the brain is in now: a question forks only from a turn of it.
         self._session = session
         # Main turns of the brain's told and not yet forwarded, by the session each is of: its request is held once its

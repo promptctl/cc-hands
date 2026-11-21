@@ -1172,6 +1172,7 @@ async def _moving(config_dir: Path, recorded: list[Entry]) -> Brain:
     brain._config_dir = config_dir  # pyright: ignore[reportPrivateUsage]
     brain._launch_started = asyncio.get_running_loop().create_future()  # pyright: ignore[reportPrivateUsage]
     brain._launch_started.set_result(None)  # pyright: ignore[reportPrivateUsage]
+    brain._adrift = asyncio.get_running_loop().create_future()  # pyright: ignore[reportPrivateUsage]
     return brain
 
 
@@ -1206,16 +1207,15 @@ async def test_a_start_of_the_session_the_brain_is_in_leaves_the_turn_running_th
     assert started.facts == {"left": "b1", "entered": "b1", "source": "compact"}
 
 
-async def test_a_start_that_does_not_parse_is_one_event_and_fails_every_turn_open_as_the_order_lost(tmp_path: Path) -> None:
+async def test_a_start_that_does_not_parse_is_one_event_and_leaves_the_brain_adrift(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     brain = await _moving(tmp_path, recorded)
-    (running,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
     assert await brain.posted("SessionStart", b"{not json") == {}
     [unread] = events(recorded, "brain.unread")
     assert unread.facts == {"hook": "SessionStart"} and unread.outcome == "failed"
-    # Which conversation Claude Code is in is not guessed: what ran fails, saying the start was unread.
-    with pytest.raises(process.OrderLost, match="SessionStart hook does not parse"):
-        running.ended.result()
+    # Which conversation Claude Code is in is not guessed: the brain's run ends, saying the start was unread.
+    with pytest.raises(process.Adrift, match="SessionStart hook does not parse"):
+        brain._adrift.result()  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_start_from_a_source_hands_does_not_know_still_moves_the_brain(tmp_path: Path) -> None:
@@ -1227,6 +1227,20 @@ async def test_a_start_from_a_source_hands_does_not_know_still_moves_the_brain(t
     assert moved.facts["source"] == UnknownSource("teleport")
 
 
+async def test_a_start_the_model_fails_to_apply_still_moves_the_brain(tmp_path: Path) -> None:
+    # Claude Code moved whatever the model made of it.
+    recorded: list[Entry] = []
+    brain = await _moving(tmp_path, recorded)
+
+    async def broken(hook: object) -> None:
+        raise RuntimeError("the model broke")
+
+    brain._reader.hooked = broken  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b2", source="clear"))
+    assert brain._session.id() == SessionId("b2")  # pyright: ignore[reportPrivateUsage]
+    assert process.held(tmp_path).read_text() == "b2\n"
+
+
 async def test_an_end_that_is_no_move_leaves_the_turn_running_to_fail_as_the_brain_exits(tmp_path: Path) -> None:
     # Its Claude Code ending, not leaving for another conversation: what it ran fails as the brain is gone.
     recorded: list[Entry] = []
@@ -1236,7 +1250,7 @@ async def test_an_end_that_is_no_move_leaves_the_turn_running_to_fail_as_the_bra
     assert not running.ended.done()
 
 
-async def test_a_conversation_that_cannot_be_held_is_said_and_the_brain_is_in_it_all_the_same(tmp_path: Path) -> None:
+async def test_a_conversation_that_cannot_be_held_is_said_and_leaves_the_brain_adrift_in_it(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     unwritable = tmp_path / "a file"
     unwritable.write_text("")
@@ -1244,8 +1258,10 @@ async def test_a_conversation_that_cannot_be_held_is_said_and_the_brain_is_in_it
     await brain.posted("SessionEnd", _session_hook("SessionEnd", "b1", reason="clear"))
     await brain.posted("SessionStart", _session_hook("SessionStart", "b2", source="clear"))
     [moved] = events(recorded, "brain.session")
-    assert moved.outcome == "failed" and "could not be held, so the next start of hands will not resume it" in str(moved.error)
+    assert moved.outcome == "failed" and "could not be held, so the next start of hands would resume the one held before it" in str(moved.error)
     assert brain._session.id() == SessionId("b2")  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(process.Adrift, match="b2 could not be held"):
+        brain._adrift.result()  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_an_end_answered_past_its_bound_fails_every_turn_open_as_the_order_lost() -> None:

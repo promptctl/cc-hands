@@ -30,14 +30,22 @@ class Spent:
 
 
 @dataclass(frozen=True)
-class Tally:
-    """The brain's main conversation as its latest main-turn reply left it, and what it has spent since hands started: a
-    resumed conversation's earlier runs were not heard."""
+class InContext:
+    """The brain's main conversation as its latest main-turn reply left it."""
 
     model: str
     # What the conversation holds now: the latest main turn's request, and what the model wrote back to it, which the
     # next request carries.
-    in_context: int
+    tokens: int
+
+
+@dataclass(frozen=True)
+class Tally:
+    """What the conversation the brain is in holds, None until a main turn's reply of it has begun, as a new one after a
+    clear has had none; and what the brain has spent since hands started, in every conversation: a resumed
+    conversation's earlier runs were not heard."""
+
+    in_context: InContext | None
     spent: Spent
 
 
@@ -63,7 +71,7 @@ def _count(value: object) -> int:
 
 class Usage:
     """Hears the brain's replies off the wire, as Kept admits them: `reading` says what the conversation it is in now
-    holds, and what it has spent."""
+    holds, and what the brain has spent."""
 
     def __init__(self, session: Callable[[], SessionId]) -> None:
         # Which conversation the brain is in now.
@@ -98,10 +106,7 @@ class Usage:
             case _:
                 pass
 
-    def reading(self) -> Tally | None:
-        """None until a main turn's reply of the conversation the brain is in has begun: until then, a /clear's new one
-        among them, it has asked the model nothing."""
-        if (latest := self._latest.get(self._session())) is None:
-            return None
+    def reading(self) -> Tally:
+        latest = self._latest.get(self._session())
         spent = sum((reply.spent for reply in self._replies.values()), self._whole)
-        return Tally(latest.model, latest.spent.input_tokens + latest.spent.output_tokens, spent)
+        return Tally(None if latest is None else InContext(latest.model, latest.spent.input_tokens + latest.spent.output_tokens), spent)

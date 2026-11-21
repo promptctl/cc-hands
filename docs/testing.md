@@ -42,7 +42,8 @@ relies on of Claude Code's own terminal is a contract, tests/terminalcontract.py
 the fake Claude Code (tests/claudescreen.py) in `make check` (test_terminal_contract.py), and against the pinned Claude Code in
 a terminal of hands' own, with the mock of Anthropic's API as its model, in `make check-rest` (test_terminal_contract_pinned.py).
 A claim the pin stops keeping fails the second, and the fake is changed to match. tests/test_pinned_brain.py is the brain's one
-smoke test, the happy path through hands' proxy. The rig the two pinned modules share is tests/pinnedbrain.py.
+smoke test, the happy path through hands' proxy, and tests/test_session_contract_pinned.py pins the order of a /clear's and a
+/resume's end, start and first request that the brain follows. The rig the three pinned modules share is tests/pinnedbrain.py.
 
 ## The phone's pages
 

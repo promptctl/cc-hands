@@ -1,8 +1,16 @@
 """Which session the brain's Claude Code is in now."""
 
 from collections.abc import Callable
+from typing import Protocol
 
 from hands.core.session import SessionId
+
+
+class SessionView(Protocol):
+    """[LAW:single-enforcer] BrainSession as a reader holds it: read and watched, never moved."""
+
+    def id(self) -> SessionId: ...
+    def watch(self, moved: Callable[[], None]) -> None: ...
 
 
 class BrainSession:

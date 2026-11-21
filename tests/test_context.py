@@ -287,7 +287,11 @@ async def test_a_request_of_a_session_the_brain_is_not_in_goes_unchanged_as_one_
     rig.kept.hear(other)
     routed = rig.kept.route(other)
     assert isinstance(routed, Send) and routed.changes == () and routed.refusal == "retried"
-    assert [event.facts for event in events(rig.recorded, "brain.unadmitted")] == [{"exchange": "x", "session": "work", "held": BRAIN}]
+    [unadmitted] = events(rig.recorded, "brain.unadmitted")
+    assert unadmitted.facts == {"exchange": "x", "session": "work", "held": BRAIN}
+    # The root of a trace of its own, with the event that says it was not the brain's inside it.
+    assert routed.span is not None and routed.span.parent_id is None
+    assert (unadmitted.trace_id, unadmitted.parent_id) == (routed.span.trace_id, routed.span.span_id)
     assert rig.keeper.changes(sent(history(6), kind=CountTokens())) == ()
 
 

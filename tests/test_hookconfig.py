@@ -1,8 +1,11 @@
 """The plugin's hooks: one declared permission timeout, every other permission time derived from it, and a hooks.json
 that is hookconfig's table and nothing else."""
 
+import http.server
 import importlib.util
 import json
+import socket
+import threading
 import shlex
 import subprocess
 import sys
@@ -26,6 +29,7 @@ from hands.sessions.hookconfig import (
     SUBSCRIBED,
     plugin_hooks,
     post_timeout,
+    relayed,
     rendered,
 )
 from hands.sessions.hooks import hook_output
@@ -113,3 +117,45 @@ def test_the_recording_rig_takes_every_hook_the_brain_posts() -> None:
     rig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rig)
     assert set(BRAIN_HOOKS) <= set(rig.HOOKS)
+
+
+class _Answering(http.server.BaseHTTPRequestHandler):
+    """hands' listener as a relayed hook meets it: /ok echoes what it was posted, wrapped; /broken fails, saying why."""
+
+    def do_POST(self) -> None:
+        posted = self.rfile.read(int(self.headers["Content-Length"]))
+        status, body = (200, b'{"posted": ' + posted + b"}") if self.path == "/ok" else (500, b"hands broke")
+        # Without a Date header, which would read the machine's clock.
+        self.send_response_only(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+def _run(hook: dict[str, object], payload: bytes) -> subprocess.CompletedProcess[bytes]:
+    # As Claude Code runs a command hook in exec form: the payload on its stdin, its stdout the hook's output.
+    return subprocess.run([cast(str, hook["command"]), *cast(list[str], hook["args"])], input=payload, capture_output=True)
+
+
+@pytest.mark.outside
+def test_a_relayed_hook_prints_hands_answer_and_fails_showing_any_other_or_none() -> None:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Answering)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # A listener that takes the connection and never answers.
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        answered = _run(relayed(f"{url}/ok", 5), b'{"hook_event_name": "SessionStart"}')
+        assert (answered.returncode, json.loads(answered.stdout)) == (0, {"posted": {"hook_event_name": "SessionStart"}})
+        broken = _run(relayed(f"{url}/broken", 5), b"{}")
+        assert broken.returncode != 0 and broken.stdout == b"hands broke"
+        unanswered = _run(relayed(f"http://127.0.0.1:{silent.getsockname()[1]}/SessionStart", 1), b"{}")
+        assert unanswered.returncode != 0 and unanswered.stderr
+    finally:
+        server.shutdown()
+        silent.close()

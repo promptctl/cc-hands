@@ -10,7 +10,7 @@ brain's and its compaction too, so each of them shares the main turn's cached pr
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from functools import partial
+from enum import Enum
 from typing import Protocol
 
 from loguru import logger
@@ -41,7 +41,7 @@ from hands.core.wire import (
 )
 from hands.sessions.audit import Record
 from hands.sessions.proxy import Listener
-from hands.sessions.wide import annotate, begun, count, root, unit
+from hands.sessions.wide import annotate, begun, continuing, count, root, unit
 
 # Turns a result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
@@ -176,6 +176,15 @@ class Asking(Hearing, Protocol):
     def own(self, sent: Sent) -> Send | None: ...
 
 
+class Staged(Enum):
+    """An exchange of the brain's own, routed by the stage."""
+
+    STAGED = "staged"
+
+
+STAGED = Staged.STAGED
+
+
 class Kept:
     """The brain's listener on the wire: the stage's route, or a side question's for its own request, with the keeper's
     changes made before the route's own, and each exchange of the brain's heard too by whatever else reads it: the brain,
@@ -190,12 +199,17 @@ class Kept:
         self._asides = asides
         self._readers = (stage, keeper, *others, asides)
         # [LAW:single-enforcer] the exchanges that are the brain's, each decided once, as its request is told, and kept
-        # until it is whole, so an exchange begun before a /clear ends where it began: the route each is made by.
-        self._admitted: dict[str, Callable[[Sent], Route]] = {}
+        # until it is whole, so an exchange begun before a /clear ends where it began: a side question's own Send, or the
+        # stage's to route (STAGED).
+        self._admitted: dict[str, Send | Staged] = {}
 
     def route(self, sent: Sent) -> Route:
         # Heard before it is routed (`Listener`), so one that was not admitted then never is.
-        return self._admitted.get(sent.exchange, self._unadmitted)(sent)
+        match self._admitted.get(sent.exchange):
+            case None:
+                return self._unadmitted(sent)
+            case admitted:
+                return self._kept(admitted, sent)
 
     def hear(self, observed: Observed) -> None:
         match observed:
@@ -217,16 +231,17 @@ class Kept:
         # for what Claude Code sends, and never made for it. Asked once, as its request is told.
         match self._asides.own(sent):
             case Send() as owned:
-                self._admitted[sent.exchange] = partial(self._kept, lambda _: owned)
+                self._admitted[sent.exchange] = owned
             case None if sent.session == self._session():
-                self._admitted[sent.exchange] = partial(self._kept, self._stage.route)
+                self._admitted[sent.exchange] = STAGED
             case None:
                 pass
 
-    def _kept(self, routing: Callable[[Sent], Route], sent: Sent) -> Route:
+    def _kept(self, admitted: Send | Staged, sent: Sent) -> Route:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
         kept = self._keeper.changes(sent)
-        match routing(sent):
+        routed = self._stage.route(sent) if admitted is STAGED else admitted
+        match routed:
             # [LAW:one-source-of-truth] the Send as it was routed, every field carried, with the keeper's changes first.
             case Send() as send:
                 return replace(send, changes=(*kept, *send.changes))
@@ -237,7 +252,7 @@ class Kept:
         """A request on hands' proxy that is no exchange of the brain's: a `claude` the brain's Bash tool runs, or one of
         a session the brain has left. It goes as it came, the root of a trace of its own."""
         span = root(self._clock)
-        # [LAW:nothing-unseen] one event, naming the request and its session.
-        with unit("brain.unadmitted", self._record, begun(self._clock)):
+        # [LAW:nothing-unseen] one event, naming the request and its session, in the request's own trace.
+        with continuing(span), unit("brain.unadmitted", self._record, begun(self._clock)):
             annotate(exchange=sent.exchange, session=sent.session, held=self._session())
         return Send(span=span)

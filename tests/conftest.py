@@ -780,7 +780,7 @@ def post(event, **fields):
         return {{}}
     return json.loads(ran.stdout) if ran.stdout.strip() else {{}}
 def moved(reason, entered):
-    # A /clear or a /resume, as Claude Code 2.1.308 makes one: the end of the session it leaves, answered, and only then
+    # A /clear or a /resume, as the pinned Claude Code makes one: the end of the session it leaves, answered, and only then
     # the start of the one it enters (docs/claude-code-behavior.md).
     global session, transcript
     post("SessionEnd", reason=reason)

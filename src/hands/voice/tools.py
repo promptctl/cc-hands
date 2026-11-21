@@ -1019,11 +1019,13 @@ def usage_tool(usage: Usage) -> Tool:
         you start has its own context, which this does not measure.
         """
         reading = usage.reading()
-        if reading is None:
+        if reading.spent.replies == 0:
             return {"error": "No reply of yours has been counted yet."}
+        # A conversation the brain has moved to and had no reply in yet holds nothing counted: its model and size are null.
+        held = reading.in_context
         return {
-            "model": reading.model,
-            "in_context_tokens": reading.in_context,
+            "model": None if held is None else held.model,
+            "in_context_tokens": None if held is None else held.tokens,
             "spent": {"input_tokens": reading.spent.input_tokens, "output_tokens": reading.spent.output_tokens, "replies": reading.spent.replies},
         }
 
