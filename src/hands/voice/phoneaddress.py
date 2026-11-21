@@ -10,7 +10,6 @@ sends with the page's request.
 """
 
 import datetime
-import hmac
 import ipaddress
 import json
 import os
@@ -170,14 +169,6 @@ def phone_key(clock: Clock, home: Home) -> str:
             raise Rejected(f"{path} holds no key; delete it, and hands makes a new one")
         case key:
             return key
-
-
-def carries_key(authorization: str, key: str) -> bool:
-    """Whether a request's Authorization header carries the phone's key as a bearer token.
-
-    [LAW:single-enforcer] the one check of the key, for every route that asks for it, compared in constant time.
-    """
-    return hmac.compare_digest(authorization.encode(), f"Bearer {key}".encode())
 
 
 def lan_addresses() -> list[str]:

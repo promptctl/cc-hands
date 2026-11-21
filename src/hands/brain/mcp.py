@@ -11,7 +11,6 @@ Its tools type into sessions and answer permissions, and a port on 127.0.0.1 is 
 every web page, so each request carries a token only the brain's --mcp-config holds.
 """
 
-import hmac
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.clock import Clock
+from hands.core.bearer import bearer, bears
 from hands.core.trace import Span
 from hands.sessions.audit import Record, said
 from hands.sessions.wide import annotate, begun, continuing, fail, unit
@@ -71,7 +71,7 @@ class McpServer:
 
     def config(self) -> str:
         """The --mcp-config that points a Claude Code at this server, beside any its own setup names, with the token that lets it in."""
-        return json.dumps({"mcpServers": {SERVER_NAME: {"type": "http", "url": self.url, "headers": {"Authorization": f"Bearer {self.token}"}}}})
+        return json.dumps({"mcpServers": {SERVER_NAME: {"type": "http", "url": self.url, "headers": {"Authorization": bearer(self.token)}}}})
 
 
 async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: CallSpans) -> McpServer:
@@ -82,7 +82,7 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
     @web.middleware
     async def admitted(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
         # [LAW:single-enforcer] the one door: nothing reaches a tool without the token.
-        if not hmac.compare_digest(request.headers.get("Authorization", ""), f"Bearer {token}"):
+        if not bears(request.headers.get("Authorization", ""), token):
             logger.warning(f"the MCP server refused a {request.method} without its token, from {request.remote} (Origin {request.headers.get('Origin')})")
             return web.Response(status=401)
         return await handler(request)

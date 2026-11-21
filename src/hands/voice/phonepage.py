@@ -20,6 +20,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.clock import Clock
+from hands.core.bearer import bears
 from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -29,7 +30,7 @@ from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
-from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, tailnet
+from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, tailnet
 from hands.voice.summaries import SummaryStore
 
 # How often a page served under the tailnet's name asks Tailscale for its certificate again: Tailscale renews one a
@@ -61,7 +62,7 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
         began = begun(clock)
-        if not carries_key(request.headers.get("Authorization", ""), key):
+        if not bears(request.headers.get("Authorization", ""), key):
             call_ended(record, began, remote, None, CallRefused("offered without the phone's key"))
             return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
         try:
@@ -88,8 +89,8 @@ def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str
     from `store` and runs its writes in `environment`, the one hands was started in; the gallery page sets hands'
     voices, level, modality, and model through `gallery`.
 
-    [LAW:one-source-of-truth] the one composition of the phone's routes: hands serves it, and every test of the routes
-    asks it.
+    [LAW:one-source-of-truth] the one composition of the phone's routes: hands serves it, and so do the tests of the phone's
+    route and of the pages in a browser.
     """
     app = web.Application()
     app.add_routes(phone_routes(clock, phone, key, record))
