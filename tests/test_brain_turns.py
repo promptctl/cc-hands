@@ -40,6 +40,12 @@ async def until(check: Callable[[], bool]) -> None:
     await patiently(check, lambda: None)
 
 
+async def _kept_out(brain: Brain) -> None:
+    """Until the work the brain keeps running on its own has returned: a stop's, its last key pressed included. A turn its
+    stop ends is over before that key goes (`Brain._clear`), so its end is no sign the keys are all pressed."""
+    await asyncio.gather(*brain._typing)  # pyright: ignore[reportPrivateUsage]
+
+
 async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what_it_showed_with_nothing_typed() -> None:
     clock = VirtualClock()
     brain = _owning(clock)
@@ -597,14 +603,13 @@ async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_inter
     turn = brain._turn  # pyright: ignore[reportPrivateUsage]
     assert turn is not None
     assert brain.interrupt(brain.answering()) is True
-    # Escape went, and each dialog is refused in the step it went, whether or not Claude Code has read the key.
+    # Each dialog is refused in the step the Escape goes, whether or not Claude Code has read the key, or it is pressed yet.
     await settled()
-    assert "escape" in keys.pressed
-    assert all(post.done() for post in posts)
     assert [post.result() for post in posts] == [hook_output(DenyAndInterrupt(STOPPED))] * count
+    await until(lambda: "escape" in keys.pressed)
     # Claude Code stops what the Escape stopped, writes the record of it, and is at its prompt.
     await _interrupted(brain, "p1")
-    await settled()
+    await _kept_out(brain)
     assert turn.answered.done()
     assert (turn.answered.result(), dialogs(brain)) == (BrainStopped(), ())
     assert [await each.decided() for each in asked] == [DenyAndInterrupt(STOPPED)] * count
@@ -634,10 +639,9 @@ async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_wit
         logger.remove(sink)
     # The dialog is refused as the turn is broken, in the step it is learned, and the turn is stopped as an Escape stops it.
     assert (reply, asks, said) == (hook_output(DenyAndInterrupt(BROKEN)), 1, ["the brain's own work failed: RuntimeError('no voice')"])
-    await settled()
-    assert "escape" in keys.pressed
+    await until(lambda: "escape" in keys.pressed)
     await _interrupted(brain, "p1")
-    await settled()
+    await _kept_out(brain)
     assert turn.answered.done() and not turn.answered.cancelled()
     assert (type(turn.answered.exception()), dialogs(brain)) == (RuntimeError, ())
     assert permissions(recorded) == [("p1", "Write", DenyAndInterrupt(BROKEN))]
@@ -711,7 +715,6 @@ async def test_words_claude_code_takes_before_a_turn_pasted_its_own_are_never_th
     assert (turn.taken.done(), [running.opener for running in brain._claude_turns.open]) == (False, ["other"])  # pyright: ignore[reportPrivateUsage]
 
 
-@pytest.mark.quarantined("promptctl-testing-c3u.7e9", until="2026-11-26")
 @pytest.mark.parametrize("queued", [False, True])
 async def test_words_of_an_untaken_turn_that_claude_code_takes_next_are_stopped(queued: bool) -> None:
     brain = _owning(VirtualClock())
@@ -719,7 +722,7 @@ async def test_words_of_an_untaken_turn_that_claude_code_takes_next_are_stopped(
     brain._over(_typed_turn(brain, "hello"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
     _took(brain, "p1", "hello", queued=queued)
     (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
-    await until(lambda: late.ended.done())
+    await _kept_out(brain)
     assert (type(late.ended.exception()), keys.pressed, brain._claude_turns.open) == (process.Unran, ["escape", "ctrl_c"], ())  # pyright: ignore[reportPrivateUsage]
 
 
@@ -731,8 +734,8 @@ async def test_words_of_an_untaken_turn_taken_after_a_task_s_result_are_still_st
     _took(brain, "p1", "<task-notification>done</task-notification>")
     _took(brain, "p1", "hello", queued=True)
     (notified,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
-    await until(lambda: notified.ended.done())
-    assert (keys.pressed, brain._claude_turns.open) == (["escape", "ctrl_c"], ())  # pyright: ignore[reportPrivateUsage]
+    await _kept_out(brain)
+    assert (notified.ended.done(), keys.pressed, brain._claude_turns.open) == (True, ["escape", "ctrl_c"], ())  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_words_of_an_untaken_turn_taken_after_a_stop_cleared_the_input_are_a_person_s_and_run_on() -> None:
@@ -754,7 +757,7 @@ async def test_words_of_an_untaken_turn_a_turn_asked_since_was_filed_into_run_on
     _took(brain, "p1", "hello")
     asked = _typed_turn(brain, "what's the weather")
     _took(brain, "p1", "what's the weather", queued=True)
-    await until(lambda: not brain._typing)  # pyright: ignore[reportPrivateUsage]
+    await _kept_out(brain)
     (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
     assert (asked.running, asked.answered.done(), keys.pressed) == (late, False, [])
 
@@ -1014,7 +1017,6 @@ async def test_a_turn_claude_code_opened_itself_is_stopped_when_its_work_is_the_
         task.cancel()
 
 
-@pytest.mark.quarantined("promptctl-testing-c3u.7e9", until="2026-11-26")
 async def test_a_task_result_ctrl_c_cleared_from_claude_codes_queue_ends_its_turn_unran_and_holds_no_turn_after_it() -> None:
     recorded: list[Entry] = []
     clock = VirtualClock()
@@ -1025,7 +1027,7 @@ async def test_a_task_result_ctrl_c_cleared_from_claude_codes_queue_ends_its_tur
     _told(brain, "n1", ["n1"], waiting=(NOTICE,))
     (behind,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
     assert brain.interrupt(behind) is True
-    await until(lambda: behind.ended.done())
+    await _kept_out(brain)
     # Ctrl-C cleared it before it ran: no telling will end it, so the clear does, and nothing is left open to wait on.
     assert ("ctrl_c" in keys.pressed, type(behind.ended.exception()), brain._claude_turns.open) == (True, process.Unran, ())  # pyright: ignore[reportPrivateUsage]
     turn = asyncio.ensure_future(brain.ask("and now?", unasked))
