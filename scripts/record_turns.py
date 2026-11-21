@@ -35,7 +35,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from hands.brain import pinned
-from hands.sessions.hookconfig import BRAIN_HOOKS, Relayed, plugin_hooks, relayed
+from hands.sessions.hookconfig import BRAIN_HOOKS, brain_hook, plugin_hooks
 from hands.sessions.home import default_home
 
 TESTS = Path(__file__).resolve().parent.parent / "tests"
@@ -47,9 +47,6 @@ CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 # The hooks a recording holds: every one a wrapped session posts (hands' plugin's own: the shim's, and MessageDisplay),
 # every one the brain does, and PreToolUse, which neither subscribes to, so a recording shows when a call started.
 HOOKS = tuple(dict.fromkeys((*plugin_hooks()["hooks"], *BRAIN_HOOKS, "PreToolUse")))
-# [LAW:one-source-of-truth] the hooks Claude Code runs no HTTP hook for are relayed to the rig as the brain relays them
-# to hands, so a recorded start arrives as the brain's does, a spawn later.
-UNPOSTED = {event: hook for event, hook in BRAIN_HOOKS.items() if isinstance(hook, Relayed)}
 TMUX = "record-turns"
 # How often the transcript and the session file are read.
 POLL = 0.001
@@ -113,9 +110,11 @@ class Rig:
         self._failed: BaseException | None = None
         self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
-        url = f"http://127.0.0.1:{self._server.server_address[1]}/"
+        url = f"http://127.0.0.1:{self._server.server_address[1]}"
         settings = {
-            "hooks": {event: [{"hooks": [relayed(url, UNPOSTED[event].timeout) if event in UNPOSTED else {"type": "http", "url": url}]}] for event in HOOKS},
+            # [LAW:one-source-of-truth] each of the brain's hooks declared as the brain declares it, so a recorded start
+            # arrives as the brain's does, relayed a spawn later; the rest posted as a wrapped session's are.
+            "hooks": {event: [{"hooks": [brain_hook(event, url) if event in BRAIN_HOOKS else {"type": "http", "url": f"{url}/{event}"}]}] for event in HOOKS},
             "permissions": {"allow": ["Bash(*)", "mcp__slow__wait"]},
         }
         mcp = {"mcpServers": {"slow": {"type": "stdio", "command": sys.executable, "args": ["-I", str(Path(__file__).resolve()), "--slow-mcp"]}}}

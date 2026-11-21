@@ -15,14 +15,12 @@ from hands.core.effects import AllowWith, Allow, Deny, DenyAndInterrupt, Withdra
 from hands.core.reducer import UNTOLD
 from hands.sessions.hookconfig import (
     BRAIN_HOOKS,
-    BRAIN_POST_TIMEOUT_SECONDS,
     BRAIN_REPLY_BY_SECONDS,
     HOOKS_FILE,
     PERMISSION_HOOK_TIMEOUT_SECONDS,
     PLUGIN_ID,
     POST_TIMEOUT_SECONDS,
     REPLY_MARGIN_SECONDS,
-    Relayed,
     SHIM_COMMAND,
     STOP_HOLD_SECONDS,
     SUBSCRIBED,
@@ -108,11 +106,10 @@ def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s_whose_entry_is_
     # A directory source is installed and updated by copying it, so Claude Code runs nothing of hands' and asks no one to accept it.
 
 
-def test_the_recording_rig_takes_every_hook_the_brain_posts_and_relays_the_start_as_the_brain_relays_it() -> None:
+def test_the_recording_rig_takes_every_hook_the_brain_posts() -> None:
     # Imported, as nothing else in the suite does: the rig is run by hand, so a name it lost would wait for that run.
     spec = importlib.util.spec_from_file_location("record_turns", REPOSITORY / "scripts" / "record_turns.py")
     assert spec is not None and spec.loader is not None
     rig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rig)
     assert set(BRAIN_HOOKS) <= set(rig.HOOKS)
-    assert rig.UNPOSTED == {"SessionStart": Relayed(BRAIN_POST_TIMEOUT_SECONDS)}

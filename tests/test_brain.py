@@ -27,7 +27,8 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
-from hands.brain.process import BROKEN, BrainSession, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.session import BrainSession
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
@@ -283,11 +284,11 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false"}
     assert "permissions" not in settings
     hooks = settings["hooks"]
-    assert hooks.pop("Elicitation") == [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/Elicitation"}]}]
     # The order of the brain's turns rests on its prompt hook and its Stop being waited on: a prompt's as long as a typed
     # turn has to be taken, and a Stop's past the hold the model puts on it, as the shim's outlives a working session's.
-    # Its end too: Claude Code enters the session a /clear or a /resume moves it to only once the end is answered.
-    waits = {event: TAKE_SECONDS + POST_TIMEOUT_SECONDS for event in ("UserPromptSubmit", "Stop", "StopFailure", "SessionEnd")}
+    # Its end too: Claude Code enters the session a /clear or a /resume moves it to only once the end is answered. A
+    # dialog an MCP server opens is declined as it comes.
+    waits = {event: TAKE_SECONDS + POST_TIMEOUT_SECONDS for event in ("UserPromptSubmit", "Stop", "StopFailure", "SessionEnd", "Elicitation")}
     assert {event: hooks.pop(event) for event in waits} == {event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}", "timeout": wait}]}] for event, wait in waits.items()}
     # Claude Code runs no HTTP hook for a start: curl posts it, and prints hands' answer as the hook's, failing on any other.
     wait = TAKE_SECONDS + POST_TIMEOUT_SECONDS
@@ -1312,7 +1313,7 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
             return False
         return True
 
-    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.process import BrainSession, _child_of, brain_claude, start\nfrom hands.clock import SYSTEM\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
+    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.session import BrainSession\nfrom hands.brain.process import _child_of, brain_claude, start\nfrom hands.clock import SYSTEM\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
     script += "".join(f"    {line}\n" for line in started.strip().splitlines()) + "    os._exit(0)\nasyncio.run(main())\n"
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
@@ -1339,7 +1340,8 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
 # Run in a process of its own, since a loop that never closes would take the test run down with it.
 SHUT_DOWN = """
 import asyncio, contextlib, math, os, pickle, sys
-from hands.brain.process import BrainSession, start
+from hands.brain.session import BrainSession
+from hands.brain.process import start
 from hands.sessions import pseudoterminal
 
 launch = pickle.load(sys.stdin.buffer)
@@ -1935,10 +1937,12 @@ async def test_a_launch_whose_claude_code_posts_no_start_fails_naming_it(tmp_pat
 
 
 @pytest.mark.outside
-async def test_a_launch_whose_conversation_cannot_be_held_fails_naming_it(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_launch_whose_conversation_cannot_be_held_fails_naming_it(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The next start would resume a conversation other than the one the brain came up in.
-    writing = tmp_path / "brain" / "conversation.writing"
-    writing.mkdir(parents=True)
+    def unwritable(config_dir: Path, session: SessionId) -> None:
+        raise OSError(30, "Read-only file system", str(process.held(config_dir)))
+
+    monkeypatch.setattr(process, "hold", unwritable)
     recorded: list[Entry] = []
     with pytest.raises(Unstartable, match="the brain's conversation b1 could not be held"):
         await launched_brain(SYSTEM, launch(tmp_path), recorded.append)

@@ -2,7 +2,7 @@
 
 from typing import cast
 
-from hands.brain.process import BrainSession
+from hands.brain.session import BrainSession
 from hands.brain.usage import Spent, Tally, Usage
 from hands.clock import SYSTEM
 from hands.core.session import SessionId
@@ -88,6 +88,9 @@ def test_a_conversation_the_brain_moves_to_holds_nothing_until_its_own_first_rep
     assert usage.reading() is None
     heard(usage, sent("b", session=entered), started("b", 3))
     assert usage.reading() == Tally("claude-opus-5-5", 4, Spent(13, 2, 2))
+    # Resumed back, it holds what its own latest reply left it holding.
+    held.enter(BRAIN)
+    assert usage.reading() == Tally("claude-opus-5-5", 11, Spent(13, 2, 2))
 
 
 async def test_each_call_is_one_event_holding_what_it_reported() -> None:

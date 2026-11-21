@@ -178,8 +178,8 @@ class Asking(Hearing, Protocol):
 
 class Kept:
     """The brain's listener on the wire: the stage's route, or a side question's for its own request, with the keeper's
-    changes made before the route's own, and everything heard too by whatever else reads the wire: the brain, and what
-    answers hands' side questions."""
+    changes made before the route's own, and each exchange of the brain's heard too by whatever else reads it: the brain,
+    and what answers hands' side questions."""
 
     def __init__(self, clock: Clock, record: Record, session: Callable[[], SessionId], stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
         self._clock = clock
@@ -194,26 +194,23 @@ class Kept:
         self._admitted: dict[str, Callable[[Sent], Route]] = {}
 
     def route(self, sent: Sent) -> Route:
-        # The proxy tells a request before it routes it, so one that was not admitted then never is.
+        # Heard before it is routed (`Listener`), so one that was not admitted then never is.
         return self._admitted.get(sent.exchange, self._unadmitted)(sent)
 
     def hear(self, observed: Observed) -> None:
         match observed:
             case Sent() as sent:
                 self._admit(sent)
+                admitted = sent.exchange in self._admitted
+            case Exchanged(exchange=exchange):
+                # Whole, so never routed again: let go before it is heard.
+                admitted = self._admitted.pop(exchange, None) is not None
             case _:
-                pass
-        try:
-            # [LAW:single-enforcer] every reader hears the brain's exchanges and nothing else: a working session's
-            # tapped traffic, or a request of another session, reaches none of them.
-            for reader in self._readers if observed.exchange in self._admitted else ():
-                reader.hear(observed)
-        finally:
-            match observed:
-                case Exchanged(exchange=exchange):
-                    self._admitted.pop(exchange, None)
-                case _:
-                    pass
+                admitted = observed.exchange in self._admitted
+        # [LAW:single-enforcer] every reader hears the brain's exchanges and nothing else: a working session's tapped
+        # traffic, or a request of another session, reaches none of them.
+        for reader in self._readers if admitted else ():
+            reader.hear(observed)
 
     def _admit(self, sent: Sent) -> None:
         # [LAW:single-enforcer] a side question's own request is routed by the question alone: the stage's routes are

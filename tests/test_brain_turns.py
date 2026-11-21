@@ -17,7 +17,8 @@ from loguru import logger
 from hands.brain import process
 from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
-from hands.brain.process import ClaudeTurns, BROKEN, BrainSession, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainStopped, Untaken, _listen, _Turn, model  # pyright: ignore[reportPrivateUsage]
+from hands.brain.session import BrainSession
+from hands.brain.process import ClaudeTurns, BROKEN, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainStopped, Untaken, _listen, _Turn, model  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, HookReply, Submitted, Summarise
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
@@ -25,7 +26,7 @@ from hands.sessions.audit import Entry
 from conftest import events, patiently, settled
 from brains import dialogs, failures, permissions, unasked
 
-from hands.core.events import Abandoned, Dequeued, Ending, Interrupted, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
+from hands.core.events import Abandoned, Dequeued, Ending, Interrupted, Located, Prompted, Removed, StatusReported, Stopped, Taken, UnknownSource, Unqueued
 from hands.core.status import Busy, Idle, Report, Stamp
 from hands.core.session import Membership, PromptId, PromptText, SessionId
 from hands.core.wire import MainTurn, Sent
@@ -1205,15 +1206,33 @@ async def test_a_start_of_the_session_the_brain_is_in_leaves_the_turn_running_th
     assert started.facts == {"left": "b1", "entered": "b1", "source": "compact"}
 
 
-async def test_a_start_that_does_not_parse_is_one_event_and_the_brain_stays_in_its_session(tmp_path: Path) -> None:
+async def test_a_start_that_does_not_parse_is_one_event_and_fails_every_turn_open_as_the_order_lost(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     brain = await _moving(tmp_path, recorded)
     (running,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
     assert await brain.posted("SessionStart", b"{not json") == {}
     [unread] = events(recorded, "brain.unread")
     assert unread.facts == {"hook": "SessionStart"} and unread.outcome == "failed"
-    assert brain._session.id() == SessionId("b1") and events(recorded, "brain.session") == []  # pyright: ignore[reportPrivateUsage]
-    # Nothing was left, so the turn running there runs on.
+    # Which conversation Claude Code is in is not guessed: what ran fails, saying the start was unread.
+    with pytest.raises(process.OrderLost, match="SessionStart hook does not parse"):
+        running.ended.result()
+
+
+async def test_a_start_from_a_source_hands_does_not_know_still_moves_the_brain(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await _moving(tmp_path, recorded)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b2", source="teleport"))
+    assert brain._session.id() == SessionId("b2")  # pyright: ignore[reportPrivateUsage]
+    [moved] = events(recorded, "brain.session")
+    assert moved.facts["source"] == UnknownSource("teleport")
+
+
+async def test_an_end_that_is_no_move_leaves_the_turn_running_to_fail_as_the_brain_exits(tmp_path: Path) -> None:
+    # Its Claude Code ending, not leaving for another conversation: what it ran fails as the brain is gone.
+    recorded: list[Entry] = []
+    brain = await _moving(tmp_path, recorded)
+    (running,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    await brain.posted("SessionEnd", _session_hook("SessionEnd", "b1", reason="other"))
     assert not running.ended.done()
 
 

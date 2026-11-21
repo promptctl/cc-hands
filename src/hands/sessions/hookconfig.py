@@ -110,9 +110,9 @@ def declared(event: str) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class Http:
-    """A hook Claude Code posts to hands itself, waiting on it `timeout` seconds, or its own default when None."""
+    """A hook Claude Code posts to hands itself, waiting on it `timeout` seconds."""
 
-    timeout: float | None
+    timeout: float
 
 
 @dataclass(frozen=True)
@@ -133,7 +133,8 @@ BRAIN_HOOKS: Mapping[str, Http | Relayed] = {
     "Stop": Http(BRAIN_POST_TIMEOUT_SECONDS),
     "StopFailure": Http(BRAIN_POST_TIMEOUT_SECONDS),
     "PermissionRequest": Http(PERMISSION_HOOK_TIMEOUT_SECONDS),
-    "Elicitation": Http(None),
+    # Declined as it comes (hands.brain.process.DECLINED).
+    "Elicitation": Http(BRAIN_POST_TIMEOUT_SECONDS),
     "SessionEnd": Http(BRAIN_POST_TIMEOUT_SECONDS),
 }
 
@@ -142,8 +143,6 @@ def brain_hook(event: str, listener: str) -> dict[str, object]:
     """One of the brain's hooks as its --settings declare it, posted to `listener` at the path of its event."""
     url = f"{listener}/{event}"
     match BRAIN_HOOKS[event]:
-        case Http(timeout=None):
-            return {"type": "http", "url": url}
         case Http(timeout=timeout):
             return {"type": "http", "url": url, "timeout": timeout}
         case Relayed(timeout=timeout):

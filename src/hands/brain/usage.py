@@ -71,9 +71,10 @@ class Usage:
         # The exchanges sent and not yet whole.
         self._sent: dict[str, Sent] = {}
         self._replies: dict[str, _Reply] = {}
-        # [LAW:one-source-of-truth] what whole exchanges spent, folded in once each is whole, and the latest main turn.
+        # [LAW:one-source-of-truth] what whole exchanges spent, folded in once each is whole, and the latest main turn of
+        # each conversation, so a /resume back reads the one it returns to.
         self._whole = Spent()
-        self._latest: _Reply | None = None
+        self._latest: dict[SessionId | None, _Reply] = {}
 
     def hear(self, observed: Observed) -> None:
         match observed:
@@ -83,13 +84,13 @@ class Usage:
                 sent = self._sent[exchange]
                 reply = self._replies[exchange] = _Reply(exchange, model, usage, sent.session)
                 if isinstance(sent.kind, MainTurn):
-                    self._latest = reply
+                    self._latest[reply.session] = reply
             case Heard(exchange=exchange, event=MessageDelta(usage=usage)) if exchange in self._replies:
                 # [LAW:one-source-of-truth] the wire's own fold, so a reply is counted as the wire assembles it.
                 reply = self._replies[exchange] = replace(self._replies[exchange], usage=usage_after(self._replies[exchange].usage, usage))
-                # Only the main turn that began last is the conversation as it stands.
-                if self._latest is not None and self._latest.exchange == exchange:
-                    self._latest = reply
+                # Only the main turn that began last is its conversation as it stands.
+                if (latest := self._latest.get(reply.session)) is not None and latest.exchange == exchange:
+                    self._latest[reply.session] = reply
             case Exchanged(exchange=exchange) if exchange in self._sent:
                 del self._sent[exchange]
                 if (reply := self._replies.pop(exchange, None)) is not None:
@@ -100,7 +101,7 @@ class Usage:
     def reading(self) -> Tally | None:
         """None until a main turn's reply of the conversation the brain is in has begun: until then, a /clear's new one
         among them, it has asked the model nothing."""
-        if self._latest is None or self._latest.session != self._session():
+        if (latest := self._latest.get(self._session())) is None:
             return None
         spent = sum((reply.spent for reply in self._replies.values()), self._whole)
-        return Tally(self._latest.model, self._latest.spent.input_tokens + self._latest.spent.output_tokens, spent)
+        return Tally(latest.model, latest.spent.input_tokens + latest.spent.output_tokens, spent)

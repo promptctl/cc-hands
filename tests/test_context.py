@@ -10,7 +10,7 @@ import pytest
 
 from conftest import events
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
-from hands.brain.process import BrainSession
+from hands.brain.session import BrainSession
 from hands.brain.asides import AsideFailed, Unanswered
 from hands.virtualclock import VirtualClock
 from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question

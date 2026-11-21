@@ -18,9 +18,17 @@ EndReason = Literal["clear", "resume", "logout", "prompt_input_exit", "bypass_pe
 
 
 @dataclass(frozen=True)
+class UnknownSource:
+    """A SessionStart source this version of hands does not know, kept by its name: the session joins all the same, as one
+    started anew."""
+
+    name: str
+
+
+@dataclass(frozen=True)
 class Joined:
     membership: Membership
-    source: StartSource
+    source: StartSource | UnknownSource
 
 
 @dataclass(frozen=True)

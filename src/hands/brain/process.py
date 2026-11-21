@@ -29,6 +29,7 @@ import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
 
@@ -37,9 +38,10 @@ from loguru import logger
 
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
+from hands.brain.session import BrainSession
 from hands.clock import Clock, wait
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
-from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped
+from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
 from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
@@ -54,6 +56,7 @@ from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.child import Ran
+from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
@@ -230,10 +233,7 @@ def conversation(config_dir: Path, new: SessionId) -> Conversation:
 
 def hold(config_dir: Path, session: SessionId) -> None:
     """Remember `session` as the brain's conversation, replacing whatever was held whole."""
-    path = held(config_dir)
-    written = path.with_name(f"{path.name}.writing")
-    written.write_text(f"{session}\n")
-    written.replace(path)
+    replace_whole(held(config_dir), f"{session}\n", 0o644)
 
 
 def let_go(config_dir: Path) -> SessionId | None:
@@ -875,23 +875,6 @@ class SessionLeft(Exception):
     of them runs on there."""
 
 
-class BrainSession:
-    """[LAW:one-source-of-truth] which session the brain's Claude Code is in now: the conversation it launches in, until
-    a /clear or a /resume at its keyboard moves it. The brain's start step is its one writer (`Brain._entered`); every
-    reader is handed `id`, and reads it as it is when it reads."""
-
-    def __init__(self, session: SessionId) -> None:
-        self._id = session
-
-    def id(self) -> SessionId:
-        return self._id
-
-    def enter(self, session: SessionId) -> SessionId:
-        """Moves the brain to `session`, and returns the one it was in."""
-        left, self._id = self._id, session
-        return left
-
-
 # [LAW:one-type-per-behavior] what opened a turn of Claude Code's that hands did not type, as a table: each row a kind and
 # the prompt it is known by. A turn of another kind, a scheduled prompt's say, is one more row, and nothing that matches
 # a turn to its end reads the kind.
@@ -1084,7 +1067,7 @@ class Brain:
         self._session = session
         # [LAW:no-ambient-temporal-coupling] the launch's own start, once applied: whether its conversation was held, or
         # what failed holding it. The launch is up only once it is (`start`).
-        self._launch_started: asyncio.Future[OSError | None] = asyncio.get_running_loop().create_future()
+        self._launch_started: asyncio.Future[Unstartable | None] = asyncio.get_running_loop().create_future()
         self._typist = typist
         # The Claude Code fritter wrapped, and where it works: what its own hooks do not say of it.
         self._pid = typist.pid
@@ -1519,16 +1502,16 @@ class Brain:
             case _:
                 pass
 
-    async def started(self) -> None:
+    async def started(self, by: float) -> None:
         """Returns once the launch's own start is applied, the conversation it launched in held. Raises Unstartable,
-        saying which, when no start comes within START_SECONDS, or its conversation cannot be held: the next start of
-        hands would resume a conversation other than the one the brain is in."""
-        await wait(self._clock, {self._launch_started}, START_SECONDS)
+        saying which, when no start comes by `by`, the launch's deadline, or its conversation cannot be held: the next
+        start of hands would resume a conversation other than the one the brain is in."""
+        await wait(self._clock, {self._launch_started}, by - self._clock.now())
         if not self._launch_started.done():
             ended = f", {exited(self._exit.result())}" if self._exit.done() else ""
             raise Unstartable(f"the brain's Claude Code posted no start of its session within {START_SECONDS:.0f}s{ended}; it showed:\n{self._claude.shown()}")
         if (unheld := self._launch_started.result()) is not None:
-            raise Unstartable(f"the brain's conversation {self._session.id()} could not be held: {unheld}")
+            raise unheld
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many
@@ -1556,7 +1539,7 @@ class Brain:
             raise BrainGone(f"the brain cannot be typed into: {error}") from error
 
     async def _run_out(self, up: Begun) -> int:
-        # [LAW:nothing-unseen] the brain's run, from its input coming up to its process's end, is one event as it ends:
+        # [LAW:nothing-unseen] the brain's run, from fritter starting its Claude Code to its process's end, is one event as it ends:
         # its exit code, and the last of what it showed on its terminal; or that hands stopped waiting for its end.
         with unit("brain.run", self._record, up):
             code = await asyncio.shield(self._claude.exit)
@@ -1609,29 +1592,30 @@ class Brain:
                 return {}
 
     def _moved_by(self, hook: Hook) -> None:
-        """What a start or an end moves of the brain: the end of its session is the leaving, so every turn of Claude Code's
-        open there fails; a start is the entering, of a session new or held before, or of the one held, as a compaction
-        starts it again."""
+        """What a start or an end moves of the brain: the end of its session by a /clear or a /resume is the leaving, so
+        every turn of Claude Code's open there fails; a start is the entering, of a session new or held before, or of the
+        one held, as a compaction starts it again. Any other end is the brain's Claude Code ending, whose turns fail as
+        it exits (`_run_out`)."""
         match hook.happened:
-            case Ended(session=session, reason=reason):
+            case Ended(session=session, reason="clear" | "resume" as reason):
                 self._claude_turns.failed(SessionLeft(f"the brain's Claude Code ended its session {session} ({reason})"))
             case Joined(membership=membership, source=source):
                 self._entered(membership.id, source)
             case _:
                 pass
 
-    def _entered(self, session: SessionId, source: StartSource) -> None:
+    def _entered(self, session: SessionId, source: StartSource | UnknownSource) -> None:
         """The brain's start step: Claude Code is in `session` now, and the next hands to start the brain resumes it. A
         conversation that cannot be held is said, and the brain is in it all the same: Claude Code moved it there."""
         # [LAW:nothing-unseen] each start is one event: the session left, the one entered, and whether it was held.
         with unit("brain.session", self._record, begun(self._clock)):
             left = self._session.enter(session)
             annotate(left=left, entered=session, source=source)
-            unheld: OSError | None = None
+            unheld: Unstartable | None = None
             try:
                 hold(self._config_dir, session)
             except OSError as error:
-                unheld = error
+                unheld = Unstartable(f"the brain's conversation {session} could not be held: {error}")
                 fail(f"the brain's conversation {session} could not be held, so the next start of hands will not resume it: {error}")
         # The launch waits on its own start alone: a later one's failure is its event's.
         if not self._launch_started.done():
@@ -1669,14 +1653,15 @@ class Brain:
                 with unit("brain.permission", self._record, begun(self._clock)):
                     fail(f"hands could not read the permission request: {error}")
                 return hook_output(Deny(UNREAD))
-            case "UserPromptSubmit" | "Stop" | "SessionEnd":
-                # [LAW:no-silent-failure] a turn's opening, its Stop, or the end of the session it ran in, the model never
-                # heard: which turn a telling ends is no longer known (`ClaudeTurns`), and is not guessed.
+            case "UserPromptSubmit" | "Stop" | "SessionEnd" | "SessionStart":
+                # [LAW:no-silent-failure] a turn's opening, its Stop, the end of the session it ran in, or the start of the
+                # one Claude Code is in now, the model never heard: which turn a telling ends, and in which conversation,
+                # is no longer known (`ClaudeTurns`), and is not guessed.
                 self._unheard(event, error)
                 self._lost(f"the brain's {event} hook does not parse: {error}")
                 return {}
             case _:
-                # A start unread leaves the brain in the session it was in.
+                # [LAW:nothing-unseen] any other hook unread is one event all the same.
                 self._unheard(event, error)
                 return {}
 
@@ -1962,38 +1947,36 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
         sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
         running: InTmux | None = None
+        brain: Brain | None = None
+        # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
+        by = clock.now() + START_SECONDS
         try:
-            try:
-                running = await in_tmux(clock, station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
-                annotate(tmux_session=brain_session(station.config_dir))
-                typist, wrapper = await _typist(clock, running, sockets)
-                annotate(pid=wrapper)
-            except Unstartable:
-                # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
-                # Claude Code keeps its transcript (it exits "No conversation found" on one it cannot read).
-                annotate(let_go=let_go(station.config_dir))
-                raise
-        except BaseException:
-            # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
-            # its own, which nothing but hands' own end would hang up.
-            if running is not None:
-                await running.stop()
-            posting.cancel()
-            await listener.cleanup()
-            shutil.rmtree(sockets, ignore_errors=True)
-            raise
-        brain = Brain(running, wrapper, session, typist, listener, sockets, station.config_dir, station.cwd, record, here(), clock)
-        posting.set_result(brain.posted)
-        try:
+            running = await in_tmux(clock, station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
+            annotate(tmux_session=brain_session(station.config_dir))
+            typist, wrapper = await _until(clock, running, by, partial(_typist, running, sockets))
+            annotate(pid=wrapper)
+            brain = Brain(running, wrapper, session, typist, listener, sockets, station.config_dir, station.cwd, record, here(), clock)
+            posting.set_result(brain.posted)
             # [LAW:no-ambient-temporal-coupling] up once its input is and its own start is applied, the conversation it
             # launched in held, so the next start resumes what this one says. The brain answers every hook from here,
             # in whichever order the two come, since Claude Code may wait on its start before it turns its input on.
-            await _input_up(clock, running, typist)
-            await brain.started()
+            await _until(clock, running, by, partial(_input_up, typist))
+            await brain.started(by)
         except BaseException as error:
             if isinstance(error, Unstartable):
+                # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
+                # Claude Code keeps its transcript (it exits "No conversation found" on one it cannot read).
                 annotate(let_go=let_go(station.config_dir))
-            await brain.stop()
+            # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
+            # its own, which nothing but hands' own end would hang up. A brain made lets go of all it holds as it stops.
+            if brain is not None:
+                await brain.stop()
+            else:
+                if running is not None:
+                    await running.stop()
+                posting.cancel()
+                await listener.cleanup()
+                shutil.rmtree(sockets, ignore_errors=True)
             raise
     return brain
 
@@ -2021,36 +2004,42 @@ async def _listen(posting: "asyncio.Future[Callable[[str, bytes], Awaitable[Mapp
     return runner, f"http://{host}:{port}"
 
 
-async def _typist(clock: Clock, running: InTmux, sockets: Path) -> tuple[Typist, int]:
+async def _until[T](clock: Clock, running: InTmux, by: float, ready: Callable[[], Awaitable[T | str]]) -> T:
+    """What `ready` finds once the brain's launch has it, asked again until `by` or the brain's end. `ready` answers what
+    it is still waiting for while it has nothing, which is what the launch fails saying."""
+    waiting = "the brain had not started"
+    while clock.now() < by and not running.exit.done():
+        match await ready():
+            case str() as still:
+                waiting = still
+            case found:
+                return found
+        await clock.sleep(0.05)
+    raise _unstarted(running, waiting)
+
+
+async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int] | str:
     """The brain as fritter types into it: the socket fritter opened under `sockets`, and the claude it started; and that
     fritter's pid."""
-    deadline = clock.now() + START_SECONDS
-    while clock.now() < deadline and not running.exit.done():
-        found = [path for path in sockets.rglob("*") if path.is_socket()]
-        wrapper = running.fritter
-        child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
-        if found and wrapper is not None and child is not None:
-            return Typist(found[0], child), wrapper
-        await clock.sleep(0.05)
-    raise _unstarted(running, "fritter had not started the brain and opened its socket")
+    found = [path for path in sockets.rglob("*") if path.is_socket()]
+    wrapper = running.fritter
+    child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
+    if found and wrapper is not None and child is not None:
+        return Typist(found[0], child), wrapper
+    return "fritter had not started the brain and opened its socket"
 
 
-async def _input_up(clock: Clock, running: InTmux, typist: Typist) -> None:
-    """Returns once the brain's input is up.
+async def _input_up(typist: Typist) -> None | str:
+    """None once the brain's input is up.
 
     [LAW:no-ambient-temporal-coupling] up is the brain's own word, the bracketed paste Claude Code turns on once it reads
     its input, not a guess at how long that takes: a turn typed into a terminal not yet raw has its Return made a newline,
     which Claude Code takes as one more line."""
-    deadline = clock.now() + START_SECONDS
-    waiting = "the brain had not turned its input on"
-    while clock.now() < deadline and not running.exit.done():
-        try:
-            await asyncio.to_thread(typist.pasting)
-            return
-        except Untyped as error:
-            waiting = f"the brain had not turned its input on ({error})"
-        await clock.sleep(0.05)
-    raise _unstarted(running, waiting)
+    try:
+        await asyncio.to_thread(typist.pasting)
+        return None
+    except Untyped as error:
+        return f"the brain had not turned its input on ({error})"
 
 
 def _unstarted(running: InTmux, waiting: str) -> Unstartable:

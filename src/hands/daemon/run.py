@@ -101,7 +101,8 @@ from hands.voice.tools import audited, close_session_tool, cued, intermediary_to
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
-from hands.brain.process import Brain, BrainSession, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
+from hands.brain.session import BrainSession
+from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -204,7 +205,7 @@ async def mind(
             raise CannotStart(str(error)) from error
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        asides = Asides(clock, proxy_url, Newest(session.id), record)
+        asides = Asides(clock, proxy_url, Newest(session), record)
         try:
             stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)

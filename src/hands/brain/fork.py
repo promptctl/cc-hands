@@ -9,10 +9,11 @@ the brain, and sends it back through the proxy: no Claude Code is started to ask
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
+from hands.brain.session import BrainSession
 from hands.core.session import SessionId
 from hands.core.wire import (
     CLASS_HEADER,
@@ -107,43 +108,48 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
 
 
 class Newest:
-    """The brain's newest main turn, heard off the wire: the one thing a side question is forked from."""
+    """The brain's newest main turn in each conversation, heard off the wire: the one thing a side question is forked from."""
 
-    def __init__(self, session: Callable[[], SessionId]) -> None:
+    def __init__(self, session: BrainSession) -> None:
         # Which conversation the brain is in now: a question forks only from a turn of it.
         self._session = session
         # Main turns of the brain's told and not yet forwarded, by the session each is of: its request is held once its
         # bytes go upstream.
         self._main: dict[str, SessionId | None] = {}
-        # The newest turn held, and the conversation it is of.
-        self._turn: Turn | None = None
-        self._of: SessionId | None = None
-        # [LAW:no-ambient-temporal-coupling] set, and replaced, as each turn is held: a question waits on it for a turn of
-        # the conversation the brain is in, which after a /clear is none until that conversation sends its first.
-        self._held = asyncio.Event()
+        # [LAW:one-source-of-truth] the newest turn held of each conversation, so a /resume back forks from where it was left.
+        self._turns: dict[SessionId | None, Turn] = {}
+        # [LAW:no-ambient-temporal-coupling] set, and replaced, as each turn is held and as the brain moves: a question
+        # waits on it for a turn of the conversation the brain is in, which after a /clear is none until it sends its first.
+        self._changed = asyncio.Event()
+        session.watch(self._change)
 
     async def turn(self) -> Turn:
         """The brain's newest main turn in the conversation it is in, once that conversation has sent one."""
-        while self._turn is None or self._of != self._session():
-            await self._held.wait()
-        return self._turn
+        while (turn := self._turns.get(self._session.id())) is None:
+            await self._changed.wait()
+        return turn
 
     def hear(self, observed: Observed) -> None:
         match observed:
             case Sent(exchange=exchange, session=session, kind=MainTurn()):
                 self._main[exchange] = session
             case Forwarded(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
-                self._of = self._main.pop(exchange)
-                self._turn = Turn(exchange, path, headers, body, None)
-                held, self._held = self._held, asyncio.Event()
-                held.set()
-            case Exchanged(exchange=exchange, reply=Reached(body=Written(message=message))) if self._turn is not None and exchange == self._turn.exchange:
-                self._turn = replace(self._turn, reply=message)
-            case Exchanged(exchange=exchange):
+                self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
+                self._change()
+            case Exchanged(exchange=exchange, reply=reply):
                 # A main turn held or refused before it was forwarded is never waited on again.
                 self._main.pop(exchange, None)
+                match reply:
+                    case Reached(body=Written(message=message)):
+                        self._turns = {of: replace(turn, reply=message) if turn.exchange == exchange else turn for of, turn in self._turns.items()}
+                    case _:
+                        pass
             case _:
                 pass
+
+    def _change(self) -> None:
+        changed, self._changed = self._changed, asyncio.Event()
+        changed.set()
 
 
 def _block(block: Block) -> dict[str, object]:

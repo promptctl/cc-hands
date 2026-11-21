@@ -8,7 +8,7 @@ from typing import get_args, overload
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, DenyAndInterrupt, HookReply, ModeAfterPlan, Withdraw
-from hands.core.events import Displayed, Ended, EndReason, Hooked, Joined, Located, Occurred, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished
+from hands.core.events import Displayed, Ended, EndReason, Hooked, Joined, Located, Occurred, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, UnknownSource
 from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised
 from hands.core.session import AskedQuestion, Blocker, Instant, Membership, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
@@ -262,15 +262,18 @@ _KNOWN_SOURCES: Mapping[str, StartSource] = {source: source for source in get_ar
 _KNOWN_REASONS: Mapping[str, EndReason] = {reason: reason for reason in get_args(EndReason)}
 
 
-def _start_source(source: str) -> StartSource:
+def _start_source(source: str) -> StartSource | UnknownSource:
+    # Not refused: a start refused would leave its session, the brain's among them, unjoined, every hook after it of a
+    # session nobody holds.
     if source not in _KNOWN_SOURCES:
-        raise Rejected(f"SessionStart source {source!r} is not one hands knows")
+        logger.error(f"SessionStart source {source!r} is not one hands knows: the session joins as one started anew")
+        return UnknownSource(source)
     return _KNOWN_SOURCES[source]
 
 
 def _end_reason(reason: str) -> EndReason:
-    # Not refused, as an unknown start is: the shim has already removed the file, so a refused end would leave the
-    # session listed with nothing left to end it. A reason this version does not know is spoken as an end nobody
+    # Not refused: the shim has already removed the file, so a refused end would leave the session listed with nothing
+    # left to end it. A reason this version does not know is spoken as an end nobody
     # chose, which is the loud way to be wrong.
     return _KNOWN_REASONS.get(reason, "other")
 
