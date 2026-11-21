@@ -86,22 +86,27 @@ def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Appli
     return app
 
 
-async def serve_phone(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str], gallery: Gallery) -> Never:
-    """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
-    with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The page reads and stops `brain`. The
-    conversation page is served beside it, under the same key, handing `typed` what is typed into it, and the backlog
-    page, its summaries read from `store` and its writes run in `environment`, the one hands was started in. The gallery
-    page is served there too, its voices, level, modality, and model set through `gallery`.
-
-    [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
-    under, or, served on the LAN alone, why Tailscale gave it none.
-    """
+def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str], gallery: Gallery) -> web.Application:
+    """The phone's page and every page served beside it, under the key `home` keeps [LAW:one-source-of-truth]: the
+    brain's page, which reads and stops `brain`; the conversation page, read from `home`'s audit log, handing `typed` what
+    is typed into it; the backlog page, its summaries read from `store` and its writes run in `environment`, the one
+    hands was started in; and the gallery page, its voices, level, modality, and model set through `gallery`."""
     key = phone_key(clock, home)
     app = phone_app(clock, phone, key, record)
     app.add_routes(brain_routes(clock, brain, key, record))
     app.add_routes(conversation_routes(clock, Conversation(home.audit), typed, key, record))
     app.add_routes(backlog_routes(clock, store, key, record, environment))
     app.add_routes(gallery_routes(clock, gallery, key, record))
+    return app
+
+
+async def serve_phone(clock: Clock, app: web.Application, home: Home, record: Record) -> Never:
+    """Serve `app`, the phone's pages (`phone_pages`), on every address this machine has, until cancelled; under the
+    tailnet's name, with the certificate Tailscale renews, asked for again every RENEW_SECONDS.
+
+    [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
+    under, or, served on the LAN alone, why Tailscale gave it none.
+    """
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     try:

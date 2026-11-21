@@ -39,7 +39,8 @@ CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 
 # Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it
 # advances. test_pinned_brain.py and test_terminal_contract_pinned.py are not among those to move: they read a real
-# Claude Code's screen, and nothing tells them it changed. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
+# Claude Code's screen, and nothing tells them it changed. Nor is test_pages.py: Chrome times each page's reads and
+# Stops by the machine's clock, which no VirtualClock moves, so hands answers it on that clock too. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
 UNMOVED = frozenset({
     "conftest.py",
@@ -85,6 +86,7 @@ UNMOVED = frozenset({
     "test_offline.py",
     "test_otlp.py",
     "test_own_model.py",
+    "test_pages.py",
     "test_patience.py",
     "test_phone.py",
     "test_phonepage.py",
