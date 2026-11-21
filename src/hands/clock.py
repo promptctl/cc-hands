@@ -150,15 +150,15 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
     cancelling none of them, so what is still running when the time is up runs on for whoever reads it next."""
     import asyncio
 
+    from hands.tasks import cancel_and_wait
+
     every = asyncio.ensure_future(asyncio.wait(futures))
     timer = asyncio.ensure_future(clock.sleep(timeout))
     try:
         await asyncio.wait((every, timer), return_when=asyncio.FIRST_COMPLETED)
     finally:
-        every.cancel()
-        timer.cancel()
         # Both over before this returns, so nothing of the wait outlives it.
-        await asyncio.wait((every, timer))
+        await cancel_and_wait(every, timer)
     # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait that raised
     # (on no futures at all, as `asyncio.wait` does) is never everything done.
     for side in (every, timer):

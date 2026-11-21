@@ -25,7 +25,8 @@ from hands.daemon import exits, indicator, readiness, update, watchdog
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, cancelled, execv, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start
+from hands.tasks import cancel_and_wait
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -584,18 +585,22 @@ async def launch(
         record(watch.result())
         stop.tell(SettingsEdited())
 
-    watching = asyncio.create_task(edited())
-    watching.add_done_callback(heard)
     loop = asyncio.get_running_loop()
     for signal_number in STOP_SIGNALS:
         loop.add_signal_handler(signal_number, stop.tell, Signalled(signal_number))
     try:
         with run_start.ending(record):
+            watching = asyncio.create_task(edited())
+            watching.add_done_callback(heard)
             try:
-                # No session has joined before the hooks are served, which is after the import.
-                run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop, clock)
-                last = Ended(None, 0) if run is None else await run(stop)
-                await cancelled({watching})
+                try:
+                    # No session has joined before the hooks are served, which is after the import.
+                    run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop, clock)
+                    last = Ended(None, 0) if run is None else await run(stop)
+                finally:
+                    # [LAW:no-ambient-temporal-coupling] the watch ends, and what it heard is told, before the end is read
+                    # off the stop, however the run went.
+                    await cancel_and_wait(watching)
                 match stop.end:
                     case Failed():
                         # A run that failed leaves its last heartbeat naming a pid that is gone, or, as it restarts, one
@@ -618,7 +623,6 @@ async def launch(
                     wide.ended("hands.run", record, began, None, stopped_by=stop.named, ending=ending, pid=os.getpid())
                     return ending
     finally:
-        watching.cancel()
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in STOP_SIGNALS:
             loop.remove_signal_handler(signal_number)

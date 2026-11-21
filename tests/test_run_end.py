@@ -14,7 +14,8 @@ from hands.virtualclock import VirtualClock
 from hands.daemon.cli import launch
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.run import stopping, until_told
-from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, Failing, cancelled
+from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, Failing
+from hands.tasks import cancel_and_wait
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import SettingsEdited
 from hands.sessions.wide import WideEvent
@@ -203,7 +204,7 @@ async def test_a_task_that_raises_as_it_is_cancelled_is_told_before_the_cancel_r
     task = asyncio.create_task(closes_badly(), name="the phone")
     task.add_done_callback(stopping(stop))
     await asyncio.sleep(0)
-    await cancelled({task})
+    await cancel_and_wait(task)
     assert stop.named == ("q key", "the phone")
     assert stop.end == Failed((TEARDOWN,))
 
