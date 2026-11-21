@@ -48,7 +48,7 @@ smoke test, the happy path through hands' proxy. The rig the two pinned modules 
 
 tests/test_pages.py runs each phone page's own code in the installed Google Chrome, driven by Playwright, against
 `phonepage.phone_pages`, the routes hands serves the phone, on the route tests' fakes. Chrome must be installed, as it is
-on CI's runner: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
+on GitHub's macos-15 runner image, which CI's `rest` tier runs on: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
 its pages made, whether the test passed or not.
 
 ## The commands

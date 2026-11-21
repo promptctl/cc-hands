@@ -29,7 +29,7 @@ from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
-from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, phone_key, tailnet
+from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, tailnet
 from hands.voice.summaries import SummaryStore
 
 # How often a page served under the tailnet's name asks Tailscale for its certificate again: Tailscale renews one a
@@ -82,20 +82,19 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
     return [web.get("/", shown), web.get("/hands.js", scripted), web.post("/offer", offered)]
 
 
-def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str], gallery: Gallery) -> web.Application:
-    """Every page the phone opens, under the phone's key in `home`. The phone's page reads and stops `brain`. The
-    conversation page reads `home`'s audit log and hands `typed` what is typed into it; the backlog page reads its
-    summaries from `store` and runs its writes in `environment`, the one hands was started in; the gallery page sets
-    hands' voices, level, modality, and model through `gallery`.
+def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery) -> web.Application:
+    """Every page the phone opens, under the phone's `key`. The phone's page reads and stops `brain`. The conversation
+    page reads the audit log at `audit` and hands `typed` what is typed into it; the backlog page reads its summaries
+    from `store` and runs its writes in `environment`, the one hands was started in; the gallery page sets hands'
+    voices, level, modality, and model through `gallery`.
 
-    [LAW:one-source-of-truth] the one composition of the phone's routes: hands serves it, and so does a test that drives
-    the pages in a browser.
+    [LAW:one-source-of-truth] the one composition of the phone's routes: hands serves it, and every test of the routes
+    asks it.
     """
-    key = phone_key(clock, home)
     app = web.Application()
     app.add_routes(phone_routes(clock, phone, key, record))
     app.add_routes(brain_routes(clock, brain, key, record))
-    app.add_routes(conversation_routes(clock, Conversation(home.audit), typed, key, record))
+    app.add_routes(conversation_routes(clock, Conversation(audit), typed, key, record))
     app.add_routes(backlog_routes(clock, store, key, record, environment))
     app.add_routes(gallery_routes(clock, gallery, key, record))
     return app

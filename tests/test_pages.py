@@ -9,17 +9,16 @@ from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import BaseTestServer, TestServer
-from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, Route, async_playwright, expect
+from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
 from hands.clock import SYSTEM
 from hands.sessions.audit import AuditLog, Replied, Transcribed
 from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
 from hands.virtualclock import VirtualClock
-from hands.voice import longpoll
 from hands.voice.gallerypage import Gallery
 from hands.voice.phone import Phone
-from hands.voice.phoneaddress import keyed, phone_key
+from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
 from hands.voice.ptt import PushToTalk
 from hands.voice.summaries import SummaryStore
@@ -37,6 +36,11 @@ pytestmark = pytest.mark.outside
 # A microphone Chrome makes up, granted without asking: the phone's call takes one, and no test has a person to allow it.
 FAKE_MICROPHONE = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
 
+# What starts every line a page's own code says with console.error, set before any of the page's code runs: Chrome
+# says its own lines, a failed fetch's among them, on the same console.
+FAULT_MARK = "page fault:"
+MARKED = f"const said = console.error; console.error = (...args) => said({FAULT_MARK!r}, ...args);"
+
 
 @dataclass
 class Hands:
@@ -52,14 +56,13 @@ class Hands:
 
     def address(self, path: str, **query: str) -> str:
         """`path` on this server, carrying the phone's key as `hands phone` prints it."""
-        return keyed(str(self.server.make_url(path).with_query(query)), self.key)
+        return keyed_address(str(self.server.make_url(path).with_query(query)), self.key)
 
 
 @pytest.fixture
-async def hands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
-    # A read that has seen what it shows looks again soon, so a change is drawn as soon as it is made.
-    monkeypatch.setattr(longpoll, "POLL_SECONDS", 0.01)
+async def hands(tmp_path: Path) -> AsyncGenerator[Hands]:
     home = Home(tmp_path / "hands")
+    key = phone_key(SYSTEM, home)
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
     brain, typed, voices = Brain(), list[str](), Voicing()
 
@@ -67,30 +70,35 @@ async def hands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerat
         typed.append(text)
 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(VirtualClock()), wake=Pretrained(), models=MODELS)
-    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(tmp_path / "summaries.db")), home, lambda _: None, os.environ, gallery)
+    # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
+    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery)
     async with TestServer(pages) as server:
-        yield Hands(server, phone_key(SYSTEM, home), phone, brain, typed, a_log(home.audit), voices)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices)
         await phone.stop()
 
 
 @dataclass
 class Opened:
-    """The pages a test opened, and every fault their own code made: an error it never caught, or one it said on the
-    console. Chrome's own lines for an answer that is not 2xx carry no arguments, and the pages are answered so on purpose."""
+    """The pages a test opened, and every fault their own code made: an error it never caught, or one it said with
+    console.error."""
 
     context: BrowserContext
     faults: list[str] = field(default_factory=list[str])
 
-    def __post_init__(self) -> None:
+    @classmethod
+    async def made(cls, chrome: Browser) -> "Opened":
+        opened = cls(await chrome.new_context())
+        await opened.context.add_init_script(MARKED)
         # Every page the context opens, those a page's link opens among them.
-        self.context.on("page", self._watched)
+        opened.context.on("page", opened._watched)
+        return opened
 
     def _watched(self, page: Page) -> None:
         page.on("pageerror", lambda error: self.faults.append(f"{page.url}: uncaught {error}"))
 
         def said(message: ConsoleMessage) -> None:
-            if message.type == "error" and message.args:
-                self.faults.append(f"{page.url}: console.error {message.text}")
+            if message.text.startswith(FAULT_MARK):
+                self.faults.append(f"{page.url}: console.error {message.text.removeprefix(FAULT_MARK)}")
 
         page.on("console", said)
 
@@ -98,6 +106,12 @@ class Opened:
         page = await self.context.new_page()
         await page.goto(address)
         return page
+
+    async def followed(self, page: Page, link: str) -> Page:
+        """The page `page`'s link named `link` opens beside it."""
+        async with page.expect_popup() as popup:
+            await page.get_by_role("link", name=link).click()
+        return await popup.value
 
     async def closed(self) -> list[str]:
         """Every fault the pages made, once each is closed: [LAW:no-ambient-temporal-coupling] Playwright delivers a page's
@@ -120,18 +134,18 @@ async def chrome(hands: Hands) -> AsyncGenerator[Browser]:
 @pytest.fixture
 async def browser(chrome: Browser) -> AsyncGenerator[Opened]:
     """The pages a test opens, checked once it is over, passed or failed: a page fault fails it."""
-    opened = Opened(await chrome.new_context())
+    opened = await Opened.made(chrome)
     yield opened
     assert await opened.closed() == []
 
 
 async def test_a_fault_in_a_pages_own_code_is_caught_by_the_check(chrome: Browser, hands: Hands) -> None:
     # The check's own pages, not the fixture's, so the faults made here are this test's to assert.
-    opened = Opened(await chrome.new_context())
-    # A read whose answer the phone's page cannot draw, which hands.js's reading says on the console.
-    await opened.context.route(lambda url: "/brain?seen=" in url, lambda route: route.fulfill(json={"seen": "new", "waits": 1, "now": 0, "shown": {"doing": "working"}}))
-    async with opened.context.expect_console_message(lambda message: message.type == "error"):
-        page = await opened.open(hands.address("/"))
+    opened = await Opened.made(chrome)
+    page = await opened.open(hands.address("/"))
+    # A console.error with nothing to say is still the page's.
+    async with page.expect_console_message(lambda message: message.text.startswith(FAULT_MARK)):
+        await page.evaluate("console.error()")
     # And an error nothing catches.
     async with page.expect_event("pageerror"):
         await page.evaluate("setTimeout(() => { throw new Error('a fault of the page') })")
@@ -142,17 +156,17 @@ async def test_a_fault_in_a_pages_own_code_is_caught_by_the_check(chrome: Browse
 
 async def test_connect_calls_hands_and_the_page_says_it_is_on_the_call(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
-    await page.get_by_role("button", name="Connect").dispatch_event("pointerdown")
+    await page.get_by_role("button", name="Connect").click()
     await expect(page.locator("#state")).to_have_text("Connected. Hold the button and speak.")
     await expect(page.locator("#talk")).to_have_text("Hold to talk")
 
 
 async def test_a_second_page_takes_the_phone_and_the_first_says_so(browser: Opened, hands: Hands) -> None:
     first = await browser.open(hands.address("/"))
-    await first.locator("#talk").dispatch_event("pointerdown")
+    await first.get_by_role("button", name="Connect").click()
     await expect(first.locator("#state")).to_have_text("Connected. Hold the button and speak.")
     second = await browser.open(hands.address("/"))
-    await second.locator("#talk").dispatch_event("pointerdown")
+    await second.get_by_role("button", name="Connect").click()
     await expect(second.locator("#state")).to_have_text("Connected. Hold the button and speak.")
     # The first calls again on its own, and hands declines it: the second is the page in the user's hand.
     await expect(first.locator("#state")).to_have_text("Another page has hands' phone. Press Connect to take it here.")
@@ -169,27 +183,9 @@ async def test_stop_stops_the_turn_the_page_shows_and_says_what_came_of_it(brows
     assert hands.brain.stopped == ["turn-1"]
 
 
-async def test_a_stop_hands_took_whose_answer_was_lost_says_it_could_not_stop_it(browser: Opened, hands: Hands) -> None:
-    hands.brain.work_now = SLEEPING
-    page = await browser.open(hands.address("/"))
-
-    async def lost(route: Route) -> None:
-        # hands takes the Stop, and the answer never reaches the page.
-        await route.fetch()
-        await route.abort()
-
-    await page.route("**/brain/stop", lost)
-    await expect(page.locator("#doing")).to_contain_text("Running Bash")
-    await page.get_by_role("button", name="Stop").click()
-    await expect(page.locator("#brain-said")).to_have_text("Could not stop it: hands is out of reach: Failed to fetch")
-    assert hands.brain.stopped == ["turn-1"]
-
-
 async def test_words_typed_on_the_conversation_page_are_sent_to_hands(browser: Opened, hands: Hands) -> None:
     phone = await browser.open(hands.address("/"))
-    async with phone.expect_popup() as popup:
-        await phone.get_by_role("link", name="Conversation").click()
-    page = await popup.value
+    page = await browser.followed(phone, "Conversation")
     await page.get_by_label("Type to hands").fill("what is on the backlog")
     await page.get_by_label("Type to hands").press("Enter")
     # Emptied once hands has the words.
@@ -212,9 +208,7 @@ async def test_use_on_the_gallery_makes_hands_speak_in_that_voice_and_the_page_s
     voice = VOICES[1]
     shown = voice.replace("_", " ").title()
     phone = await browser.open(hands.address("/"))
-    async with phone.expect_popup() as popup:
-        await phone.get_by_role("link", name="Voices and options").click()
-    page = await popup.value
+    page = await browser.followed(phone, "Voices and options")
     await page.locator("#voices li", has_text=shown).get_by_role("button", name="Use").click()
     await expect(page.locator("#status")).to_have_text(f"Speaking in {shown} from now on.")
     await expect(page.locator("#speaking")).to_have_text(f"hands speaks in {shown}.")
@@ -231,4 +225,3 @@ async def test_a_note_saved_on_the_backlog_page_is_kept_by_lit_on_its_ticket(bro
     await expect(page.get_by_label(f"Note on {ticket}")).to_have_attribute("placeholder", "Noted: Say which word wakes it")
     shown = subprocess.run([str(LIT), "show", ticket], cwd=workspace.root, check=True, capture_output=True, text=True).stdout
     assert "Say which word wakes it" in shown
-

@@ -177,7 +177,7 @@ def carries_key(authorization: str, key: str) -> bool:
 
     [LAW:single-enforcer] the one check of the key, for every route that asks for it, compared in constant time.
     """
-    return hmac.compare_digest(authorization.removeprefix("Bearer ").encode(), key.encode())
+    return hmac.compare_digest(authorization.encode(), f"Bearer {key}".encode())
 
 
 def lan_addresses() -> list[str]:
@@ -192,7 +192,7 @@ def lan_addresses() -> list[str]:
     ]
 
 
-def keyed(address: str, key: str) -> str:
+def keyed_address(address: str, key: str) -> str:
     """`address` carrying the phone's key, in the fragment, which a browser never sends: each page reads it there and
     sends it with its requests (hands.js)."""
     return f"{address}#{key}"
@@ -205,4 +205,4 @@ def page_urls(name: str | Untailed, lan: list[str], key: str) -> list[str]:
             hosts = [name, *lan]
         case Untailed():
             hosts = lan
-    return [keyed(f"https://{host}:{PHONE_PORT}/", key) for host in hosts]
+    return [keyed_address(f"https://{host}:{PHONE_PORT}/", key) for host in hosts]
