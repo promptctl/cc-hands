@@ -2203,16 +2203,16 @@ ranks the parent instead and exits 0. So a drop is parsed against a fresh read b
 which refuses any move outside one frame; it is made with `lit rank --above` or `--below`; and the
 read after it must have the ticket directly beside its target, or the answer is a conflict saying
 the backlog changed while it was moved, with lit's own words of what it ranked; nothing is undone.
-Only lit's refusal, a non-zero exit with its reason line, or a lit that never ran proves a rank wrote
-nothing; a lit that did not answer, ended without a reason, or failed once it was running is said to
-have ranked or not, unknown.
-A rank lit made whose backlog could not be read again is said as exactly that. The page keeps no order of its own: it draws what each
+That one read settles the rank whatever lit exited, since lit's reference says of no failure that it
+comes before any write, and the drop is answered with it. Only a lit that could not be started is
+known to have written nothing, and no read is made after it. A rank whose backlog could not be read
+again, or that lit no longer tracks, is said as not known. The page keeps no order of its own: it draws what each
 answer carries, one request at a time in the order they were made. A drag holds that queue until it
 is dropped, so a read asked for meanwhile never redraws the rows it is placed among, and no drag
 begins while a request is under way. Anything that ends the pointer's stream without a release, a
 cancel, the capture lost, or the window losing focus, ends the drag dropping nothing. Each read is one `backlog.read` event, with how many tickets it drew and how many of
 them had a summary, counted from what the page is given; each drop one `backlog.ranked`, with the
-ticket and where it was put, whether lit ranked anything and what it said, and why it was refused or failed.
+ticket and where it was put, whether lit ranked it, what lit said of it (`ranked_said`), and why it was refused or failed.
 
 Each epic is drawn shut, with how many open tickets it holds, until it is tapped (or, focused, Enter or Space); which
 epics are open is the page's own state, kept across every redraw. An epic with no open ticket beneath it is not drawn,
@@ -2230,13 +2230,15 @@ below the last for a higher one, else above the ticket's epic for high and below
 ordered by dragging, and `lit next` follows their rank. An epic made whose rank lit refuses, or that cannot be ranked as
 asked, is left at the bottom of its frame and the ticket is not moved; a later press finds and uses it as it stands. lit
 keeps a moved ticket's rank, so once moved it is ranked below the last other open ticket of its new epic, through
-`Backlog.move`. `Backlog.leveling` is the one check: a ticket at the level already, or one with no level
+`Backlog.move`, unless it is last among them already. `Backlog.leveling` is the one check: a ticket at the level already, or one with no level
 (`Backlog.standing`), is refused before lit writes anything. Every drop and press in a project runs alone, from the read
-it is checked against to the read that shows it, so two pages never both make one level's epic. The read after must have
-the ticket last in the epic and a made epic where it was ranked, or the answer is a conflict. Each press is one
-`backlog.leveled` event, with the ticket, the level, the epic it went into, and whether lit made that epic, ranked it,
-moved the ticket, and ranked it last there, each "yes", "no", or "unknown" where lit stopped without saying why, and why
-it was refused or failed. A level epic carries its topic, so a ticket in `wake word - high` pressed Low goes to `wake
+it is checked against to the read that shows it, so two pages never both make one level's epic. Each of a press's writes
+is settled by the one read after it, as a drop's rank is, and the press goes on from that read: the epic made, found by
+its title and topic; the epic where it was ranked; the ticket in the epic; and the ticket last among the epic's open
+tickets. A write that read does not have is a conflict. Each press is one `backlog.leveled` event, with the ticket, the
+level, the epic it went into, and whether lit made that epic, ranked it, moved the ticket, and ranked it last there, each
+"yes", "no", "unknown" where the backlog could not be read again, or "unneeded" where the backlog had it already, each
+beside what lit said of it (`<fact>_said`), and why it was refused or failed. A level epic carries its topic, so a ticket in `wake word - high` pressed Low goes to `wake
 word - low`.
 A press shows on its card at once and nothing is redrawn, so the next card is where it was and a person goes down the
 list pressing: nothing on the page moves on a press, a note's save, or either's answer, and what went wrong is said over
@@ -2253,7 +2255,9 @@ height while it empties, says the note, or takes back one lit did not keep. Ever
 person hands runs as: a `Person` is the name lit is given with `--by` and the environment hands was started in without
 `CLAUDE_CODE_SESSION_ID`, which lit would sign with instead; every command run for them runs in it, a `lit rank`, which
 takes no `--by`, too. `hands file-tickets` writes as `Inherited`, signed by the session it is run from. Each note is one
-`backlog.noted` event, with the ticket, its length, and whether lit kept it.
+`backlog.noted` event, with the ticket, its length, and whether lit kept it: a note on a ticket lit does not keep is
+refused before anything is written, and one is kept where the read after holds one more comment with its words by the
+page's signer than the read before.
 
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts

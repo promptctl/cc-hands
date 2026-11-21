@@ -396,8 +396,8 @@ async def adopt(clock: Clock, project: Path, ticket: str, epic: str, by: Signer)
 async def file_ticket(clock: Clock, project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
     """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
     the first word lit says. Raises LitFailed when it fails, or says no id."""
-    filed = await _lit(clock, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
-    said = filed.decode(errors="replace").split()
+    filed = await _said(clock, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
+    said = filed.split()
     if not said:
         raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
     return said[0]
