@@ -736,7 +736,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import datetime, itertools, json, os, select, signal, sys, termios, threading, time, tty, urllib.request
+import datetime, itertools, json, os, select, signal, subprocess, sys, termios, threading, time, tty, urllib.request, uuid
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -768,9 +768,12 @@ import turns
 transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
 status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
 def post(event, **fields):
-    [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
+    [[hook]] = [matcher["hooks"] for matcher in hooks[event]]
     body = json.dumps({{"session_id": session, "transcript_path": transcript, "cwd": os.getcwd(), "permission_mode": "default", "hook_event_name": event, **fields}}).encode()
-    return json.loads(urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=30).read())
+    if hook["type"] == "command":
+        # As Claude Code runs a command hook: the body on its stdin, and what it prints its answer.
+        return json.loads(subprocess.run(hook["command"], shell=True, input=body, capture_output=True, check=True, timeout=30).stdout or b"{{}}")
+    return json.loads(urllib.request.urlopen(urllib.request.Request(hook["url"], body, {{"Content-Type": "application/json"}}), timeout=30).read())
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
@@ -793,6 +796,9 @@ time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h")
+# Claude Code begins its session before it takes a key, and says so to whatever its settings hook.
+if "SessionStart" in hooks:
+    post("SessionStart", source="resume" if "--resume" in sys.argv else "startup")
 stated("idle")
 pending, box, turn, turn_text, prompts = b"", "", None, "", 0
 # The dialog on its screen, if one is up: the file a Write asks to write. While it is, no prompt is drawn, a paste is
@@ -842,7 +848,8 @@ def ended(event, prompt, reply, **fields):
 # opening prompt on both channels that carry it. It runs the recording's prompts, the typed one first.
 def play(name, text):
     global prompts, last, tail
-    lines = turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text))
+    # A recording's SessionStart is the one this posted as it started.
+    lines = turns.played(turns.RECORDINGS[name], subscribed=[event for event in hooks if event != "SessionStart"], session=session, first=prompts, prompt=taken(text))
     opening, pause = True, float(os.environ.get("PLAY_PAUSE", "0"))
     with open(os.path.join(os.path.dirname(os.environ["TYPED"]), "said.log"), "a", buffering=1) as said:
         for line in lines:
@@ -867,7 +874,14 @@ def play(name, text):
     last, tail = turns.stops(lines)[-1], time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
     typed(["played", name])
 def submit(text):
-    global turn, turn_text, prompts, last, tail
+    global turn, turn_text, prompts, last, tail, session, transcript
+    if text == "/clear":
+        # A new session in the same process, its transcript beside the last one's, begun before the next key is taken.
+        session = str(uuid.uuid4())
+        transcript = os.path.join(os.path.dirname(transcript), session + ".jsonl")
+        post("SessionStart", source="clear")
+        typed(["clear", session])
+        return
     if text.startswith("/btw "):
         if text == "/btw stubborn":
             signal.signal(signal.SIGTERM, lambda *_: typed(["sigterm", text, session]))

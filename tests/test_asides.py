@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -11,6 +12,8 @@ from conftest import patiently
 from aiohttp import web
 from loguru import logger
 
+from brains import unmoved
+from hands.brain.conversation import CurrentSession
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
 from hands.virtualclock import VirtualClock
@@ -56,7 +59,7 @@ ASKED = [text(REMINDER), text("what now?")]
 
 def test_a_question_before_any_reply_joins_the_last_user_message_and_the_newest_marker_moves_one_message_earlier() -> None:
     history = body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)))
-    headers, sent = forked(Turn("x1", "/v1/messages?beta=true", HEADERS, as_sent(history), None), "what now?")
+    headers, sent = forked(Turn(BRAIN, "x1", "/v1/messages?beta=true", HEADERS, as_sent(history), None), "what now?")
     assert sent["messages"] == [
         user(text("hi", cache_control=MARK)),
         {"role": "assistant", "content": [text("hello", cache_control=MARK)]},
@@ -70,7 +73,7 @@ def test_a_question_before_any_reply_joins_the_last_user_message_and_the_newest_
 
 def test_a_question_after_a_finished_reply_follows_it_with_no_placeholder() -> None:
     history = body(user(text("hi", cache_control=MARK)))
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Thinking("hm", "sig"), Text("Done."))), "what now?")
+    _, sent = forked(Turn(BRAIN, "x1", "/v1/messages", HEADERS, as_sent(history), reply(Thinking("hm", "sig"), Text("Done."))), "what now?")
     assert sent["messages"] == [
         user(text("hi")),
         {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=MARK)]},
@@ -81,7 +84,7 @@ def test_a_question_after_a_finished_reply_follows_it_with_no_placeholder() -> N
 def test_each_call_of_a_reply_still_running_stands_in_with_claude_codes_placeholder() -> None:
     history = body(user(text("hi", cache_control=MARK)))
     calls = reply(Text("Looking."), ToolUse("t1", "list", {}), ToolUse("t2", "read", {"id": 2}), stop="tool_use")
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), calls), "what now?")
+    _, sent = forked(Turn(BRAIN, "x1", "/v1/messages", HEADERS, as_sent(history), calls), "what now?")
     [*_, (asking)] = cast(list[dict[str, object]], sent["messages"])
     assert asking == user(
         {"type": "tool_result", "tool_use_id": "t1", "content": RUNNING}, {"type": "tool_result", "tool_use_id": "t2", "content": RUNNING}, *ASKED
@@ -91,15 +94,15 @@ def test_each_call_of_a_reply_still_running_stands_in_with_claude_codes_placehol
 
 def test_markers_the_loop_put_on_earlier_messages_stay_and_a_lone_message_has_none_moved() -> None:
     history = body(user(text("one", cache_control=MARK)), {"role": "assistant", "content": [text("two")]}, user(text("three", cache_control=MARK)))
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("four."))), "q")
+    _, sent = forked(Turn(BRAIN, "x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("four."))), "q")
     messages = cast(list[dict[str, list[dict[str, object]]]], sent["messages"])
     assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[MARK], [None], [None], [MARK], [None, None]]
-    _, alone = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), None), "q")
+    _, alone = forked(Turn(BRAIN, "x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), None), "q")
     assert alone["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
 
 
 async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_reply_once_read() -> None:
-    newest = Newest(BRAIN)
+    newest = Newest(unmoved(BRAIN))
     waiting = asyncio.create_task(newest.turn())
     message = reply(Text("Done."))
     clock = VirtualClock()
@@ -119,10 +122,25 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     assert not waiting.done()
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
     newest.hear(Forwarded("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}'))
-    assert await waiting == Turn("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}', None)
+    assert await waiting == Turn(BRAIN, "x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}', None)
     newest.hear(exchanged("o1", SessionId("other")))
     newest.hear(exchanged("x1", BRAIN))
     assert (await newest.turn()).reply == message
+
+
+async def test_after_a_clear_a_question_waits_for_the_new_conversations_first_turn_never_forking_the_one_left(tmp_path: Path) -> None:
+    current = CurrentSession(tmp_path, BRAIN)
+    newest = Newest(current)
+    newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {}))
+    newest.hear(Forwarded("x1", "/v1/messages", HEADERS, b'{"messages": [1]}'))
+    cleared = SessionId("cleared")
+    current.move(cleared)
+    waiting = asyncio.create_task(newest.turn())
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    newest.hear(Sent("y1", cleared, MainTurn(None), "main", {}))
+    newest.hear(Forwarded("y1", "/v1/messages", HEADERS, b'{"messages": [2]}'))
+    assert await waiting == Turn(cleared, "y1", "/v1/messages", HEADERS, b'{"messages": [2]}', None)
 
 
 def sse(event: dict[str, object]) -> bytes:
@@ -213,7 +231,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         clock = VirtualClock(epoch=datetime.fromtimestamp(0, UTC))
         wire = Wire(clock, lambda _observed: None)
         proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=clock)
-        asides = Asides(clock, proxy.url, Newest(BRAIN), recorded.append)
+        asides = Asides(clock, proxy.url, Newest(unmoved(BRAIN)), recorded.append)
 
         class Listening:
             def route(self, sent: Sent) -> Route:
@@ -361,7 +379,7 @@ REPLIES = {"no reply yet": None, "an empty reply": reply(), "a reply of thinking
 @pytest.mark.parametrize("replied", REPLIES.values(), ids=REPLIES.keys())
 @pytest.mark.parametrize("shape", SHAPES.values(), ids=SHAPES.keys())
 def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: list[dict[str, object]], replied: Message | None) -> None:
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*shape)), replied), "what now?")
+    _, sent = forked(Turn(BRAIN, "x1", "/v1/messages", HEADERS, as_sent(body(*shape)), replied), "what now?")
     messages = cast(list[dict[str, object]], sent["messages"])
     assert refused(messages) == []
     [*_, asking] = [message for message in messages if message["role"] == "user"]
@@ -383,9 +401,9 @@ def test_the_checker_refuses_the_order_that_was_refused_live() -> None:
 
 def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
     history = body(user(text("hi", cache_control=MARK)))
-    _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
+    _, empty = forked(Turn(BRAIN, "x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
     assert empty["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
-    _, thought = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), Thinking("hm", "sig"))), "q")
+    _, thought = forked(Turn(BRAIN, "x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), Thinking("hm", "sig"))), "q")
     assert cast(list[object], thought["messages"])[1] == {"role": "assistant", "content": [text("So.", cache_control=MARK), {"type": "thinking", "thinking": "hm", "signature": "sig"}]}
 
 
@@ -458,7 +476,7 @@ async def test_a_timeout_that_is_not_its_askers_fails_the_question_broken_not_ti
         async def turn(self) -> Turn:
             raise TimeoutError("a wait of its own")
 
-    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(BRAIN), lambda _entry: None)
+    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(unmoved(BRAIN)), lambda _entry: None)
     try:
         with pytest.raises(AsideFailed, match="not its asker's time") as failed:
             await asides.ask(AsideKind.LINE, "q", Deadline(10))

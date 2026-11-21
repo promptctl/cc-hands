@@ -9,6 +9,7 @@ calls from its main conversation reads a figure that already holds the request i
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
+from hands.brain.conversation import CurrentSession
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Heard, MainTurn, MessageDelta, MessageStarted, Observed, Sent, usage_after
 
@@ -45,6 +46,8 @@ class Tally:
 class _Reply:
     """A reply's usage as its frames have said it so far."""
 
+    # The conversation it is a reply in.
+    session: SessionId
     exchange: str
     model: str
     usage: Mapping[str, object]
@@ -60,12 +63,13 @@ def _count(value: object) -> int:
 
 
 class Usage:
-    """Hears the wire for one session's replies: `reading` says what its main conversation holds and it has spent."""
+    """Hears the wire for the brain's replies: `reading` says what the conversation it holds has in context, and what
+    it has spent."""
 
-    def __init__(self, session: SessionId) -> None:
-        self._session = session
-        # The session's exchanges sent and not yet whole, by whether each is a main turn.
-        self._sent: dict[str, bool] = {}
+    def __init__(self, current: CurrentSession) -> None:
+        self._current = current
+        # The brain's exchanges sent and not yet whole: the conversation each is of, and whether it is a main turn.
+        self._sent: dict[str, tuple[SessionId, bool]] = {}
         self._replies: dict[str, _Reply] = {}
         # [LAW:one-source-of-truth] what whole exchanges spent, folded in once each is whole, and the latest main turn.
         self._whole = Spent()
@@ -73,11 +77,12 @@ class Usage:
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(exchange=exchange, session=session, kind=kind) if session == self._session:
-                self._sent[exchange] = isinstance(kind, MainTurn)
+            case Sent(exchange=exchange, session=session, kind=kind) if session == self._current.session:
+                self._sent[exchange] = (self._current.session, isinstance(kind, MainTurn))
             case Heard(exchange=exchange, event=MessageStarted(model=model, usage=usage)) if exchange in self._sent:
-                reply = self._replies[exchange] = _Reply(exchange, model, usage)
-                if self._sent[exchange]:
+                conversation, main = self._sent[exchange]
+                reply = self._replies[exchange] = _Reply(conversation, exchange, model, usage)
+                if main:
                     self._latest = reply
             case Heard(exchange=exchange, event=MessageDelta(usage=usage)) if exchange in self._replies:
                 # [LAW:one-source-of-truth] the wire's own fold, so a reply is counted as the wire assembles it.
@@ -93,8 +98,9 @@ class Usage:
                 pass
 
     def reading(self) -> Tally | None:
-        """None until a main turn's reply has begun: until then the conversation has asked the model nothing."""
-        if self._latest is None:
+        """None until a main turn's reply has begun in the conversation the brain holds: until then it has asked the
+        model nothing, whatever a conversation a /clear left had."""
+        if self._latest is None or self._latest.session != self._current.session:
             return None
         spent = sum((reply.spent for reply in self._replies.values()), self._whole)
         return Tally(self._latest.model, self._latest.spent.input_tokens + self._latest.spent.output_tokens, spent)

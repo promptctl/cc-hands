@@ -72,8 +72,14 @@ def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp
     # [LAW:parse-dont-validate] the one parser of a hook's JSON, whoever posted it.
     payload = Payload.parse(raw)
     session = payload.session_id()
-    located = Located(Membership(session, pid, cwd, Path(payload.text("transcript_path"))))
-    return _hook(payload, payload.text("hook_event_name"), session, located, _happened(payload, session, at, heard, request))
+    membership = Membership(session, pid, cwd, Path(payload.text("transcript_path")))
+    name = payload.text("hook_event_name")
+    match name:
+        case "SessionStart":
+            # A /clear or /resume moves the brain to the session this names, the one way Claude Code says so.
+            return Hook(name, session, None, Joined(membership, _start_source(payload.text("source"))))
+        case _:
+            return _hook(payload, name, session, Located(membership), _happened(payload, session, at, heard, request))
 
 
 def _hook(payload: Payload, name: str, session: SessionId, joining: Located | None, happened: Hooked | PermissionRequested) -> Hook | PermissionHook:

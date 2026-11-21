@@ -6,6 +6,7 @@ It is imported by the shim, so it holds only the standard library and hands' dat
 """
 
 import json
+import shlex
 from collections.abc import Mapping
 
 # [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The hooks below declare
@@ -113,6 +114,7 @@ _BRAIN_DECLARED_TIMEOUTS: Mapping[str, float] = {
     "UserPromptSubmit": BRAIN_POST_TIMEOUT_SECONDS,
     "Stop": BRAIN_POST_TIMEOUT_SECONDS,
     "StopFailure": BRAIN_POST_TIMEOUT_SECONDS,
+    "SessionStart": BRAIN_POST_TIMEOUT_SECONDS,
 }
 
 
@@ -121,6 +123,19 @@ def brain_declared(event: str) -> dict[str, object]:
     background: hands answers each, and Claude Code goes on only once it has."""
     timeout = _BRAIN_DECLARED_TIMEOUTS.get(event)
     return {} if timeout is None else {"timeout": timeout}
+
+
+# The hooks the pinned Claude Code runs no HTTP hook for ("HTTP hooks are not supported for SessionStart", measured on
+# 2.1.308): a command posts each of these instead, the same body to the same URL.
+UNPOSTED = frozenset({"SessionStart", "Setup"})
+
+
+def poster(event: str, url: str) -> dict[str, object]:
+    """The hook that posts `event`'s body to `url`: Claude Code's own HTTP hook, or curl for one it runs none for. curl
+    fails on an answer that is not a success, so Claude Code reports the hook failed."""
+    if event in UNPOSTED:
+        return {"type": "command", "command": f"curl -fsS -o /dev/null -H 'Content-Type: application/json' --data-binary @- {shlex.quote(url)}"}
+    return {"type": "http", "url": url}
 
 
 def main() -> None:

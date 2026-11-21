@@ -1,15 +1,23 @@
 """What the brain's tests read a turn, a permission, or a failure by, whether the brain is a launched one or built bare."""
 
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 from loguru import logger
 
 from conftest import events
+from hands.brain.conversation import CurrentSession
 from hands.brain.process import Asked, Brain
-from hands.core.session import Held
+from hands.core.session import Held, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import Fact
+
+
+def unmoved(session: SessionId) -> CurrentSession:
+    """The brain's session as a test that never moves it holds it: its config directory is not there, so a move
+    raises."""
+    return CurrentSession(Path("/nonexistent/brain-config"), session)
 
 
 def unasked(asked: Asked) -> None:
