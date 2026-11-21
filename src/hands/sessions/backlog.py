@@ -86,19 +86,34 @@ class Inherited:
 Signer = Person | Inherited
 
 
-class LitFailed(Exception):
-    """lit did not do what it was asked in a directory, and the message says why; `reason` is the token lit's refusal
-    names, None where lit named none."""
+@dataclass(frozen=True)
+class Refusal:
+    """lit's verdict on a command it failed, the first line of what it said: the code it exited with, and the reason
+    token that tells apart the failures one code covers."""
 
-    def __init__(self, message: str, reason: str | None) -> None:
+    code: int
+    reason: str
+
+
+# lit's reference (links docs/cli-reference.md, 'Every reason') says of code 6 alone that the command changed nothing:
+# it ran correctly and found nothing to do. Every other code may come after lit has written.
+UNCHANGED = 6
+
+
+class LitFailed(Exception):
+    """lit did not do what it was asked in a directory, and the message says why; `refusal` is lit's own verdict, None
+    where it gave none."""
+
+    def __init__(self, message: str, refusal: Refusal | None) -> None:
         super().__init__(message)
-        self.reason = reason
+        self.refusal = refusal
 
     @property
     def wrote_nothing(self) -> bool:
-        """Whether lit is known to have written nothing: it refused, saying why on its reason line. A lit that did not
-        answer, ended without a reason, or failed once it was running may have written before it stopped."""
-        return self.reason is not None
+        """Whether lit is known to have written nothing: it said so, by the one code its reference gives that meaning.
+        Any other refusal, a lit that did not answer, ended without a verdict, or failed once it was running, may have
+        written before it stopped."""
+        return self.refusal is not None and self.refusal.code == UNCHANGED
 
 
 class LitNotStarted(LitFailed):
@@ -134,11 +149,10 @@ class Untracked:
         return "the directory no longer exists" if self.gone else "lit has no workspace there"
 
 
-# A failed lit command's first stderr line names its reason as a token beside the exit code, lit's published contract
-# (links docs/cli-reference.md) for telling apart the failures one code covers. Two reasons say it has no workspace
-# here: `lit init` never ran in this repository, or this is no git repository.
-ERROR_LINE = re.compile(r"error \(code=\d+, reason=(?P<reason>\w+)\): ")
-NO_WORKSPACE = ("workspace_not_initialized", "outside_git_workspace")
+# A failed lit command's first stderr line is its Refusal, lit's published contract (links docs/cli-reference.md). Two
+# say it has no workspace here: `lit init` never ran in this repository, or this is no git repository.
+ERROR_LINE = re.compile(r"error \(code=(?P<code>\d+), reason=(?P<reason>\w+)\): ")
+NO_WORKSPACE = (Refusal(3, "workspace_not_initialized"), Refusal(3, "outside_git_workspace"))
 
 
 @dataclass(frozen=True)
@@ -378,7 +392,7 @@ async def read_backlog(clock: Clock, project: Path) -> Backlog | Untracked:
     except ProjectGone:
         return Untracked(project, gone=True)
     except LitFailed as failed:
-        if failed.reason in NO_WORKSPACE:
+        if failed.refusal in NO_WORKSPACE:
             return Untracked(project)
         raise
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
@@ -441,7 +455,7 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
         err = ran.err.decode(errors="replace")
         line = ERROR_LINE.match(err)
         # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
-        raise LitFailed(f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}", None if line is None else line["reason"])
+        raise LitFailed(f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}", None if line is None else Refusal(int(line["code"]), line["reason"]))
     return ran.out
 
 

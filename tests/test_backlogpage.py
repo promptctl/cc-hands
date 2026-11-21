@@ -502,16 +502,24 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
     assert event.facts["ranked"] == "yes" and f"ranked the epic {wire} instead" in str(event.facts["lit_said"])
 
 
+# lit's reference says code 6 changed nothing, and says no such thing of any other code.
+CHANGED_NOTHING = 'echo "error (code=6, reason=state_already_holds): the state already holds" >&2\nexit 6'
+MAY_HAVE_WRITTEN = 'echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1'
+
+
 @pytest.mark.outside
 @real_lit
-async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("refusal, ranked, said", [(CHANGED_NOTHING, "no", "not moved: lit rank"), (MAY_HAVE_WRITTEN, "unknown", "whether lit ranked {parser} above {mic} is not known: lit rank")], ids=["changed nothing", "may have written"])
+async def test_a_rank_lit_refuses_is_said_unmoved_only_for_the_code_lit_says_changed_nothing(
+    page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str, ranked: str, said: str
+) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    stub_lit(tmp_path, monkeypatch, rank='echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5')
+    stub_lit(tmp_path, monkeypatch, rank=refusal)
     status, body = await moved(page, workspace, parser, above=mic)
-    assert status == 502 and "lit rank" in body and "workspace_busy" in body
+    assert status == 502 and body.startswith(said.format(parser=parser, mic=mic))
     assert workspace.order(mic, parser) == [mic, parser]
     [event] = page.events("backlog.ranked")
-    assert event.outcome == "failed" and event.error is not None and "workspace_busy" in event.error and event.facts["ranked"] == "no"
+    assert event.outcome == "failed" and event.error == body and event.facts["ranked"] == ranked
 
 
 @pytest.mark.outside
@@ -651,10 +659,10 @@ async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_mo
 @real_lit
 async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_and_the_ticket_was_not_moved(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, parent='echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5')
+    stub_lit(tmp_path, monkeypatch, parent=CHANGED_NOTHING)
     status, body = await leveled(page, workspace, hey, "high")
     [event] = page.events("backlog.leveled")
-    assert status == 502 and body.startswith(f"not leveled: lit made {event.facts['epic']}, wake word - high, and ranked it ") and f", and did not move {hey} into it: " in body and "workspace_busy" in body
+    assert status == 502 and body.startswith(f"not leveled: lit made {event.facts['epic']}, wake word - high, and ranked it ") and f", and did not move {hey} into it: " in body and "state_already_holds" in body
     assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("yes", "no")
     # The epic stands made and empty, and the next press puts the ticket in it rather than making another.
     monkeypatch.undo()
@@ -666,9 +674,10 @@ async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_a
 
 @pytest.mark.outside
 @real_lit
-async def test_a_move_lit_stops_without_a_reason_is_said_to_be_unknown(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("unanswered", [f'{LIT} "$@" >/dev/null\nkill -9 $$', f'{LIT} "$@" >/dev/null\n{MAY_HAVE_WRITTEN}'], ids=["killed", "refused after writing"])
+async def test_a_move_lit_stops_on_without_saying_it_changed_nothing_is_said_to_be_unknown(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unanswered: str) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, parent=f'{LIT} "$@" >/dev/null\nkill -9 $$')
+    stub_lit(tmp_path, monkeypatch, parent=unanswered)
     status, body = await leveled(page, workspace, hey, "low")
     [event] = page.events("backlog.leveled")
     assert status == 502 and body.startswith(f"lit made {event.facts['epic']}, wake word - low, and ranked it ") and f", and whether it moved {hey} into it is not known: " in body
@@ -722,9 +731,11 @@ async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_p
 @pytest.mark.parametrize(
     "before_rank, ranked, said",
     [
-        ('echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5', "no", "and left it at the bottom of its frame, so"),
+        (CHANGED_NOTHING, "no", "and left it at the bottom of its frame, so"),
+        (MAY_HAVE_WRITTEN, "unknown", "or left it at the bottom of its frame is not known, so"),
         (f'{LIT} "$@" >/dev/null\nkill -9 $$', "unknown", "or left it at the bottom of its frame is not known, so"),
     ],
+    ids=["changed nothing", "may have written", "killed"],
 )
 async def test_a_rank_that_fails_after_the_epic_is_made_says_the_epic_is_made_and_the_ticket_not_moved(
     page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_rank: str, ranked: str, said: str
@@ -848,11 +859,12 @@ async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_
 
 @pytest.mark.outside
 @real_lit
-async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_with_lits_verdict(page: Page, workspace: Workspace) -> None:
+async def test_a_note_on_a_ticket_lit_does_not_hold_carries_lits_verdict_and_is_not_claimed_unkept(page: Page, workspace: Workspace) -> None:
     status, body = await noted(page, workspace, "page-nope", "Split it")
-    assert status == 502 and body.startswith("not noted: lit comment") and "entity_not_found" in body
+    # lit's reference does not say entity_not_found comes before any write, so the page does not say it.
+    assert status == 502 and body.startswith("whether lit kept the note on page-nope is not known: lit comment") and "entity_not_found" in body
     [event] = page.events("backlog.noted")
-    assert event.outcome == "failed" and event.facts["noted"] == "no"
+    assert event.outcome == "failed" and event.facts["noted"] == "unknown"
 
 
 @pytest.mark.outside
