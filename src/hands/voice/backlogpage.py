@@ -360,7 +360,7 @@ class Halted(Exception):
 
 
 async def _read(clock: Clock, project: Path, unread: str, status: int, untracked: str) -> Backlog:
-    """The backlog in `project` read fresh partway through a leveling; raises Halted saying `unread` and lit's error when
+    """The backlog in `project` read fresh before or partway through a write; raises Halted saying `unread` and lit's error when
     it cannot be read, and `untracked` with `status` when it has no backlog, saying why."""
     try:
         read = await read_backlog(clock, project)
