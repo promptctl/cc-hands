@@ -9,6 +9,7 @@ the same change.
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from importlib import resources
 from typing import Protocol, TypeVar, cast, get_args
 
@@ -66,7 +67,8 @@ class Desk(Protocol):
 @dataclass(frozen=True)
 class Gallery:
     """What the page reads and sets. `speaker` is what a model switch's line is heard through, and `models` the models
-    the page offers, which `own` refuses where they are not hands' to run on."""
+    the page offers, which `own` refuses where they are not hands' to run on. `started_at` is which run of hands answers:
+    a switch restarts hands, and the page knows hands is back once a run started later answers."""
 
     voices: Voicing
     levels: Listening
@@ -75,6 +77,9 @@ class Gallery:
     speaker: Heard
     wake: Word
     models: tuple[str, ...]
+    # [LAW:one-source-of-truth] the run's start as its heartbeat carries it, fixed at the process door, which is how
+    # `hands restart` too knows a new run is up.
+    started_at: datetime
 
 
 def parse_field(body: bytes, field: str) -> str:
@@ -136,7 +141,7 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
             "voices": VOICES, "speaking_in": str(speaking),
             "levels": LEVELS, "level": gallery.levels.level,
             "modalities": MODALITIES, "modality": gallery.desk.modality,
-            "models": gallery.models, "running_on": gallery.own.running(),
+            "models": gallery.models, "running_on": gallery.own.running(), "started_at": gallery.started_at.isoformat(),
         })
 
     @keyed(clock, "gallery.hear", record, key)

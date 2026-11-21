@@ -51,7 +51,7 @@ from conftest import events
 def unused_gallery() -> Gallery:
     """A gallery no request in these tests reads: the page's own routes are tested in test_gallerypage, and the one check
     that the phone's server mounts them is made on the port below."""
-    return Gallery(voices=Mock(), levels=Mock(), desk=Mock(), own=Mock(), speaker=Mock(), wake=Pretrained(), models=())
+    return Gallery(voices=Mock(), levels=Mock(), desk=Mock(), own=Mock(), speaker=Mock(), wake=Pretrained(), models=(), started_at=datetime.datetime(2026, 11, 20, tzinfo=datetime.UTC))
 
 KEY = "the-phone-key"
 PAGE_RATE = 48000

@@ -44,6 +44,12 @@ a terminal of hands' own, with the mock of Anthropic's API as its model, in `mak
 A claim the pin stops keeping fails the second, and the fake is changed to match. tests/test_pinned_brain.py is the brain's one
 smoke test, the happy path through hands' proxy. The rig the two pinned modules share is tests/pinnedbrain.py.
 
+## The phone's pages
+
+A page's own script runs in node, through tests/pagescript.py: a DOM of plain objects, a virtual clock, and hands as a
+timeline of what each route answers, with replies taken from hands' own routes, so a page that waits out a restart waits none of
+it. Tests assert what the person sees, not how often the page reads. Starting node is a process, so these tests are `outside`.
+
 ## The commands
 
 - `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.

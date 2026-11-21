@@ -3,7 +3,9 @@ choice the one its tool makes, and each refused where the tool refuses it."""
 
 import asyncio
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -24,10 +26,13 @@ from hands.voice.trigger import described
 from hands.voice.voices import VOICES, Voice
 from hands.voice.wakeword import Pretrained
 from conftest import events
+from pagescript import Click, Era, Reply, Submit, Wait, run_page
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
 MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
+# The run the page is served by.
+STARTED = datetime(2026, 11, 20, 9, tzinfo=UTC)
 
 
 @dataclass
@@ -127,6 +132,7 @@ class Page:
     speaker: Speaker
     own: Own
     recorded: list[Entry]
+    gallery: Gallery
 
     def events(self, name: str) -> list[WideEvent]:
         return events(self.recorded, name)
@@ -136,11 +142,17 @@ class Page:
 async def page() -> AsyncGenerator[Page]:
     voices, levels, desk, speaker, own = Voicing(), Listening(), Desk(), Speaker(), Own()
     recorded: list[Entry] = []
-    gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, speaker=speaker, wake=Pretrained(), models=MODELS)
+    gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, speaker=speaker, wake=Pretrained(), models=MODELS, started_at=STARTED)
+    async with _served(gallery, recorded) as client:
+        yield Page(client, voices, levels, desk, speaker, own, recorded, gallery)
+
+
+@asynccontextmanager
+async def _served(gallery: Gallery, recorded: list[Entry]) -> AsyncGenerator[TestClient[web.Request, web.Application]]:
     app = web.Application()
     app.add_routes(gallery_routes(SYSTEM, gallery, KEY, recorded.append))
     async with TestClient(TestServer(app)) as client:
-        yield Page(client, voices, levels, desk, speaker, own, recorded)
+        yield client
 
 
 @pytest.mark.outside
@@ -166,7 +178,7 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
         "voices": list(VOICES), "speaking_in": "charles",
         "levels": ["off", "wake word", "engaged"], "level": "engaged",
         "modalities": ["screen", "audio-only"], "modality": "screen",
-        "models": list(MODELS), "running_on": MODELS[0],
+        "models": list(MODELS), "running_on": MODELS[0], "started_at": STARTED.isoformat(),
     }
     [read] = page.events("gallery.read")
     assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"]) == ("ok", "charles", "engaged", "screen")
@@ -316,9 +328,89 @@ async def test_the_library_search_returns_matches_and_records_the_listing(page: 
 
 def test_the_routes_are_the_gallery_and_its_five_choices_and_a_read() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
-    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(), wake=Pretrained(), models=MODELS)
+    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(), wake=Pretrained(), models=MODELS, started_at=STARTED)
     routes: list[Any] = [route for route in gallery_routes(SYSTEM, gallery, KEY, lambda _entry: None)]
     assert sorted(f"{route.method} {route.path}" for route in routes) == sorted([
         "GET /gallery", "GET /gallery/state", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",
         "POST /gallery/level", "POST /gallery/modality", "POST /gallery/model",
     ])
+
+
+async def _reply(client: TestClient[web.Request, web.Application], method: str, path: str, body: object | None = None) -> Reply:
+    response = await client.request(method, path, headers=KEYED, json=body)
+    return Reply(response.status, await response.text())
+
+
+async def _run_after(page: Page, running_on: str) -> Reply:
+    """hands' state as the run a switch restarts into answers it: started later, on `running_on`."""
+    page.own.running_on = running_on
+    async with _served(replace(page.gallery, started_at=STARTED + timedelta(minutes=1)), []) as client:
+        return await _reply(client, "GET", "/gallery/state")
+
+
+STATE, SWITCH = "GET /gallery/state", "POST /gallery/model"
+# The person switches at 1 s; hands restarts from 2 s, out of reach until 9 s.
+SWITCHED = Submit("model-form", 1000, {"model": "claude-opus-5-5"})
+
+
+@pytest.mark.outside
+async def test_a_switch_is_waited_out_and_the_page_comes_back_on_the_run_after_it(page: Page) -> None:
+    before, switched = await _reply(page.client, "GET", "/gallery/state"), await _reply(page.client, "POST", "/gallery/model", {"model": "claude-opus-5-5"})
+    after = await _run_after(page, "claude-opus-5-5")
+    opened, _, waiting, back = run_page("gallery.html", [Era(0, {STATE: before, SWITCH: switched}), Era(2000, {STATE: None}), Era(9000, {STATE: after})], [Wait(0), SWITCHED, Wait(5000), Wait(20000)])
+    assert (opened.running, opened.disabled) == ("hands runs on claude-sonnet-5-5.", 0)
+    # While hands restarts the page says so, and its controls stay live.
+    assert (waiting.reading, waiting.status, waiting.disabled) == ("hands is out of reach; reading hands again…", page.speaker.said[0], 0)
+    assert (back.running, back.reading, back.errors) == ("hands runs on claude-opus-5-5.", "hands is back, on claude-opus-5-5.", [])
+    assert back.controls == opened.controls and back.disabled == 0
+
+
+@pytest.mark.outside
+async def test_a_run_after_a_switch_on_another_model_is_said_with_the_model_it_runs_on(page: Page) -> None:
+    before, switched = await _reply(page.client, "GET", "/gallery/state"), await _reply(page.client, "POST", "/gallery/model", {"model": "claude-opus-5-5"})
+    after = await _run_after(page, "claude-sonnet-5-5")
+    *_, back = run_page("gallery.html", [Era(0, {STATE: before, SWITCH: switched}), Era(2000, {STATE: None}), Era(9000, {STATE: after})], [Wait(0), SWITCHED, Wait(20000)])
+    assert (back.running, back.reading, back.errors) == ("hands runs on claude-sonnet-5-5.", "hands came back on claude-sonnet-5-5, not claude-opus-5-5.", ["reading"])
+
+
+@pytest.mark.outside
+async def test_the_run_before_a_switch_answering_is_not_taken_for_hands_back(page: Page) -> None:
+    before, switched = await _reply(page.client, "GET", "/gallery/state"), await _reply(page.client, "POST", "/gallery/model", {"model": "claude-opus-5-5"})
+    _, still = run_page("gallery.html", [Era(0, {STATE: before, SWITCH: switched})], [Wait(0), SWITCHED])
+    assert (still.running, still.reading) == ("hands runs on claude-sonnet-5-5.", "hands still runs on claude-sonnet-5-5; the page reads it until it restarts on claude-opus-5-5.")
+    assert still.disabled == 0
+
+
+@pytest.mark.outside
+async def test_a_switch_whose_answer_is_lost_is_waited_out_as_one_that_may_have_been_made(page: Page) -> None:
+    before = await _reply(page.client, "GET", "/gallery/state")
+    after = await _run_after(page, "claude-opus-5-5")
+    _, lost, back = run_page("gallery.html", [Era(0, {STATE: before}), Era(500, {STATE: None, SWITCH: None}), Era(9000, {STATE: after})], [Wait(500), SWITCHED, Wait(20000)])
+    assert lost.status == "hands is out of reach, so the switch to claude-opus-5-5 may still be made; the page reads hands until it is."
+    assert (back.reading, back.disabled) == ("hands is back, on claude-opus-5-5.", 0)
+
+
+@pytest.mark.outside
+async def test_a_page_opened_while_hands_is_out_of_reach_reads_it_until_it_answers(page: Page) -> None:
+    state = await _reply(page.client, "GET", "/gallery/state")
+    away, opened = run_page("gallery.html", [Era(0, {STATE: None}), Era(7000, {STATE: state})], [Wait(3000), Wait(20000)])
+    assert (away.errors, away.running) == (["reading"], "")
+    assert (opened.running, opened.reading, opened.errors) == ("hands runs on claude-sonnet-5-5.", "", [])
+    assert opened.controls > 0 and opened.disabled == 0
+
+
+@pytest.mark.outside
+async def test_a_page_whose_key_hands_refuses_stops_and_says_where_to_open_it(page: Page) -> None:
+    refused = await page.client.get("/gallery/state")
+    [shown] = run_page("gallery.html", [Era(0, {STATE: Reply(refused.status, await refused.text())})], [Wait(60000)])
+    assert (shown.reading, shown.errors) == ("Open this page from the address `hands phone` prints, with gallery on its path.", ["reading"])
+    assert shown.asked == [STATE]
+
+
+@pytest.mark.outside
+async def test_a_choice_that_does_not_restart_hands_is_said_back_and_leaves_the_controls_live(page: Page) -> None:
+    before = await _reply(page.client, "GET", "/gallery/state")
+    used = await _reply(page.client, "POST", "/gallery/use", {"voice": VOICES[0]})
+    _, chosen = run_page("gallery.html", [Era(0, {STATE: before}), Era(1000, {STATE: None, "POST /gallery/use": used})], [Wait(1000), Click("voices", "Use", 2000)])
+    # Said back once hands answers the choice, whatever the read after it: here, hands gone out of reach.
+    assert (chosen.status, chosen.errors, chosen.disabled) == (f"Speaking in {VOICES[0].replace('_', ' ').title()} from now on.", ["reading"], 0)

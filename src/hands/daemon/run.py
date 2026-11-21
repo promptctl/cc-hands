@@ -294,7 +294,7 @@ async def run(
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock))
             tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
-            gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
+            gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS, started_at=heart.started_at)
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
             # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
             # no longer does.
