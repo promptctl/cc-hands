@@ -279,6 +279,8 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert "permissions" not in settings
     hooks = settings["hooks"]
     assert hooks.pop("Elicitation") == [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/Elicitation"}]}]
+    # The pin runs no HTTP hook for SessionStart, so a command posts its body to the same route.
+    assert hooks.pop("SessionStart") == [{"hooks": [{"type": "command", "command": "curl -sS -o /dev/null -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:7/SessionStart"}]}]
     # The order of the brain's turns rests on its prompt hook and its Stop being waited on: a prompt's as long as a typed
     # turn has to be taken, and a Stop's past the hold the model puts on it, as the shim's outlives a working session's.
     waits = {"UserPromptSubmit": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "Stop": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "StopFailure": TAKE_SECONDS + POST_TIMEOUT_SECONDS}

@@ -1010,8 +1010,9 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
     return [tool(model_in_use), tool(use_model, then="silence")]
 
 
-def usage_tool(usage: Usage) -> Tool:
-    """[LAW:nothing-unseen] the result is the reading, so the call's event holds it."""
+def usage_tool(usage: "asyncio.Future[Usage]") -> Tool:
+    """[LAW:nothing-unseen] the result is the reading, so the call's event holds it. [LAW:no-ambient-temporal-coupling]
+    the usage is the brain's, which needs this tool's server to start, so it is awaited: only the brain calls the tool."""
 
     async def context_usage() -> Result:
         """How many tokens your main conversation holds now, and how many you have spent since hands started, as the API
@@ -1021,14 +1022,14 @@ def usage_tool(usage: Usage) -> Tool:
         your context is. These are the real figures; a token total in your system reminders is not your usage. A subagent
         you start has its own context, which this does not measure.
         """
-        reading = usage.reading()
-        if reading is None:
-            return {"error": "No reply of yours has been counted yet."}
-        return {
-            "model": reading.model,
-            "in_context_tokens": reading.in_context,
-            "spent": {"input_tokens": reading.spent.input_tokens, "output_tokens": reading.spent.output_tokens, "replies": reading.spent.replies},
-        }
+        reading = (await usage).reading()
+        spent = {"input_tokens": reading.spent.input_tokens, "output_tokens": reading.spent.output_tokens, "replies": reading.spent.replies}
+        match reading.context:
+            case None:
+                # [LAW:parse-dont-validate] said as what it is: a conversation begun anew, or not yet answered, holds no reply.
+                return {"in_context": "nothing counted yet: this conversation has no reply of yours", "spent": spent}
+            case context:
+                return {"model": context.model, "in_context_tokens": context.tokens, "spent": spent}
 
     return tool(context_usage)
 

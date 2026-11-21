@@ -400,6 +400,19 @@ class Sessions:
         """Every session that has not ended, by id."""
         return [session.membership.id for session in self._registry.live()]
 
+    def held_by(self, pid: int) -> Session | None:
+        """The live session the process `pid` holds, or None when it holds none. A start ends what its process held
+        (reducer `_vacated`), so a registry its sessions only join by starting holds at most one per process; a sweep's
+        registry may list two on a pid for a moment, until the sweep ends one, and is never asked this."""
+        match [session for session in self._registry.live() if session.membership.pid == pid]:
+            case []:
+                return None
+            case [held]:
+                return held
+            case several:
+                # [LAW:no-silent-failure] two sessions on one process is a registry this query was never meant for.
+                raise RuntimeError(f"process {pid} holds {len(several)} live sessions: {[session.membership.id for session in several]}")
+
     def live_session(self, session: SessionId) -> Session | None:
         """The session as the registry holds it now, or None once it has ended or if it never joined."""
         match self._registry.sessions.get(session):

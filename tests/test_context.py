@@ -41,6 +41,7 @@ from hands.core.wire import (
 )
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
+from brains import Holder
 
 BRAIN = SessionId("brain")
 # The span the stages here route with: which trace a request is in is the stage's, not the keeper's.
@@ -170,9 +171,9 @@ def sent(body: object, kind: Kind | None = None, session: SessionId = BRAIN) -> 
     return Sent("x", session, kind or classify("/v1/messages", body), None, body)
 
 
-def ended(kind: Kind = MainTurn(None)) -> Exchanged:
+def ended(kind: Kind = MainTurn(None), session: SessionId = BRAIN) -> Exchanged:
     message = Message("m", "claude-opus-5-5", (Text("done"),), "end_turn", {})
-    return Exchanged("x", BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root(VirtualClock(seed=2)))
+    return Exchanged("x", session, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root(VirtualClock(seed=2)))
 
 
 class Rig:
@@ -180,7 +181,7 @@ class Rig:
         self.asked = Asked()
         self.store = Store()
         self.recorded: list[Entry] = []
-        self.keeper = Keeper(VirtualClock(), BRAIN, self.asked.ask, self.store, every, self.recorded.append)
+        self.keeper = Keeper(VirtualClock(), Holder(BRAIN), self.asked.ask, self.store, every, self.recorded.append)
         self.kept = Kept(Stage(), self.keeper, NoAsides())
 
     async def turn(self, finished: int) -> Route:
@@ -219,6 +220,31 @@ async def test_each_result_is_asked_about_once_after_its_turn_ends_and_goes_as_i
     # The stubs go before the stage's own tail.
     assert routes[7] == Send((*stubs[7], Tail("[hands] tail")), span=SPAN)
     assert stubbings(rig.recorded) == [({"stubbed": ("call0", "call1", "call2"), "whole": ()}, {"stubbed": 3, "whole": 0})]
+
+
+async def test_results_heard_in_a_conversation_are_asked_about_only_as_a_turn_of_it_ends() -> None:
+    asked = Asked()
+    brain = Holder(BRAIN)
+    keeper = Keeper(VirtualClock(), brain, asked.ask, Store(), 3, lambda _entry: None)
+    worker = asyncio.create_task(keeper.keep_asking())
+    try:
+        keeper.hear(sent(history(2)))
+        # A /clear before the turn ended: a turn of the new conversation asks nothing of the one it left.
+        cleared = SessionId("b2")
+        brain.session = cleared
+        keeper.hear(sent(history(0), session=cleared))
+        keeper.hear(ended(session=cleared))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert asked.files == []
+        # A /resume back, and a turn of it ending: its own results are asked about then.
+        brain.session = BRAIN
+        keeper.hear(ended())
+        for _ in range(20):
+            await asyncio.sleep(0)
+    finally:
+        worker.cancel()
+    assert asked.files == ["/0", "/1"]
 
 
 async def test_a_result_with_no_summary_when_its_batch_comes_goes_whole_for_good_and_says_so(rig: Rig) -> None:
@@ -277,7 +303,7 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
         def route(self, sent: Sent) -> Route:
             return Synthesize("(stayed silent)", SPAN)
 
-    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    keeper = Keeper(VirtualClock(), Holder(BRAIN), Asked().ask, Store(), 3, lambda _entry: None)
     assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Synthesize("(stayed silent)", SPAN)
 
 
@@ -288,7 +314,7 @@ async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() ->
 
     store = Store()
     store.said.update({key(result): "said" for result in aged(history(6), 3)})
-    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, store, 3, lambda _entry: None)
+    keeper = Keeper(VirtualClock(), Holder(BRAIN), Asked().ask, store, 3, lambda _entry: None)
     routed = Kept(Final(), keeper, NoAsides()).route(sent(history(6)))
     assert isinstance(routed, Send) and routed.refusal == "final"
     assert routed.changes[-1] == Tail("standing") and len(routed.changes) > 1
@@ -303,6 +329,6 @@ async def test_a_side_questions_own_request_goes_as_the_question_routes_it_and_t
         def own(self, sent: Sent) -> Send | None:
             return Send(span=SPAN)
 
-    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    keeper = Keeper(VirtualClock(), Holder(BRAIN), Asked().ask, Store(), 3, lambda _entry: None)
     routed = Kept(Unasked(), keeper, Owning()).route(sent(history(6), kind=Fork()))
     assert isinstance(routed, Send) and routed.refusal == "retried" and routed.span == SPAN

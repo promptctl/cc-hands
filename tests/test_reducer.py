@@ -470,6 +470,26 @@ def test_a_branch_ends_its_parent_quietly_and_joins_the_fork_in_the_same_process
     assert reduce(ended, Joined(fork, "fork")) == (registry(Gone(ONE), Session(fork, Unreported(), mode=None)), [])
 
 
+@pytest.mark.parametrize("dialogs", [(), (HELD,)])
+@pytest.mark.parametrize("source", ["startup", "resume", "clear", "fork"])
+def test_a_start_in_a_process_ends_the_session_the_process_held_quietly(dialogs: tuple[Held, ...], source: StartSource) -> None:
+    # /clear or /resume with no end hook heard first: the process holds the new session now, as a sweep would find, and
+    # the one it left ends under its own membership.
+    moved = Membership(SessionId("s1-next"), pid=ONE.pid, cwd=Path("/code/elsewhere"), transcript=Path("/u/s1-next.jsonl"))
+    after, effects = reduce(holding(IDLE, Told(TURN), dialogs=dialogs), Joined(moved, source))
+    assert after.sessions[ONE.id] == Gone(ONE)
+    assert [session.membership for session in after.live()] == [moved]
+    assert effects[: len(dialogs)] == [Reply(ONE.id, held.request, Withdraw()) for held in dialogs]
+
+
+def test_starts_in_one_process_one_after_another_leave_only_the_last_live() -> None:
+    second = replace(TWO, pid=ONE.pid)
+    third = Membership(SessionId("s3"), pid=ONE.pid, cwd=ONE.cwd, transcript=Path("/t/s3.jsonl"))
+    after = reduce(reduce(reduce(registry(), Joined(ONE, "startup"))[0], Joined(second, "clear"))[0], Joined(third, "resume"))[0]
+    assert [session.membership.id for session in after.live()] == [third.id]
+    assert after.sessions[ONE.id] == Gone(ONE) and after.sessions[second.id] == Gone(second)
+
+
 def test_an_ended_session_compacting_waits_for_its_status_to_be_read() -> None:
     assert reduce(GONE, Joined(ONE, "compact")) == (holding(Unreported()), [])
 

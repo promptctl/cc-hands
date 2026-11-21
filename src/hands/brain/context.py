@@ -17,6 +17,7 @@ from loguru import logger
 from hands.brain.asides import AsideFailed, TimeLimit
 from hands.clock import Clock
 from hands.core.context import Result, aged, key, line, question, results
+from hands.brain.holder import SessionHolder, is_held
 from hands.core.session import SessionId
 from hands.core.summaries import Digest
 from hands.core.wire import (
@@ -80,10 +81,10 @@ class Store(Protocol):
 class Keeper:
     """The changes hands makes to the brain's history on the way out, and the side questions that make them possible."""
 
-    def __init__(self, clock: Clock, session: SessionId, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
+    def __init__(self, clock: Clock, brain: SessionHolder, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
         self._clock = clock
-        # The session the brain's requests carry, and what answers a side question.
-        self._session = session
+        # The brain, whose requests carry the session it holds now, and what answers a side question.
+        self._brain = brain
         self._ask = ask
         self._store = store
         self._every = every
@@ -92,15 +93,16 @@ class Keeper:
         # None when no summary had been said of it by then. Never revisited, so the history stays byte-identical
         # between batches whatever the store learns later.
         self._decided: dict[str, str | None] = {}
-        # Results heard on a main turn that the store has no summary for, asked about once their turn ends.
-        self._unsaid: dict[str, Result] = {}
+        # Results heard on a main turn that the store has no summary for, asked about once their turn ends: kept under the
+        # session they were heard in, so a turn of another conversation never asks about them.
+        self._unsaid: dict[SessionId, dict[str, Result]] = {}
         # Every call whose result has been heard, so each is looked up in the store once.
         self._heard: set[str] = set()
         self._asking: asyncio.Queue[Result] = asyncio.Queue()
 
     def changes(self, sent: Sent) -> tuple[Change, ...]:
         """What a request of the brain's goes with: its old results as lines, and a compaction its steered prompt."""
-        if sent.session != self._session:
+        if not is_held(sent.session, self._brain):
             return ()
         match sent.kind:
             case MainTurn():
@@ -117,16 +119,16 @@ class Keeper:
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(session=session, kind=MainTurn(), body=body) if session == self._session:
+            case Sent(session=session, kind=MainTurn(), body=body) if is_held(session, self._brain):
                 fresh = [result for result in results(body) if result.call not in self._heard]
                 self._heard.update(result.call for result in fresh)
-                self._unsaid.update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
-            case Exchanged(session=session, kind=MainTurn(), reply=Synthetic()) if session == self._session:
-                self._turn_ended()
+                self._unsaid.setdefault(session, {}).update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
+            case Exchanged(session=session, kind=MainTurn(), reply=Synthetic()) if is_held(session, self._brain):
+                self._turn_ended(session)
             case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Written(message=message))) if (
-                session == self._session and message.stop_reason != "tool_use"
+                is_held(session, self._brain) and message.stop_reason != "tool_use"
             ):
-                self._turn_ended()
+                self._turn_ended(session)
             case _:
                 pass
 
@@ -143,10 +145,9 @@ class Keeper:
             # One line, however the model broke it.
             self._store.keep({key(result): " ".join(said.split())})
 
-    def _turn_ended(self) -> None:
-        for result in self._unsaid.values():
+    def _turn_ended(self, session: SessionId) -> None:
+        for result in self._unsaid.pop(session, {}).values():
             self._asking.put_nowait(result)
-        self._unsaid.clear()
 
     def _decide(self, old: tuple[Result, ...]) -> None:
         fresh = [result for result in old if result.call not in self._decided]

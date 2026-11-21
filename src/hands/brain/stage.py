@@ -52,6 +52,7 @@ from hands.core.place import Modality
 from hands.core.playback import Bookmark, Labelled, Line, Own, as_told, hands_says
 from hands.core.permissions import heard
 from hands.core.front import InFront
+from hands.brain.holder import is_held
 from hands.core.session import DenyAndInterrupt, Permission, SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
@@ -98,7 +99,7 @@ class Asking(Protocol):
     saying whether there was one."""
 
     @property
-    def session(self) -> SessionId: ...
+    def session(self) -> SessionId | None: ...
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded: ...
 
@@ -981,7 +982,7 @@ class BrainStage(FrameProcessor):
         """Where a request on the wire goes: each of a turn's own requests with hands' tail on it, and the next one after
         stay_silent held."""
         # Another session's request is made for no unit of the stage's: the root of a trace of its own.
-        if sent.session != self._brain.session:
+        if not is_held(sent.session, self._brain):
             return Send(span=root(self._clock))
         # [LAW:single-enforcer] every request Claude Code sends for the brain is final, whatever its kind and whether a turn
         # asked it: asked again, Claude Code would keep the user waiting minutes on its retries, and a spent limit it

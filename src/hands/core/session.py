@@ -397,6 +397,8 @@ class Staged:
     resolutions: tuple[Resolution, ...]
 
 
+
+
 @dataclass(frozen=True)
 class Registry:
     sessions: Mapping[SessionId, Known]

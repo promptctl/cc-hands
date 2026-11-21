@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
+from hands.brain.holder import SessionHolder, is_held
 from hands.core.session import SessionId
 from hands.core.wire import (
     CLASS_HEADER,
@@ -107,34 +108,45 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
 
 
 class Newest:
-    """The brain's newest main turn, heard off the wire: the one thing a side question is forked from."""
+    """The brain's newest main turn in the conversation it holds now, heard off the wire: the one thing a side question is
+    forked from."""
 
-    def __init__(self, session: SessionId) -> None:
-        self._session = session
-        # Main turns of the brain's told and not yet forwarded: its request is held once its bytes go upstream.
-        self._main: set[str] = set()
-        self._turn: Turn | None = None
-        # [LAW:no-ambient-temporal-coupling] set once, by the first turn held: a question asked before it awaits this.
-        self._first = asyncio.Event()
+    def __init__(self, brain: SessionHolder) -> None:
+        self._brain = brain
+        # Main turns of the brain's told and not yet forwarded, by the session each was sent in: its request is held once
+        # its bytes go upstream.
+        self._main: dict[str, SessionId] = {}
+        # [LAW:one-source-of-truth] each conversation's newest turn, kept under its session, so a /resume back to one
+        # forks from its own.
+        self._newest: dict[SessionId, Turn] = {}
+        # [LAW:no-ambient-temporal-coupling] set, and replaced, each time a turn is held: a question asked before the
+        # conversation has one awaits it.
+        self._held = asyncio.Event()
 
     async def turn(self) -> Turn:
-        """The brain's newest main turn, once it has sent one."""
-        await self._first.wait()
-        return cast(Turn, self._turn)
+        """The newest main turn of the conversation the brain holds, once it has sent one."""
+        while True:
+            held = self._held
+            session = self._brain.session
+            newest = None if session is None else self._newest.get(session)
+            if newest is not None:
+                return newest
+            await held.wait()
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(exchange=exchange, session=session, kind=MainTurn()) if session == self._session:
-                self._main.add(exchange)
+            case Sent(exchange=exchange, session=session, kind=MainTurn()) if is_held(session, self._brain):
+                self._main[exchange] = session
             case Forwarded(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
-                self._main.discard(exchange)
-                self._turn = Turn(exchange, path, headers, body, None)
-                self._first.set()
-            case Exchanged(exchange=exchange, reply=Reached(body=Written(message=message))) if self._turn is not None and exchange == self._turn.exchange:
-                self._turn = replace(self._turn, reply=message)
+                self._newest[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
+                held, self._held = self._held, asyncio.Event()
+                held.set()
+            case Exchanged(exchange=exchange, reply=Reached(body=Written(message=message))):
+                self._main.pop(exchange, None)
+                self._newest = {session: replace(turn, reply=message) if turn.exchange == exchange else turn for session, turn in self._newest.items()}
             case Exchanged(exchange=exchange):
                 # A main turn held or refused before it was forwarded is never waited on again.
-                self._main.discard(exchange)
+                self._main.pop(exchange, None)
             case _:
                 pass
 

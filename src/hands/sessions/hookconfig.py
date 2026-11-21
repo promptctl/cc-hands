@@ -123,6 +123,25 @@ def brain_declared(event: str) -> dict[str, object]:
     return {} if timeout is None else {"timeout": timeout}
 
 
+def _by_http(url: str) -> dict[str, object]:
+    return {"type": "http", "url": url}
+
+
+def _by_command(url: str) -> dict[str, object]:
+    return {"type": "command", "command": f"curl -sS -o /dev/null -H 'Content-Type: application/json' --data-binary @- {url}"}
+
+
+# [LAW:dataflow-not-control-flow] how each hook a Claude Code started by hands posts to hands, as a table: the pin runs
+# no HTTP hook for SessionStart (docs/claude-code-behavior.md, measured on 2.1.308), so a command posts its body instead,
+# on the same route, a spawn later.
+_POSTED_BY = {"SessionStart": _by_command}
+
+
+def posted(event: str, url: str) -> dict[str, object]:
+    """The hook that posts `event`'s body to `url`, for a Claude Code hands started itself (the brain, a recording rig)."""
+    return _POSTED_BY.get(event, _by_http)(url)
+
+
 def main() -> None:
     print(rendered(), end="")
 

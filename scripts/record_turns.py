@@ -35,7 +35,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from hands.brain import pinned, process
-from hands.sessions.hookconfig import plugin_hooks
+from hands.sessions.hookconfig import plugin_hooks, posted
 from hands.sessions.home import default_home
 
 TESTS = Path(__file__).resolve().parent.parent / "tests"
@@ -47,9 +47,6 @@ CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 # The hooks a recording holds: every one a wrapped session posts (hands' plugin's own: the shim's, and MessageDisplay),
 # every one the brain does, and PreToolUse, which neither subscribes to, so a recording shows when a call started.
 HOOKS = tuple(dict.fromkeys((*plugin_hooks()["hooks"], *process.HOOKS, "PreToolUse")))
-# The hooks Claude Code runs no HTTP hook for ("HTTP hooks are not supported for SessionStart"): a command posts each of
-# these to the rig instead, as hands' shim posts a wrapped session's, so its arrival is on the same clock, a spawn later.
-UNPOSTED = {"SessionStart", "Setup"}
 TMUX = "record-turns"
 # How often the transcript and the session file are read.
 POLL = 0.001
@@ -114,9 +111,9 @@ class Rig:
         self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         url = f"http://127.0.0.1:{self._server.server_address[1]}/"
-        forward = {"type": "command", "command": f"curl -sS -o /dev/null -H 'Content-Type: application/json' --data-binary @- {url}"}
         settings = {
-            "hooks": {event: [{"hooks": [forward if event in UNPOSTED else {"type": "http", "url": url}]}] for event in HOOKS},
+            # [LAW:one-source-of-truth] each hook posts as the brain's does.
+            "hooks": {event: [{"hooks": [posted(event, url)]}] for event in HOOKS},
             "permissions": {"allow": ["Bash(*)", "mcp__slow__wait"]},
         }
         mcp = {"mcpServers": {"slow": {"type": "stdio", "command": sys.executable, "args": ["-I", str(Path(__file__).resolve()), "--slow-mcp"]}}}

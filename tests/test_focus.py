@@ -43,8 +43,9 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
         typed.append(effect)
 
     sessions = new_sessions(clock=SYSTEM, typist=typist)
-    for id, project in ((HANDS, "cc-hands"), (LAWS, "laws")):
-        await sessions.apply(Joined(Membership(id, 4242, Path("/code") / project, tmp / f"{id}.jsonl", tmp / f"{id}.sock"), "startup"))
+    # Two processes: one process holds one session, so a start in it ends the one it held.
+    for pid, id, project in ((4242, HANDS, "cc-hands"), (4343, LAWS, "laws")):
+        await sessions.apply(Joined(Membership(id, pid, Path("/code") / project, tmp / f"{id}.jsonl", tmp / f"{id}.sock"), "startup"))
     return sessions
 
 

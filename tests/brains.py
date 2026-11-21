@@ -1,15 +1,23 @@
 """What the brain's tests read a turn, a permission, or a failure by, whether the brain is a launched one or built bare."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import pytest
 from loguru import logger
 
 from conftest import events
 from hands.brain.process import Asked, Brain
-from hands.core.session import Held
+from hands.core.session import Held, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import Fact
+
+
+@dataclass
+class Holder:
+    """The brain as a reader of its wire sees it, in the session a test moves it to, as a /clear or a /resume moves it."""
+
+    session: SessionId | None
 
 
 def unasked(asked: Asked) -> None:

@@ -93,13 +93,14 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
     # never a clock read.
     match event:
         case Joined(membership=membership, source=source):
-            previous = registry.sessions.get(membership.id)
+            vacated, left = _vacated(registry, membership)
+            previous = vacated.sessions.get(membership.id)
             started = _started(membership, source, previous)
-            joined, effects = _join(registry, started)
+            joined, effects = _join(vacated, started)
             # A Stop held in the process before is let go: its transcript is read afresh from here, as history.
             held = previous.stops if isinstance(previous, Session) else ()
             waiting = previous.turn.waiting if isinstance(previous, Session) else ()
-            return joined, [*_unsettled(membership.id, [stop for stop in held if stop not in started.stops], waiting), *effects, *_said_at_start(membership.id, source)]
+            return joined, [*left, *_unsettled(membership.id, [stop for stop in held if stop not in started.stops], waiting), *effects, *_said_at_start(membership.id, source)]
         case Attached(membership=membership) | Located(membership=membership) if membership.id not in registry.sessions:
             # A membership file says nothing of the mode; the session's next hook will.
             return registry.put(Session(membership, Unreported(), mode=None)), []
@@ -122,6 +123,20 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _ticked(registry, at)
         case _:
             return _enter(registry, event)
+
+
+def _vacated(registry: Registry, membership: Membership) -> tuple[Registry, list[Effect]]:
+    """The registry with every other live session of the process `membership` starts in ended, as a sweep ends one whose
+    process holds another session now (MovedOn): one process holds one session, and a start is that process saying which.
+    A file found on a pid says less, since the pid may have been reused, so only the sweep, which knows when each process
+    started, ends a session for one."""
+    # The user moved the process on at the keyboard (/clear, /resume, /branch), so there is nothing to tell them.
+    ended = [session for session in registry.live() if session.membership.pid == membership.pid and session.membership.id != membership.id]
+    effects: list[Effect] = []
+    for was in ended:
+        registry, said = _end(registry, was, was.membership, [])
+        effects.extend(said)
+    return registry, effects
 
 
 def _located(registry: Registry, membership: Membership) -> Registry:
