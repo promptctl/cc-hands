@@ -31,19 +31,15 @@ async def waited[V: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[V,
     """
     began = clock.now()
     looks = 0
-
-    async def looked() -> tuple[V, T]:
-        nonlocal looks
-        looks += 1
-        return await look()
-
     try:
-        version, found = await looked()
-        # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is never
-        # missed: it is answered at once with whatever has changed since.
-        while version == seen and clock.now() - began < WAIT_SECONDS:
+        while True:
+            looks += 1
+            version, found = await look()
+            # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is
+            # never missed: it is answered at once with whatever has changed since.
+            if version != seen or clock.now() - began >= WAIT_SECONDS:
+                break
             await clock.sleep(POLL_SECONDS)
-            version, found = await looked()
     finally:
         # [LAW:nothing-unseen] a look that fails partway through the wait still says how far the wait had come.
         annotate(seen=seen, waited_ms=round((clock.now() - began) * 1000, 1), looks=looks)

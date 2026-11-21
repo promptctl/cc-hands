@@ -158,14 +158,15 @@ def sample(voice: Chosen) -> str:
 
 class Voices:
     """The voices hands can speak in, heard and chosen through `lines`, the processor standing ahead of the TTS service, and
-    found in `library`.
+    found in `library`. `speaking` is the voice the TTS service was built in, and from then on the voice is what this owner
+    last handed it.
 
     A change of voice is a frame in order with the speech around it, so what was handed to the speaker before it is
     said in the old voice and what comes after in the new. Pipecat keeps a settings frame through a barge-in, which
     drops only the speech, so a hearing cut short still ends back in the chosen voice.
     """
 
-    def __init__(self, home: Home, lines: Lines, fetch: Fetch, library: Library) -> None:
+    def __init__(self, home: Home, lines: Lines, fetch: Fetch, library: Library, speaking: Chosen) -> None:
         self._home = home
         self._lines = lines
         self._fetch = fetch
@@ -174,9 +175,12 @@ class Voices:
         # side, and a hearing and a choice interleaved would leave a sample in another's voice, or the speaker in a
         # voice the file does not hold. Each runs whole, one after another.
         self._changing = asyncio.Lock()
+        # [LAW:one-source-of-truth] the voice hands speaks in is the one the speaker was last handed, never the file:
+        # a file edited by hand is taken up at the next start, and until then hands speaks as it did.
+        self._speaking = speaking
 
     async def speaking_in(self) -> Chosen:
-        return await asyncio.to_thread(chosen, self._home)
+        return self._speaking
 
     async def search(self, query: str, limit: int) -> Found:
         """The library voices whose paths contain `query`, and when the listing searched was made."""
@@ -205,6 +209,7 @@ class Voices:
             await asyncio.to_thread(self._fetch, voice)
             await asyncio.to_thread(keep, self._home, voice)
             await self._speak_in(voice)
+            self._speaking = voice
 
     async def _speak_in(self, voice: Chosen) -> None:
         await self._lines.push_frame(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=source(voice))))
