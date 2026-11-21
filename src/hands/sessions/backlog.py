@@ -309,6 +309,9 @@ class Backlog:
         """
         if ticket not in self.tickets:
             raise Rejected(f"the backlog has no ticket {ticket}")
+        # A closed ticket is in no epic's open tickets, so it could never be ranked last among them.
+        if self.done(ticket):
+            raise Rejected(f"{ticket} is closed, and a closed ticket is put at no level")
         match self.standing(ticket):
             case None:
                 raise Rejected(f"{ticket} is an epic, inside no epic lit lists, or inside an epic lit ranks under one it archived, so it has no level")

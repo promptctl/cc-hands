@@ -105,7 +105,7 @@ async def sighted(clock: Clock, store: SummaryStore, project: Path) -> Sighted |
 def sighting(store: SummaryStore, project: Path, backlog: tracker.Backlog) -> Sighted:
     """`backlog`, already read from `project`, with every summary already said of it.
 
-    [LAW:one-source-of-truth] the one place a backlog read is a sighting, whoever reads it: what it finds unsaid is asked
+    [LAW:one-source-of-truth] the one place a backlog read to be shown is a sighting, whoever shows it: what it finds unsaid is asked
     for, to be said in the background, never while the read waits.
     """
     reckoning = store.reckon(backlog.thing())
