@@ -134,9 +134,49 @@ tools are used in (list, focus, read, stage, send). It lives beside the brain's 
 laws:prompt.
 
 **Calls answer inside Cloudflare's window.** Cloudflare drops a proxied request whose origin sends nothing for 100
-seconds (a 524). The tools' own events already time every call, so the audit says whether any comes near it. One
-that does is answered as an SSE stream for that call, which the transport allows; nothing is built for it until one
-does.
+seconds (a 524). No call waits on a session's work (below), so every call is one of hands' quick reads or acts, and
+the tools' own events, which time every call, say whether any comes near the limit.
+
+## Long-running work: a session's turn is the job
+
+The Claude app's guidance for a long job is two tools: one starts it and returns a job id, the other takes the id
+and, once the job is done, returns its result. MCP's Tasks extension (SEP-1686, now `io.modelcontextprotocol/tasks`)
+is the same pattern in the protocol: a `tools/call` answered with `resultType: "task"` and a `taskId`, polled with
+`tasks/get` until it is `completed` (the result rides on it), `failed` or `cancelled`, with `input_required` for a
+job that needs an answer, given through `tasks/update`.
+
+The one long job in hands is a Claude Code session's turn. Everything else hands does answers in moments, and
+proxied calls go through as the upstream server answers them. Today the turn has half the pattern and a defect:
+`send_draft` starts it and returns only a readback, and `tell_turn(session)` tells the session's *last finished*
+turn. A client that sends and then asks is told the turn before its own as though it were the answer. The voice brain
+never meets this, because hands narrates each turn as it finishes. The Claude app has no such channel: it only learns
+something by asking.
+
+**Every tool that opens a turn returns the turn it opened**, as a handle naming the session and that turn, held as
+soon as Claude Code takes the prompt (its UserPromptSubmit hook). Today those tools are `send_draft`, and
+`send_command` for a command that runs a turn. **One tool, `turn(turn)`, says where that turn stands**, read from
+what hands already keeps about sessions and their turns, never from a job table of its own [LAW:one-source-of-truth]:
+
+| The turn | `turn` answers |
+| --- | --- |
+| running | `working`, with what the session is doing now |
+| stopped on a dialog | `waiting`, with the permission, question, or plan, answered by the permission tools as any dialog is |
+| finished | `done`, with the turn told as `tell_turn` tells it: one telling, shared by both |
+| unknown to this hands (sent before a restart) | an error naming `read_session` |
+
+To make that work, Recounts keeps each recent turn's telling under that turn, not only the session's newest.
+`tell_turn` stays: "what did it just do" is a different question from "how is the turn I sent going". Both doors get
+`turn`, so the voice brain can answer "is it done yet?" by the turn it sent, rather than by whichever turn happens to
+be newest.
+
+**Tasks are not built now.** Anthropic shipped Tasks in the Claude Code CLI on 2026-10-23 (public beta, v2.1.304)
+and said other Claude products would follow. Nothing found shows the Claude app declaring the extension yet, and a
+server must never return a task to a client that did not declare it in the request's `_meta`. So the remote door
+records, on each call's event, whether the client declared `io.modelcontextprotocol/tasks`. Once the Claude app does,
+a later ticket answers `send_draft` from such a client with a task whose `taskId` is the turn handle, and whose
+`tasks/get` reads `turn`. `working`, `waiting` and `done` map to `working`, `input_required` and `completed`. That is
+a second way of writing out the same job, with no second store behind it. The brain door never returns a task: hands
+already tells the brain each turn as it finishes, and a task would tell the same turn twice.
 
 ## Cloudflare and the Claude app, set up once
 
@@ -174,4 +214,8 @@ first ticket proves the path end to end before anything else is built on it.
 3. **The brain's other MCP servers, proxied.** Parsing the brain's `.claude.json`, the stdio and http clients, the
    `<server>__<tool>` names, the event for a server left out. An outside-marked test runs a tiny stdio MCP server
    through the remote door.
-4. **Instructions for the Claude app.**
+4. **A sent turn is a job: its handle, and `turn` to ask after it.** The handle returned by every tool that opens a
+   turn, Recounts kept per turn, `turn` on both doors, and the Tasks declaration recorded on each remote call's event.
+   Done when a client that sends a prompt and asks after it is told that turn's state and, once it ends, that turn and
+   no other.
+5. **Instructions for the Claude app**, written for a model that sends a prompt and then asks `turn` after it.
