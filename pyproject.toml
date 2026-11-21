@@ -42,7 +42,8 @@ hands-attention = "hands.sessions.attention:entry"
 # `CaptureManager.global_and_fixture_disabled`, not public API, which uv.lock pins and the suite fails on a move of.
 # quickjs runs the phone pages' script (src/hands/voice/hands.js) in the test's own process, its jobs stepped by the test, so
 # the unit layer, which refuses a process start, holds for it.
-dev = ["nltk>=3.10", "pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-reportlog>=1", "pytest-timeout>=2.3,<3", "quickjs>=1.19", "soundfile>=0.13"]
+# playwright drives the installed Google Chrome through the phone's pages (tests/test_pages.py), and downloads no browser.
+dev = ["nltk>=3.10", "playwright>=1.50", "pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-reportlog>=1", "pytest-timeout>=2.3,<3", "quickjs>=1.19", "soundfile>=0.13"]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

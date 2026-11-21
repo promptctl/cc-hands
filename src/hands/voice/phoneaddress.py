@@ -192,11 +192,17 @@ def lan_addresses() -> list[str]:
     ]
 
 
+def keyed(address: str, key: str) -> str:
+    """`address` carrying the phone's key, in the fragment, which a browser never sends: each page reads it there and
+    sends it with its requests (hands.js)."""
+    return f"{address}#{key}"
+
+
 def page_urls(name: str | Untailed, lan: list[str], key: str) -> list[str]:
-    """Every address the phone can open the page at, the tailnet's name first, each carrying the key in its fragment."""
+    """Every address the phone can open the page at, the tailnet's name first, each carrying the key."""
     match name:
         case str():
             hosts = [name, *lan]
         case Untailed():
             hosts = lan
-    return [f"https://{host}:{PHONE_PORT}/#{key}" for host in hosts]
+    return [keyed(f"https://{host}:{PHONE_PORT}/", key) for host in hosts]
