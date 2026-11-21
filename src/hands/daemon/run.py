@@ -63,7 +63,8 @@ from hands.voice.clips import Trigger
 from hands.voice.atdesk import serve_desk
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
-from hands.voice.phonepage import serve_phone
+from hands.voice.phonepage import phone_pages, serve_phone
+from hands.voice.phoneaddress import phone_key
 from hands.voice.turnstop import Typed
 from hands.voice.floor import Floor
 from hands.voice import memory
@@ -447,9 +448,11 @@ async def converse(
                 after_move(await voice.phone.moves.get())
 
         try:
+            # The key every page and `hands phone` share, made once here if no run has made it.
+            key = phone_key(clock, home)
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record, environment, gallery), name="the phone's page")
+                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery), home, record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

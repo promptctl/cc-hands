@@ -37,9 +37,10 @@ from hands.sessions.payload import Rejected
 from hands.core.brainwork import BrainWork, Idle, NotWorking, StopOutcome
 from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun
+from hands.core.bearer import bearer
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
-from hands.voice.phonepage import phone_app
+from hands.voice.phonepage import phone_pages
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
@@ -427,10 +428,10 @@ def offered(offer: Offer) -> str:
 
 
 @pytest.fixture
-async def page_server() -> AsyncGenerator[Served, None]:
-    key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
+async def page_server(tmp_path: Path) -> AsyncGenerator[Served, None]:
+    key, recorded, home = PushToTalk(SYSTEM, lambda _: None), list[Entry](), Home(tmp_path)
     phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
-    client = TestClient(TestServer(phone_app(SYSTEM, phone, KEY, recorded.append)))
+    client = TestClient(TestServer(phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, KEY, recorded.append, {}, unused_gallery())))
     await client.start_server()
     yield client, phone, key, recorded
     await phone.stop()
@@ -634,7 +635,7 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
     monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home, recorded.append, {}, unused_gallery()))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery()), home, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -680,7 +681,9 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async def typing(text: str) -> None:
         typed.append(text)
 
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(tmp_path / "summaries.db")), Home(tmp_path), recorded.append, {}, unused_gallery()))
+    home = Home(tmp_path)
+    key = phone_key(SYSTEM, home)
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery()), home, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -695,7 +698,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
         assert gallery.status == 401
     [event] = calls(recorded)
     assert event.parent_id is None and event.trace_id != served.trace_id
-    keyed = {"Authorization": f"Bearer {phone_key(SYSTEM, Home(tmp_path))}"}
+    keyed = {"Authorization": bearer(key)}
     async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/conversation/typed", json={"text": "hello"}, headers=keyed, ssl=unverified) as sent:
         assert sent.status == 202
     assert typed == ["hello"]

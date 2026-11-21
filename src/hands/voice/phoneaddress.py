@@ -10,7 +10,6 @@ sends with the page's request.
 """
 
 import datetime
-import hmac
 import ipaddress
 import json
 import os
@@ -172,14 +171,6 @@ def phone_key(clock: Clock, home: Home) -> str:
             return key
 
 
-def carries_key(authorization: str, key: str) -> bool:
-    """Whether a request's Authorization header carries the phone's key as a bearer token.
-
-    [LAW:single-enforcer] the one check of the key, for every route that asks for it, compared in constant time.
-    """
-    return hmac.compare_digest(authorization.removeprefix("Bearer ").encode(), key.encode())
-
-
 def lan_addresses() -> list[str]:
     """This machine's IPv4 addresses on its Ethernet and Wi-Fi, which macOS names en0, en1, and on: a VPN's tunnel, the
     tailnet's among them, is no address a phone on the LAN reaches; the page is reached on the tailnet by name."""
@@ -192,11 +183,17 @@ def lan_addresses() -> list[str]:
     ]
 
 
+def keyed_address(address: str, key: str) -> str:
+    """`address` carrying the phone's key, in the fragment, which a browser never sends: each page reads it there and
+    sends it with its requests (hands.js)."""
+    return f"{address}#{key}"
+
+
 def page_urls(name: str | Untailed, lan: list[str], key: str) -> list[str]:
-    """Every address the phone can open the page at, the tailnet's name first, each carrying the key in its fragment."""
+    """Every address the phone can open the page at, the tailnet's name first, each carrying the key."""
     match name:
         case str():
             hosts = [name, *lan]
         case Untailed():
             hosts = lan
-    return [f"https://{host}:{PHONE_PORT}/#{key}" for host in hosts]
+    return [keyed_address(f"https://{host}:{PHONE_PORT}/", key) for host in hosts]

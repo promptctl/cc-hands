@@ -44,6 +44,13 @@ a terminal of hands' own, with the mock of Anthropic's API as its model, in `mak
 A claim the pin stops keeping fails the second, and the fake is changed to match. tests/test_pinned_brain.py is the brain's one
 smoke test, the happy path through hands' proxy. The rig the two pinned modules share is tests/pinnedbrain.py.
 
+## The phone's pages
+
+tests/test_pages.py runs each phone page's own code in the installed Google Chrome, driven by Playwright, against
+`phonepage.phone_pages`, the routes hands serves the phone, on the route tests' fakes. Chrome must be installed, as it is
+on GitHub's macos-15 runner image, which CI's `rest` tier runs on: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
+its pages made, whether the test passed or not.
+
 ## The commands
 
 - `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.

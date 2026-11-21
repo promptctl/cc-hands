@@ -20,6 +20,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.clock import Clock
+from hands.core.bearer import bears
 from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -29,7 +30,7 @@ from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
-from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, phone_key, tailnet
+from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, tailnet
 from hands.voice.summaries import SummaryStore
 
 # How often a page served under the tailnet's name asks Tailscale for its certificate again: Tailscale renews one a
@@ -46,7 +47,7 @@ def parse_offer(body: object) -> Offer:
             raise Rejected("an offer is {sdp, type: offer, rate, page, claim: take or resume}")
 
 
-def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Application:
+def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[web.RouteDef]:
     """The page, the script every phone page asks hands through, and the one route that takes its calls."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     script = resources.files("hands.voice").joinpath("hands.js").read_text()
@@ -61,7 +62,7 @@ def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Appli
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
         began = begun(clock)
-        if not carries_key(request.headers.get("Authorization", ""), key):
+        if not bears(request.headers.get("Authorization", ""), key):
             call_ended(record, began, remote, None, CallRefused("offered without the phone's key"))
             return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
         try:
@@ -79,30 +80,35 @@ def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Appli
             case answer:
                 return web.json_response({"sdp": answer.sdp, "type": answer.type})
 
+    return [web.get("/", shown), web.get("/hands.js", scripted), web.post("/offer", offered)]
+
+
+def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery) -> web.Application:
+    """Every page the phone opens, under the phone's `key`. The phone's page reads and stops `brain`. The conversation
+    page reads the audit log at `audit` and hands `typed` what is typed into it; the backlog page reads its summaries
+    from `store` and runs its writes in `environment`, the one hands was started in; the gallery page sets hands'
+    voices, level, modality, and model through `gallery`.
+
+    [LAW:one-source-of-truth] the one composition of the phone's routes: hands serves it, and so do the tests of the phone's
+    route and of the pages in a browser.
+    """
     app = web.Application()
-    app.router.add_get("/", shown)
-    app.router.add_get("/hands.js", scripted)
-    app.router.add_post("/offer", offered)
+    app.add_routes(phone_routes(clock, phone, key, record))
+    app.add_routes(brain_routes(clock, brain, key, record))
+    app.add_routes(conversation_routes(clock, Conversation(audit), typed, key, record))
+    app.add_routes(backlog_routes(clock, store, key, record, environment))
+    app.add_routes(gallery_routes(clock, gallery, key, record))
     return app
 
 
-async def serve_phone(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str], gallery: Gallery) -> Never:
-    """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
-    with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The page reads and stops `brain`. The
-    conversation page is served beside it, under the same key, handing `typed` what is typed into it, and the backlog
-    page, its summaries read from `store` and its writes run in `environment`, the one hands was started in. The gallery
-    page is served there too, its voices, level, modality, and model set through `gallery`.
+async def serve_phone(clock: Clock, pages: web.Application, home: Home, record: Record) -> Never:
+    """Serve `pages` on every address this machine has, until cancelled; under the tailnet's name, with the certificate
+    Tailscale renews, asked for again every RENEW_SECONDS.
 
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
     under, or, served on the LAN alone, why Tailscale gave it none.
     """
-    key = phone_key(clock, home)
-    app = phone_app(clock, phone, key, record)
-    app.add_routes(brain_routes(clock, brain, key, record))
-    app.add_routes(conversation_routes(clock, Conversation(home.audit), typed, key, record))
-    app.add_routes(backlog_routes(clock, store, key, record, environment))
-    app.add_routes(gallery_routes(clock, gallery, key, record))
-    runner = web.AppRunner(app, access_log=None)
+    runner = web.AppRunner(pages, access_log=None)
     await runner.setup()
     try:
         with unit("phone.served", record, begun(clock)):

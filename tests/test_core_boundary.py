@@ -9,7 +9,7 @@ import hands.core
 # world is caught the first time one is imported rather than the first time someone remembers to name it.
 # `json` and `re` are here because they only transform values: a step's input is rendered as JSON, and a test
 # runner's output is read by pattern. `hashlib` likewise: the summary store's key is a digest of what it keys.
-ALLOWED = ("collections.abc", "dataclasses", "hashlib", "json", "pathlib", "re", "typing", "hands.core")
+ALLOWED = ("collections.abc", "dataclasses", "hashlib", "hmac", "json", "pathlib", "re", "typing", "hands.core")
 
 
 def imported(source: str) -> set[str]:
