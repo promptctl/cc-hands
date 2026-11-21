@@ -9,6 +9,7 @@ loop here waits on any version.
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from typing import TypedDict
 
 from hands.clock import Clock
 from hands.sessions.wide import Fact, annotate
@@ -17,6 +18,20 @@ from hands.sessions.wide import Fact, annotate
 # browser or a proxy between gives a request; and how often it looks meanwhile.
 WAIT_SECONDS = 25.0
 POLL_SECONDS = 0.25
+
+
+class Read[V, T](TypedDict):
+    """A read's answer, every page's alike (hands.voice.hands.js reads it): the version of what it shows, which the page
+    says it has seen with its next read; how long that read may wait at hands, so the page bounds it by hands' wait and
+    not by a copy of it; and what it shows."""
+
+    seen: V
+    waits: float
+    shown: T
+
+
+def read_answer[V, T](version: V, shown: T) -> Read[V, T]:
+    return {"seen": version, "waits": WAIT_SECONDS, "shown": shown}
 
 
 def version_of(shown: object) -> str:

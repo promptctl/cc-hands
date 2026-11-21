@@ -446,6 +446,14 @@ async def test_the_page_is_served_to_anyone(page_server: Served) -> None:
 
 
 @pytest.mark.outside
+async def test_the_script_the_pages_ask_hands_through_is_served_to_anyone_and_never_kept(page_server: Served) -> None:
+    client, _, _, _ = page_server
+    served = await client.get("/hands.js")
+    assert (served.status, served.content_type, served.headers["Cache-Control"]) == (200, "text/javascript", "no-store")
+    assert "async function asked(" in await served.text()
+
+
+@pytest.mark.outside
 async def test_an_offer_without_the_phone_key_is_refused_and_recorded(page_server: Served) -> None:
     client, phone, key, recorded = page_server
     page, offer = await a_page()
@@ -694,7 +702,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async with ClientSession() as session, session.get(f"https://127.0.0.1:{served.facts['port']}/backlog/tickets", headers=keyed, ssl=unverified) as unnamed:
         assert unnamed.status == 400 and "project" in await unnamed.text()
     async with ClientSession() as session, session.get(f"https://127.0.0.1:{served.facts['port']}/brain", headers=keyed, ssl=unverified) as read:
-        assert read.status == 200 and (await read.json())["work"] == {"doing": "idle"}
+        assert read.status == 200 and (await read.json())["shown"]["work"] == {"doing": "idle"}
     # Nothing on the page reaches a working session.
     async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/sessions/s1/interrupt", headers=keyed, ssl=unverified) as gone:
         assert gone.status == 404

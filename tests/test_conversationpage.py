@@ -75,13 +75,13 @@ async def test_the_conversation_is_what_the_user_and_hands_said_and_each_tool_ha
     read = await page.client.get("/conversation/moments", headers=KEYED)
     assert read.status == 200
     body = await read.json()
-    assert [(moment["kind"], moment["heading"], moment["text"]) for moment in body["moments"]] == [
+    assert [(moment["kind"], moment["heading"], moment["text"]) for moment in body["shown"]["moments"]] == [
         ("heard", "user", "switch to the wake word"),
         ("called", "called set_trigger", '{"trigger": "wake word"}\n{"trigger": "wake word"}'),
         ("said", "you", "Okay. Say Hey Jarvis, then what you want."),
     ]
-    assert body["moments"][0]["at"] == MORNING.isoformat()
-    assert body["changes"] == 3
+    assert body["shown"]["moments"][0]["at"] == MORNING.isoformat()
+    assert body["seen"] == 3
     [event] = page.events("conversation.read")
     assert (event.outcome, event.counts["moments"], event.facts["seen"], event.facts["changes"]) == ("ok", 3, None, 3)
     assert (event.facts["looks"], event.facts["changed"]) == (1, True)
@@ -94,7 +94,7 @@ async def test_a_tool_call_that_failed_says_why(page: Page) -> None:
 
     await audited(SYSTEM, tool(refused), page.log.record).body()
     body = await (await page.client.get("/conversation/moments", headers=KEYED)).json()
-    assert [moment["text"] for moment in body["moments"]] == ["{}\nfailed: no such session"]
+    assert [moment["text"] for moment in body["shown"]["moments"]] == ["{}\nfailed: no such session"]
 
 
 @pytest.mark.outside
@@ -112,27 +112,27 @@ async def test_a_tool_call_cut_off_says_so(page: Page) -> None:
     with pytest.raises(asyncio.CancelledError):
         await call
     body = await (await page.client.get("/conversation/moments", headers=KEYED)).json()
-    assert [moment["text"] for moment in body["moments"]] == ["{}\ncancelled"]
+    assert [moment["text"] for moment in body["shown"]["moments"]] == ["{}\ncancelled"]
 
 
 @pytest.mark.outside
 async def test_a_read_that_has_seen_the_conversation_waits_for_it_to_change(page: Page) -> None:
     page.log.record(Transcribed("what time is it"))
     first = await (await page.client.get("/conversation/moments", headers=KEYED)).json()
-    waiting = asyncio.create_task(page.client.get("/conversation/moments", params={"seen": str(first["changes"])}, headers=KEYED))
+    waiting = asyncio.create_task(page.client.get("/conversation/moments", params={"seen": str(first["seen"])}, headers=KEYED))
     await asyncio.sleep(longpoll.POLL_SECONDS * 3)
     assert not waiting.done()
     page.log.record(Replied("Nine o'clock.", False))
     body = await (await waiting).json()
-    assert [moment["text"] for moment in body["moments"]] == ["what time is it", "Nine o'clock."]
-    assert body["changes"] == first["changes"] + 1
+    assert [moment["text"] for moment in body["shown"]["moments"]] == ["what time is it", "Nine o'clock."]
+    assert body["seen"] == first["seen"] + 1
 
 
 @pytest.mark.outside
 async def test_a_read_whose_conversation_never_changes_is_answered_with_it_as_it_is(page: Page, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(longpoll, "WAIT_SECONDS", 0.3)
     read = await page.client.get("/conversation/moments", params={"seen": "0"}, headers=KEYED)
-    assert (await read.json()) == {"changes": 0, "moments": []}
+    assert (await read.json()) == {"seen": 0, "waits": 0.3, "shown": {"moments": []}}
     [event] = page.events("conversation.read")
     assert isinstance(waited := event.facts["waited_ms"], float) and waited >= 300
     assert event.facts["seen"] == 0 and event.facts["changed"] is False and isinstance(looks := event.facts["looks"], int) and looks > 1

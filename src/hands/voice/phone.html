@@ -90,10 +90,9 @@
   <p id="brain-said" role="status" aria-live="polite"></p>
 </section>
 <audio id="out" autoplay playsinline></audio>
+<script src="/hands.js"></script>
 <script>
 "use strict";
-// The phone's key travels in the fragment, which the browser never sends with the page's own request.
-const key = decodeURIComponent(location.hash.slice(1));
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
 // hands sends its voice every 20 ms, silence and all, for as long as the call is up: a call it has sent nothing over
@@ -114,11 +113,9 @@ const doing = document.getElementById("doing");
 const calls = document.getElementById("calls");
 const stopButton = document.getElementById("stop");
 const brainSaid = document.getElementById("brain-said");
-// hands answers a read of the brain within its 25 s wait, and a Stop at once: one unanswered for this long went to an
-// address the phone can no longer reach, and is a read or a Stop that failed. A failed read is made again after the
-// pause. What a Stop said is said of that tap alone, so it is shown for a while and then taken away: the line above
-// says how the brain stands from then on.
-const READ_MS = 40000, STOP_MS = 10000, REREAD_MS = 3000, SAID_MS = 30000;
+// What a Stop said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the
+// brain stands from then on.
+const SAID_MS = 30000;
 document.getElementById("conversation").href = `/conversation${location.hash}`;
 document.getElementById("gallery").href = `/gallery${location.hash}`;
 
@@ -350,20 +347,19 @@ async function connect(claim) {
       if (pc.iceGatheringState === "complete") return done();
       pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && done());
     });
-    const answered = await fetch("offer", {
-      method: "POST",
-      headers: {"Authorization": `Bearer ${key}`, "Content-Type": "application/json"},
-      body: JSON.stringify({sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}),
-      signal: AbortSignal.timeout(OFFER_MS),
-    });
-    const body = await answered.text();
+    const outcome = await asked("POST", "/offer", {sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}, OFFER_MS);
     if (made.ended) return;
-    // hands declines a call made again while another page has the phone: that page is the one in the user's hand.
-    if (answered.status === 409) { end("Another page has hands' phone. Press Connect to take it here."); return; }
-    // A server error may pass, as hands is restarted; a refusal of the page's key or its offer never does.
-    if (answered.status >= 500) throw new Error(body);
-    if (!answered.ok) { end(`Could not connect: ${body}`); return; }
-    await pc.setRemoteDescription(JSON.parse(body));
+    // hands declines a call made again while another page has the phone: that page is the one in the user's hand. A
+    // server error may pass, as hands is restarted; a refusal of the page's key or its offer never does.
+    switch (outcome.kind) {
+      case "answered": await pc.setRemoteDescription(outcome.body); break;
+      case "refused":
+        if (outcome.status === 409) end("Another page has hands' phone. Press Connect to take it here.");
+        else if (outcome.status >= 500) dropped(made, `hands could not answer: ${outcome.text}.`);
+        else end(`Could not connect: ${outcome.text}`);
+        break;
+      case "lost": dropped(made, `Could not reach hands: ${outcome.why}.`); break;
+    }
   } catch (error) {
     dropped(made, `Could not reach hands: ${error.message}.`);
   }
@@ -516,49 +512,13 @@ function drawBrain() {
   sayOfBrain(told.text, told.bad);
 }
 
-// The brain is read for as long as the page is open. Each read says what the page was last given, and hands answers
-// once that would change, or at the end of its wait. A read hands refuses ends the reading, as asking again would be
-// refused again; one that never reached it is said, and made again after a pause saying nothing seen, so it is
-// answered at once.
-async function readBrain() {
-  let seen = null;
-  for (;;) {
-    try {
-      const answered = await fetch(seen === null ? "brain" : `brain?seen=${encodeURIComponent(seen)}`, {
-        headers: {"Authorization": `Bearer ${key}`},
-        signal: AbortSignal.timeout(READ_MS),
-      });
-      if (!answered.ok) { unread = {text: `Could not read the brain: ${await answered.text()}`, bad: true}; drawBrain(); return; }
-      const body = await answered.json();
-      seen = body.seen;
-      work = body.work;
-      ahead = body.now - Date.now() / 1000;
-      unread = null;
-      drawBrain();
-    } catch (error) {
-      seen = null;
-      unread = {text: `Could not read the brain: ${error.message}. Reading it again…`, bad: true};
-      drawBrain();
-      await new Promise((done) => setTimeout(done, REREAD_MS));
-    }
-  }
-}
-
 // Stop ends the turn the page shows, and that turn alone: one the brain went on to after it is never stopped by it.
 stopButton.addEventListener("click", async () => {
   stopping = true;
   drawBrain();
   try {
-    const answered = await fetch("brain/stop", {
-      method: "POST",
-      headers: {"Authorization": `Bearer ${key}`, "Content-Type": "application/json"},
-      body: JSON.stringify({turn: work.turn}),
-      signal: AbortSignal.timeout(STOP_MS),
-    });
-    if (!answered.ok) throw new Error(await answered.text());
-    sayOfStop({text: (await answered.json()).readback, bad: false});
-  } catch (error) {
-    sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
+    const outcome = await asked("POST", "/brain/stop", {turn: work.turn});
+    sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
   } finally {
     stopping = false;
     drawBrain();
@@ -573,7 +533,14 @@ function sayOfStop(stopSaid) {
 
 drawBrain();
 setInterval(drawDoing, 1000);
-if (key) readBrain(); else { unread = {text: "Open this page from the address `hands phone` prints.", bad: true}; drawBrain(); }
+// The brain is read for as long as the page is open, its work and how far the Mac's clock stood ahead of this page's as
+// hands said it.
+reading("/brain", read => {
+  work = read.work;
+  ahead = read.now - Date.now() / 1000;
+  unread = null;
+  drawBrain();
+}, why => { unread = {text: `Could not read the brain: ${why}`, bad: true}; drawBrain(); });
 </script>
 </body>
 </html>

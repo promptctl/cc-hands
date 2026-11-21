@@ -40,7 +40,9 @@ hands-attention = "hands.sessions.attention:entry"
 # `get_env_settings`, outside its `__all__`, and wraps the SIGALRM handler it installs and the `pytest.fail.Exception` that
 # raises, so a major version that moves either is taken on purpose. It also writes past the capture through pytest's
 # `CaptureManager.global_and_fixture_disabled`, not public API, which uv.lock pins and the suite fails on a move of.
-dev = ["nltk>=3.10", "pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-reportlog>=1", "pytest-timeout>=2.3,<3", "soundfile>=0.13"]
+# quickjs runs the phone pages' script (src/hands/voice/hands.js) in the test's own process, its jobs stepped by the test, so
+# the unit layer, which refuses a process start, holds for it.
+dev = ["nltk>=3.10", "pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-reportlog>=1", "pytest-timeout>=2.3,<3", "quickjs>=1.19", "soundfile>=0.13"]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

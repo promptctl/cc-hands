@@ -54,10 +54,8 @@
 <p class="muted">Switching restarts hands. This page shows hands out of reach while it does, and what it runs on once it is back.</p>
 </fieldset>
 
+<script src="/hands.js"></script>
 <script>
-// The phone's key travels in the fragment, which the browser never sends with the page's own request.
-const key = decodeURIComponent(location.hash.slice(1));
-
 // The name a voice, level, or modality is shown by: bill_boerst is Bill Boerst, audio-only is Audio Only.
 const label = text => text.replace(/[_-]/g, " ").replace(/\b\w/g, letter => letter.toUpperCase());
 
@@ -67,41 +65,6 @@ function say(line, text, failed = false) {
   shown.textContent = text;
   shown.className = failed ? "error" : "";
 }
-
-// A request hands does not answer within a minute, well past a read's own wait, is given up on by the page, not by hands.
-const ANSWER_MS = 60000;
-
-// [LAW:one-source-of-truth] every request the page makes, a read or a choice, is this one, and what came of it is one of
-// three outcomes: hands' answer, hands' refusal in its own words, or no answer, lost on the way or never sent back.
-async function asked(method, path, body) {
-  const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(ANSWER_MS) };
-  if (body !== undefined) {
-    init.headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(body);
-  }
-  // Each step of the crossing fails its own way: never reached, an answer cut off on its way back, or one that is not JSON.
-  let response;
-  try {
-    response = await fetch(path, init);
-  } catch (error) {
-    return { kind: "lost", why: error.name === "TimeoutError" ? "hands did not answer within a minute" : "hands is out of reach" };
-  }
-  let text;
-  try {
-    text = await response.text();
-  } catch (error) {
-    return { kind: "lost", why: `hands' answer was cut off: ${error.message}` };
-  }
-  if (!response.ok) return { kind: "refused", status: response.status, text: text || `hands refused with ${response.status}` };
-  try {
-    return { kind: "answered", body: JSON.parse(text) };
-  } catch (error) {
-    return { kind: "lost", why: `hands' answer is not one this page reads: ${error.message}` };
-  }
-}
-
-// What a request hands did not answer says: its refusal, or why no answer came.
-const unanswered = outcome => outcome.kind === "refused" ? outcome.text : outcome.why;
 
 function button(text, onClick, pressed) {
   const control = document.createElement("button");
@@ -159,37 +122,6 @@ function render(state) {
     button(model, () => act("/gallery/model", { model }, result => result.said), model === state.running_on)));
 }
 
-// How long the page waits to read hands again after a read that failed.
-const AGAIN_MS = 2000;
-
-// Read hands for as long as the page is open: each read waits at hands until what it shows changes from what was seen.
-// [LAW:one-source-of-truth] the page draws what hands answers and nothing else, so a restart, and the run after it,
-// reach the page as reads that fail and then a read that answers.
-async function reading() {
-  let seen = null;
-  for (;;) {
-    const outcome = await asked("GET", seen === null ? "/gallery/state" : `/gallery/state?seen=${encodeURIComponent(seen)}`);
-    if (outcome.kind === "answered") {
-      const state = outcome.body;
-      // An answer with no version would be asked for again at once, and again, never waiting at hands.
-      if (typeof state.seen !== "string") throw new Error("hands' answer carries no version");
-      // A read that answers at the end of its wait with nothing changed has nothing new to draw.
-      if (state.seen !== seen) render(state);
-      say("reading", "");
-      seen = state.seen;
-    } else if (outcome.kind === "refused" && outcome.status === 401) {
-      say("reading", outcome.text, true);
-      return;
-    } else {
-      say("reading", `${unanswered(outcome)}; reading it again…`, true);
-      // The next read says it has seen nothing, so hands answers it at once and the red line clears as soon as hands is
-      // back, whether a new run answers it or the one that was there all along.
-      seen = null;
-      await new Promise(done => setTimeout(done, AGAIN_MS));
-    }
-  }
-}
-
 // A library voice is named by its path there, which is what hands is told to speak in, so the path is shown whole.
 function renderLibrary(found) {
   const when = new Date(found.listed_at * 1000).toLocaleTimeString();
@@ -217,9 +149,9 @@ document.getElementById("library-form").addEventListener("submit", async event =
   else say("status", unanswered(outcome), true);
 });
 
-// [LAW:no-silent-failure] a read this page cannot draw stops the reading, and the page says so and why: reading the same
-// answer again would fail the same way.
-reading().catch(error => say("reading", `This page stopped reading hands: ${error.message}. Reload it to read again.`, true));
+// [LAW:one-source-of-truth] the page draws what hands answers and nothing else, so a restart, and the run after it, reach
+// the page as reads that fail and then a read that answers.
+reading("/gallery/state", state => { render(state); say("reading", ""); }, why => say("reading", why, true));
 </script>
 </body>
 </html>
