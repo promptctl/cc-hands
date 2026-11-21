@@ -139,11 +139,6 @@ async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pyte
     assert not any("killed" in line or "already ended" in line for line in logged), "a failure of its own was told as a kill"
 
 
-async def test_a_child_that_cannot_start_says_so() -> None:
-    with pytest.raises(SpawnFailed):
-        await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
-
-
 @pytest.mark.outside
 async def test_a_program_that_is_not_there_never_ran_and_the_os_says_why() -> None:
     with pytest.raises(SpawnFailed) as raised:

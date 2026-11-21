@@ -2,11 +2,10 @@
 
 `lit export` is lit's versioned data-export primitive, and the one command that hands over descriptions in bulk.
 It is read fresh at every call and kept nowhere [LAW:one-source-of-truth]: lit is where the backlog is, and its rank
-order is changed by `lit rank` alone.
+order is changed only by the lit writes here: `lit rank`, and the `lit new` and `lit parent set` that place a ticket.
 """
 
 import asyncio
-import errno
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -87,24 +86,30 @@ Signer = Person | Inherited
 
 
 class LitFailed(Exception):
-    """lit did not do what it was asked in a directory: it never ran, did not answer, or failed or refused, and the
-    message says why; `reason` is the token lit's refusal names, None where lit named none."""
+    """lit did not do what it was asked in a directory, and the message says why; `reason` is the token lit's refusal
+    names, None where lit named none."""
 
     def __init__(self, message: str, reason: str | None) -> None:
         super().__init__(message)
         self.reason = reason
 
     @property
-    def refused(self) -> bool:
-        """Whether lit refused, saying why on its reason line."""
+    def wrote_nothing(self) -> bool:
+        """Whether lit is known to have written nothing: it refused, saying why on its reason line. A lit that did not
+        answer, ended without a reason, or failed once it was running may have written before it stopped."""
         return self.reason is not None
 
 
 class LitNotStarted(LitFailed):
-    """lit's program never ran in the directory, so it wrote nothing there; the message says what the OS said."""
+    """lit's program never ran in the directory; the message says what the OS said."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message, None)
+
+    @property
+    def wrote_nothing(self) -> bool:
+        """A lit that never ran wrote nothing."""
+        return True
 
 
 class ProjectGone(LitNotStarted):
@@ -112,12 +117,6 @@ class ProjectGone(LitNotStarted):
 
     def __init__(self, project: Path) -> None:
         super().__init__(f"{project} no longer exists")
-
-
-def wrote_nothing(error: LitFailed) -> bool:
-    """Whether lit is known to have written nothing: it refused, or it never ran. A lit that did not answer, ended
-    without a reason, or failed once it was running may have written before it stopped."""
-    return error.refused or isinstance(error, LitNotStarted)
 
 
 @dataclass(frozen=True)
@@ -431,8 +430,8 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
     except SpawnFailed as error:
-        # The spawn names the missing path: the project directory, not lit, is what is gone.
-        if error.errno == errno.ENOENT and str(error.filename) == str(project):
+        # Whichever path the OS names, a directory that is not there is what lit could not start in.
+        if not project.is_dir():
             raise ProjectGone(project) from error
         raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
     except OSError as error:

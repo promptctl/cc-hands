@@ -78,7 +78,15 @@ class Ran:
 
 class SpawnFailed(OSError):
     """The OS handed `run` no process: the program, or the files its output goes to, could not be made, so it never ran.
-    Its errno, text and filename are the OS's own."""
+    It says what the OS said, and carries its errno and filenames."""
+
+    def __init__(self, refused: OSError) -> None:
+        super().__init__(*refused.args)
+        self.filename, self.filename2 = refused.filename, refused.filename2
+        self.refused = refused
+
+    def __str__(self) -> str:
+        return str(self.refused)
 
 
 async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ran:
@@ -99,8 +107,9 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
                 argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
             )
         except OSError as error:
-            # [LAW:single-enforcer] the one place hands knows a child never ran: the OS handed back no process.
-            raise SpawnFailed(error.errno, error.strerror, error.filename) from error
+            # No process was made, so the child never ran.
+            logger.debug(f"{argv[0]} could not be started: {error}")
+            raise SpawnFailed(error) from error
         unspawned.pop_all()
     # The files are the thread's from here, and it closes them: a caller that leaves early cannot pull them from
     # under the read.

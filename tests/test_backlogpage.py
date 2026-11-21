@@ -641,8 +641,8 @@ async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_a
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     stub_lit(tmp_path, monkeypatch, parent='echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5')
     status, body = await leveled(page, workspace, hey, "high")
-    assert status == 502 and body.startswith("not leveled: ") and "workspace_busy" in body
     [event] = page.events("backlog.leveled")
+    assert status == 502 and body.startswith(f"not leveled: lit made {event.facts['epic']}, wake word - high, and ranked it ") and f", and did not move {hey} into it: " in body and "workspace_busy" in body
     assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("yes", "no")
     # The epic stands made and empty, and the next press puts the ticket in it rather than making another.
     monkeypatch.undo()
@@ -658,9 +658,9 @@ async def test_a_move_lit_stops_without_a_reason_is_said_to_be_unknown(page: Pag
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     stub_lit(tmp_path, monkeypatch, parent=f'{LIT} "$@" >/dev/null\nkill -9 $$')
     status, body = await leveled(page, workspace, hey, "low")
-    assert status == 502 and body.startswith(f"whether lit moved {hey} into ") and "is not known" in body
     [event] = page.events("backlog.leveled")
-    assert event.outcome == "failed" and event.facts["moved"] == "unknown"
+    assert status == 502 and body.startswith(f"lit made {event.facts['epic']}, wake word - low, and ranked it ") and f", and whether it moved {hey} into it is not known: " in body
+    assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("yes", "unknown")
 
 
 @pytest.mark.outside
