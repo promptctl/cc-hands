@@ -10,7 +10,7 @@ import pytest
 from hands.clock import SYSTEM
 from hands.sessions.home import Home
 from hands.voice import phoneaddress
-from hands.voice.phoneaddress import NoTailscale, Tailnet, Untailed, not_after, own_certificate, tailnet, tailnet_name
+from hands.voice.phoneaddress import Tailnet, Untailed, not_after, own_certificate, tailnet, tailnet_name
 
 
 pytestmark = pytest.mark.outside
@@ -73,9 +73,9 @@ async def test_a_certificate_tailscale_refuses_is_untailed_in_its_words(tmp_path
     assert await tailnet(SYSTEM, Home(tmp_path)) == Untailed("tailscale cert failed (3): not logged in")
 
 
-async def test_a_machine_without_tailscale_is_untailed_by_design_rather_than_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_tailscale_not_on_the_path_is_untailed_saying_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
-    assert await tailnet(SYSTEM, Home(tmp_path)) == NoTailscale()
+    assert await tailnet(SYSTEM, Home(tmp_path)) == Untailed("the tailscale command is not on the PATH")
 
 
 async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

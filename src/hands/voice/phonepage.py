@@ -8,6 +8,7 @@ The page is open to anyone who can reach the port; a call is not. The page sends
 an offer without it is refused.
 """
 
+import datetime
 import json
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
@@ -28,12 +29,15 @@ from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
-from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, NoTailscale, Tailnet, Untailed, own_certificate, server_context
+from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, server_context
 from hands.voice.summaries import SummaryStore
 
 # How often the page asks Tailscale for the tailnet's certificate again: Tailscale renews one a month before its 90
 # days are out, so a day is far inside the time a renewed one has before the old one ends.
 RENEW_SECONDS = 24 * 60 * 60.0
+# How soon Tailscale is asked again once it has given no certificate and none is served: it is still starting at login,
+# and connects within a minute or so. Each refusal after doubles the wait, up to RENEW_SECONDS.
+ASK_AGAIN_SECONDS = 60.0
 
 
 def parse_offer(body: object) -> Offer:
@@ -101,7 +105,7 @@ def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str
 
 async def serve_phone(clock: Clock, pages: web.Application, home: Home, asked: Callable[[], Awaitable[Tailnet | Untailed]], record: Record) -> Never:
     """Serve `pages` on every address this machine has, until cancelled; under the tailnet's name, with the certificate
-    Tailscale gives `asked`, asked for again every RENEW_SECONDS.
+    Tailscale gives `asked`, asked for again when `_Served` says.
 
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`, and each renewal after it one of its own,
     `phone.renewed`, the root of a trace of its own: each says the port or what Tailscale answered, as `_Served` says it.
@@ -111,7 +115,7 @@ async def serve_phone(clock: Clock, pages: web.Application, home: Home, asked: C
     try:
         with unit("phone.served", record, begun(clock)):
             served = _Served(own_certificate(clock, home))
-            served.answered(await asked())
+            wait = served.answered(await asked())
             # Every request the site takes is work for no unit open here: the server's tasks copy the context it is
             # started in, and `phone.served` ends as the page comes up.
             with continuing(None):
@@ -122,9 +126,9 @@ async def serve_phone(clock: Clock, pages: web.Application, home: Home, asked: C
         # No renewal is part of whatever unit is open where the page is served.
         with continuing(None):
             while True:
-                await clock.sleep(RENEW_SECONDS)
+                await clock.sleep(wait)
                 with unit("phone.renewed", record, begun(clock)):
-                    served.answered(await asked())
+                    wait = served.answered(await asked())
     finally:
         await runner.cleanup()
 
@@ -141,26 +145,30 @@ class _Served:
     def __init__(self, own: tuple[Path, Path]) -> None:
         self.context = server_context(*own)
         self._tailnet: Tailnet | None = None
+        # How many times running Tailscale has refused with nothing served: the backoff's exponent.
+        self._refusals = 0
         self.context.sni_callback = self._chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
 
-    def answered(self, answer: Tailnet | Untailed) -> None:
-        """Serve what Tailscale answered: a chain it issued replaces the one served, and a refusal keeps it.
+    def answered(self, answer: Tailnet | Untailed) -> float:
+        """Serve what Tailscale answered: a chain it issued replaces the one served, and a refusal keeps it. The seconds
+        until it is asked again: a day while a chain is served, and while none is, exponential backoff from ASK_AGAIN_SECONDS.
 
-        [LAW:nothing-unseen] said on the unit open here: failed in Tailscale's words when it refused, ok saying why when
-        this machine has no Tailscale, and the tailnet name served and when its certificate ends, if one is.
+        [LAW:nothing-unseen] said on the unit open here: failed in Tailscale's words when it refused, the tailnet name
+        served and when its certificate ends, if one is, and when Tailscale is asked again.
         """
         match answer:
             case Tailnet():
                 self._tailnet = answer
-            case NoTailscale(reason=reason):
-                annotate(untailed=reason)
             case Untailed(reason=reason):
                 fail(reason)
         match self._tailnet:
             case Tailnet(name=name, not_after=ends):
                 annotate(tailnet=name, tailnet_not_after=ends)
+                wait, self._refusals = RENEW_SECONDS, 0
             case None:
-                pass
+                wait, self._refusals = min(ASK_AGAIN_SECONDS * 2**self._refusals, RENEW_SECONDS), self._refusals + 1
+        annotate(asked_again_in=datetime.timedelta(seconds=wait))
+        return wait
 
     def _chosen(self, connection: ssl.SSLObject, server_name: str | None, _context: ssl.SSLContext) -> None:
         # [LAW:single-enforcer] the one place a name picks its certificate: the name the phone asked for.

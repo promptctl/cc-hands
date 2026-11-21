@@ -55,13 +55,6 @@ class Untailed:
     reason: str
 
 
-@dataclass(frozen=True)
-class NoTailscale(Untailed):
-    """Untailed by this machine's design rather than by any failure: it has no Tailscale, so the page is the LAN's alone."""
-
-    reason: str = "the tailscale command is not on the PATH"
-
-
 async def tailnet_name(clock: Clock) -> str | Untailed:
     """This machine's name on the tailnet, as Tailscale's own command says it."""
     status = await _tailscale(clock, "status", "--json")
@@ -131,7 +124,7 @@ async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> bytes | 
     # [LAW:one-source-of-truth] the one place the command is found: every asking runs the same tailscale.
     command = shutil.which("tailscale")
     if command is None:
-        return NoTailscale()
+        return Untailed("the tailscale command is not on the PATH")
     asked = f"tailscale {subcommand}"
     try:
         # [LAW:single-enforcer] ended as `run` ends each child it runs: killed and reaped on a timeout, and on a shutdown.
