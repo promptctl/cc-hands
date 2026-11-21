@@ -7,6 +7,7 @@ It is imported by the shim, so it holds only the standard library and hands' dat
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 # [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The hooks below declare
 # it, and the shim waits as long. It is hands' own choice, a day, so that no answer by voice is ever hurried: hands puts
@@ -107,20 +108,52 @@ def declared(event: str) -> dict[str, object]:
     return {**({} if timeout is None else {"timeout": timeout}), **({"async": True} if event in _IN_BACKGROUND else {})}
 
 
-# [LAW:dataflow-not-control-flow] what each of the brain's hooks declares, as a table, as `_DECLARED_TIMEOUTS` is the shim's.
-_BRAIN_DECLARED_TIMEOUTS: Mapping[str, float] = {
-    "PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS,
-    "UserPromptSubmit": BRAIN_POST_TIMEOUT_SECONDS,
-    "Stop": BRAIN_POST_TIMEOUT_SECONDS,
-    "StopFailure": BRAIN_POST_TIMEOUT_SECONDS,
+@dataclass(frozen=True)
+class Http:
+    """A hook Claude Code posts to hands itself, waiting on it `timeout` seconds, or its own default when None."""
+
+    timeout: float | None
+
+
+@dataclass(frozen=True)
+class Relayed:
+    """A hook Claude Code runs only as a command ("HTTP hooks are not supported for SessionStart"): curl posts its
+    payload to hands, and prints hands' answer as the hook's output, within `timeout` seconds."""
+
+    timeout: float
+
+
+# [LAW:one-source-of-truth] the brain's hooks, each posted to the listener at its own path. None runs in the background:
+# hands answers each, and Claude Code goes on only once it has. Its prompt hook and its Stop's hold order the brain's
+# turns (hands.brain.process.ClaudeTurns), and so does its end: Claude Code runs the start of the session a /clear or a
+# /resume enters only once the end of the one it left is answered, so the end is heard under the session it ends.
+BRAIN_HOOKS: Mapping[str, Http | Relayed] = {
+    "SessionStart": Relayed(BRAIN_POST_TIMEOUT_SECONDS),
+    "UserPromptSubmit": Http(BRAIN_POST_TIMEOUT_SECONDS),
+    "Stop": Http(BRAIN_POST_TIMEOUT_SECONDS),
+    "StopFailure": Http(BRAIN_POST_TIMEOUT_SECONDS),
+    "PermissionRequest": Http(PERMISSION_HOOK_TIMEOUT_SECONDS),
+    "Elicitation": Http(None),
+    "SessionEnd": Http(BRAIN_POST_TIMEOUT_SECONDS),
 }
 
 
-def brain_declared(event: str) -> dict[str, object]:
-    """What one of the brain's hooks declares beyond its URL: how long Claude Code waits on it. None of them runs in the
-    background: hands answers each, and Claude Code goes on only once it has."""
-    timeout = _BRAIN_DECLARED_TIMEOUTS.get(event)
-    return {} if timeout is None else {"timeout": timeout}
+def brain_hook(event: str, listener: str) -> dict[str, object]:
+    """One of the brain's hooks as its --settings declare it, posted to `listener` at the path of its event."""
+    url = f"{listener}/{event}"
+    match BRAIN_HOOKS[event]:
+        case Http(timeout=None):
+            return {"type": "http", "url": url}
+        case Http(timeout=timeout):
+            return {"type": "http", "url": url, "timeout": timeout}
+        case Relayed(timeout=timeout):
+            return relayed(url, timeout)
+
+
+def relayed(url: str, timeout: float) -> dict[str, object]:
+    """A command hook that posts its payload to `url` and prints the answer as its output, failing loudly, with its reply
+    shown, on any answer but a success. Exec form (`args` set), so no shell stands between."""
+    return {"type": "command", "command": "curl", "args": ["-sS", "--fail-with-body", "--max-time", f"{timeout:g}", "-H", "Content-Type: application/json", "--data-binary", "@-", url], "timeout": timeout}
 
 
 def main() -> None:

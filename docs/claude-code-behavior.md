@@ -141,6 +141,7 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **hooks:** when another Stop hook blocks, Claude goes on under the same prompt id and the next Stop carries stop_hook_active (verified live) (measured on 2.1.282).
 - **hooks:** Claude Code runs no hook, SessionStart included, at a startup dialog (workspace trust, a project's new MCP servers) until it is answered (measured on 2.1.283).
 - **hooks:** an HTTP hook for SessionStart never posted, in seven recorded sessions, where a command hook for it did; the pin's code skips HTTP hooks for SessionStart and Setup ("HTTP hooks are not supported for ...") (measured on 2.1.308)
+- **hooks:** on a /clear or a /resume, Claude Code runs the SessionStart of the session it enters only once the SessionEnd of the one it left is answered: an end's reply held 3s, the start ran 39ms after it (tests/test_session_contract_pinned.py) (measured on 2.1.308)
 - **hooks:** Claude Code reads the plan file into an ExitPlanMode call's input before any hook sees it (measured on 2.1.281)
 - **hooks:** the input of an approved ExitPlanMode call is what the approval sent, empty unless the plan was edited at the dialog (measured on 2.1.281)
 - **hooks:** the plan dialog's own yeses send an empty updatedInput, so the plan is read from its file as the user left it, with the mode to leave plan mode for (measured on 2.1.281)

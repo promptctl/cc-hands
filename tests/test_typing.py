@@ -57,7 +57,7 @@ class FakeFritter:
 
 
 def typist(path: Path) -> Typist:
-    return Typist(SID, path, pid=4242)
+    return Typist(path, pid=4242)
 
 
 def asked(path: Path, answer: bytes, send: Callable[[Typist], None]) -> dict[str, object]:

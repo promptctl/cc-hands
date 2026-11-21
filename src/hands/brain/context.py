@@ -10,6 +10,7 @@ brain's and its compaction too, so each of them shares the main turn's cached pr
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
+from functools import partial
 from typing import Protocol
 
 from loguru import logger
@@ -40,7 +41,7 @@ from hands.core.wire import (
 )
 from hands.sessions.audit import Record
 from hands.sessions.proxy import Listener
-from hands.sessions.wide import annotate, begun, count, unit
+from hands.sessions.wide import annotate, begun, count, root, unit
 
 # Turns a result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
@@ -80,10 +81,9 @@ class Store(Protocol):
 class Keeper:
     """The changes hands makes to the brain's history on the way out, and the side questions that make them possible."""
 
-    def __init__(self, clock: Clock, session: SessionId, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
+    def __init__(self, clock: Clock, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
         self._clock = clock
-        # The session the brain's requests carry, and what answers a side question.
-        self._session = session
+        # What answers a side question.
         self._ask = ask
         self._store = store
         self._every = every
@@ -99,9 +99,9 @@ class Keeper:
         self._asking: asyncio.Queue[Result] = asyncio.Queue()
 
     def changes(self, sent: Sent) -> tuple[Change, ...]:
-        """What a request of the brain's goes with: its old results as lines, and a compaction its steered prompt."""
-        if sent.session != self._session:
-            return ()
+        """What a request of the brain's goes with: its old results as lines, and a compaction its steered prompt. Every
+        request it is asked of is the brain's (Kept), of whichever conversation the brain is in: a call's id is its own
+        across them, so a /resume back stubs what it stubbed before."""
         match sent.kind:
             case MainTurn():
                 # [LAW:single-enforcer] only the brain's own loop moves the boundary: a fork carries its question as one
@@ -117,15 +117,15 @@ class Keeper:
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(session=session, kind=MainTurn(), body=body) if session == self._session:
+            case Sent(kind=MainTurn(), body=body):
                 fresh = [result for result in results(body) if result.call not in self._heard]
                 self._heard.update(result.call for result in fresh)
                 self._unsaid.update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
-            case Exchanged(session=session, kind=MainTurn(), reply=Synthetic()) if session == self._session:
+            # A turn a move cut off leaves its unsaid results to be asked as the next main turn ends, in the conversation
+            # the brain moved to.
+            case Exchanged(kind=MainTurn(), reply=Synthetic()):
                 self._turn_ended()
-            case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Written(message=message))) if (
-                session == self._session and message.stop_reason != "tool_use"
-            ):
+            case Exchanged(kind=MainTurn(), reply=Reached(body=Written(message=message))) if message.stop_reason != "tool_use":
                 self._turn_ended()
             case _:
                 pass
@@ -181,27 +181,66 @@ class Kept:
     changes made before the route's own, and everything heard too by whatever else reads the wire: the brain, and what
     answers hands' side questions."""
 
-    def __init__(self, stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
+    def __init__(self, clock: Clock, record: Record, session: Callable[[], SessionId], stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
+        self._clock = clock
+        self._record = record
+        self._session = session
         self._stage = stage
         self._keeper = keeper
         self._asides = asides
-        self._others = (*others, asides)
+        self._readers = (stage, keeper, *others, asides)
+        # [LAW:single-enforcer] the exchanges that are the brain's, each decided once, as its request is told, and kept
+        # until it is whole, so an exchange begun before a /clear ends where it began: the route each is made by.
+        self._admitted: dict[str, Callable[[Sent], Route]] = {}
 
     def route(self, sent: Sent) -> Route:
+        # The proxy tells a request before it routes it, so one that was not admitted then never is.
+        return self._admitted.get(sent.exchange, self._unadmitted)(sent)
+
+    def hear(self, observed: Observed) -> None:
+        match observed:
+            case Sent() as sent:
+                self._admit(sent)
+            case _:
+                pass
+        try:
+            # [LAW:single-enforcer] every reader hears the brain's exchanges and nothing else: a working session's
+            # tapped traffic, or a request of another session, reaches none of them.
+            for reader in self._readers if observed.exchange in self._admitted else ():
+                reader.hear(observed)
+        finally:
+            match observed:
+                case Exchanged(exchange=exchange):
+                    self._admitted.pop(exchange, None)
+                case _:
+                    pass
+
+    def _admit(self, sent: Sent) -> None:
+        # [LAW:single-enforcer] a side question's own request is routed by the question alone: the stage's routes are
+        # for what Claude Code sends, and never made for it. Asked once, as its request is told.
+        match self._asides.own(sent):
+            case Send() as owned:
+                self._admitted[sent.exchange] = partial(self._kept, lambda _: owned)
+            case None if sent.session == self._session():
+                self._admitted[sent.exchange] = partial(self._kept, self._stage.route)
+            case None:
+                pass
+
+    def _kept(self, routing: Callable[[Sent], Route], sent: Sent) -> Route:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
         kept = self._keeper.changes(sent)
-        # [LAW:single-enforcer] a side question's own request is routed by the question alone: the stage's routes are
-        # for what Claude Code sends, and never made for it.
-        owned = self._asides.own(sent)
-        match self._stage.route(sent) if owned is None else owned:
+        match routing(sent):
             # [LAW:one-source-of-truth] the Send as it was routed, every field carried, with the keeper's changes first.
             case Send() as send:
                 return replace(send, changes=(*kept, *send.changes))
             case Synthesize() as synthetic:
                 return synthetic
 
-    def hear(self, observed: Observed) -> None:
-        self._stage.hear(observed)
-        self._keeper.hear(observed)
-        for other in self._others:
-            other.hear(observed)
+    def _unadmitted(self, sent: Sent) -> Route:
+        """A request on hands' proxy that is no exchange of the brain's: a `claude` the brain's Bash tool runs, or one of
+        a session the brain has left. It goes as it came, the root of a trace of its own."""
+        span = root(self._clock)
+        # [LAW:nothing-unseen] one event, naming the request and its session.
+        with unit("brain.unadmitted", self._record, begun(self._clock)):
+            annotate(exchange=sent.exchange, session=sent.session, held=self._session())
+        return Send(span=span)

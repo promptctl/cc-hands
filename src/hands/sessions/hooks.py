@@ -1,6 +1,6 @@
 """A hook's POST body, parsed once into a core event, and the reply a blocking hook prints."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import get_args, overload
@@ -52,28 +52,40 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: Re
     # [LAW:parse-dont-validate] past this function nothing looks at hook JSON again.
     payload = Payload.parse(raw)
     session = payload.session_id()
-    name = payload.text("hook_event_name")
-    match name:
-        case "SessionStart":
-            # The shim writes the membership file before it posts, so the start reads it.
-            source = _start_source(payload.text("source"))
-            return Hook(name, session, None, Joined(read_membership(home, session), source))
-        case "SessionEnd":
-            return Hook(name, session, None, Ended(session, _end_reason(payload.text("reason"))))
-        case _:
-            recorded = recorded_membership(home, session)
-            return _hook(payload, name, session, None if recorded is None else Located(recorded), _happened(payload, session, at, heard, request))
+    # The shim writes the membership file before it posts, so a start reads it.
+    return _parsed(payload, session, lambda: read_membership(home, session), lambda: _located(recorded_membership(home, session)), at, heard, request)
 
 
 def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp, request: RequestId) -> Hook | PermissionHook:
     """A hook of a Claude Code hands started itself, the brain, whose process and directory hands knows: no shim wrote a
     file for it, so it joins, and is found where it works now, by the transcript the hook names. Raises Rejected as
     parse_hook does."""
-    # [LAW:parse-dont-validate] the one parser of a hook's JSON, whoever posted it.
     payload = Payload.parse(raw)
     session = payload.session_id()
-    located = Located(Membership(session, pid, cwd, Path(payload.text("transcript_path"))))
-    return _hook(payload, payload.text("hook_event_name"), session, located, _happened(payload, session, at, heard, request))
+
+    def membership() -> Membership:
+        return Membership(session, pid, cwd, Path(payload.text("transcript_path")))
+
+    return _parsed(payload, session, membership, lambda: Located(membership()), at, heard, request)
+
+
+def _parsed(
+    payload: Payload, session: SessionId, membership: Callable[[], Membership], joining: Callable[[], Located | None], at: Instant, heard: Stamp, request: RequestId
+) -> Hook | PermissionHook:
+    """[LAW:parse-dont-validate] the one parser of a hook's JSON, whoever posted it: `membership` is the session a start
+    joins as, and `joining` where any other hook finds it, as its poster knows them."""
+    name = payload.text("hook_event_name")
+    match name:
+        case "SessionStart":
+            return Hook(name, session, None, Joined(membership(), _start_source(payload.text("source"))))
+        case "SessionEnd":
+            return Hook(name, session, None, Ended(session, _end_reason(payload.text("reason"))))
+        case _:
+            return _hook(payload, name, session, joining(), _happened(payload, session, at, heard, request))
+
+
+def _located(recorded: Membership | None) -> Located | None:
+    return None if recorded is None else Located(recorded)
 
 
 def _hook(payload: Payload, name: str, session: SessionId, joining: Located | None, happened: Hooked | PermissionRequested) -> Hook | PermissionHook:
