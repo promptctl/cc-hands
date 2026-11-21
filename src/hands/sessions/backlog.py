@@ -94,23 +94,12 @@ class LitFailed(Exception):
         super().__init__(message)
         self.reason = reason
 
-    @property
-    def wrote_nothing(self) -> bool:
-        """Whether lit is known to have written nothing: it refused, saying why on its reason line. A lit that did not
-        answer, ended without a reason, or failed once it was running may have written before it stopped."""
-        return self.reason is not None
-
 
 class LitNotStarted(LitFailed):
     """lit's program never ran in the directory; the message says what the OS said."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message, None)
-
-    @property
-    def wrote_nothing(self) -> bool:
-        """A lit that never ran wrote nothing."""
-        return True
 
 
 class ProjectGone(LitNotStarted):

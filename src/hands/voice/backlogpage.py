@@ -17,7 +17,7 @@ import asyncio
 import getpass
 import json
 from collections import defaultdict
-from collections.abc import Awaitable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from importlib import resources
 from pathlib import Path
@@ -26,7 +26,7 @@ from aiohttp import web
 
 from hands.clock import Clock
 from hands.sessions.audit import Record
-from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
+from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, LitNotStarted, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
@@ -211,11 +211,8 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
             move = before.move(ticket, place)
         except Rejected as error:
             raise Halted(400, f"not moved: {error}") from error
-        try:
-            said = await rank(clock, project, move, person)
-        except LitFailed as error:
-            raise _unwritten(error, "ranked", "not moved", f"whether lit ranked {ticket} {place} is not known") from error
-        annotate(ranked="yes", lit_said=said)
+        said = await _written(clock, project, rank(clock, project, move, person), "ranked", lambda backlog: backlog.landed(move), "not moved", f"whether lit ranked {ticket} {place} is not known")
+        annotate(lit_said=str(said))
         try:
             after = await sighted(clock, store, project)
         except (LitFailed, Rejected) as error:
@@ -257,11 +254,7 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
                 annotate(epic=epic)
                 unmoved, unknown = "not leveled", f"whether lit moved {ticket} into {epic} is not known"
             case NewEpic(topic=topic, title=title, parent=frame, place=place) as new:
-                try:
-                    await make_epic(clock, project, new, person)
-                except LitFailed as error:
-                    raise _unwritten(error, "created", "not leveled", f"whether lit made the epic {title} is not known") from error
-                annotate(created="yes")
+                await _written(clock, project, make_epic(clock, project, new, person), "created", lambda backlog: level in backlog.level_epics(topic, frame), "not leveled", f"whether lit made the epic {title} is not known")
                 made = await _read(clock, project, f"not leveled: lit made the epic {title}, and the backlog could not be read again to rank it", 502, f"not leveled: lit made the epic {title}, and lit no longer tracks {project}")
                 found = made.level_epics(topic, frame).get(level)
                 if found is None:
@@ -272,24 +265,19 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
                 except Rejected as error:
                     raise Halted(409, f"not leveled: lit made {found}, {title}, at the bottom of its frame, and it cannot be ranked {place}: {error}") from error
                 epic = found
-                try:
-                    await rank(clock, project, move, person)
-                except LitFailed as error:
-                    raise _unwritten(
-                        error,
-                        "ranked",
-                        f"not leveled: lit made {epic}, {title}, and left it at the bottom of its frame, so {ticket} was not moved",
-                        f"not leveled: lit made {epic}, {title}, and whether it ranked it {place} or left it at the bottom of its frame is not known, so {ticket} was not moved",
-                    ) from error
-                annotate(ranked="yes")
+                await _written(
+                    clock,
+                    project,
+                    rank(clock, project, move, person),
+                    "ranked",
+                    lambda backlog: backlog.landed(move),
+                    f"not leveled: lit made {epic}, {title}, and left it at the bottom of its frame, so {ticket} was not moved",
+                    f"not leveled: lit made {epic}, {title}, and whether it ranked it {place} or left it at the bottom of its frame is not known, so {ticket} was not moved",
+                )
                 ranks = (move,)
                 unmoved = f"not leveled: lit made {epic}, {title}, and ranked it {place}, and did not move {ticket} into it"
                 unknown = f"lit made {epic}, {title}, and ranked it {place}, and whether it moved {ticket} into it is not known"
-        try:
-            await adopt(clock, project, ticket, epic, person)
-        except LitFailed as error:
-            raise _unwritten(error, "moved", unmoved, unknown) from error
-        annotate(moved="yes")
+        await _written(clock, project, adopt(clock, project, ticket, epic, person), "moved", lambda backlog: backlog.parent.get(ticket) == epic, unmoved, unknown)
         # lit keeps a ticket's rank when it moves it, which falls anywhere among its new epic's: it is ranked below the
         # last of the others, or left where it is when it is alone there.
         moved = await _read(clock, project, f"lit moved {ticket} into {epic}, and the backlog could not be read again to rank it last there", 502, f"lit moved {ticket} into {epic}, and lit no longer tracks {project}")
@@ -299,11 +287,7 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
         except Rejected as error:
             raise Halted(409, f"lit moved {ticket} into {epic}, and it cannot be ranked last there: {error}") from error
         for last in lasts:
-            try:
-                await rank(clock, project, last, person)
-            except LitFailed as error:
-                raise _unwritten(error, "placed", f"lit moved {ticket} into {epic}, and did not rank it last there", f"lit moved {ticket} into {epic}, and whether it ranked it last there is not known") from error
-            annotate(placed="yes")
+            await _written(clock, project, rank(clock, project, last, person), "placed", lambda backlog: backlog.landed(last), f"lit moved {ticket} into {epic}, and did not rank it last there", f"lit moved {ticket} into {epic}, and whether it ranked it last there is not known")
         ranks = (*ranks, *lasts)
         after = await _read(clock, project, f"lit moved {ticket} into {epic}, and the backlog could not be read again to check it", 502, f"lit moved {ticket} into {epic}, and lit no longer tracks {project}")
         # [LAW:no-silent-failure] the read after is the evidence, as a drop's is. The page drew the press when it was made
@@ -324,11 +308,10 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
     async def noting(project: Path, ticket: str, text: str) -> web.Response:
         # [LAW:nothing-unseen] whether lit kept the note, "no", "yes", or "unknown", is on the event however it ends.
         annotate(project=project, ticket=ticket, chars=len(text), noted="no")
-        try:
-            await comment(clock, project, ticket, text, person)
-        except LitFailed as error:
-            raise _unwritten(error, "noted", "not noted", f"whether lit kept the note on {ticket} is not known") from error
-        annotate(noted="yes")
+        # The note is kept where the backlog after it holds one more comment of these words on the ticket than before.
+        before = await _read(clock, project, f"not noted: the backlog in {project} could not be read", 404, f"not noted: {project} has no backlog to note in")
+        said = _said(before, ticket, text)
+        await _written(clock, project, comment(clock, project, ticket, text, person), "noted", lambda backlog: _said(backlog, ticket, text) > said, "not noted", f"whether lit kept the note on {ticket} is not known")
         return web.Response(status=204)
 
     return [web.get("/backlog", page_served), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked), web.post("/backlog/level", leveled), web.post("/backlog/note", noted)]
@@ -373,11 +356,39 @@ async def _read(clock: Clock, project: Path, unread: str, status: int, untracked
             return read
 
 
-def _unwritten(error: LitFailed, fact: str, unchanged: str, unknown: str) -> Halted:
-    """A drop's, a leveling's, or a note's stop when a lit write in it failed: where lit is known to have written
-    nothing, the answer says `unchanged`; else it may have written first, so `fact` on the event is "unknown", and the
-    answer says `unknown` [LAW:no-silent-failure]."""
-    if error.wrote_nothing:
-        return Halted(502, f"{unchanged}: {error}")
-    annotate(**{fact: "unknown"})
-    return Halted(502, f"{unknown}: {error}")
+async def _written[T](clock: Clock, project: Path, write: Awaitable[T], fact: str, holds: Callable[[Backlog], bool], unwritten: str, unknown: str) -> T | LitFailed:
+    """What a lit write in a drop, a leveling, or a note returned, or, where lit failed it and the backlog read after
+    `holds` what it asked for all the same, lit's failure; `fact` on the event is "yes" either way. Raises Halted saying
+    `unwritten` where lit never ran or the backlog after does not hold it, and `fact` stays "no"; and saying `unknown`
+    where the backlog cannot be read again to see, and `fact` is "unknown" [LAW:no-silent-failure].
+
+    [LAW:one-source-of-truth] whether a failed write landed is read off the backlog lit holds after it, the one record of
+    what lit did, never off how lit exited: lit's reference says of no failure that it comes before any write, and its
+    code 6 is a write that already holds.
+    """
+    try:
+        done = await write
+    except LitNotStarted as error:
+        raise Halted(502, f"{unwritten}: {error}") from error
+    except LitFailed as error:
+        try:
+            after = await read_backlog(clock, project)
+        except (LitFailed, Rejected) as unread:
+            annotate(**{fact: "unknown"})
+            raise Halted(502, f"{unknown}: {error}; and the backlog could not be read again to see: {unread}") from error
+        match after:
+            case Untracked(why=why):
+                annotate(**{fact: "unknown"})
+                raise Halted(502, f"{unknown}: {error}; and lit no longer tracks {project}: {why}") from error
+            case Backlog() if holds(after):
+                annotate(**{fact: "yes", f"{fact}_error": str(error)})
+                return error
+            case Backlog():
+                raise Halted(502, f"{unwritten}: {error}") from error
+    annotate(**{fact: "yes"})
+    return done
+
+
+def _said(backlog: Backlog, ticket: str, text: str) -> int:
+    """How many comments on `ticket` in `backlog` say exactly `text`."""
+    return sum(note.body == text for note in backlog.comments.get(ticket, ()))
