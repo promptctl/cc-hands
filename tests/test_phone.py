@@ -17,6 +17,7 @@ import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestClient, TestServer
 from loguru import logger
+from cryptography import x509
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerConnection, RTCSessionDescription
 from av import AudioFrame
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
@@ -36,10 +37,10 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.brainwork import BrainWork, Idle, NotWorking, StopOutcome
 from hands.sessions.summaries import Summaries
-from hands.sessions.wide import WideEvent, begun
+from hands.sessions.wide import WideEvent, begun, unit
 from hands.core.bearer import bearer
 from hands.voice import phonepage
-from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
+from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key, server_context
 from hands.voice.phonepage import phone_pages
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
@@ -648,13 +649,12 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
 
 @pytest.mark.outside
 async def test_the_page_served_under_the_tailnet_name_is_one_event_naming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = Home(tmp_path)
-    cert, key = own_certificate(SYSTEM, home)
-    [event] = await _served(home, Tailnet("hands.example.ts.net", cert, key), monkeypatch)
+    issued = own_certificate(SYSTEM, Home(tmp_path / "issued"))
+    [event] = await _served(Home(tmp_path), _tailnet(issued), monkeypatch)
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("phone.served", "ok")
     # The port the system bound, not the 0 it was asked for.
     port = event.facts["port"]
-    assert dict(event.facts) == {"port": port, "tailnet": "hands.example.ts.net"} and isinstance(port, int) and port > 0
+    assert dict(event.facts) == {"port": port, "tailnet": TAILNET, "tailnet_not_after": _not_after(issued)} and isinstance(port, int) and port > 0
 
 
 @pytest.mark.outside
@@ -665,49 +665,91 @@ async def test_the_page_served_on_the_lan_alone_is_one_event_saying_why(tmp_path
     assert dict(event.facts) == {"port": port, "untailed": "the tailscale command is not on the PATH"} and isinstance(port, int) and port > 0
 
 
-def _shown(context: ssl.SSLContext) -> bytes:
-    """The certificate a phone is shown on a handshake with `context`, as DER: the handshake run in memory, no socket."""
+TAILNET = "hands.example.ts.net"
+# Far more flights than a TLS 1.3 handshake takes: one that has not finished by then never will.
+HANDSHAKE_ROUNDS = 8
+
+
+def _not_after(pair: tuple[Path, Path]) -> datetime.datetime:
+    return x509.load_pem_x509_certificate(pair[0].read_bytes()).not_valid_after_utc
+
+
+def _tailnet(pair: tuple[Path, Path]) -> Tailnet:
+    """What Tailscale answers for TAILNET, having issued `pair`."""
+    return Tailnet(TAILNET, server_context(*pair), _not_after(pair))
+
+
+def _shown(own: ssl.SSLContext, server_name: str | None) -> bytes:
+    """The certificate a phone asking for `server_name` is shown by the page served with `own`, as DER: the handshake
+    run in memory, no socket."""
     client = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     client.check_hostname = False
     client.verify_mode = ssl.CERT_NONE
     to_server, to_client = ssl.MemoryBIO(), ssl.MemoryBIO()
-    server_side = context.wrap_bio(to_server, to_client, server_side=True)
-    client_side = client.wrap_bio(to_client, to_server)
-    for side in [client_side, server_side] * 4:
-        try:
-            side.do_handshake()
-        except ssl.SSLWantReadError:
-            pass
-    shown = client_side.getpeercert(binary_form=True)
-    assert shown is not None
-    return shown
+    unfinished = [client.wrap_bio(to_client, to_server, server_hostname=server_name), own.wrap_bio(to_server, to_client, server_side=True)]
+    [client_side, _] = unfinished
+    for _round in range(HANDSHAKE_ROUNDS):
+        unfinished = [side for side in unfinished if not _stepped(side)]
+        if not unfinished:
+            shown = client_side.getpeercert(binary_form=True)
+            assert shown is not None
+            return shown
+    raise AssertionError(f"the handshake had not finished on {['server' if side.server_side else 'client' for side in unfinished]} after {HANDSHAKE_ROUNDS} rounds")
 
 
-async def test_each_renewal_of_the_tailnet_certificate_is_one_event_ok_or_failed_with_tailscale_reason(tmp_path: Path) -> None:
+def _stepped(side: ssl.SSLObject) -> bool:
+    """Whether `side`'s handshake finished on this step, rather than waiting on the other side's next flight."""
+    try:
+        side.do_handshake()
+    except ssl.SSLWantReadError:
+        return False
+    return True
+
+
+async def _renewals(shown: phonepage._Shown, answers: list[Tailnet | Untailed]) -> list[WideEvent]:  # pyright: ignore[reportPrivateUsage]
+    """The `phone.renewed` events of serving `shown` while Tailscale answers `answers`, a renewal each, the renewing
+    started inside a unit of work of its own."""
     clock = VirtualClock()
-    first, renewed = own_certificate(clock, Home(tmp_path / "first")), own_certificate(clock, Home(tmp_path / "renewed"))
-    tailed = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    tailed.load_cert_chain(*first)
-    answers: list[Tailnet | Untailed] = [Tailnet("hands.example.ts.net", *renewed), Untailed("tailscale cert said: no certificate for this name")]
+    asked = iter(answers)
 
-    async def asked() -> Tailnet | Untailed:
-        return answers.pop(0)
+    async def ask() -> Tailnet | Untailed:
+        return next(asked)
 
     recorded: list[Entry] = []
-    keeping = asyncio.create_task(phonepage._keep_renewed(clock, tailed, asked, recorded.append))  # pyright: ignore[reportPrivateUsage]
-    for due in (phonepage.RENEW_SECONDS, 2 * phonepage.RENEW_SECONDS):
-        await clock.sleeping(due)
-        clock.advance_to(due)
-    await clock.sleeping(3 * phonepage.RENEW_SECONDS)
+    with unit("hands.start", recorded.append, begun(clock)):
+        keeping = asyncio.create_task(phonepage._renewing(clock, shown, ask, recorded.append))  # pyright: ignore[reportPrivateUsage]
+    for each in range(1, len(answers) + 1):
+        await clock.sleeping(each * phonepage.RENEW_SECONDS)
+        clock.advance_to(each * phonepage.RENEW_SECONDS)
+    await clock.sleeping((len(answers) + 1) * phonepage.RENEW_SECONDS)
     keeping.cancel()
     with pytest.raises(asyncio.CancelledError):
         await keeping
-    ok, failed = recorded
-    assert isinstance(ok, WideEvent) and (ok.event, ok.outcome, dict(ok.facts)) == ("phone.renewed", "ok", {"tailnet": "hands.example.ts.net"})
-    assert isinstance(failed, WideEvent) and (failed.event, failed.outcome, failed.error) == ("phone.renewed", "failed", "tailscale cert said: no certificate for this name")
-    # Each renewal is the root of a trace of its own, and the renewed chain is the one the phone is shown.
-    assert ok.parent_id is None and failed.parent_id is None and ok.trace_id != failed.trace_id
-    assert _shown(tailed) == ssl.PEM_cert_to_DER_cert(renewed[0].read_text())
+    renewed = events(recorded, "phone.renewed")
+    # Each renewal is the root of a trace of its own, whatever was open where the renewing was started.
+    assert [event.parent_id for event in renewed] == [None] * len(answers) and len({event.trace_id for event in renewed}) == len(answers)
+    return renewed
+
+
+async def test_each_renewal_of_the_tailnet_certificate_is_one_event_and_one_tailscale_refuses_keeps_the_chain_served(tmp_path: Path) -> None:
+    own, first, renewed = (own_certificate(SYSTEM, Home(tmp_path / name)) for name in ("own", "first", "renewed"))
+    shown = phonepage._Shown(server_context(*own), _tailnet(first))  # pyright: ignore[reportPrivateUsage]
+    ok, failed = await _renewals(shown, [_tailnet(renewed), Untailed("tailscale cert failed (1): rate limited")])
+    served = {"tailnet": TAILNET, "tailnet_not_after": _not_after(renewed)}
+    assert (ok.outcome, dict(ok.facts)) == ("ok", served)
+    # The refusal says why, and says the chain still served, and when it ends.
+    assert (failed.outcome, failed.error, dict(failed.facts)) == ("failed", "tailscale cert failed (1): rate limited", served)
+    assert _shown(shown.own, TAILNET) == ssl.PEM_cert_to_DER_cert(renewed[0].read_text())
+    assert _shown(shown.own, None) == ssl.PEM_cert_to_DER_cert(own[0].read_text())
+
+
+async def test_a_page_served_on_the_lan_alone_is_served_under_the_tailnet_name_once_tailscale_gives_one(tmp_path: Path) -> None:
+    own, issued = (own_certificate(SYSTEM, Home(tmp_path / name)) for name in ("own", "issued"))
+    shown = phonepage._Shown(server_context(*own), None)  # pyright: ignore[reportPrivateUsage]
+    still, tailed = await _renewals(shown, [Untailed("Tailscale is not connected to the tailnet: its state is Starting"), _tailnet(issued)])
+    assert (still.outcome, dict(still.facts)) == ("ok", {"untailed": "Tailscale is not connected to the tailnet: its state is Starting"})
+    assert (tailed.outcome, dict(tailed.facts)) == ("ok", {"tailnet": TAILNET, "tailnet_not_after": _not_after(issued)})
+    assert _shown(shown.own, TAILNET) == ssl.PEM_cert_to_DER_cert(issued[0].read_text())
 
 
 @pytest.mark.outside

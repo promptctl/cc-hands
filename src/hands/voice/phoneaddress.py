@@ -14,6 +14,7 @@ import ipaddress
 import json
 import os
 import shutil
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,16 +40,17 @@ RENEW_DAYS = 30
 
 @dataclass(frozen=True)
 class Tailnet:
-    """This machine's name on the tailnet, and the certificate Tailscale issued for it."""
+    """This machine's name on the tailnet, and the certificate Tailscale issued for it, loaded: the context a phone
+    asking for that name is shown, and the time that certificate ends."""
 
     name: str
-    cert: Path
-    key: Path
+    context: ssl.SSLContext
+    not_after: datetime.datetime
 
 
 @dataclass(frozen=True)
 class Untailed:
-    """Why hands has no tailnet name to serve the page under: said in the log, and the page served on the LAN alone."""
+    """Why hands has no tailnet name to serve the page under, in Tailscale's words or the certificate's."""
 
     reason: str
 
@@ -68,8 +70,13 @@ async def tailnet_name(clock: Clock) -> str | Untailed:
     match described:
         case {"CertDomains": [str(name), *_]}:  # pyright: ignore[reportUnknownVariableType]  (the first name is all that is read)
             return name
-        case _:
+        case {"BackendState": "Running"}:
             return Untailed("the tailnet has HTTPS certificates turned off, so Tailscale issues none for this machine")
+        case {"BackendState": str(state)}:
+            # [LAW:no-silent-failure] a Tailscale logged out or stopped names no certificate either, and says why.
+            return Untailed(f"Tailscale is not connected to the tailnet: its state is {state}")
+        case _:
+            return Untailed("tailscale status said neither a certificate name nor its state")
 
 
 async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
@@ -80,15 +87,28 @@ async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
             return name
         case str():
             pass
-    found = Tailnet(name, home.phone / "tailnet.crt", home.phone / "tailnet.key")
+    cert, key = home.phone / "tailnet.crt", home.phone / "tailnet.key"
     home.phone.mkdir(parents=True, exist_ok=True)
     # Tailscale keeps the certificate and renews it when it is due, so asking again is cheap.
-    issued = await _tailscale(clock, "cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
+    issued = await _tailscale(clock, "cert", "--cert-file", str(cert), "--key-file", str(key), name)
     match issued:
         case Untailed():
             return issued
         case str():
-            return found
+            pass
+    # [LAW:parse-dont-validate] a Tailnet is a pair that has loaded: one Tailscale wrote torn, or out of step, is Untailed.
+    try:
+        context = server_context(cert, key)
+    except OSError as error:
+        return Untailed(f"the certificate tailscale cert wrote does not load: {error}")
+    return Tailnet(name, context, x509.load_pem_x509_certificate(cert.read_bytes()).not_valid_after_utc)
+
+
+def server_context(cert: Path, key: Path) -> ssl.SSLContext:
+    """[LAW:one-source-of-truth] the one making of the context a phone's handshake is answered with."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    return context
 
 
 async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> str | Untailed:
