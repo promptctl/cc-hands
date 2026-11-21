@@ -94,8 +94,6 @@ async function act(path, body, readback) {
       case "refused": say("status", outcome.text, true); break;
       case "lost": say("status", `${outcome.why}; the choice may still have been made`, true); break;
     }
-  } catch (error) {
-    say("status", `This page could not say what came of the choice: ${error.message}`, true);
   } finally {
     controls.disabled = false;
   }

@@ -8,7 +8,7 @@ import subprocess
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import pytest
 from aiohttp.test_utils import TestServer
@@ -22,7 +22,7 @@ from hands.sessions.summaries import Summaries
 from hands.virtualclock import VirtualClock
 from hands.voice.gallerypage import Gallery
 from hands.voice.phone import Phone
-from hands.voice.phoneaddress import phone_key
+from hands.voice.phoneaddress import Untailed, page_urls, phone_key
 from hands.voice.phonepage import phone_pages
 from hands.voice.ptt import PushToTalk
 from hands.voice.summaries import SummaryStore
@@ -57,18 +57,19 @@ class Served:
     thrown: list[str] = field(default_factory=list[str])
 
     async def opened(self, path: str) -> Page:
-        """The page at `path`, opened as the phone opens it: its address carrying the phone's key in the fragment, as
-        `phoneaddress.page_urls` carries it."""
+        """The page at `path`, opened as the phone opens it: its address carrying the phone's key in the fragment
+        `phoneaddress.page_urls` gives it."""
         page = await self.browser.new_page()
         page.on("pageerror", lambda error: self.thrown.append(f"{page.url}: {error}"))
         page.on("console", lambda message: self._said(page, message))
-        await page.goto(f"{self.server.make_url(path)}#{self.key}")
+        [phones] = page_urls(Untailed("served on a test's own port"), ["127.0.0.1"], self.key)
+        await page.goto(f"{self.server.make_url(path)}#{urlsplit(phones).fragment}")
         return page
 
     def _said(self, page: Page, message: ConsoleMessage) -> None:
-        # A console.error of the page's own script carries what it was called with. Chrome's own line for each fetch
-        # answered with a 4xx or 5xx carries nothing, and the pages are answered so on purpose: a 409 when another page
-        # takes the phone, a 401, a 5xx from a hands that failed.
+        # A console.error of a page's own script carries what it was called with; a page's own fault reaches `pageerror`,
+        # thrown or reported. Chrome's own line for each fetch answered with a 4xx or 5xx carries nothing, and the pages
+        # are answered so on purpose: a 409 when another page takes the phone, a 500 from a hands that failed.
         if message.type == "error" and message.args:
             self.thrown.append(f"{page.url}: {message.text}")
 
@@ -117,18 +118,48 @@ async def test_a_stop_hands_fails_at_says_it_could_not_stop_it(served: Served, m
     monkeypatch.setattr(served.brain, "stop", failing)
     page = await served.opened("/")
     await page.click("#stop")
-    await expect(page.locator("#brain-said")).to_contain_text("Could not stop it: 500")
+    await expect(page.locator("#brain-said")).to_have_text("Could not stop it: hands failed at brain.stop: RuntimeError: the stage could not stop turn-1")
 
 
-async def test_a_stop_whose_answer_is_lost_says_whether_the_brain_stopped_is_not_known(served: Served) -> None:
+async def test_a_stop_hands_took_whose_answer_is_lost_says_whether_the_brain_stopped_is_not_known(served: Served) -> None:
     page = await served.opened("/")
 
     async def lost(route: Route) -> None:
+        # hands takes the Stop, and its answer never reaches the page.
+        await route.fetch()
         await route.abort("connectionreset")
 
     await page.route("**/brain/stop", lost)
     await page.click("#stop")
     await expect(page.locator("#brain-said")).to_contain_text("Whether the brain stopped is not known: hands is out of reach")
+    assert served.brain.stopped == ["turn-1"]
+
+
+async def unreadable(route: Route) -> None:
+    """hands' answer as no page reads it: JSON, and none of what any route answers."""
+    await route.fulfill(status=200, content_type="application/json", body="null")
+
+
+async def test_a_page_whose_own_code_throws_fails_the_check_every_page_test_ends_with(served: Served) -> None:
+    page = await served.opened("/")
+    await expect(page.locator("#doing")).to_contain_text("Running Bash")
+    await page.route("**/brain/stop", unreadable)
+    async with page.expect_event("pageerror"):
+        await page.click("#stop")
+    [thrown] = served.thrown
+    assert "Cannot read properties of null (reading 'readback')" in thrown
+    # What the check would fail this test on, seen: the test passes on it.
+    served.thrown.clear()
+
+
+async def test_a_page_that_reports_a_fault_of_its_own_fails_the_check_every_page_test_ends_with(served: Served) -> None:
+    page = await served.opened("/")
+    await page.route("**/brain", unreadable)
+    async with page.expect_event("pageerror"):
+        await page.reload()
+    [thrown] = served.thrown
+    assert "hands' answer is not a read" in thrown
+    served.thrown.clear()
 
 
 async def test_a_page_whose_phone_another_page_took_says_so_and_calls_no_more(served: Served) -> None:

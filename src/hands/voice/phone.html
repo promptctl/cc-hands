@@ -374,8 +374,8 @@ async function watch(made) {
     await new Promise((done) => setTimeout(done, 1000));
     if (made.ended) return;
     let now = 0, stats;
-    // Closed while the wait ran: the call is over, and so is its watch.
-    try { stats = await made.pc.getStats(); } catch { return; }
+    // Closed while the stats were asked for: the call is over, and so is its watch. Any other failure is the page's own.
+    try { stats = await made.pc.getStats(); } catch (error) { if (made.ended) return; throw error; }
     stats.forEach((report) => { if (report.type === "inbound-rtp" && report.kind === "audio") now = report.packetsReceived; });
     if (now !== received) { received = now; heard = performance.now(); }
     else if (performance.now() - heard > QUIET_MS) dropped(made, "hands went quiet.");
@@ -517,17 +517,13 @@ stopButton.addEventListener("click", async () => {
   drawBrain();
   try {
     const outcome = await asked("POST", "/brain/stop", {turn: work.turn}, STOP_MS);
-    // A Stop whose answer was lost may have reached hands all the same: the brain's line, drawn from hands' reads, says
-    // whether it stopped.
+    // A Stop whose answer was lost may have reached hands all the same: what the brain is doing, drawn from hands' reads,
+    // shows whether it stopped.
     switch (outcome.kind) {
       case "answered": sayOfStop({text: outcome.body.readback, bad: false}); break;
       case "refused": sayOfStop({text: `Could not stop it: ${outcome.text}`, bad: true}); break;
       case "lost": sayOfStop({text: `Whether the brain stopped is not known: ${outcome.why}.`, bad: true}); break;
     }
-  } catch (error) {
-    // `asked` answers every request with an outcome, so what is caught is the page's own fault: the console keeps where.
-    console.error(error);
-    sayOfStop({text: `This page could not say what came of the Stop: ${error.message}`, bad: true});
   } finally {
     stopping = false;
     drawBrain();

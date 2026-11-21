@@ -122,6 +122,17 @@ async def test_a_stop_that_names_no_turn_is_refused_and_stops_nothing(page: Page
     assert [stop.outcome for stop in page.events("brain.stop")] == ["failed"] * 3
 
 
+async def test_a_stop_hands_fails_at_is_answered_in_hands_words_and_its_event_keeps_what_raised(page: Page, monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(turn: str) -> StopOutcome:
+        raise RuntimeError(f"the stage could not stop {turn}")
+
+    monkeypatch.setattr(page.brain, "stop", failing)
+    failed = await page.client.post("/brain/stop", json={"turn": "turn-1"}, headers=KEYED)
+    assert (failed.status, await failed.text()) == (500, "hands failed at brain.stop: RuntimeError: the stage could not stop turn-1")
+    [stop] = page.events("brain.stop")
+    assert (stop.outcome, stop.error) == ("failed", "RuntimeError: the stage could not stop turn-1") and stop.stacktrace
+
+
 async def test_neither_route_answers_without_the_phones_key(page: Page) -> None:
     page.brain.work_now = SLEEPING
     assert (await page.client.get("/brain")).status == 401

@@ -14,9 +14,11 @@ import quickjs
 from hands.voice.longpoll import WAIT_SECONDS, Read
 
 # The browser as the module meets it: an address whose fragment is the key, a page's clock that stands still, a fetch
-# hands answers when the test says, a timer that fires when the test says, and the bound each request was given.
+# hands answers when the test says, a timer that fires when the test says, the bound each request was given, and each
+# fault reported as an uncaught error would be.
 BROWSER = """
-var console = {error() {}};
+var reported = [];
+function reportError(error) { reported.push(error.message); }
 Date.now = () => 1000000;
 var requests = [], timers = [], drawn = [], unread = [];
 function fetch(path, init) { return new Promise((resolve, reject) => requests.push({path, init, resolve, reject})); }
@@ -173,6 +175,7 @@ def test_a_read_refused_as_the_pages_own_mistake_stops_with_hands_words(reading:
 def test_an_answer_that_is_not_a_read_stops_the_reading_and_says_so(reading: Page, answer: object) -> None:
     reading.answer(200, json.dumps(answer))
     assert reading.seen("unread") == ["This page stopped reading hands: hands' answer is not a read. Reload it to read again."]
+    assert reading.seen("reported") == ["hands' answer is not a read"]
     assert (reading.seen("drawn"), reading.asking(), reading.timers()) == ([], [], [])
 
 
@@ -180,6 +183,7 @@ def test_a_read_the_page_cannot_draw_stops_the_reading_and_says_why(page: Page) 
     page.run('reading("/state", () => { throw new Error("no such row"); }, why => unread.push(why))')
     page.read("v1", {})
     assert (page.seen("unread"), page.asking()) == (["This page stopped reading hands: no such row. Reload it to read again."], [])
+    assert page.seen("reported") == ["no such row"]
 
 
 def test_hands_clock_is_as_every_read_last_said_it_changed_or_not(reading: Page) -> None:

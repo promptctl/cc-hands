@@ -680,7 +680,8 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async def typing(text: str) -> None:
         typed.append(text)
 
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phonepage.phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(tmp_path / "summaries.db")), Home(tmp_path), recorded.append, {}, unused_gallery()), Home(tmp_path), recorded.append))
+    home = Home(tmp_path)
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phonepage.phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(tmp_path / "summaries.db")), home, recorded.append, {}, unused_gallery()), home, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)

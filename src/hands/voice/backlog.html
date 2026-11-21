@@ -126,19 +126,29 @@ let waiting = 0;
 function inTurn(work) {
   waiting += 1;
   document.body.classList.add("busy");
-  // A job that throws is said on the page, and the queue goes on to the next: it never stays rejected.
-  queue = queue.then(work).catch(error => say(`The page failed: ${error.message}`, true)).finally(() => {
+  // A job that throws is said on the page, and the queue goes on to the next: it never stays rejected. What reaches here
+  // is the page's own fault, as `said` raises it, and [LAW:single-enforcer] it is reported as an uncaught error would be.
+  queue = queue.then(work).catch(error => { say(`The page failed: ${error.message}`, true); reportError(error); }).finally(() => {
     waiting -= 1;
     document.body.classList.toggle("busy", waiting > 0);
   });
   return queue;
 }
 
+// What hands said in place of the answer the page asked for, thrown, its message the words the page says of it.
+class Unanswered extends Error {}
+
+// The words a failure is said in on the page, when it is hands' (Unanswered); any other is the page's own fault, raised on.
+function said(error) {
+  if (error instanceof Unanswered) return error.message;
+  throw error;
+}
+
 // What hands answered, or thrown: its refusal, or why no answer came, after `unknown`, what the page cannot know of a
 // change it sent when none did, which a read has nothing of.
 function answer(outcome, unknown) {
   if (outcome.kind === "answered") return outcome.body;
-  throw new Error(`${outcome.kind === "lost" ? unknown : ""}${unanswered(outcome)}`);
+  throw new Unanswered(`${outcome.kind === "lost" ? unknown : ""}${unanswered(outcome)}`);
 }
 const got = async path => answer(await asked("GET", path), "");
 const changed = async (path, sent, unknown) => answer(await asked("POST", path, sent), unknown);
@@ -151,7 +161,7 @@ function turned(work) {
 // A backlog read hands answered, drawn whole: the page keeps no order of its own [LAW:one-source-of-truth]. A project lit
 // does not track is said as such.
 function drawnFrom(read) {
-  if (!read.tracked) { tree.replaceChildren(); throw new Error(`${project} has no backlog: ${read.why}.`); }
+  if (!read.tracked) { tree.replaceChildren(); throw new Unanswered(`${project} has no backlog: ${read.why}.`); }
   levels = read.levels;
   tree.replaceChildren(listed(read.items));
   stale = false;
@@ -327,7 +337,7 @@ function pressedAt(id, level) {
   putAt(id, level).then(() => {
     stale = true;
     shownAt(id, press.level);
-  }, error => { press.failed = error.message; }).finally(() => {
+  }, error => { press.failed = said(error); }).finally(() => {
     press.pending -= 1;
     if (press.pending === 0) {
       presses.delete(id);
@@ -350,7 +360,7 @@ function restored(id, why) {
       said = node === undefined ? `${why}\nlit's open backlog no longer holds ${id}.` : why;
     } catch (error) {
       level = null;
-      said = `${why}\nWhat lit holds for ${id} could not be read again, so no level is shown: ${error.message}`;
+      said = `${why}\nWhat lit holds for ${id} could not be read again, so no level is shown: ${said(error)}`;
     }
     if (presses.has(id)) return;
     alarm(id, said);
@@ -428,7 +438,7 @@ function noting(id) {
   alarm(id, "");
   noted(id, text).then(() => { note.kept = text; }, error => {
     note.draft = note.draft ? `${text}\n${note.draft}` : text;
-    alarm(id, error.message);
+    alarm(id, said(error));
   }).finally(() => {
     note.saving -= 1;
     written(id, note.draft);
@@ -453,7 +463,7 @@ function read() {
       drawnFrom(await got(TICKETS));
       say("");
     } catch (error) {
-      say(error.message, true);
+      say(said(error), true);
     }
   });
 }
@@ -468,13 +478,13 @@ function wrote(path, sent, doing, unknown) {
       return;
     } catch (error) {
       // hands' answer says whether lit changed anything.
-      say(error.message, true);
+      say(said(error), true);
     }
     // [LAW:no-silent-failure] a change that failed is shown, and the backlog drawn again as lit has it.
     try {
       drawnFrom(await got(TICKETS));
     } catch (error) {
-      say(`${state.textContent}\nThe backlog could not be read again, so what is drawn may not be lit's order now: ${error.message}`, true);
+      say(`${state.textContent}\nThe backlog could not be read again, so what is drawn may not be lit's order now: ${said(error)}`, true);
     }
   });
 }

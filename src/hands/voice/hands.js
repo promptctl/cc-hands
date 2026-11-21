@@ -99,8 +99,9 @@ export async function reading(path, draw, unread) {
     }
   } catch (error) {
     // [LAW:no-silent-failure] an answer the page cannot read, or cannot draw, ends the reading and says why: the same
-    // answer read again would fail the same way. The console keeps where it failed.
-    console.error(error);
+    // answer read again would fail the same way. [LAW:single-enforcer] reported as every page's fault is, as an uncaught
+    // error would be.
+    reportError(error);
     unread(`This page stopped reading hands: ${error.message}. Reload it to read again.`);
   }
 }
