@@ -28,7 +28,8 @@ from loguru import logger
 from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pushed
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, said
-from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, settled, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, Signalled, TimedOut, summary
+from hands.sessions.sides import settled
 from hands.clock import wait
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, begun, count, unit
@@ -117,8 +118,9 @@ class Standing:
 
 # Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
 # where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
-# where there is no gh to ask; unanswered where it was too slow, and refused where gh would not list or answered in
-# a shape hands does not read.
+# where no gh is on the PATH to ask, and unavailable where one is and could not be run; unanswered where it was too
+# slow or was ended by a signal before it answered, and refused where gh would not list or answered in a shape hands
+# does not read.
 Forge = Literal["unasked", "absent", "unavailable", "answered", "unanswered", "refused"]
 
 # Why a reading has no baseline to read against: none was taken (no repository, one that could not be read, or a turn no prompt
@@ -643,12 +645,12 @@ class Deltas:
         match listing:
             case Ran(status=Exited(code=0), out=out):
                 pass
+            case Ran(status=Signalled()) | TimedOut():
+                return (), Asked("unanswered", took)
             case Ran(err=err) as refused:
                 # Not a GitHub remote, not signed in, no default repository: gh says which.
                 logger.info(f"gh would not list the pull requests of {branch} in {baseline.root}: it {summary(refused)}: {err.strip()}")
                 return (), Asked("refused", took)
-            case TimedOut():
-                return (), Asked("unanswered", took)
             case NeverStarted() as unrun:
                 # A gh that is on the PATH and cannot be run is no forge that refused: it was never asked.
                 logger.warning(f"gh {summary(unrun)}, so the pull requests of {branch} were not asked for")

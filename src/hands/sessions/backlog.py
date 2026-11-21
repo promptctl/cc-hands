@@ -435,7 +435,8 @@ async def _lit(children: Children, project: Path, *arguments: str, environment: 
         case TimedOut() as wedged:
             raise LitFailed(f"{command} in {project} {summary(wedged)}", None)
         case NeverStarted(error=error) if error.errno == errno.ENOENT and str(error.filename) == str(project):
-            # The spawn names the path it could not use: the project directory as given, where the chdir failed, not lit.
+            # [LAW:parse-dont-validate] the spawn names the path it could not use: the project directory as given, where
+            # the chdir failed, not lit, read once here into a project that is gone.
             raise ProjectGone(project) from error
         case NeverStarted(error=error) as unrun:
             raise LitNotStarted(f"lit in {project} {summary(unrun)}") from error

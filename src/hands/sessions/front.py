@@ -17,7 +17,7 @@ from loguru import logger
 from hands.core.front import Candidate, FrontUnread, InFront, Screen, in_front
 from hands.core.session import SessionId
 from hands.core.tmux import Unanswered
-from hands.sessions.child import Children, Exited, Ran, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
 from hands.sessions import tmux
 from hands.sessions.terminals import Process, ancestor_terminals, process_table
 from hands.threads import SerialThread
@@ -93,7 +93,7 @@ async def _ran(children: Children, *argv: str) -> str:
             return out.decode()
         case Ran(err=err) as outcome:
             raise _Unread(f"{' '.join(argv)} {summary(outcome)}: {err.strip()}")
-        case outcome:
+        case TimedOut() | NeverStarted() as outcome:
             raise _Unread(f"{' '.join(argv)} {summary(outcome)}")
 
 

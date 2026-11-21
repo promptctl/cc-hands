@@ -40,7 +40,7 @@ from hands.daemon.exits import Exit, Failed
 from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
-from hands.sessions.child import Children, Exited, Ran, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
 from hands.sessions.home import Home
 from hands.sessions.liveness import live
 from hands.sessions.payload import Rejected
@@ -349,7 +349,11 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     # The claude on PATH, the shim or not, is started as hands starts every claude: its auto-updater off.
-    session = await on_terminal(smoked.children, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
+    match await on_terminal(smoked.children, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)}):
+        case NeverStarted() as never:
+            raise NotReached("joined", f"`{claude}` {summary(never)}")
+        case ClaudeCode() as session:
+            pass
     try:
         member = await _joined(smoked, folder, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
@@ -498,7 +502,7 @@ async def _synthesized(children: Children, text: str) -> bytes:
                 pass
             case Ran(err=err) as failed:
                 raise RuntimeError(f"`say` could not synthesize what the test says: it {summary(failed)}: {err.strip()}")
-            case unrun:
+            case TimedOut() | NeverStarted() as unrun:
                 raise RuntimeError(f"`say` could not synthesize what the test says: it {summary(unrun)}")
         with wave.open(str(spoken), "rb") as read:
             return read.readframes(read.getnframes())

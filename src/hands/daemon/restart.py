@@ -110,7 +110,7 @@ def detach(clock: Clock) -> Callable[[int], bool]:
     sys.stdout.flush()
     sys.stderr.flush()
     read, write = os.pipe()
-    middle = os.fork()  # [LAW:single-enforcer] exception: detach, whose fork carries on as this command, not a child of it; the warden's pipe goes with it
+    middle = os.fork()  # [LAW:single-enforcer] exception: detach, whose fork carries on as this command, not a child of it; its warden's pipe is inherited, so the warden ends with the command, and its reaper thread is not, so a warden that ends after is found at the next record
     if middle != 0:
         os.close(write)
         # The middle process exits at once, leaving the command to launchd.

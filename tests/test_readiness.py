@@ -22,7 +22,8 @@ from pathlib import Path
 import pytest
 
 from conftest import SYSTEM_PATH, executable, pin, stand_in
-from conftest import children_on
+from conftest import Answering, children_on
+from hands.sessions.child import Exited, Ran
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
@@ -119,8 +120,10 @@ def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None
 
 
 def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
-    executable(root / "real" / "claude", "#!/bin/sh\nprintf '\\377\\376'\n")
-    assert isinstance(readiness.plugin(children_on(SYSTEM), Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Unknown)
+    # Found on the PATH, never run: the runner answers with what it printed.
+    executable(root / "real" / "claude", "#!/bin/sh\n")
+    found = readiness.plugin(Answering(lambda _argv: Ran(Exited(0), b"\xff\xfe", "")), Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}")
+    assert isinstance(found, Unknown) and "not text" in found.said, found
 
 
 @pytest.mark.outside

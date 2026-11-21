@@ -15,16 +15,16 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
-from contextlib import ExitStack
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Generator, Mapping, Sequence
+from contextlib import ExitStack, closing
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Literal, overload
+from typing import IO
 
 from loguru import logger
 
 from hands.clock import Clock, wait
-from hands.sessions import wide
+from hands.sessions import warden, wide
 from hands.threads import settles_off_loop, tell
 
 
@@ -37,7 +37,7 @@ class Exited:
 
 @dataclass(frozen=True)
 class Signalled:
-    """The child was ended by `signal`, sent by something other than hands."""
+    """The child was ended by `signal`."""
 
     signal: signal.Signals
 
@@ -61,7 +61,8 @@ class Ran:
 
 @dataclass(frozen=True)
 class NeverStarted:
-    """The OS made no process: the program, or the files its output goes to, could not be made. The OS's own error."""
+    """The OS made no process: the program, the files its output goes to, or the warden that would end it with hands
+    could not be made. The OS's own error."""
 
     error: OSError
 
@@ -77,254 +78,344 @@ class TimedOut:
 
 # [LAW:types-are-the-program] how a child hands ran ended, closed: a caller matches each arm, so "never ran", "ran past
 # its limit" and "exited with N or by signal S" cannot be read as one another. A child hands killed for its caller is
-# TimedOut or the caller's own interruption raised on, never a Signalled.
+# TimedOut or the caller's own interruption raised on, never a Ran.
 type Outcome = Ran | NeverStarted | TimedOut
 
 
-def said(status: Status) -> str:
-    """How a child ended by itself, after its program's name in a message."""
-    match status:
+@dataclass(frozen=True)
+class Reaped:
+    """A child its supervisor has reaped: how it ended; whether hands killed it, at its limit, its caller's
+    interruption, or its stop; and whether anything of its process group was left to kill once it had exited."""
+
+    status: Status
+    killed: bool
+    leftovers: bool
+
+
+def summary(ending: Outcome | Reaped | Status) -> str:
+    """[LAW:one-source-of-truth] the one wording of how a child ended, after its program's name in a message."""
+    match ending:
         case Exited(code=code):
             return f"exited {code}"
         case Signalled(signal=ended):
             return f"was ended by {ended.name}"
-
-
-def summary(outcome: Outcome) -> str:
-    """[LAW:one-source-of-truth] the one wording of how a child ended, after its program's name in a message."""
-    match outcome:
-        case Ran(status=status):
-            return said(status)
+        case Reaped(killed=True):
+            return "was killed by hands"
+        case Reaped(status=status) | Ran(status=status):
+            return summary(status)
         case NeverStarted(error=error):
             return f"could not be started: {error.strerror or error}"
         case TimedOut(limit=limit):
             return f"ran past {limit:.1f}s"
 
 
-@dataclass(frozen=True)
-class Fields:
-    """The facts of how a child ended, each a field of its own, for an event's consumer to query rather than read:
-    `ending` says which way, and only that way's own fact is set."""
-
-    ending: Literal["exited", "signalled", "never_started", "timed_out"]
-    returncode: int | None = None
-    signal: str | None = None
-    limit: float | None = None
-    # The OS's name for why it never started, ENOENT for a program that is not there; the event's error says it in words.
-    errno: str | None = None
-
-
-def fields(outcome: Outcome) -> Fields:
-    """[LAW:one-source-of-truth] the one projection of an outcome onto an event's fields."""
-    match outcome:
-        case Ran(status=status):
-            return _status_fields(status)
-        case NeverStarted(error=error):
-            return Fields("never_started", errno=None if error.errno is None else errno.errorcode.get(error.errno, str(error.errno)))
-        case TimedOut(limit=limit):
-            return Fields("timed_out", limit=limit)
-
-
-def _status_fields(status: Status) -> Fields:
-    match status:
+def fields(ending: Outcome | Reaped | Status) -> Mapping[str, wide.Fact]:
+    """[LAW:one-source-of-truth] the one projection of how a child ended onto an event's facts: `ending` says which way,
+    and beside it only that way's own facts, for an event's consumer to query rather than read."""
+    match ending:
         case Exited(code=code):
-            return Fields("exited", returncode=code)
+            return {"ending": "exited", "returncode": code}
         case Signalled(signal=ended):
-            return Fields("signalled", signal=ended.name)
+            return {"ending": "signalled", "signal": ended.name}
+        case Reaped(killed=True):
+            return {"ending": "killed"}
+        case Reaped(status=status) | Ran(status=status):
+            return fields(status)
+        case NeverStarted(error=OSError(errno=int(number))):
+            # The OS's name for why, ENOENT for a program that is not there; the event's error says it in words.
+            return {"ending": "never_started", "errno": errno.errorcode.get(number, str(number))}
+        case NeverStarted():
+            return {"ending": "never_started"}
+        case TimedOut(limit=limit):
+            return {"ending": "timed_out", "limit": limit}
 
 
 class WardenGone(RuntimeError):
-    """The warden, which ends hands' children once hands has ended, has ended first: a child started now could outlive hands."""
+    """No warden could be started again in place of one that ended: a child started now could outlive hands."""
+
+
+@dataclass(frozen=True)
+class _Running:
+    """A warden that runs, and hands' end of its pipe."""
+
+    process: subprocess.Popen[bytes]
+    write: int
 
 
 class Warden:
-    """hands' end of the pipe to hands.sessions.warden, started on the first child hands records with it.
+    """hands' end of the pipe to hands.sessions.warden: started before the first child hands records with it, and
+    again, told every group still recorded, whenever the one before it has ended while hands ran.
 
-    [LAW:no-shared-mutable-globals] its one writer: every record goes through `record`, under its lock.
+    [LAW:no-shared-mutable-globals] its one writer: every record goes through `added` and `removed`, under its lock.
+    [LAW:one-source-of-truth] the groups are hands' own; a warden holds a copy, written in full to each one started.
     """
 
     def __init__(self, audit: Path) -> None:
         self._audit = audit
         self._lock = threading.Lock()
-        self._write: int | None = None
-        self._gone: str | None = None
+        self._groups: set[int] = set()
+        self._running: _Running | None = None
 
-    def record(self, line: bytes) -> None:
-        """Write `line`, `+<pgid>` or `-<pgid>`, to the warden, starting it first if it is not yet running."""
+    def ready(self) -> None:
+        """Start a warden, if none runs, before a child it would end is started; the OS's error where it cannot be."""
         with self._lock:
-            if self._write is None:
-                self._write = self._started()
-            if self._gone is not None:
-                # [LAW:no-silent-failure] never a child it cannot end once hands has ended.
-                raise WardenGone(self._gone)
-            try:
-                os.write(self._write, line + b"\n")
-            except BrokenPipeError:
-                self._gone = "the warden stopped reading"
-                raise WardenGone(self._gone) from None
+            if self._running is None:
+                self._started()
 
-    def _started(self) -> int:
+    def added(self, group: int) -> None:
+        """Record `group`, a child's process group that now exists."""
+        with self._lock:
+            self._groups.add(group)
+            self._told(warden.added(group))
+
+    def removed(self, group: int) -> None:
+        """Take back `group`'s record, once what was left of it is killed."""
+        with self._lock:
+            self._groups.discard(group)
+            self._told(warden.removed(group))
+
+    def _told(self, line: bytes) -> None:
+        try:
+            if self._running is not None:
+                try:
+                    os.write(self._running.write, line)
+                    return
+                except BrokenPipeError:
+                    self._lost(self._running, "stopped reading")
+            # Told every group, this line's change among them.
+            self._started()
+        except OSError as error:
+            # [LAW:no-silent-failure] never a child it cannot end once hands has ended.
+            raise WardenGone(f"no warden could be started in place of the one that ended: {error}") from error
+
+    def _started(self) -> None:
         # Non-inheritable, as os.pipe makes both ends: no child, and no hands exec'd in this one's place, holds the write
         # end, so the kernel closes it when this hands ends, and the warden reads that as its end.
         read, write = os.pipe()
         try:
             # [LAW:single-enforcer] exception: the warden is the one child that outlives hands, the runner's own.
-            warden = subprocess.Popen(
+            process = subprocess.Popen(
                 [sys.executable, "-I", "-m", "hands.sessions.warden", str(self._audit), str(os.getpid())],
                 stdin=read,
                 stdout=subprocess.DEVNULL,
                 # A session of its own: a terminal's SIGHUP or SIGINT to hands' process group does not reach it.
                 start_new_session=True,
             )
-        except OSError as error:
+        except OSError:
             os.close(write)
-            # The child being recorded did start: its failure is the warden's, never a NeverStarted.
-            raise WardenGone(f"the warden could not be started: {error}") from error
+            raise
         finally:
             os.close(read)
-        threading.Thread(target=self._reap, args=(warden,), name="the warden", daemon=True).start()
-        return write
+        self._running = running = _Running(process, write)
+        os.write(write, b"".join(map(warden.added, self._groups)))
+        threading.Thread(target=self._reap, args=(running,), name="the warden", daemon=True).start()
 
-    def _reap(self, warden: subprocess.Popen[bytes]) -> None:
-        code = warden.wait()
+    def _reap(self, running: _Running) -> None:
+        code = running.process.wait()
         with self._lock:
-            self._gone = f"the warden ({warden.pid}) {said(status_of(code))} while hands ran"
-        # [LAW:no-silent-failure] said at once, not only at the next child's start.
-        logger.error(f"{self._gone}: no child hands starts from now can be ended with it")
+            # One already found gone, by a write it stopped reading, is not lost twice.
+            if self._running is running:
+                self._lost(running, summary(status_of(code)))
+                try:
+                    # Started again at once, not at the next record: the groups recorded now are unwardened until then.
+                    self._started()
+                except OSError as error:
+                    logger.error(f"no warden could be started in place of the one that ended: {error}; no child hands starts from now can be ended with it")
+
+    def _lost(self, running: _Running, how: str) -> None:
+        os.close(running.write)
+        self._running = None
+        # [LAW:no-silent-failure] said at once, however it is found.
+        logger.error(f"the warden ({running.process.pid}) {how} while hands ran; one is started again, told every group still recorded")
 
 
 @dataclass(frozen=True)
-class Reaped:
-    """A child its owner has reaped: how it ended, and whether anything of its process group was left to kill."""
+class _Unstarted:
+    killed: bool
 
-    status: Status
-    leftovers: bool
+
+@dataclass(frozen=True)
+class _Live:
+    pid: int
+    killed: bool
+
+
+@dataclass(frozen=True)
+class _Reaping:
+    killed: bool
 
 
 class Child:
-    """A child and the one thread that owns it: starts it, records its process group with the warden, waits for its
-    exit, kills what is left of its group, takes the record back, and reaps it, in that order.
+    """A child and the one thread that supervises it: starts it, records its process group with the warden, waits for
+    its exit, kills what is left of its group, takes the record back, and reaps it, in that order.
 
-    [LAW:no-ambient-temporal-coupling] the leader is reaped only once its group is killed and its record taken back: until
-    then the unreaped leader keeps its pid, so no kill, hands' or the warden's, can reach a group of the same id made
-    since. [LAW:single-enforcer] `kill` is the one kill of a child's group: on its limit, on its caller's interruption,
-    and on its stop, before it starts as after.
+    [LAW:no-ambient-temporal-coupling] the leader is reaped only once its group is killed and its record taken back:
+    until then the unreaped leader keeps its pid, so no kill, hands' or the warden's, can reach a group of the same id
+    made since. [LAW:types-are-the-program] its lifecycle is one state: a child not yet started has no pid to signal, and
+    one being reaped has none either. [LAW:single-enforcer] `kill` is the one kill of a child's group: on its limit, on
+    its caller's interruption, and on its stop, before it starts as after.
     """
 
-    def __init__(self, name: str, warden: Warden) -> None:
-        self.name = name
+    def __init__(self, warden: Warden) -> None:
         self._warden = warden
         self._lock = threading.Lock()
-        self._pid: int | None = None
-        self._killing = False
-        self._reaping = False
+        self._state: _Unstarted | _Live | _Reaping = _Unstarted(killed=False)
 
     def kill(self) -> None:
-        """Kill the child's process group now, or as soon as it is started; nothing once its owner is reaping it."""
+        """Kill the child's process group now, or as soon as it is started; nothing once its supervisor is reaping it."""
         with self._lock:
-            self._killing = True
-            if self._pid is not None and not self._reaping:
-                _killed(self._pid)
+            match self._state:
+                case _Unstarted():
+                    self._state = _Unstarted(killed=True)
+                case _Live(pid=pid):
+                    self._state = _Live(pid, killed=True)
+                    warden.killed(pid)
+                case _Reaping():
+                    pass
 
     def terminate(self) -> None:
-        """Ask the child alone to end, with SIGTERM, while its owner has not reaped it and its pid is still its own."""
+        """Ask the child alone to end, with SIGTERM, while it is live and its pid is still its own."""
         with self._lock:
-            if self._pid is not None and not self._reaping:
-                os.kill(self._pid, signal.SIGTERM)
+            match self._state:
+                case _Live(pid=pid):
+                    os.kill(pid, signal.SIGTERM)
+                case _Unstarted() | _Reaping():
+                    pass
 
-    def owned(self, popen: Callable[[], subprocess.Popen[bytes]], started: Callable[[int], None] = lambda pid: None) -> Reaped | NeverStarted:
-        """Run the child `popen` starts to its end, on the calling thread, which owns it from here: `started` is told
-        its pid once it is recorded. NeverStarted where `popen` made no process; what fails after it is raised."""
-        # On the owner's thread, not the caller's: a signal's exception lands on the main thread alone, so none can come
-        # between the start and the record, and leave a child the warden never heard of.
+    def supervise(self, popen: Callable[[], subprocess.Popen[bytes]], started: Callable[[int], None] = lambda pid: None) -> Reaped | NeverStarted:
+        """Run the child `popen` starts to its end, on the calling thread, which supervises it from here: `started` is
+        told its pid once it is recorded. NeverStarted where no process was made; what fails once one was is raised."""
+        # Everything the watch needs is made before the child is, so a failure to make it is a child never started.
         try:
-            process = popen()
+            self._warden.ready()
+            watch = select.kqueue()
         except OSError as error:
             return NeverStarted(error)
-        with self._lock:
-            self._pid = process.pid
+        with closing(watch):
+            # On the supervisor's thread, not the caller's: a signal's exception lands on the main thread alone, so none
+            # can come between the start and the record, and leave a child the warden never heard of.
             try:
-                self._warden.record(b"+%d" % process.pid)
-            except BaseException:
-                # A child the warden never heard of would outlive hands: it is ended before the failure goes on up.
-                _killed(process.pid)
-                process.wait()
-                raise
-            if self._killing:
-                _killed(process.pid)
-        try:
-            started(process.pid)
-            _exited(process.pid)
-        finally:
+                process = popen()
+            except OSError as error:
+                return NeverStarted(error)
             with self._lock:
-                self._reaping = True
-                leftovers = _killed(process.pid)
+                killed = self._state.killed
+                self._state = _Live(process.pid, killed)
+                try:
+                    self._warden.added(process.pid)
+                except BaseException:
+                    # [LAW:no-ambient-temporal-coupling] whatever raised, a child the warden never heard of would outlive
+                    # hands: it is ended and reaped before the failure goes on up.
+                    self._state = _Reaping(killed)
+                    warden.killed(process.pid)
+                    process.wait()
+                    raise
+                if killed:
+                    warden.killed(process.pid)
             try:
-                self._warden.record(b"-%d" % process.pid)
+                started(process.pid)
+                _exited(watch, process.pid)
             finally:
-                code = process.wait()
-        return Reaped(status_of(code), leftovers)
+                with self._lock:
+                    killed = self._state.killed
+                    self._state = _Reaping(killed)
+                    leftovers = warden.killed(process.pid)
+                try:
+                    self._warden.removed(process.pid)
+                finally:
+                    code = process.wait()
+        return Reaped(status_of(code), killed, leftovers)
 
 
-def _exited(pid: int) -> None:
+def _exited(watch: select.kqueue, pid: int) -> None:
     """Once `pid`, a child of this process, has exited, without reaping it: kqueue's NOTE_EXIT, as macOS has no waitid."""
-    kq = select.kqueue()
-    try:
-        [event] = kq.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)], 1, None)
-    finally:
-        kq.close()
+    [event] = watch.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)], 1, None)
     # One that had exited before it was watched comes back at once as an error, ESRCH: exited all the same.
     if event.flags & select.KQ_EV_ERROR and event.data != errno.ESRCH:
         raise OSError(event.data, os.strerror(event.data))
 
 
-def _killed(group: int) -> bool:
-    """SIGKILL the process group `group`; whether anything in it was still running."""
+class _TimeUp:
+    """The time a wait was given ran out before the child was reaped."""
+
+
+_TIME_UP = _TimeUp()
+
+
+def _policy[T](child: Child, limit: float) -> Generator[float | None, T | BaseException | _TimeUp, T]:
+    """[LAW:single-enforcer] the one policy of a wait on a child, written once for a coroutine and a blocking thread,
+    which differ only in how they wait: up to `limit`; past it, kill the child and wait for its reap; on any interruption
+    of the wait, kill, wait for the reap, and raise the interruption on. What the supervisor raised is raised on.
+
+    A sans-I/O protocol: it yields how long to wait, None for until the child is reaped, and is sent what the wait gave.
+    """
+    # A wait with no limit gives no _TimeUp, and each loop says so to the type, where one send would need an assertion.
     try:
-        os.killpg(group, signal.SIGKILL)
-        return True
-    except (ProcessLookupError, PermissionError):
-        # Gone, or nothing left in it but processes that have exited, which macOS refuses to signal.
-        return False
+        given = yield limit
+    except BaseException:
+        # [LAW:no-ambient-temporal-coupling] BaseException, not Exception: a cancellation or a KeyboardInterrupt that
+        # went past this would leave the child running after its caller had stopped waiting for it.
+        child.kill()
+        while isinstance((yield None), _TimeUp):
+            pass
+        raise
+    while isinstance(given, _TimeUp):
+        child.kill()
+        given = yield None
+    if isinstance(given, BaseException):
+        raise given
+    return given
+
+
+async def _awaited[T](clock: Clock, child: Child, limit: float, settles: "asyncio.Future[T]") -> T:
+    """The policy, driven by a coroutine awaiting the supervisor's future."""
+    policy: Generator[float | None, T | BaseException | _TimeUp, T] = _policy(child, limit)
+    wanted = next(policy)
+    while True:
+        try:
+            await (asyncio.wait((settles,)) if wanted is None else wait(clock, (settles,), wanted))
+        except BaseException as stopped:
+            wanted = policy.throw(stopped)
+            continue
+        try:
+            wanted = policy.send(_given(settles))
+        except StopIteration as done:
+            return done.value
+
+
+def _given[T](settles: "asyncio.Future[T]") -> T | BaseException | _TimeUp:
+    """What a timed wait on `settles` gave: the supervisor's result, what it raised, or the time up first."""
+    if not settles.done():
+        return _TIME_UP
+    raised = settles.exception()
+    return settles.result() if raised is None else raised
+
+
+def _blocked[T](clock: Clock, child: Child, limit: float, settles: "queue.SimpleQueue[T | BaseException]") -> T:
+    """The policy, driven by a thread blocked on the supervisor's queue."""
+    policy: Generator[float | None, T | BaseException | _TimeUp, T] = _policy(child, limit)
+    wanted = next(policy)
+    while True:
+        try:
+            given: T | BaseException | _TimeUp = settles.get() if wanted is None else clock.take(settles, wanted)
+        except queue.Empty:
+            given = _TIME_UP
+        except BaseException as stopped:
+            wanted = policy.throw(stopped)
+            continue
+        try:
+            wanted = policy.send(given)
+        except StopIteration as done:
+            return done.value
 
 
 @dataclass(frozen=True)
-class _Owned:
-    """What a child's owner settles a run with: the outcome, and whether its group had leftovers to kill."""
+class _Captured:
+    """A child reaped, and everything it printed while it ran."""
 
-    outcome: Ran | NeverStarted
-    leftovers: bool
-
-
-# A wait the policy asks for: up to that many seconds, or None for until the owner has settled.
-type _Wait = float | None
-# What a wait gives back: what the owner settled with, raised or not, or None when the time was up first.
-type _Settled = _Owned | BaseException | None
-
-
-def _policy(child: Child, limit: float) -> Generator[_Wait, _Settled, tuple[Outcome, bool]]:
-    """[LAW:single-enforcer] the one policy of a run's wait, written once for a coroutine and a blocking thread alike,
-    which differ only in how they wait (a sans-I/O protocol): up to `limit`; past it, kill and wait for the reap; on any
-    interruption of the wait, kill, wait for the reap, and raise the interruption on."""
-    try:
-        settled = yield limit
-    except BaseException:
-        child.kill()
-        yield None
-        raise
-    timed_out = settled is None
-    if timed_out:
-        child.kill()
-        settled = yield None
-    match settled:
-        case _Owned(outcome=Ran(out=out, err=err), leftovers=leftovers) if timed_out:
-            return TimedOut(limit, out, err), leftovers
-        case _Owned(outcome=outcome, leftovers=leftovers):
-            return outcome, leftovers
-        case BaseException():
-            raise settled
-        case None:
-            raise AssertionError("an untimed wait ended with nothing settled")
+    reaped: Reaped
+    out: bytes
+    err: str
 
 
 class Children:
@@ -341,63 +432,46 @@ class Children:
     async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
         """Run `argv` to its end inside `limit` seconds; how it ended. Interrupted, its caller's cancellation or failure
         is raised on once the child and its group are killed and reaped. A second cancellation leaves at once, and the
-        owner reaps the child all the same."""
-        child = Child(argv[0], self._warden)
+        supervisor reaps the child all the same."""
+        child = Child(self._warden)
         began = wide.begun(self.clock)
         settles = settles_off_loop(lambda: _captured(child, argv, cwd, env), name=f"{argv[0]} (a child of hands)")
-        policy = _policy(child, limit)
         try:
-            wanted = next(policy)
-            while True:
-                try:
-                    if wanted is None:
-                        await asyncio.wait((settles,))
-                    else:
-                        await wait(self.clock, (settles,), wanted)
-                except BaseException as stopped:
-                    wanted = policy.throw(stopped)
-                    continue
-                wanted = policy.send(None if not settles.done() else settles.exception() or settles.result())
-        except StopIteration as done:
-            outcome, leftovers = done.value
-            self._told(argv, began, outcome, leftovers)
-            return outcome
+            captured = await _awaited(self.clock, child, limit, settles)
         except BaseException as raised:
             wide.ended("child.run", self._emit, began, raised, None, program=argv[0])
             raise
+        return self._ran(argv[0], began, captured, limit)
 
     def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
         """`run`, waited on by the calling thread rather than awaited: for work that blocks, off the loop."""
-        child = Child(argv[0], self._warden)
+        child = Child(self._warden)
         began = wide.begun(self.clock)
-        settles: queue.SimpleQueue[_Owned | BaseException] = queue.SimpleQueue()
+        settles: queue.SimpleQueue[_Captured | NeverStarted | BaseException] = queue.SimpleQueue()
+        # A daemon thread, as every supervisor is: a hands that ends leaves its children to the warden, never waits on them.
         threading.Thread(target=_settle_into, args=(settles, lambda: _captured(child, argv, cwd, env)), name=f"{argv[0]} (a child of hands)", daemon=True).start()
-        policy = _policy(child, limit)
         try:
-            wanted = next(policy)
-            while True:
-                try:
-                    settled: _Settled = settles.get() if wanted is None else self.clock.take(settles, wanted)
-                except queue.Empty:
-                    settled = None
-                except BaseException as stopped:
-                    wanted = policy.throw(stopped)
-                    continue
-                wanted = policy.send(settled)
-        except StopIteration as done:
-            outcome, leftovers = done.value
-            self._told(argv, began, outcome, leftovers)
-            return outcome
+            captured = _blocked(self.clock, child, limit, settles)
         except BaseException as raised:
             wide.ended("child.run", self._emit, began, raised, None, program=argv[0])
             raise
+        return self._ran(argv[0], began, captured, limit)
 
-    async def terminal(self, name: str, popen: Callable[[], subprocess.Popen[bytes]]) -> "Running":
-        """The child `popen` starts, owned as every child is, with no limit: its end is its own, or its stop."""
-        child = Child(name, self._warden)
+    async def terminal(self, name: str, popen: Callable[[], subprocess.Popen[bytes]]) -> "Running | NeverStarted":
+        """The child `popen` starts, supervised as every child is, with no limit: its end is its own, or its stop."""
+        child = Child(self._warden)
+        began = wide.begun(self.clock)
         loop = asyncio.get_running_loop()
-        started: asyncio.Future[int] = loop.create_future()
-        ended = settles_off_loop(lambda: _status(child.owned(popen, lambda pid: tell(loop, started.set_result, pid))), name=f"{name} (a child of hands)")
+        started: asyncio.Future[int | NeverStarted] = loop.create_future()
+
+        def supervised() -> Reaped | NeverStarted:
+            ending = child.supervise(popen, lambda pid: tell(loop, started.set_result, pid))
+            if isinstance(ending, NeverStarted):
+                tell(loop, started.set_result, ending)
+            self._told(name, began, ending, None if isinstance(ending, NeverStarted) else ending.leftovers)
+            return ending
+
+        ended = settles_off_loop(supervised, name=f"{name} (a child of hands)")
         try:
             await asyncio.wait((started, ended), return_when=asyncio.FIRST_COMPLETED)
         except BaseException:
@@ -405,39 +479,46 @@ class Children:
             await asyncio.wait((ended,))
             raise
         if not started.done():
-            # Ended before it was started: the OSError of a popen that made no process, or what the warden raised.
+            # Ended before its start was told: what the supervisor raised, raised here.
             ended.result()
-        return Running(child, started.result(), ended)
+        match started.result():
+            case NeverStarted() as never:
+                return never
+            case int() as pid:
+                return Running(child, pid, ended)
 
-    def _told(self, argv: Sequence[str], began: wide.Begun, outcome: Outcome, leftovers: bool) -> None:
-        # [LAW:nothing-unseen] one event for each child, however it ended: a child that never ran or ran past its limit is a
-        # failed run, said with how; one that exited, with any code, ran, and its fields say how it ended.
-        failure = None if isinstance(outcome, Ran) else f"{argv[0]} {summary(outcome)}"
-        wide.ended("child.run", self._emit, began, None, failure, program=argv[0], leftovers=leftovers, **asdict(fields(outcome)))
+    def _ran(self, program: str, began: wide.Begun, captured: _Captured | NeverStarted, limit: float) -> Outcome:
+        match captured:
+            case NeverStarted():
+                self._told(program, began, captured, None)
+                return captured
+            case _Captured(reaped=reaped, out=out, err=err):
+                # Killed by hands, and no interruption raised on: the policy's kill at the limit.
+                outcome = TimedOut(limit, out, err) if reaped.killed else Ran(reaped.status, out, err)
+                self._told(program, began, outcome, reaped.leftovers)
+                return outcome
+
+    def _told(self, program: str, began: wide.Begun, ending: Outcome | Reaped, leftovers: bool | None) -> None:
+        # [LAW:nothing-unseen] one event for each child, however it ended: a child that never ran, ran past its limit, or
+        # was killed at its stop is a failed run, said with how; one that exited, with any code, ran, and its facts say how.
+        # `leftovers` is None for a child that never ran, with no group to have left anything.
+        ran = isinstance(ending, Ran) or (isinstance(ending, Reaped) and not ending.killed)
+        wide.ended("child.run", self._emit, began, None, None if ran else f"{program} {summary(ending)}", program=program, leftovers=leftovers, **fields(ending))
 
 
 @dataclass(frozen=True)
 class Running:
-    """A child with no limit, running: its pid, and its status once its owner has reaped it."""
+    """A child with no limit, running: its pid, and how it ended once its supervisor has reaped it."""
 
     child: Child
     pid: int
-    ended: asyncio.Future[Status]
+    ended: "asyncio.Future[Reaped | NeverStarted]"
 
     async def stopped(self, clock: Clock, grace: float) -> None:
-        """Ask the child alone to end, and kill everything it started once it has not within `grace` on `clock`."""
+        """Ask the child alone to end, and kill everything it started once it has not within `grace` on `clock`: the
+        one policy of a wait, with the grace for its limit."""
         self.child.terminate()
-        try:
-            await wait(clock, (self.ended,), grace)
-        except BaseException:
-            # Cancelled, or its clock failed and never measured the grace: the child is ended all the same.
-            self.child.kill()
-            await asyncio.wait((self.ended,))
-            raise
-        if not self.ended.done():
-            logger.info(f"killed {self.child.name} ({self.pid}) and everything it started, because it had not ended {grace:.1f}s after it was asked to")
-            self.child.kill()
-            await asyncio.wait((self.ended,))
+        await _awaited(clock, self.child, grace, self.ended)
 
 
 def _settle_into[T](settles: "queue.SimpleQueue[T | BaseException]", work: Callable[[], T]) -> None:
@@ -447,57 +528,25 @@ def _settle_into[T](settles: "queue.SimpleQueue[T | BaseException]", work: Calla
         settles.put(raised)
 
 
-def _status(owned: Reaped | NeverStarted) -> Status:
-    match owned:
-        case Reaped(status=status):
-            return status
-        case NeverStarted(error=error):
-            raise error
-
-
-def _captured(child: Child, argv: Sequence[str], cwd: Path | None, env: Mapping[str, str] | None) -> _Owned:
-    """The owner's run of `argv`, its output going to files read once it is reaped; what fails once it ran is raised."""
+def _captured(child: Child, argv: Sequence[str], cwd: Path | None, env: Mapping[str, str] | None) -> _Captured | NeverStarted:
+    """The supervisor's run of `argv`, its output going to files read once it is reaped; what fails once it ran is raised."""
     with ExitStack() as files:
         try:
             out = files.enter_context(tempfile.TemporaryFile())
             err = files.enter_context(tempfile.TemporaryFile())
         except OSError as error:
             # Nowhere for its output to go, so it was never started.
-            return _Owned(NeverStarted(error), leftovers=False)
-        match child.owned(lambda: _popen(argv, cwd, env, out, err)):
+            return NeverStarted(error)
+        match child.supervise(lambda: _popen(argv, cwd, env, out, err)):
             case NeverStarted() as unstarted:
-                return _Owned(unstarted, leftovers=False)
-            case Reaped(status=status, leftovers=leftovers):
+                return unstarted
+            case Reaped() as reaped:
                 out.seek(0)
                 err.seek(0)
-                return _Owned(Ran(status, out.read(), err.read().decode(errors="replace")), leftovers)
+                return _Captured(reaped, out.read(), err.read().decode(errors="replace"))
 
 
 def _popen(argv: Sequence[str], cwd: Path | None, env: Mapping[str, str] | None, out: IO[bytes], err: IO[bytes]) -> subprocess.Popen[bytes]:
-    # A session of its own, so its process group is everything it starts: a git's filters, a lit's helpers.
+    # A session of its own, so its process group is everything it starts: a git's filters, a lit's helpers. env None is
+    # Popen's own: the child inherits hands' environment.
     return subprocess.Popen(argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
-
-
-@overload
-async def settled[A, B](first: Awaitable[A], second: Awaitable[B], /) -> tuple[A, B]: ...
-@overload
-async def settled[A, B, C](first: Awaitable[A], second: Awaitable[B], third: Awaitable[C], /) -> tuple[A, B, C]: ...
-@overload
-async def settled[T](*sides: Awaitable[T]) -> tuple[T, ...]: ...
-async def settled(*sides: Awaitable[object]) -> tuple[object, ...]:
-    """Every side of a reading run together and waited out, then what each gave; where any raised, all they raised.
-
-    [LAW:single-enforcer] the one way a reading runs its sides at once, each bounded by the reading's deadline. Waited
-    out, so a side that raises does not end the reading while another runs on and writes to its event after it has
-    ended [LAW:no-ambient-temporal-coupling]. Not a TaskGroup, nor a gather that cancels the rest: a child told twice to
-    stop leaves its git unreaped.
-    """
-    gave = await asyncio.gather(*sides, return_exceptions=True)
-    raised = [side for side in gave if isinstance(side, BaseException)]
-    # A side cancelled on its own, as the loop's shutdown cancels every task at once, is the reading cancelled: raised
-    # as a cancellation, it is told as one and goes on up, where in a group it would be told as a failure.
-    if any(isinstance(side, asyncio.CancelledError) for side in raised):
-        raise asyncio.CancelledError
-    if raised:
-        raise BaseExceptionGroup("a side of the reading raised", raised)
-    return tuple(gave)

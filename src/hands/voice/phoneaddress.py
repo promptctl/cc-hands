@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from hands.clock import Clock
-from hands.sessions.child import Children, Exited, Ran, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -131,7 +131,7 @@ async def _tailscale(children: Children, subcommand: str, *arguments: str) -> by
             return out
         case Ran(err=err) as failed:
             return Untailed(f"{asked} {summary(failed)}: {err.strip()}")
-        case unrun:
+        case TimedOut() | NeverStarted() as unrun:
             return Untailed(f"{asked} {summary(unrun)}")
 
 

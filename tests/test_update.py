@@ -26,9 +26,9 @@ from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, update
 from hands.daemon.restart import Outcome, Restarted, reply
 from hands.daemon.starting import invocation
-from hands.daemon.update import Failed, Installed, Ran, Step, Unfinished
+from hands.daemon.update import Failed, Installed, Step, StepRun, Unfinished
 from hands.sessions import child
-from hands.sessions.child import Children, Exited, Fields, NeverStarted, TimedOut
+from hands.sessions.child import Children, Exited, NeverStarted, Signalled, TimedOut
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -124,7 +124,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     # Cloned fresh from master, installed on uv.lock's versions into this hands' own environment, and its fritter and
     # the brain's Claude Code installed by the hands just installed.
     assert commands.ran == expected(home, work)
-    assert installed == Installed(update.Tool(), SHA, tuple(Ran(step, argv, Fields("exited", returncode=0)) for step, (argv, _cwd) in zip(TOOL_STEPS, expected(home, work), strict=True)), ())
+    assert installed == Installed(update.Tool(), SHA, tuple(StepRun(step, argv, {"ending": "exited", "returncode": 0}) for step, (argv, _cwd) in zip(TOOL_STEPS, expected(home, work), strict=True)), ())
 
 
 @pytest.mark.parametrize("failing", [step for step in TOOL_STEPS if step is not Step.RENDERED_PLUGINS])
@@ -615,7 +615,7 @@ def test_a_step_that_runs_past_its_limit_stops_the_update_saying_so(tmp_path: Pa
     assert isinstance(installed, Failed) and installed.step is Step.FETCH
     assert installed.said.endswith(f"ran past {update.limit(Step.FETCH):.1f}s:\nReceiving objects:  12%\n")
     # [LAW:nothing-unseen] the update's event says the step ran past its limit, not that it exited.
-    assert installed.ran[-1].ended == Fields("timed_out", limit=update.limit(Step.FETCH))
+    assert installed.ran[-1].ended == {"ending": "timed_out", "limit": update.limit(Step.FETCH)}
     assert commands.limits == [update.limit(step) for step in TOOL_STEPS[: TOOL_STEPS.index(Step.FETCH) + 1]]
 
 
@@ -653,6 +653,28 @@ def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(t
     # Nothing reads those trees, so hands is still restarted onto master.
     assert isinstance(installed, Installed)
     assert installed.advised == (update.Advised(Step.RENDERED_PLUGINS, "rm: permission denied"),)
+
+
+def test_a_removal_of_the_rendered_trees_ended_by_a_signal_stops_the_update(tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    # Gone past whatever code it fails with, never past a signal: a half-removed tree is not a refusal to remove it.
+    commands = Commands(tools_of_this_hands(tmp_path), Step.RENDERED_PLUGINS, child.Ran(Signalled(signal.SIGKILL), b"", ""))
+
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    assert isinstance(installed, update.Unfinished) and installed.step is Step.RENDERED_PLUGINS
+    assert installed.ran[-1].ended == {"ending": "signalled", "signal": "SIGKILL"}
+
+
+def test_a_plugin_list_that_exits_127_is_a_failed_listing_not_a_claude_that_is_not_there(tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    # A claude that started, and whose own shell could not find what it runs: the shell's 127, from a process that ran.
+    commands = Commands(tools_of_this_hands(tmp_path), Step.PLUGIN_LIST, exited(127, "", "node: not found\n"))
+
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    assert isinstance(installed, update.Unfinished) and installed.step is Step.PLUGIN_LIST
+    assert "exited 127" in installed.said and "node: not found" in installed.said
 
 
 @pytest.mark.parametrize("name", ["brain", "users"])

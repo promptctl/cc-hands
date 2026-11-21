@@ -13,9 +13,10 @@ import subprocess
 import sys
 import tokenize
 import uuid
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import pytest
 
@@ -24,7 +25,7 @@ from conftest import BrokenClock, VirtualClock, events, patiently
 from hands.clock import SYSTEM
 from hands.sessions import audit, child, warden
 from hands.sessions.audit import Entry
-from hands.sessions.child import Child, Children, Exited, Fields, NeverStarted, Ran, Signalled, TimedOut, Warden, fields, summary
+from hands.sessions.child import Child, Children, Exited, NeverStarted, Ran, Reaped, Running, Signalled, TimedOut, Warden, WardenGone, fields, summary
 
 
 def alive(pid: int) -> bool:
@@ -44,17 +45,20 @@ def runner(tmp_path: Path, recorded: list[Entry], clock: child.Clock = SYSTEM) -
 
 
 @pytest.mark.parametrize(
-    ("outcome", "ending", "said"),
+    ("ending", "facts", "said"),
     [
-        (Ran(Exited(3), b"", ""), Fields("exited", returncode=3), "exited 3"),
-        (Ran(Signalled(signal.SIGKILL), b"", ""), Fields("signalled", signal="SIGKILL"), "was ended by SIGKILL"),
-        (NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory")), Fields("never_started", errno="ENOENT"), "could not be started: No such file or directory"),
-        (TimedOut(5.0, b"", ""), Fields("timed_out", limit=5.0), "ran past 5.0s"),
+        (Ran(Exited(3), b"", ""), {"ending": "exited", "returncode": 3}, "exited 3"),
+        (Ran(Signalled(signal.SIGHUP), b"", ""), {"ending": "signalled", "signal": "SIGHUP"}, "was ended by SIGHUP"),
+        (NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory")), {"ending": "never_started", "errno": "ENOENT"}, "could not be started: No such file or directory"),
+        (TimedOut(5.0, b"", ""), {"ending": "timed_out", "limit": 5.0}, "ran past 5.0s"),
+        (Reaped(Exited(0), killed=False, leftovers=False), {"ending": "exited", "returncode": 0}, "exited 0"),
+        # hands' own kill is never read as a signal something else sent.
+        (Reaped(Signalled(signal.SIGKILL), killed=True, leftovers=False), {"ending": "killed"}, "was killed by hands"),
     ],
-    ids=["exited", "signalled", "never-started", "timed-out"],
+    ids=["exited", "signalled", "never-started", "timed-out", "reaped", "killed"],
 )
-def test_each_way_a_child_ends_is_its_own_fields_and_its_own_words(outcome: child.Outcome, ending: Fields, said: str) -> None:
-    assert (fields(outcome), summary(outcome)) == (ending, said)
+def test_each_way_a_child_ends_is_its_own_facts_and_its_own_words(ending: child.Outcome | Reaped, facts: dict[str, object], said: str) -> None:
+    assert (fields(ending), summary(ending)) == (facts, said)
 
 
 def test_a_signal_is_a_status_of_its_own_and_an_exit_code_is_its_code() -> None:
@@ -69,51 +73,93 @@ class Kills(Child):
     """A child that is never started: what is asked of it is the policy's alone."""
 
     def __init__(self) -> None:
-        super().__init__("a child", Warden(Path("/unwritten")))
+        super().__init__(Warden(Path("/unwritten")))
         self.kills = 0
 
     def kill(self) -> None:
         self.kills += 1
 
 
-OWNED = child._Owned(Ran(Exited(0), b"out", "err"), leftovers=False)  # pyright: ignore[reportPrivateUsage]
+# What a supervisor settles with, as the policy sees it: anything, handed back as it came.
+SETTLED = object()
+
+
+def policy_of(kills: Kills) -> Generator[float | None, object, object]:
+    """The policy of a wait of 5 seconds on `kills`."""
+    return child._policy(kills, 5.0)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_child_settled_inside_its_limit_is_how_it_ran_and_is_never_killed() -> None:
     kills = Kills()
-    policy = child._policy(kills, 5.0)  # pyright: ignore[reportPrivateUsage]
+    policy = policy_of(kills)
     assert next(policy) == 5.0
     with pytest.raises(StopIteration) as done:
-        policy.send(OWNED)
-    assert (done.value.value, kills.kills) == ((OWNED.outcome, False), 0)
+        policy.send(SETTLED)
+    assert (done.value.value, kills.kills) == (SETTLED, 0)
 
 
-def test_a_child_past_its_limit_is_killed_and_waited_for_and_keeps_what_it_printed() -> None:
+def test_a_child_past_its_limit_is_killed_and_waited_for_until_its_reap() -> None:
     kills = Kills()
-    policy = child._policy(kills, 5.0)  # pyright: ignore[reportPrivateUsage]
+    policy = policy_of(kills)
     next(policy)
-    # Time up: killed, then waited for with no limit, until its owner has reaped it.
-    assert (policy.send(None), kills.kills) == (None, 1)
+    # Time up: killed, then waited for with no limit, until its supervisor has reaped it.
+    assert (policy.send(child._TIME_UP), kills.kills) == (None, 1)  # pyright: ignore[reportPrivateUsage]
     with pytest.raises(StopIteration) as done:
-        policy.send(child._Owned(Ran(Signalled(signal.SIGKILL), b"half", "way"), leftovers=True))  # pyright: ignore[reportPrivateUsage]
-    assert done.value.value == (TimedOut(5.0, b"half", "way"), True)
+        policy.send(SETTLED)
+    assert done.value.value is SETTLED
 
 
 @pytest.mark.parametrize("interruption", [asyncio.CancelledError(), KeyboardInterrupt(), RuntimeError("no timer")], ids=["cancelled", "interrupted", "clock-failed"])
 def test_a_wait_interrupted_kills_the_child_waits_for_its_reap_and_raises_the_interruption(interruption: BaseException) -> None:
     kills = Kills()
-    policy = child._policy(kills, 5.0)  # pyright: ignore[reportPrivateUsage]
+    policy = policy_of(kills)
     next(policy)
     assert (policy.throw(interruption), kills.kills) == (None, 1)
     with pytest.raises(type(interruption)):
-        policy.send(OWNED)
+        policy.send(SETTLED)
 
 
 def test_what_failed_once_the_child_ran_is_raised_as_itself() -> None:
-    policy = child._policy(Kills(), 5.0)  # pyright: ignore[reportPrivateUsage]
+    policy = policy_of(Kills())
     next(policy)
     with pytest.raises(OSError, match="could not be read"):
         policy.send(OSError("the output could not be read"))
+
+
+class Refusing(Warden):
+    """A warden that is ready, and fails each record as a warden that ended and could not be started again does."""
+
+    def ready(self) -> None:
+        pass
+
+    def added(self, group: int) -> None:
+        raise WardenGone("no warden could be started in place of the one that ended")
+
+
+@dataclass
+class Started:
+    """A process as Popen gives one, that was never made: its pid, and a wait that has nothing to wait for."""
+
+    pid: int
+
+    def wait(self) -> int:
+        return 0
+
+
+def test_a_child_the_warden_could_not_record_is_killed_once_and_never_after_its_reap(monkeypatch: pytest.MonkeyPatch) -> None:
+    killed: list[int] = []
+
+    def kill(group: int) -> bool:
+        killed.append(group)
+        return False
+
+    monkeypatch.setattr(child.warden, "killed", kill)
+    supervised = Child(Refusing(Path("/unwritten")))
+    with pytest.raises(WardenGone):
+        supervised.supervise(lambda: cast(subprocess.Popen[bytes], Started(4242)))
+    # Reaped as the failure went up: a kill after it, as a stop's would be, signals no group whose pid is free again.
+    supervised.kill()
+    assert killed == [4242]
 
 
 def test_output_files_that_cannot_be_made_are_a_child_that_never_started_and_none_is_left_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -155,19 +201,31 @@ def test_the_warden_refuses_a_line_hands_never_writes(line: bytes) -> None:
         warden.after(frozenset(), line)
 
 
-def test_the_warden_counts_a_group_gone_or_all_exited_as_nothing_killed(monkeypatch: pytest.MonkeyPatch) -> None:
-    def killpg(group: int, _signal: int) -> None:
-        match group:
-            case 1:
-                raise ProcessLookupError(errno.ESRCH, "No such process")
-            case 2:
-                # What macOS says to a group whose processes have all exited but are not yet reaped.
-                raise PermissionError(errno.EPERM, "Operation not permitted")
-            case _:
-                pass
+@pytest.mark.parametrize(("raised", "left"), [(ProcessLookupError(errno.ESRCH, "No such process"), False), (PermissionError(errno.EPERM, "Operation not permitted"), False), (None, True)], ids=["gone", "all-exited", "running"])
+def test_a_group_gone_or_all_exited_is_nothing_left_to_kill(raised: OSError | None, left: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    def killpg(_group: int, _signal: int) -> None:
+        # EPERM is what macOS says to a group whose processes have all exited but are not yet reaped.
+        if raised is not None:
+            raise raised
 
     monkeypatch.setattr(warden.os, "killpg", killpg)
-    assert warden.kill(frozenset({1, 2, 3})) == 1
+    assert warden.killed(7) is left
+
+
+def test_the_warden_ends_every_group_recorded_around_a_line_it_cannot_read_and_says_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    killed: list[int] = []
+
+    def kill(group: int) -> bool:
+        killed.append(group)
+        return True
+
+    monkeypatch.setattr(warden, "killed", kill)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"+10\n+what\n+11\n-10\n")))
+    warden.main(tmp_path / "audit", 1)
+    assert killed == [11]
+    [said] = wardens(tmp_path / "audit")
+    assert (said["outcome"], said["facts"]["recorded"], said["facts"]["killed"]) == ("failed", 1, 1)
+    assert "b'+what'" in said["error"]
 
 
 # ---- [LAW:single-enforcer] every start outside the runner names its owner where it is made.
@@ -311,11 +369,26 @@ def test_a_child_waited_on_from_a_blocking_thread_is_held_to_the_same_limit(tmp_
     assert ran.facts["ending"] == "timed_out"
 
 
+class BreaksOnceStarted(VirtualClock):
+    """A clock whose sleep fails once the child has written its pid: its kill lands on a child that is running."""
+
+    def __init__(self, pid: Path) -> None:
+        super().__init__()
+        self._pid = pid
+
+    def sleep(self, seconds: float) -> asyncio.Future[None]:
+        return asyncio.ensure_future(self._broken())
+
+    async def _broken(self) -> None:
+        await patiently(lambda: self._pid.exists() and bool(self._pid.read_text().strip()), lambda: None)
+        raise RuntimeError("no timer")
+
+
 @pytest.mark.outside
 async def test_a_child_whose_clock_fails_is_killed_and_reaped_before_the_failure_leaves(tmp_path: Path) -> None:
     pid = tmp_path / "pid"
     with pytest.raises(RuntimeError, match="no timer"):
-        await runner(tmp_path, [], BrokenClock()).run("sh", "-c", f"echo $$ > {pid}; exec sleep 600", limit=5.0)
+        await runner(tmp_path, [], BreaksOnceStarted(pid)).run("sh", "-c", f"echo $$ > {pid}; exec sleep 600", limit=5.0)
     assert not alive(int(pid.read_text()))
 
 
@@ -391,12 +464,37 @@ async def test_a_terminal_child_stopped_on_a_clock_that_fails_is_killed_and_reap
         finally:
             os.close(write)
 
-    running = await runner(tmp_path, []).terminal("stubborn", popen)
+    recorded: list[Entry] = []
+    running = await runner(tmp_path, recorded).terminal("stubborn", popen)
+    assert isinstance(running, Running), running
     with os.fdopen(read, "rb") as ready:
         assert ready.readline() == b"ready\n"
     with pytest.raises(RuntimeError, match="no timer"):
         await running.stopped(BrokenClock(), 5)
-    assert running.ended.result() == Signalled(signal.SIGKILL)
+    match running.ended.result():
+        case Reaped(killed=killed):
+            assert killed
+        case other:
+            raise AssertionError(f"a terminal child killed at its stop was {other}")
+    # [LAW:nothing-unseen] a terminal child is a child.run of its own, its kill hands' and never a signal's.
+    [ran] = events(recorded, "child.run")
+    assert (ran.outcome, ran.facts["program"], ran.facts["ending"]) == ("failed", "stubborn", "killed")
+
+
+@pytest.mark.outside
+async def test_a_terminal_child_that_could_not_be_started_never_started_and_says_so(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+
+    def popen() -> subprocess.Popen[bytes]:
+        return subprocess.Popen(["/nonexistent/hands-no-such-terminal"], start_new_session=True)
+
+    match await runner(tmp_path, recorded).terminal("absent", popen):
+        case NeverStarted(error=error):
+            assert error.errno == errno.ENOENT
+        case other:
+            raise AssertionError(f"a terminal program that is not there was {other}")
+    [ran] = events(recorded, "child.run")
+    assert (ran.outcome, ran.facts["ending"], ran.facts["errno"]) == ("failed", "never_started", "ENOENT")
 
 
 # ---- No child outlives hands, however hands ends.
@@ -422,6 +520,12 @@ match ending:
         os.kill(os.getpid(), signal.SIGTERM)
     case "kill":
         os.kill(os.getpid(), signal.SIGKILL)
+    case "warden-killed":
+        first = children._warden._running.process.pid
+        os.kill(first, signal.SIGKILL)
+        while children._warden._running is None or children._warden._running.process.pid == first:
+            time.sleep(0.01)
+        os.kill(os.getpid(), signal.SIGKILL)
     case "exec":
         os.execv("/usr/bin/true", ["true"])
     case "failed-exec":
@@ -436,7 +540,7 @@ match ending:
 
 
 @pytest.mark.outside
-@pytest.mark.parametrize("ending", ["exit", "crash", "stop", "kill", "exec", "failed-exec"])
+@pytest.mark.parametrize("ending", ["exit", "crash", "stop", "kill", "warden-killed", "exec", "failed-exec"])
 async def test_no_child_outlives_hands_however_hands_ends(ending: str, tmp_path: Path) -> None:
     pid = tmp_path / "pid"
     ended = subprocess.run([sys.executable, "-c", ENDING, str(tmp_path / "audit"), str(pid), ending], capture_output=True, text=True, timeout=60)

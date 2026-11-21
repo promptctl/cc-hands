@@ -17,7 +17,7 @@ from pathlib import Path
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Unanswered
 from hands.sessions import audit, wide
-from hands.sessions.child import Children, Exited, Ran, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
 from hands.sessions.home import Home
 from hands.sessions.terminals import Process, process_table
 from hands.sessions.tmux import ran_at, shown
@@ -212,7 +212,7 @@ async def _tmux(children: Children, tmux: str, terminal: Mapping[str, str], *arg
     match await children.run(tmux, *arguments, limit=ANSWER_SECONDS, env=terminal):
         case Ran() as ran:
             return ran
-        case unanswered:
+        case TimedOut() | NeverStarted() as unanswered:
             raise NotStarted(f"tmux {arguments[0]} {summary(unanswered)}")
 
 

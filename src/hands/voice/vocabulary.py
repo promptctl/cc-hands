@@ -18,7 +18,8 @@ from pathlib import Path
 from mlx_whisper.tokenizer import get_encoding
 
 from hands.sessions.audit import Primed, Record
-from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, settled, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
+from hands.sessions.sides import settled
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.home import Home
 from hands.sessions.registry import Listing, Sessions

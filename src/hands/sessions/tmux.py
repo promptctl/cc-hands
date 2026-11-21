@@ -246,7 +246,8 @@ KEYS: Mapping[Keystroke, str] = {
 async def ran_at(children: Children, tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Unanswered:
     """How the tmux server at `socket` exited from `arguments`, or why it gave no answer: wedged, or `tmux` not run.
 
-    [LAW:single-enforcer] the one tmux answer limit, and the one translation of a tmux that gave none."""
+    [LAW:single-enforcer] the one limit on a running tmux server's answer, and the one translation of one that gave none.
+    Starting a server, which forks it and its first window, is startsession's own and slower."""
     match await children.run(tmux, "-S", str(socket), *arguments, limit=ANSWER_SECONDS):
         case Ran() as ran:
             return ran

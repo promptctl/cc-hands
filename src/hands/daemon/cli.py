@@ -237,8 +237,6 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     recalling.add_argument("words", nargs="*", help="words every moment printed holds, in any case")
     recalling.add_argument("-n", "--most", type=int, default=20, help="how many of the newest matching moments to print")
     arguments = parser.parse_args(argv)
-    # [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice: the
-    # token a command needs is in the process's environment by then. After parsing, so --help and --version read nothing.
     try:
         # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
         # A relative --home is this directory's, made absolute here, since the home is written into the shim.
@@ -251,26 +249,33 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
         # [LAW:single-enforcer] the one runner of every child this process starts, killing each at its caller's limit and
         # every one still running once the process has ended, however it ended.
         children = Children(clock, audit_log.record, home.audit)
-        # [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice:
-        # the token a command needs is in the process's environment by then. After parsing, so --help and --version read
-        # nothing, and once the audit log is open, so a keychain that could not say is logged where every error is.
-        from hands.voice.library import KeychainUnreadable, hub_token
-
-        try:
-            token = hub_token(children, os.environ)
-        except KeychainUnreadable as error:
-            # [LAW:no-silent-failure] said, and gone past: a voice whose weights need the token fails at its choice, naming them.
-            logger.error(f"{error}; hands goes on without a Hugging Face token")
-            token = None
-        if token is not None:
-            os.environ["HF_TOKEN"] = token
         match arguments.command:
-            case "run":
-                return run_daemon(children, home, audit_log, arguments.restarted, arguments.model)
             case "tmux-status":
+                # tmux runs it on every refresh of its status line: it reads hands' heartbeat, and starts no child.
                 return show_segment(clock, home)
+            case "run":
+                return run_daemon(tokened(children), home, audit_log, arguments.restarted, arguments.model)
             case _:
-                return commanded(children, home, audit_log.record, arguments)
+                return commanded(tokened(children), home, audit_log.record, arguments)
+
+
+def tokened(children: Children) -> Children:
+    """`children`, once the Hugging Face token is in the process's environment, where the cloning weights read it.
+
+    [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice: the
+    token a command needs is in the environment by then. After parsing, so --help and --version read nothing, and once
+    the audit log is open, so a keychain that could not say is logged where every error is."""
+    from hands.voice.library import KeychainUnreadable, hub_token
+
+    try:
+        token = hub_token(children, os.environ)
+    except KeychainUnreadable as error:
+        # [LAW:no-silent-failure] said, and gone past: a voice whose weights need the token fails at its choice, naming them.
+        logger.error(f"{error}; hands goes on without a Hugging Face token")
+        token = None
+    if token is not None:
+        os.environ["HF_TOKEN"] = token
+    return children
 
 
 def model_id(text: str) -> str:
@@ -699,7 +704,8 @@ def retire(indicator: int, grace: float = RETIRE_GRACE_SECONDS) -> Retired:
         said_exited(status)
         return "exited"
     # Still this process's child and unreaped, so the pid is the indicator's and no other process's. Its group goes
-    # with it, the notices it was posting included, as Child.killed ends a child hands started.
+    # with it, the notices it was posting included, as the runner ends the group of each child it starts
+    # (hands.sessions.child); the indicator is started outside it, and asked first, so its end is its own.
     signalled(indicator, signal.SIGTERM)
     statuses: list[int] = []
     waiter = threading.Thread(target=lambda: statuses.append(os.waitpid(indicator, 0)[1]), name="retire", daemon=True)

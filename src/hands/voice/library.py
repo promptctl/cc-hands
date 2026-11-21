@@ -102,7 +102,7 @@ KEYCHAIN_SECONDS = 10.0
 
 
 class KeychainUnreadable(Exception):
-    """The keychain could not say whether it holds the token: `security` failed, hung, or printed no text."""
+    """The keychain could not say what token it holds: `security` failed, hung, or printed no text, or nothing."""
 
 
 def hub_token(children: Children, environment: Mapping[str, str]) -> str | None:
@@ -122,10 +122,14 @@ def _keychain_token(children: Children) -> str | None:
     match children.run_blocking("security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w", limit=KEYCHAIN_SECONDS):
         case Ran(status=Exited(code=0), out=out):
             try:
-                return out.decode().strip() or None
+                token = out.decode().strip()
             except UnicodeDecodeError:
                 # The token itself is never said: only that it was not text.
                 raise KeychainUnreadable(f"the keychain's {KEYCHAIN_ITEM} is not text") from None
+            if not token:
+                # [LAW:parse-dont-validate] an item that holds nothing is no token, and never the keychain holding none.
+                raise KeychainUnreadable(f"the keychain's {KEYCHAIN_ITEM} is empty")
+            return token
         # [LAW:domain-language] errSecItemNotFound, as `security` exits with it: the keychain holds no such item.
         case Ran(status=Exited(code=44)):
             return None

@@ -53,7 +53,7 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_declared
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, Signalled, TimedOut, status_of, summary
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
@@ -435,7 +435,7 @@ class InTmux:
 
     async def _ended(self) -> int:
         # The client exits once the pane has written fritter's status, or the session is gone without it.
-        await asyncio.shield(self._client.exit)
+        await asyncio.shield(self._client.ended)
         # The client lets go as the session ends, which may be before the pane's shell has written fritter's status.
         while not (self._workspace / "status").exists() and (shell := self.shell) is not None and _alive(shell):
             await self._clock.sleep(0.02)
@@ -549,8 +549,11 @@ async def in_tmux(children: Children, station: Station, argv: Sequence[str], wor
         # is the size of whoever watches it.
         + f"\nwhile [ ! -e {shlex.quote(str(status))} ] && {tmuxed} has-session -t ={session} 2>/dev/null; do {tmuxed} attach-session -f ignore-size -t ={session} || sleep 0.2; done\n"
     )
-    client = await on_terminal(children, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited)
-    return InTmux(children, client, tmux, socket, session, workspace)
+    match await on_terminal(children, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited):
+        case NeverStarted() as never:
+            raise Unstartable(f"the brain's tmux client {summary(never)}")
+        case ClaudeCode() as client:
+            return InTmux(children, client, tmux, socket, session, workspace)
 
 
 class BrainGone(Exception):
@@ -664,9 +667,14 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
-    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))  # [LAW:single-enforcer] exception: the person at this terminal owns the login, which runs on it as long as they take
-    if signed.returncode != 0:
-        raise LoginFailed(f"{ran} exited {signed.returncode}")
+    # The terminal's foreground job, hands' own process group, so it reads the keyboard: in a group of its own, one the
+    # warden could end, it would be cut off from the terminal the person logs in at.
+    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))  # [LAW:single-enforcer] exception: the person at this terminal owns the login, which runs in hands' foreground job for as long as they take
+    match status_of(signed.returncode):
+        case Exited(code=0):
+            pass
+        case Exited() | Signalled() as unsigned:
+            raise LoginFailed(f"{ran} {summary(unsigned)}")
     # A first run quit before its last screen exits 0 as one that answered them all.
     answered(config_dir)
     held = logged_in(children, config_dir, base_url, inherited)
@@ -716,6 +724,8 @@ def logged_in(children: Children, config_dir: Path, base_url: str, inherited: Ma
     none, or one whose requests do not reach hands' proxy, and Unstartable when Claude Code could not be asked. Blocks."""
     # Whatever it exits with, its status is read: one with no login says so in what it prints.
     match children.run_blocking(str(brain_claude(config_dir)), "auth", "status", limit=AUTH_STATUS_SECONDS, env=environment(config_dir, base_url, inherited)):
+        case Ran(status=Signalled()) as ended:
+            raise Unstartable(f"`claude auth status` for the brain {summary(ended)}")
         case Ran(out=out, err=err):
             pass
         case TimedOut() | NeverStarted() as unasked:
@@ -1938,8 +1948,10 @@ async def _typist(children: Children, running: InTmux, sockets: Path, session: S
     while clock.now() < deadline and not running.exit.done():
         found = [path for path in sockets.rglob("*") if path.is_socket()]
         wrapper = running.fritter
-        child = None if wrapper is None else await _child_of(children, wrapper)
-        if found and wrapper is not None and child is not None:
+        child = Childless(waiting) if wrapper is None else await _child_of(children, wrapper)
+        if isinstance(child, Childless):
+            waiting = child.why
+        elif found and wrapper is not None:
             typist = Typist(session, found[0], child)
             try:
                 await asyncio.to_thread(typist.pasting)
@@ -1969,17 +1981,24 @@ def exited(code: int) -> str:
     return "the brain's tmux session was ended under it" if code == PANE_ENDED else f"fritter exited ({code})"
 
 
-async def _child_of(children: Children, pid: int) -> int | None:
-    """The process `pid` started, fritter's claude, or None while it has started none: pgrep found nothing, or it did not
-    answer in time and the start's own deadline goes on waiting."""
+@dataclass(frozen=True)
+class Childless:
+    """No process yet that `pid` started, and why: pgrep found none, or did not answer in time. The start's own
+    deadline goes on waiting either way, and says this why if it runs out."""
+
+    why: str
+
+
+async def _child_of(children: Children, pid: int) -> int | Childless:
+    """The process `pid` started, fritter's claude, or why there is none yet."""
     match await children.run("pgrep", "-P", str(pid), limit=PGREP_SECONDS):
         case Ran(status=Exited(code=0), out=out) if out.split():
             return int(out.split()[0])
         # [LAW:domain-language] pgrep's own exit for "no process matched".
         case Ran(status=Exited(code=1)):
-            return None
-        case TimedOut():
-            return None
+            return Childless("fritter had not started the brain and opened its socket")
+        case TimedOut() as wedged:
+            return Childless(f"pgrep, asked what fritter ({pid}) started, {summary(wedged)}")
         case Ran(err=err) as failed:
             raise Unstartable(f"pgrep, asked what fritter ({pid}) started, {summary(failed)}: {err.strip() or 'and named nothing'}")
         case NeverStarted() as unrun:

@@ -207,8 +207,9 @@ WARDEN_AUDIT = Path(tempfile.gettempdir()) / "hands-tests-warden"
 
 
 def children_on(clock: Clock) -> Children:
-    """[LAW:locality-or-seam] the one place tests build the runner of children: on `clock`, its events discarded. Its
-    warden starts only with its first child, so a test that starts none starts no process."""
+    """[LAW:locality-or-seam] the one place a test's own process builds the runner of children: on `clock`, its events
+    discarded; a script a test runs as a process of its own builds its own, as hands does. Its warden starts only with its
+    first child, so a test that starts none starts no process."""
     return Children(clock, lambda _: None, WARDEN_AUDIT)
 
 

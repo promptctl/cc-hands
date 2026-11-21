@@ -2,7 +2,7 @@
 
 from loguru import logger
 
-from hands.sessions.child import Children, Exited, Ran, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
 
 # The text is passed as an argument, never spliced into the script, so nothing in it needs quoting.
 _SCRIPT = ("on run argv", 'display notification (item 1 of argv) with title "hands"', "end run")
@@ -26,6 +26,6 @@ async def post_notification(text: str, children: Children) -> bool:
         case Ran(err=err) as refused:
             logger.error(f"osascript refused to post {text!r}: it {summary(refused)}: {err.strip()}")
             return False
-        case unrun:
+        case TimedOut() | NeverStarted() as unrun:
             logger.error(f"osascript did not post {text!r}: it {summary(unrun)}")
             return False

@@ -47,7 +47,8 @@ from typing import assert_never, cast
 from hands.daemon import readiness
 from hands.daemon.starting import invocation
 from hands.sessions import child
-from hands.sessions.child import Children, Exited, Fields, NeverStarted, Outcome, Signalled, Status, TimedOut, fields, summary
+from hands.sessions.child import Children, Exited, NeverStarted, Outcome, TimedOut, fields, summary
+from hands.sessions.wide import Fact
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.payload import Rejected
@@ -58,10 +59,6 @@ BRANCH = "master"
 # The name `uv tool install` gives hands' environment in its tool directory: the package's.
 TOOL = "hands"
 COMMIT = re.compile(r"[0-9a-f]{40}")
-# [LAW:domain-language] the shell's exit for a command that could not be started, which a step reads a NeverStarted as.
-UNSTARTABLE = 127
-# Every exit but success, for a step that is said and gone past whichever way it fails.
-ANY_FAILURE = frozenset(range(1, 256))
 # The marketplace hands' plugin comes from, named by the plugin's own id.
 MARKETPLACE = PLUGIN_ID.partition("@")[2]
 # What `hands plugin` rendered its digest directories under, in the home: nothing writes or reads it any more, so its
@@ -123,13 +120,24 @@ class Step(StrEnum):
     RENDERED_PLUGINS = "rendered-plugins"
 
 
-@dataclass(frozen=True)
-class Done:
-    """What one command did: its exit code, what it printed to its output, and what to its errors."""
+# [LAW:types-are-the-program] the ends of a step's command it says and goes on past, read off how it ended: never a code
+# standing in for a signal, or for a command that could not start.
+type Past = Callable[[child.Ran | NeverStarted], bool]
 
-    code: int
-    output: str
-    errors: str
+
+def _exits(*codes: int) -> Past:
+    """Past these exits alone."""
+    return lambda ended: isinstance(ended, child.Ran) and ended.status in [Exited(code) for code in codes]
+
+
+def _unstarted(ended: child.Ran | NeverStarted) -> bool:
+    """Past a command that could not start: a claude that is not there."""
+    return isinstance(ended, NeverStarted)
+
+
+def _any_exit(ended: child.Ran | NeverStarted) -> bool:
+    """Past every exit but success, for a step said and gone past whichever code it fails with; never past a signal."""
+    return isinstance(ended, child.Ran) and isinstance(ended.status, Exited) and ended.status.code != 0
 
 
 type Run = Callable[[Sequence[str], Path, Mapping[str, str], float], Outcome]
@@ -156,12 +164,12 @@ def limit(step: Step) -> float:
 
 
 @dataclass(frozen=True)
-class Ran:
-    """One step as the update's event records it: the step, the command it ran, and how it ended."""
+class StepRun:
+    """One step as the update's event records it: the step, the command it ran, and how it ended (`child.fields`)."""
 
     step: Step
     argv: tuple[str, ...]
-    ended: Fields
+    ended: Mapping[str, Fact]
 
 
 @dataclass(frozen=True)
@@ -180,7 +188,7 @@ class Installed:
 
     target: Target
     sha: str
-    ran: tuple[Ran, ...]
+    ran: tuple[StepRun, ...]
     advised: tuple[Advised, ...]
 
 
@@ -191,7 +199,7 @@ class Failed:
 
     step: Step
     said: str
-    ran: tuple[Ran, ...]
+    ran: tuple[StepRun, ...]
 
 
 @dataclass(frozen=True)
@@ -203,7 +211,7 @@ class Unfinished:
     sha: str
     step: Step
     said: str
-    ran: tuple[Ran, ...]
+    ran: tuple[StepRun, ...]
 
 
 class _Stopped(Exception):
@@ -217,7 +225,7 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
     for the uv tool environment; or the step that failed. `runs_from` is the environment the running hands runs from,
     and its restart starts it again on, by its own word: None with none running, or one from before its heartbeat said. `caller` is the caller's
     environment, whose Claude Code config the plugin steps run under."""
-    ran: list[Ran] = []
+    ran: list[StepRun] = []
     advised: list[Advised] = []
     # The target and commit installed, once the install step has put it in hands' environment, or the pull has put the
     # checkout's commit where hands runs from: a failure from then on is Unfinished.
@@ -226,36 +234,52 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
     def ending(name: Step, said: str) -> _Stopped:
         return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(*installed, name, said, tuple(ran)))
 
-    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
-        """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past,
-        and on running past its limit, which no step goes past."""
+    def took(name: Step, argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Outcome:
         outcome = run(argv, cwd, env, limit(name))
-        ran.append(Ran(name, tuple(argv), fields(outcome)))
+        ran.append(StepRun(name, tuple(argv), fields(outcome)))
+        return outcome
+
+    def ended_by(name: Step, argv: Sequence[str], outcome: Outcome) -> _Stopped:
         command = " ".join(argv)
         match outcome:
-            case TimedOut(out=out, err=err):
-                # What it printed before it was killed is how far it got.
-                raise ending(name, f"`{command}` {summary(outcome)}:\n{err}{out.decode(errors='replace')}")
-            case NeverStarted(error=error):
-                done = Done(UNSTARTABLE, "", str(error))
-            case child.Ran(status=status, out=out, err=err):
-                done = Done(_code(status), out.decode(errors="replace"), err)
-        if done.code in past:
-            advised.append(Advised(name, done.errors.strip()))
-        elif done.code != 0:
-            raise ending(name, f"`{command}` {summary(outcome)}:\n{done.errors}{done.output}")
-        return done
+            case child.Ran(out=out, err=err) | TimedOut(out=out, err=err):
+                # What it printed before it ended is how far it got.
+                return ending(name, f"`{command}` {summary(outcome)}:\n{err}{out.decode(errors='replace')}")
+            case NeverStarted():
+                return ending(name, f"`{command}` {summary(outcome)}")
+
+    def step(name: Step, argv: Sequence[str], cwd: Path, env: Mapping[str, str] = caller) -> str:
+        """What the step printed, once it exited 0; any other end stops the update."""
+        match outcome := took(name, argv, cwd, env):
+            case child.Ran(status=Exited(code=0), out=out):
+                return out.decode(errors="replace")
+            case child.Ran() | TimedOut() | NeverStarted():
+                raise ended_by(name, argv, outcome)
+
+    def advisable(name: Step, argv: Sequence[str], cwd: Path, past: Past, env: Mapping[str, str] = caller) -> str | Advised:
+        """`step`, which says and goes on past the ends `past` goes past; running past its limit is never one."""
+        match outcome := took(name, argv, cwd, env):
+            case child.Ran(status=Exited(code=0), out=out):
+                return out.decode(errors="replace")
+            case child.Ran(err=err) as ended if past(ended):
+                advised.append(advice := Advised(name, err.strip()))
+                return advice
+            case NeverStarted(error=error) as ended if past(ended):
+                advised.append(advice := Advised(name, str(error)))
+                return advice
+            case child.Ran() | TimedOut() | NeverStarted():
+                raise ended_by(name, argv, outcome)
 
     def commit(cwd: Path, of: str) -> str:
         # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
-        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).output.strip()
+        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).strip()
         if not COMMIT.fullmatch(sha):
             raise ending(Step.COMMIT, f"git named the commit {of} is at as {sha!r}, not a commit's 40 hex digits")
         return sha
 
     clone, constraints = work / "cc-hands", work / "constraints.txt"
     try:
-        tool = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
+        tool = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).strip()) / TOOL
         target = parse_target(prefix, tool)
         if isinstance(target, Unsupported):
             raise ending(Step.WHERE, f"this hands runs from {prefix}, which is neither {tool}, the uv tool environment the update installs master into, nor the .venv of a checkout of hands, so a restart would not run what it updated: run `hands update` with the hands `uv tool install` put on PATH, or from a checkout's own .venv")
@@ -278,20 +302,23 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
                 installed = (target, sha)
                 step(Step.SYNC, ("uv", "sync", "--locked", "--reinstall-package", TOOL), root)
         # Run by the interpreter the install just filled, so each is the target's own command.
-        step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
+        advisable(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, _exits(Installing.UNFOUND))
         step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
         # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
         # installed for the user or it is not; no claude at all is no plugin.
         under = readiness.plugin_environment(home, caller)
-        listing = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
-        try:
-            held = listing.code != UNSTARTABLE and bool(readiness.installed_everywhere(listing.output))
-        except Rejected as error:
-            raise ending(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
+        match advisable(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, _unstarted, under):
+            case Advised():
+                held = False
+            case str() as listing:
+                try:
+                    held = bool(readiness.installed_everywhere(listing))
+                except Rejected as error:
+                    raise ending(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
         if held:
             step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
             step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
-        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
+        advisable(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, _any_exit)
     except _Stopped as stopped:
         return stopped.stopped
     return Installed(target, sha, tuple(ran), tuple(advised))
@@ -306,12 +333,3 @@ def run(children: Children, argv: Sequence[str], cwd: Path, env: Mapping[str, st
     """Run `argv` in `cwd`, with nothing to read and no terminal to ask on, inside `limit` seconds; how it ended."""
     # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
     return children.run_blocking(*argv, limit=limit, cwd=cwd, env={**env, "GIT_TERMINAL_PROMPT": "0"})
-
-
-def _code(status: Status) -> int:
-    """`status` as the exit code a step's past is read in: a signal as a shell gives one, 128 and its number."""
-    match status:
-        case Exited(code=code):
-            return code
-        case Signalled(signal=ended):
-            return 128 + ended

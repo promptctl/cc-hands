@@ -19,7 +19,7 @@ from pathlib import Path
 
 from hands.clock import Clock
 from hands.core.session import ESCAPES
-from hands.sessions.child import Children, Exited, Running, Signalled
+from hands.sessions.child import Children, NeverStarted, Running
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -77,8 +77,8 @@ class ClaudeCode:
         self._clock = clock
         self._child = child
         self._terminal = terminal
-        # Its exit code, once it has ended and what it showed last is read.
-        self.exit = asyncio.ensure_future(self._run_out())
+        # Done once it has ended and what it showed last is read; how it ended is its child.run event's.
+        self.ended = asyncio.ensure_future(self._run_out())
 
     @property
     def pid(self) -> int:
@@ -90,25 +90,19 @@ class ClaudeCode:
 
     async def stop(self) -> None:
         await self._child.stopped(self._clock, STOP_SECONDS)
-        await asyncio.shield(self.exit)
+        await asyncio.shield(self.ended)
 
-    async def _run_out(self) -> int:
-        match await asyncio.shield(self._child.ended):
-            case Exited(code=code):
-                pass
-            case Signalled(signal=ended):
-                # Popen's way to say it, which the brain's exit has always read: minus the signal.
-                code = -ended
+    async def _run_out(self) -> None:
+        await asyncio.shield(self._child.ended)
         try:
             # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
             async with self._clock.timeout(DRAIN_SECONDS):
                 await asyncio.shield(self._terminal.closed)
         except TimeoutError:
             pass
-        return code
 
 
-async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode:
+async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
     """Run `argv` in `cwd` and `environment` on a pseudo-terminal of hands' own, as a terminal emulator runs a program."""
     master, slave = pty.openpty()
     try:
@@ -139,7 +133,12 @@ async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, enviro
     except BaseException:
         os.close(master)
         raise
-    return ClaudeCode(children.clock, child, _Terminal(master))
+    match child:
+        case NeverStarted():
+            os.close(master)
+            return child
+        case Running():
+            return ClaudeCode(children.clock, child, _Terminal(master))
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
