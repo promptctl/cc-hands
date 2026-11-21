@@ -597,7 +597,7 @@ async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_inter
     turn = brain._turn  # pyright: ignore[reportPrivateUsage]
     assert turn is not None
     assert brain.interrupt(brain.answering()) is True
-    # Each dialog is refused in the step the Escape goes, whether or not Claude Code has read the key, or it is pressed yet.
+    # Each dialog is refused within the loop's steps of the stop, whether or not the Escape is pressed yet or Claude Code has read it.
     await settled()
     assert all(post.done() for post in posts)
     assert [post.result() for post in posts] == [hook_output(DenyAndInterrupt(STOPPED))] * count
