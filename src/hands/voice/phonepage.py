@@ -47,11 +47,16 @@ def parse_offer(body: object) -> Offer:
 
 
 def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Application:
-    """The page, and the one route that takes its calls."""
+    """The page, the script every phone page asks hands through, and the one route that takes its calls."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    script = resources.files("hands.voice").joinpath("hands.js").read_text()
 
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+    # Never kept by the browser, as no page is: a page and the script it asks hands through are always one run's.
+    async def scripted(_request: web.Request) -> web.Response:
+        return web.Response(text=script, content_type="text/javascript", headers={"Cache-Control": "no-store"})
 
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
@@ -76,6 +81,7 @@ def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Appli
 
     app = web.Application()
     app.router.add_get("/", shown)
+    app.router.add_get("/hands.js", scripted)
     app.router.add_post("/offer", offered)
     return app
 

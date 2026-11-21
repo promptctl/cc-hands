@@ -9,6 +9,7 @@ loop here waits on any version.
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from typing import TypedDict
 
 from hands.clock import Clock
 from hands.sessions.wide import Fact, annotate
@@ -19,13 +20,25 @@ WAIT_SECONDS = 25.0
 POLL_SECONDS = 0.25
 
 
+class Read[V, T](TypedDict):
+    """A read's answer, every page's alike (hands.voice.hands.js reads it): the version of what it shows, which the page
+    says it has seen with its next read; how long that read may wait at hands, so the page bounds it by hands' wait and
+    not by a copy of it; the Mac's clock as hands answered, which the page times what hands shows by, never by its own;
+    and what it shows, which the version is the version of."""
+
+    seen: V
+    waits: float
+    now: float
+    shown: T
+
+
 def version_of(shown: object) -> str:
     """The version of what a page shows: the same for the same JSON, whatever order its keys were built in."""
     return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()[:16]
 
 
-async def waited[V: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[V, T]]], seen: V | None) -> tuple[V, T]:
-    """What `look` finds once its version is not `seen`, or as it is once WAIT_SECONDS have passed; a page that has seen
+async def waited[V: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[V, T]]], seen: V | None) -> Read[V, T]:
+    """The read of what `look` finds once its version is not `seen`, or as it is once WAIT_SECONDS have passed; a page that has seen
     nothing (None) is answered at once. The event of the unit open here says what the page had seen, how long it waited
     and how many looks it took, and whether what it found had changed.
     """
@@ -44,4 +57,4 @@ async def waited[V: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[V,
         # [LAW:nothing-unseen] a look that fails partway through the wait still says how far the wait had come.
         annotate(seen=seen, waited_ms=round((clock.now() - began) * 1000, 1), looks=looks)
     annotate(changed=version != seen)
-    return version, found
+    return {"seen": version, "waits": WAIT_SECONDS, "now": clock.wall().timestamp(), "shown": found}

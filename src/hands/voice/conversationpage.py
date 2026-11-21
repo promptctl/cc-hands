@@ -101,6 +101,11 @@ def conversation_routes(clock: Clock, conversation: Conversation, typed: Callabl
     """
     page = resources.files("hands.voice").joinpath("conversation.html").read_text()
 
+    # The conversation as the page draws it, versioned by how many changes its moments have had.
+    async def look() -> tuple[int, dict[str, list[dict[str, str]]]]:
+        changes, moments = await conversation.caught_up()
+        return changes, {"moments": [_shown(moment) for moment in moments]}
+
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
@@ -111,10 +116,10 @@ def conversation_routes(clock: Clock, conversation: Conversation, typed: Callabl
         except Rejected as error:
             fail(str(error))
             return web.Response(status=400, text=str(error))
-        changes, moments = await waited(clock, conversation.caught_up, seen)
-        annotate(changes=changes)
-        count(moments=len(moments))
-        return web.json_response({"changes": changes, "moments": [_shown(moment) for moment in moments]})
+        read = await waited(clock, look, seen)
+        annotate(changes=read["seen"])
+        count(moments=len(read["shown"]["moments"]))
+        return web.json_response(read)
 
     @keyed(clock, "conversation.typed", record, key)
     async def sent(request: web.Request) -> web.Response:

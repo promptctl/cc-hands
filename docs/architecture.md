@@ -2156,9 +2156,17 @@ gives the prompt back to the input, and the Ctrl-C empties it), so what it asked
 with its next turn. Both routes are served beside the phone's page under its key
 (`hands.voice.keyed`): `GET /brain?seen=<version>` and `POST /brain/stop`. A read that has seen the
 work waits until it changes, by the conversation page's loop in `hands.voice.longpoll`, a look being
-a digest of what the stage holds in memory; its answer carries the Mac's clock, by which the page
-times the work. Each read is one `brain.read` event, with what the brain was doing, how many calls
+a digest of what the stage holds in memory. Each read is one `brain.read` event, with what the brain was doing, how many calls
 it ran, and the wait's facts; each Stop one `brain.stop`, with the turn it named and what came of it.
+
+**Every phone page asks hands through one module, `/hands.js`** (`src/hands/voice/hands.js`, served
+by `hands.voice.phonepage`), which each page imports: a request whose outcome is hands' answer, its
+refusal, or no answer and why; and a read for as long as the page is open. Every read is answered
+as `hands.voice.longpoll.Read`, `{seen, waits, now, shown}`, built by `waited` alone: the version of
+what it shows, how long the page's next read waits at hands, which bounds that read on the page,
+the Mac's clock as hands answered, by which the phone's page times the brain's work, and what it
+shows. A read refused with a 4xx ends the page's reading; any other failure reads again with
+nothing seen. `tests/test_handsjs.py` runs the module in QuickJS.
 
 **The conversation page is the log's conversation, with a box to type in**
 (`hands.voice.conversationpage`). It is served beside the phone's page, on its port and

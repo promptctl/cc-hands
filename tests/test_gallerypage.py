@@ -182,8 +182,8 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
     page.levels.level = "engaged"
     response = await page.client.get("/gallery/state", headers=KEYED)
     body = await response.json()
-    assert isinstance(body.pop("seen"), str)
-    assert body == {
+    assert (isinstance(body["seen"], str), body["waits"]) == (True, WAIT_SECONDS)
+    assert body["shown"] == {
         "voices": list(VOICES), "speaking_in": "charles",
         "levels": ["off", "wake word", "engaged"], "level": "engaged",
         "modalities": ["screen", "audio-only"], "modality": "screen",
@@ -206,7 +206,7 @@ async def test_a_read_that_has_seen_the_state_answers_once_a_choice_changes_it(p
     await page.client.post("/gallery/use", headers=KEYED, json={"voice": "bill_boerst"})
     page.clock.advance(POLL_SECONDS)
     body = await (await waiting).json()
-    assert (body["speaking_in"], body["seen"] != seen) == ("bill_boerst", True)
+    assert (body["shown"]["speaking_in"], body["seen"] != seen) == ("bill_boerst", True)
     assert page.events("gallery.read")[-1].facts["changed"] is True
 
 
@@ -227,7 +227,7 @@ async def test_a_run_on_another_model_answers_a_read_that_saw_the_run_before_at_
     seen = await _seen(page)
     page.own.running_on = MODELS[1]
     body = await (await page.client.get(f"/gallery/state?seen={seen}", headers=KEYED)).json()
-    assert (body["running_on"], body["seen"] != seen) == (MODELS[1], True)
+    assert (body["shown"]["running_on"], body["seen"] != seen) == (MODELS[1], True)
     assert page.events("gallery.read")[-1].facts["looks"] == 1
 
 

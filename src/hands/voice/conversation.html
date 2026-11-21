@@ -54,26 +54,18 @@
   <textarea id="text" rows="1" placeholder="Type to hands" aria-label="Type to hands" enterkeyhint="send"></textarea>
   <button id="send" type="submit">Send</button>
 </form>
-<script>
-"use strict";
-// The phone's key travels in the fragment, which the browser never sends with the page's own request.
-const key = decodeURIComponent(location.hash.slice(1));
+<script type="module">
+import {asked, reading} from "/hands.js";
+
 const moments = document.getElementById("moments");
 const state = document.getElementById("state");
 const form = document.getElementById("typing");
 const text = document.getElementById("text");
 const send = document.getElementById("send");
 document.getElementById("phone").href = `/${location.hash}`;
-// How long the page waits to read again after a read that failed, as hands is restarted or the network drops.
-const AGAIN_MS = 2000;
-
 // One line says how the page stands, and whoever said it, the reading or the sending, is the one that takes it back.
 function say(by, line, bad = false) { state.textContent = line; state.dataset.by = by; state.classList.toggle("bad", bad); }
 function unsay(by) { if (state.dataset.by === by) say(by, ""); }
-
-function asked(path, init = {}) {
-  return fetch(path, {...init, headers: {...init.headers, "Authorization": `Bearer ${key}`}});
-}
 
 function stamped(at) {
   const time = document.createElement("time");
@@ -113,31 +105,15 @@ function shown(moment) {
 // Whether the newest moment is in view, so new ones are followed only by a reader who has not scrolled back.
 function following() { return moments.scrollHeight - moments.scrollTop - moments.clientHeight < 40; }
 
-// Read the conversation for as long as the page is open: each read waits at hands until it changes from what was seen.
-async function reading() {
-  let seen = null;
-  for (;;) {
-    let read;
-    // Every way a read can fail, out of reach, refused, or cut off partway, says so and reads again.
-    try {
-      const response = await asked(seen === null ? "/conversation/moments" : `/conversation/moments?seen=${seen}`);
-      if (response.status === 401) { say("reading", "Open this page from the address `hands phone` prints.", true); return; }
-      if (!response.ok) throw new Error(await response.text());
-      read = await response.json();
-    } catch (error) {
-      say("reading", error instanceof TypeError ? "hands is out of reach; trying again…" : `hands could not read the conversation: ${error.message}`, true);
-      await new Promise(done => setTimeout(done, AGAIN_MS));
-      continue;
-    }
-    const followed = seen === null || following();
-    // Every read redraws the conversation whole; a tool call the reader opened stays open across it.
-    const opened = new Set([...moments.querySelectorAll("details[open]")].map(details => details.dataset.call));
-    moments.replaceChildren(...read.moments.map(shown));
-    for (const details of moments.querySelectorAll("details")) details.open = opened.has(details.dataset.call);
-    if (followed) moments.scrollTop = moments.scrollHeight;
-    unsay("reading");
-    seen = read.changes;
-  }
+// Every answer redraws the conversation whole; a tool call the reader opened stays open across it, and the newest moment
+// is followed only by a reader who has not scrolled back from it, as a page with nothing drawn yet has not.
+function drawn(read) {
+  const followed = following();
+  const opened = new Set([...moments.querySelectorAll("details[open]")].map(details => details.dataset.call));
+  moments.replaceChildren(...read.moments.map(shown));
+  for (const details of moments.querySelectorAll("details")) details.open = opened.has(details.dataset.call);
+  if (followed) moments.scrollTop = moments.scrollHeight;
+  unsay("reading");
 }
 
 async function sending(event) {
@@ -146,11 +122,14 @@ async function sending(event) {
   if (!words) return;
   send.disabled = true;
   try {
-    const response = await asked("/conversation/typed", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({text: words})});
-    if (response.ok) { text.value = ""; unsay("sending"); }
-    else say("sending", `Not sent: ${await response.text()}`, true);
-  } catch {
-    say("sending", "Not sent: hands is out of reach.", true);
+    const outcome = await asked("POST", "/conversation/typed", {text: words});
+    // Words whose answer was lost may have reached hands all the same: the conversation says whether they did, before
+    // they are sent again.
+    switch (outcome.kind) {
+      case "answered": text.value = ""; unsay("sending"); break;
+      case "refused": say("sending", `Not sent: ${outcome.text}`, true); break;
+      case "lost": say("sending", `Whether hands has it is not known: ${outcome.why}. If it is not in the conversation, send it again.`, true); break;
+    }
   } finally {
     send.disabled = false;
     text.focus();
@@ -163,7 +142,7 @@ text.addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); send.click(); }
 });
 
-if (key) reading(); else { say("reading", "Open this page from the address `hands phone` prints.", true); send.disabled = true; }
+reading("/conversation/moments", drawn, why => say("reading", why, true));
 </script>
 </body>
 </html>

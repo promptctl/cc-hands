@@ -8,7 +8,7 @@ import pytest
 
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.virtualclock import VirtualClock
-from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS, version_of, waited
+from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS, Read, version_of, waited
 
 
 class Shown:
@@ -24,10 +24,10 @@ class Shown:
         return version_of(self.text), self.text
 
 
-async def read(clock: VirtualClock, look: Callable[[], Awaitable[tuple[str, str]]], seen: str | None) -> tuple[tuple[str, str] | BaseException, WideEvent]:
+async def read(clock: VirtualClock, look: Callable[[], Awaitable[tuple[str, str]]], seen: str | None) -> tuple[Read[str, str] | BaseException, WideEvent]:
     """What the read answers, or what it raised, and the event of the unit it ran in."""
     recorded: list[WideEvent] = []
-    answered: tuple[str, str] | BaseException
+    answered: Read[str, str] | BaseException
     try:
         with unit("page.read", recorded.append, begun(clock)):
             answered = await waited(clock, look, seen)
@@ -40,14 +40,14 @@ async def read(clock: VirtualClock, look: Callable[[], Awaitable[tuple[str, str]
 async def test_a_page_that_has_seen_nothing_is_answered_at_once() -> None:
     clock, shown = VirtualClock(), Shown("charles")
     answered, event = await read(clock, shown.look, None)
-    assert answered == (version_of("charles"), "charles")
+    assert answered == Read(seen=version_of("charles"), waits=WAIT_SECONDS, now=clock.wall().timestamp(), shown="charles")
     assert (event.facts["looks"], event.facts["waited_ms"], event.facts["changed"]) == (1, 0.0, True)
 
 
 async def test_a_page_that_has_seen_something_else_is_answered_at_once() -> None:
     clock, shown = VirtualClock(), Shown("charles")
     answered, event = await read(clock, shown.look, version_of("a run before"))
-    assert answered == (version_of("charles"), "charles")
+    assert answered == Read(seen=version_of("charles"), waits=WAIT_SECONDS, now=clock.wall().timestamp(), shown="charles")
     assert (event.facts["looks"], event.facts["changed"]) == (1, True)
 
 
@@ -59,7 +59,7 @@ async def test_a_page_that_has_seen_what_is_shown_is_answered_once_it_changes() 
     shown.text = "bill_boerst"
     clock.advance(POLL_SECONDS)
     answered, event = await reading
-    assert answered == (version_of("bill_boerst"), "bill_boerst")
+    assert answered == Read(seen=version_of("bill_boerst"), waits=WAIT_SECONDS, now=clock.wall().timestamp(), shown="bill_boerst")
     assert (event.facts["looks"], event.facts["waited_ms"], event.facts["changed"]) == (2, POLL_SECONDS * 1000, True)
 
 
@@ -69,7 +69,7 @@ async def test_a_page_that_has_seen_what_is_shown_is_answered_with_it_unchanged_
     await clock.sleeping(POLL_SECONDS)
     clock.advance(WAIT_SECONDS)
     answered, event = await reading
-    assert answered == (version_of("charles"), "charles")
+    assert answered == Read(seen=version_of("charles"), waits=WAIT_SECONDS, now=clock.wall().timestamp(), shown="charles")
     assert (event.facts["waited_ms"], event.facts["changed"]) == (WAIT_SECONDS * 1000, False)
 
 
