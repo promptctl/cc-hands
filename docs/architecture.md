@@ -1171,7 +1171,7 @@ Claude Code opened itself stops the typed turn queued in it. A telling of a turn
 behind runs only once the turn ahead of it ends. Before a turn is typed, every dialog the brain holds is refused, and the
 turn waits, within its take, for each dialog's hook to be answered, so no key answers one. This order rests on Claude Code waiting on the
 brain's hooks, so the brain bounds its prompt hook and its Stop's hold by `TAKE_SECONDS`, and declares each hook's
-timeout past that bound (`hookconfig.brain_declared`). The hold ends the moment the Stop is decided: only a Stop still
+timeout past that bound (`hookconfig.BRAIN_HOOKS`). The hold ends the moment the Stop is decided: only a Stop still
 undecided waits it out, and letting it go sooner would fail every open turn rather than answer any. A prompt hook or Stop answered past `TAKE_SECONDS`, a Stop let go undecided, or
 either hook unparsed, loses the order: every open turn fails `OrderLost`, and none is guessed. Anything the model holds untold, or waiting in
 Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the

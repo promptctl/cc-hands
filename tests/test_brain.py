@@ -27,14 +27,15 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
-from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.session import BrainSession
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
-from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
-from hands.sessions.audit import Entry, segment
+from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed
+from hands.sessions.audit import Entry, Record, segment
 from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, unread
 import turns
 from turns import RECORDINGS, prompts, stops
@@ -208,6 +209,11 @@ def launch(tmp: Path) -> Launch:
     return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
 
 
+async def launched_brain(clock: Clock, launch: Launch, record: Record) -> Brain:
+    """The brain `start` launches, in the conversation it launches in, as `mind` hands it that conversation."""
+    return await start(clock, launch, BrainSession(launch.session), record)
+
+
 def untimed(facts: Mapping[str, Fact]) -> dict[str, Fact]:
     """A brain turn's facts but how long it waited for the prompt, which no test can name in advance."""
     return {name: fact for name, fact in facts.items() if name != "at_prompt_after"}
@@ -278,11 +284,15 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false"}
     assert "permissions" not in settings
     hooks = settings["hooks"]
-    assert hooks.pop("Elicitation") == [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/Elicitation"}]}]
     # The order of the brain's turns rests on its prompt hook and its Stop being waited on: a prompt's as long as a typed
     # turn has to be taken, and a Stop's past the hold the model puts on it, as the shim's outlives a working session's.
-    waits = {"UserPromptSubmit": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "Stop": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "StopFailure": TAKE_SECONDS + POST_TIMEOUT_SECONDS}
+    # Its end too: Claude Code enters the session a /clear or a /resume moves it to only once the end is answered. A
+    # dialog an MCP server opens is declined as it comes.
+    waits = {event: TAKE_SECONDS + POST_TIMEOUT_SECONDS for event in ("UserPromptSubmit", "Stop", "StopFailure", "SessionEnd", "Elicitation")}
     assert {event: hooks.pop(event) for event in waits} == {event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}", "timeout": wait}]}] for event, wait in waits.items()}
+    # Claude Code runs no HTTP hook for a start: curl posts it, and prints hands' answer as the hook's, failing on any other.
+    wait = TAKE_SECONDS + POST_TIMEOUT_SECONDS
+    assert hooks.pop("SessionStart") == [{"hooks": [relayed("http://127.0.0.1:7/SessionStart", wait)]}]
     # A permission is held while the user is asked, as long as a working session's is.
     assert hooks == {"PermissionRequest": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/PermissionRequest", "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]}]}
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
@@ -336,7 +346,7 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
 @pytest.mark.outside
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         assert await brain.ask("what is running?", unasked) == BrainAnswered("p1", None)
         assert await brain.ask("/and now?", unasked) == BrainAnswered("p2", None)
@@ -346,8 +356,10 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     # Behind a space, so a turn that opens with a slash is the words it is and not a command.
     assert typed(tmp_path) == [["prompt", " what is running?"], ["prompt", " /and now?"]]
     # Each event the model applies to the brain's session is one of its own (`applied`), as a working session's is, beside these.
-    launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
-    assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
+    entered, launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
+    assert isinstance(entered, WideEvent) and isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
+    # Its start, as Claude Code starts the conversation it launched in, is a part of its launch, applied before the launch is over.
+    assert (entered.event, entered.outcome, entered.facts, entered.trace_id) == ("brain.session", "ok", {"left": "b1", "entered": "b1", "source": "startup"}, launched.trace_id)
     # Each turn is its own, with the prompt Claude Code took it as, typed at the first settled look at a screen showing
     # its prompt, however long that look took.
     assert all(isinstance(turn.facts["at_prompt_after"], float) for turn in (first, second))
@@ -432,7 +444,7 @@ async def test_the_brain_starts_with_the_mode_its_settings_name_on_its_command_l
 
     monkeypatch.setattr(process, "command", told_of)
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     await brain.stop()
     assert told == ["default"]
     [launched] = events(recorded, "brain.launch")
@@ -446,7 +458,7 @@ async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_ans
     notes = tmp_path / "notes.txt"
     no = heard("No, leave it.")
     assert isinstance(no, Deny)
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         turn = asyncio.create_task(brain.ask("write", held.append))
         await until(lambda: len(held) == 1)
@@ -512,7 +524,7 @@ async def test_a_dialog_still_drawn_after_it_was_answered_no_takes_no_key_and_th
     monkeypatch.setattr(process.InTmux, "screen", watched)
     no = heard("No, leave it.")
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         assert await asyncio.wait_for(brain.ask("ask held", lambda asked: asked.settle(no)), 10) == BrainAnswered("p1", None)
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p2", None)
@@ -535,7 +547,7 @@ async def test_a_dialog_that_takes_the_paste_answers_nothing_and_the_turn_is_unt
 ) -> None:
     # A dialog committed between hands' look at the screen and Claude Code's read of the paste.
     monkeypatch.setenv("AMBUSH", "1")
-    brain = await start(Sleeping(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         with pytest.raises(Untaken, match="Do you want to create ambush.txt"):
             await asyncio.wait_for(brain.ask("hello", unasked), 10)
@@ -550,7 +562,7 @@ async def test_the_brains_keybindings_are_hands_own_written_whole_at_every_start
     keybindings = tmp_path / "brain" / "keybindings.json"
     keybindings.parent.mkdir(parents=True, exist_ok=True)
     keybindings.write_text(json.dumps({"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:newline"}}]}))
-    brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), lambda _entry: None)
     await brain.stop()
     assert json.loads(keybindings.read_text()) == KEYBINDINGS
     # The chord bound is the one hands types, and Return no longer sends the prompt.
@@ -559,7 +571,7 @@ async def test_the_brains_keybindings_are_hands_own_written_whole_at_every_start
 
 @pytest.mark.outside
 async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chord_is_untaken_showing_its_words_at_the_prompt(tmp_path: Path, fake_claude: Path) -> None:
-    brain = await start(Sleeping(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         # As a person's edit while the brain runs, which Claude Code reloads at once.
         (tmp_path / "brain" / "keybindings.json").write_text(json.dumps({"bindings": []}))
@@ -580,7 +592,7 @@ async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_a
         takes += seconds == TAKE_SECONDS
         await (read(seconds) if takes <= 1 else asyncio.sleep(seconds))
 
-    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         (tmp_path / "brain" / "keybindings.json").write_text(json.dumps({"bindings": []}))
         with pytest.raises(Untaken):
@@ -599,7 +611,7 @@ async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(
     monkeypatch.setattr("hands.brain.process.BRAIN_REPLY_BY_SECONDS", 0.3)
     recorded: list[Entry] = []
     held: list[Asked] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         with unit("voice.turn", recorded.append, begun(SYSTEM)):
             asking = here()
@@ -627,7 +639,7 @@ async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(
 async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_never_asked(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     held: list[Asked] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         assert await asyncio.wait_for(brain.ask("stray", held.append), 10) == BrainAnswered("p1", None)
     finally:
@@ -643,7 +655,7 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
 @pytest.mark.outside
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         assert await brain.ask("fail", unasked) == BrainAnswered("p1", StopFailed("unknown", "API Error: 400 refused"))
         # An asker that stops waiting leaves the turn to run to its end, and its event still says what failed it.
@@ -664,7 +676,7 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
 @pytest.mark.outside
 async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_still_ends_its_turn(tmp_path: Path, fake_claude: Path) -> None:
     # Both only narrate the failure: refusing the hook over either would leave the turn waiting on an end already posted.
-    brain = await start(SYSTEM, launch(tmp_path), list[Entry]().append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), list[Entry]().append)
     said, sink = failures()
     try:
         assert await brain.ask("fail blank", unasked) == BrainAnswered("p1", StopFailed("authentication_failed", None))
@@ -679,7 +691,7 @@ async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_st
 @pytest.mark.outside
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         assert brain.interrupt(brain.answering()) is False
         # A turn that runs until Escape stops it.
@@ -720,7 +732,7 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
     # [LAW:no-ambient-temporal-coupling] the model has decided the stopped turn told, and the telling is still to be
     # performed: the turn is over only once the telling is heard, under its id, and the stop's Ctrl-C goes only then.
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     performing = asyncio.Event()
     typist = brain._typist = _Pressed(brain._typist, performing)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     try:
@@ -767,7 +779,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
         # A take waits as long as one does; the stop's time passes once the stand-in has read its keys.
         await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Sleeping(sleep), launch(tmp_path), recorded.append)
+    brain = await launched_brain(Sleeping(sleep), launch(tmp_path), recorded.append)
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
@@ -800,7 +812,7 @@ async def test_a_stop_told_past_its_bound_still_empties_the_input_so_the_next_tu
     async def sleep(seconds: float) -> None:
         await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
@@ -846,7 +858,7 @@ async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_las
     # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes. Each turn taken as
     # other words runs on, and the turn after it stops it before it is typed: two stops a take's wait apart, which the
     # stand-in ends as soon as it is done with each typing.
-    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
     timed = brain._typist = _Timed(brain._typist)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     try:
         for _ in range(2):
@@ -873,7 +885,7 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
     tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         # Bounded, so a brain that never dies fails here, naming the wait it hung in.
         async with asyncio.timeout(TAKE_SECONDS * 2):
@@ -896,7 +908,7 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
 ) -> None:
     # A loaded machine starts it slowly: a turn typed before it reads raw has its Return made a newline, and is untaken.
     monkeypatch.setenv("STARTS_AFTER", "1")
-    brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), lambda _entry: None)
     try:
         async with asyncio.timeout(TAKE_SECONDS * 2):
             assert await brain.ask("what is running?", unasked) == BrainAnswered("p1", None)
@@ -908,7 +920,7 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
 async def test_a_turn_never_taken_fails_showing_the_screen_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path
 ) -> None:
-    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         with pytest.raises(Untaken, match="did not take the turn typed into it"):
             await brain.ask("deaf", unasked)
@@ -922,7 +934,7 @@ async def test_a_turn_taken_as_other_words_is_typed_once_and_what_it_left_runnin
     tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
+    brain = await launched_brain(Sleeping(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
     try:
         # What Claude Code took is not what was typed, so the turn is never taken; typed once, as the same words would be
         # taken the same way again.
@@ -949,7 +961,7 @@ async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the
     warned: list[str] = []
     sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
     recorded: list[Entry] = []
-    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
+    brain = await launched_brain(Sleeping(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
     try:
         assert await asyncio.wait_for(brain.ask("first", unasked), 10) == BrainAnswered("p1", None)
         answered = await asyncio.wait_for(brain.ask("second", unasked), 10)
@@ -973,7 +985,7 @@ async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the
 
 @pytest.mark.outside
 async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path) -> None:
-    brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), lambda _entry: None)
     try:
         # A long paste comes back in its tags, and a closing backslash's space comes back trimmed.
         assert await asyncio.wait_for(brain.ask("one\ntwo\nthree\nfour", unasked), 10) == BrainAnswered("p1", None)
@@ -1001,7 +1013,7 @@ def _played(tmp: Path) -> int:
 
 def _opening(name: str) -> int:
     """How many lines a replay of `name` says before its first transcript record."""
-    return next(index for index, line in enumerate(turns.played(RECORDINGS[name], subscribed=list(HOOKS), session="s", first=0, prompt="p")) if isinstance(line, turns.Written))
+    return next(index for index, line in enumerate(turns.played(RECORDINGS[name], subscribed=list(BRAIN_HOOKS), session="s", first=0, prompt="p")) if isinstance(line, turns.Written))
 
 
 # One replay whose opening outlasts the patience while each line of it, paused before it starts, leaves as much of the
@@ -1014,7 +1026,7 @@ _SLOW_PAUSE = PATIENCE_SECS * 1.2 / _opening(_SLOW)
 @pytest.mark.parametrize(("name", "pause"), [*((name, 0.0) for name in RECORDINGS), (_SLOW, _SLOW_PAUSE)])
 async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, name: str, pause: float) -> None:
     monkeypatch.setenv("PLAY_PAUSE", str(pause))
-    brain = await start(SYSTEM, launch(tmp_path), lambda _: None)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), lambda _: None)
     asking = asyncio.create_task(brain.ask(f"play {name}", unasked))
     following: asyncio.Task[BrainEnded] | None = None
     try:
@@ -1042,7 +1054,7 @@ async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_on
     tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     said, sink = failures()
     try:
         typist = brain._typist  # pyright: ignore[reportPrivateUsage]
@@ -1077,7 +1089,7 @@ async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_
 ) -> None:
     # A sleep that fails as the turn's taking ends it fails as surely as one that fails while it runs.
     recorded: list[Entry] = []
-    brain = await start(taking(sleep), launch(tmp_path), recorded.append)
+    brain = await launched_brain(taking(sleep), launch(tmp_path), recorded.append)
     said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no clock"):
@@ -1101,7 +1113,7 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
         asked.append(held)
         raise RuntimeError("no voice")
 
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no voice"):
@@ -1123,7 +1135,7 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
 
 @pytest.mark.outside
 async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path) -> None:
-    brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), lambda _entry: None)
     pressed: list[object] = []
 
     class Jammed(_Jammed):
@@ -1151,7 +1163,7 @@ async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_an
 @pytest.mark.outside
 async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_next_turn_gets_its_own(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         asked = asyncio.create_task(brain.ask("slow", unasked))
         await asyncio.sleep(0.1)
@@ -1170,7 +1182,7 @@ def tmux_at(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 @pytest.mark.outside
 async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server_that_a_person_can_attach_to(tmp_path: Path, fake_claude: Path) -> None:
-    brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), lambda _entry: None)
     try:
         session = brain_session(tmp_path / "brain")
         assert session.startswith("hands-brain-")
@@ -1283,7 +1295,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
 
 # How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter.
 BRAIN = """
-brain = await start(SYSTEM, launch, lambda _entry: None)
+brain = await start(SYSTEM, launch, BrainSession(launch.session), lambda _entry: None)
 print(brain.pid, _child_of(brain.pid), flush=True)
 """
 @pytest.mark.outside
@@ -1301,7 +1313,7 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
             return False
         return True
 
-    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.process import _child_of, brain_claude, start\nfrom hands.clock import SYSTEM\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
+    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.session import BrainSession\nfrom hands.brain.process import _child_of, brain_claude, start\nfrom hands.clock import SYSTEM\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
     script += "".join(f"    {line}\n" for line in started.strip().splitlines()) + "    os._exit(0)\nasyncio.run(main())\n"
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
@@ -1328,6 +1340,7 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
 # Run in a process of its own, since a loop that never closes would take the test run down with it.
 SHUT_DOWN = """
 import asyncio, contextlib, math, os, pickle, sys
+from hands.brain.session import BrainSession
 from hands.brain.process import start
 from hands.sessions import pseudoterminal
 
@@ -1340,7 +1353,7 @@ class Ended(Exception):
     pass
 
 async def run() -> None:
-    brain = await start(SYSTEM, launch, lambda _entry: None)
+    brain = await start(SYSTEM, launch, BrainSession(launch.session), lambda _entry: None)
     await brain.stop()
 
 async def ends(ticks: int, seconds: float) -> None:
@@ -1409,7 +1422,7 @@ async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_sh
     unrunnable.chmod(0o644)
     monkeypatch.setattr(wrapper, "PACKAGED", unrunnable)
     with pytest.raises(Unstartable, match=r"(?s)fritter exited \(126\).*[Pp]ermission denied"):
-        await start(SYSTEM, launch(tmp_path), lambda _entry: None)
+        await launched_brain(SYSTEM, launch(tmp_path), lambda _entry: None)
 
 
 @pytest.mark.outside
@@ -1429,7 +1442,7 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
 
     monkeypatch.setattr("hands.brain.process.in_tmux", recording)
     with pytest.raises(Unstartable, match=r"(?s)had not turned its input on \(.*bracketed paste.*\) after 1s.*stuck on a screen"):
-        await start(UntilShown(lambda: bool(panes) and "stuck on a screen" in panes[0].shown()), launch(tmp_path), lambda _entry: None)
+        await launched_brain(UntilShown(lambda: bool(panes) and "stuck on a screen" in panes[0].shown()), launch(tmp_path), lambda _entry: None)
     await until(lambda: not running(tmp_path))
 
 
@@ -1447,7 +1460,7 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
     transcript(brain, "c1")
     recorded: list[Entry] = []
     with pytest.raises(Unstartable, match="No conversation found"):
-        await start(SYSTEM, replace(launch(tmp_path), conversation=conversation(brain, SessionId("n1"))), recorded.append)
+        await launched_brain(SYSTEM, replace(launch(tmp_path), conversation=conversation(brain, SessionId("n1"))), recorded.append)
     [launched] = events(recorded, "brain.launch")
     assert (launched.outcome, launched.facts["conversation"], launched.facts["let_go"]) == ("failed", "resumed", "c1")
     assert conversation(brain, SessionId("n2")) == Fresh(SessionId("n2"), None)
@@ -1670,7 +1683,9 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
         with pytest.raises(RuntimeError, match="joined the wire"), wire.joined(minded.llm):
             pass
-    assert isinstance(ran := recorded[-1], WideEvent) and ran.event == "brain.run"
+    # Each event the model applies to the brain's session is one of its own (`applied`), its end among them.
+    [*_, ran] = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
+    assert isinstance(ran, WideEvent) and ran.event == "brain.run"
     # Gone with the brain: the wire forwards everything again.
     with wire.joined(minded.llm):
         pass
@@ -1698,7 +1713,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 
     launched: list[Launch] = []
 
-    async def starting(_clock: object, launch: Launch, _record: object) -> Brain:
+    async def starting(_clock: object, launch: Launch, _session: object, _record: object) -> Brain:
         launched.append(launch)
         raise Unstartable("seen")
 
@@ -1751,7 +1766,7 @@ def test_the_brain_is_posted_no_hook_that_says_a_tool_ran() -> None:
     """What a withdrawn brain dialog means rests on this: the brain's model hears a tool run only from these hooks, so a
     dialog it lets go is one Claude Code went on past unanswered, never one whose tool ran (`refused`). A hook added
     here is a decision about that."""
-    assert {"PostToolUse", "PostToolUseFailure"}.isdisjoint(HOOKS)
+    assert {"PostToolUse", "PostToolUseFailure"}.isdisjoint(BRAIN_HOOKS)
 
 
 @pytest.mark.outside
@@ -1760,7 +1775,7 @@ async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_inter
     recorded: list[Entry] = []
     held: list[Asked] = []
     count = 2 if asking == "ask twice and wait" else 1
-    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     try:
         turn = asyncio.ensure_future(brain.ask(asking, held.append))
         await until(lambda: len(held) == count)
@@ -1787,7 +1802,7 @@ async def test_the_turn_typed_after_a_clear_of_what_was_left_running_is_asked_it
         held.append(asked)
         asked.settle(Allow())
 
-    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         with pytest.raises(Untaken):
             await brain.ask("garbled", unasked)
@@ -1805,7 +1820,7 @@ async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_sto
     async def sleep(seconds: float) -> None:
         await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
@@ -1832,7 +1847,7 @@ async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unre
         # The stop's bound never passes: only the brain's exit ends its wait.
         await (asyncio.Event().wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
+    brain = await launched_brain(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
@@ -1880,3 +1895,57 @@ def taking(take: Callable[[float], Awaitable[None]]) -> Sleeping:
 
     return Sleeping(sleep)
 
+
+
+@pytest.mark.outside
+async def test_a_clear_at_the_brains_keyboard_moves_it_and_the_next_start_resumes_the_conversation_it_moved_to(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
+    try:
+        assert await brain.ask("one", unasked) == BrainAnswered("p1", None)
+        # Typed by whoever is at the brain's keyboard: hands types every turn of its own behind a space.
+        assert tmux_at("send-keys", "-t", f"={brain_session(tmp_path / 'brain')}:", "/clear", "Enter").returncode == 0
+        await until(lambda: len(events(recorded, "brain.session")) == 2)
+        assert await brain.ask("two", unasked) == BrainAnswered("p2", None)
+    finally:
+        await brain.stop()
+    started, cleared = events(recorded, "brain.session")
+    assert started.facts == {"left": "b1", "entered": "b1", "source": "startup"}
+    entered = cleared.facts["entered"]
+    assert (cleared.outcome, cleared.facts) == ("ok", {"left": "b1", "entered": entered, "source": "clear"}) and entered != "b1"
+    # The next hands to start the brain resumes the conversation it moved to, and its start says it entered it.
+    resumed = conversation(tmp_path / "brain", SessionId("n1"))
+    assert resumed == Resumed(SessionId(str(entered)))
+    again: list[Entry] = []
+    brain = await launched_brain(SYSTEM, replace(launch(tmp_path), conversation=resumed), again.append)
+    await brain.stop()
+    [restarted] = events(again, "brain.session")
+    assert restarted.facts == {"left": entered, "entered": entered, "source": "resume"}
+
+
+@pytest.mark.outside
+async def test_a_launch_whose_claude_code_posts_no_start_fails_naming_it(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A start hands never hears is a brain whose conversation hands does not know it is in.
+    monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
+    monkeypatch.setenv("FAILING_HOOK", "SessionStart")
+    recorded: list[Entry] = []
+    with pytest.raises(Unstartable, match="posted no start of its session within 1s"):
+        await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
+    [launched] = events(recorded, "brain.launch")
+    assert launched.outcome == "failed" and "let_go" in launched.facts
+    await until(lambda: not running(tmp_path))
+
+
+@pytest.mark.outside
+async def test_a_launch_whose_conversation_cannot_be_held_fails_naming_it(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The next start would resume a conversation other than the one the brain came up in.
+    def unwritable(config_dir: Path, session: SessionId) -> None:
+        raise OSError(30, "Read-only file system", str(process.held(config_dir)))
+
+    monkeypatch.setattr(process, "hold", unwritable)
+    recorded: list[Entry] = []
+    with pytest.raises(Unstartable, match="the brain's conversation b1 could not be held"):
+        await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
+    [moved] = events(recorded, "brain.session")
+    assert moved.outcome == "failed"
+    await until(lambda: not running(tmp_path))

@@ -732,11 +732,11 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     is never taken, "garbled" is taken as other words and runs until Escape, an Escape writing the record of the interruption and setting it idle, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
     that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
     ["played", name] once it has said all of it. It writes a line to said.log beside TYPED as each line of the recording starts, and with
-    PLAY_PAUSE named waits that many seconds before starting each line ahead of the first transcript record."""
+    PLAY_PAUSE named waits that many seconds before starting each line ahead of the first transcript record. It starts its session as it starts, and "/clear" or "/resume <id>" ends it and starts another, running each command hook its --settings name with the payload on stdin; the one FAILING_HOOK names fails."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import datetime, itertools, json, os, select, signal, sys, termios, threading, time, tty, urllib.request
+import datetime, itertools, json, os, select, signal, subprocess, sys, termios, threading, time, tty, urllib.request, uuid
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -768,9 +768,26 @@ import turns
 transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
 status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
 def post(event, **fields):
-    [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
+    # Each hook as its --settings declare it, as Claude Code runs it: an http hook posted to its url, a command run in exec
+    # form with the payload on its stdin and its output the answer. A command that fails is said, and Claude Code goes on.
+    [[hook]] = [matcher["hooks"] for matcher in hooks[event]]
     body = json.dumps({{"session_id": session, "transcript_path": transcript, "cwd": os.getcwd(), "permission_mode": "default", "hook_event_name": event, **fields}}).encode()
-    return json.loads(urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=30).read())
+    if hook["type"] == "http":
+        return json.loads(urllib.request.urlopen(urllib.request.Request(hook["url"], body, {{"Content-Type": "application/json"}}), timeout=30).read())
+    ran = subprocess.run([hook["command"], *hook["args"]], input=body, capture_output=True, timeout=hook["timeout"]) if os.environ.get("FAILING_HOOK") != event else None
+    if ran is None or ran.returncode != 0:
+        os.write(1, f"{{event}} hook error\\r\\n".encode())
+        return {{}}
+    return json.loads(ran.stdout) if ran.stdout.strip() else {{}}
+def moved(reason, entered):
+    # A /clear or a /resume, as the pinned Claude Code makes one: the end of the session it leaves, answered, and only then
+    # the start of the one it enters (docs/claude-code-behavior.md).
+    global session, transcript
+    post("SessionEnd", reason=reason)
+    session = entered
+    transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
+    post("SessionStart", source=reason)
+    stated("idle")
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
@@ -791,9 +808,12 @@ time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 # Raw without flushing: Claude Code keeps what was typed while it started (keys typed
 # 0.05s in).
 tty.setraw(0, termios.TCSANOW)
+stated("idle")
+# Claude Code starts its session before it takes a prompt, the start answered first.
+if "SessionStart" in hooks:
+    post("SessionStart", source="resume" if "--resume" in sys.argv else "startup")
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h")
-stated("idle")
 pending, box, turn, turn_text, prompts = b"", "", None, "", 0
 # The dialog on its screen, if one is up: the file a Write asks to write. While it is, no prompt is drawn, a paste is
 # dropped, Return answers it yes, and Ctrl-Q reaches nothing (docs/claude-code-screen.md).
@@ -875,6 +895,14 @@ def submit(text):
         if text == "/btw die":
             os.write(1, b"bye\\r\\n")
             sys.exit(3)
+        return
+    if text == "/clear":
+        typed(["prompt", text])
+        moved("clear", str(uuid.uuid4()))
+        return
+    if text.startswith("/resume "):
+        typed(["prompt", text])
+        moved("resume", text[len("/resume "):])
         return
     if time.monotonic() < tail:
         # Sent while the last prompt's other Stop hooks still run: queued, and taken as they end. Its UserPromptSubmit is

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.events import Ended, Event, Joined, Located, PermissionRequested, Prompted, Stopped, ToolFinished
+from hands.core.events import Ended, Event, Joined, Located, PermissionRequested, Prompted, Stopped, ToolFinished, UnknownSource
 from hands.core.session import AskedQuestion, Membership, Mode, Option, Permission, Plan, PlanApproved, PromptId, Question, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
 from hands.sessions.hooks import Hook, PermissionHook, parse_hook
@@ -246,7 +246,6 @@ def test_a_question_that_does_not_parse_is_rejected_by_name(home: Home, asked: d
     ("raw", "reason"),
     [
         (b"not json", "not JSON"),
-        (body(hook_event_name="SessionStart", source="teleport"), "source 'teleport' is not one hands knows"),
         (b"[1, 2]", "JSON object"),
         (body(hook_event_name="Notification"), "'Notification' is not one hands handles"),
         (body(hook_event_name="PermissionRequest", tool_input={}), "missing field 'tool_name'"),
@@ -261,6 +260,10 @@ def test_what_does_not_parse_is_rejected_by_name(home: Home, raw: bytes, reason:
 
 def test_an_end_reason_this_version_does_not_know_is_an_end_nobody_chose(home: Home) -> None:
     assert parse(home, body(hook_event_name="SessionEnd", reason="solar_flare")) == Ended(SID, "other")
+
+
+def test_a_start_source_this_version_does_not_know_joins_kept_by_its_name(home: Home) -> None:
+    assert parse(home, body(hook_event_name="SessionStart", source="teleport")) == Joined(MEMBER, UnknownSource("teleport"))
 
 
 def test_a_notification_from_a_plugin_older_than_the_daemon_is_rejected(home: Home) -> None:
