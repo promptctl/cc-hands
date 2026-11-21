@@ -37,7 +37,7 @@ T = TypeVar("T", bound=str)
 class Voicing(Protocol):
     """The voices as the page chooses them: the one spoken, each heard, one kept, and the library searched."""
 
-    async def speaking_in(self) -> Chosen: ...
+    def speaking_in(self) -> Chosen: ...
 
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen: ...
 
@@ -142,21 +142,19 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
 
     async def look() -> tuple[str, Shown]:
         state: Shown = {
-            "voices": VOICES, "speaking_in": str(await gallery.voices.speaking_in()),
+            "voices": VOICES, "speaking_in": str(gallery.voices.speaking_in()),
             "levels": LEVELS, "level": gallery.levels.level,
             "modalities": MODALITIES, "modality": gallery.desk.modality,
             "models": gallery.models, "running_on": gallery.own.running(),
         }
         return version_of(state), state
 
-    # [LAW:one-source-of-truth] the page shows what hands answers here and keeps no picture of its own, so a choice made
-    # anywhere, by voice, by hand in the settings file, or by a model switch's restart, is on the page by the next answer.
+    # [LAW:one-source-of-truth] the page shows what hands answers here and keeps no picture of its own: what hands speaks
+    # in, listens at, takes the user as and runs on now, so a choice made by voice, and the run a model switch's restart
+    # brings up, are on the page by the next answer.
     @keyed(clock, "gallery.read", record, key)
     async def read_state(request: web.Request) -> web.Response:
-        try:
-            version, state = await waited(clock, look, request.query.get("seen"))
-        except (Rejected, OSError) as error:
-            return _refusal(error)
+        version, state = await waited(clock, look, request.query.get("seen"))
         annotate(speaking_in=state["speaking_in"], level=state["level"], modality=state["modality"], running_on=state["running_on"])
         return web.json_response({"seen": version, **state})
 

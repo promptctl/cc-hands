@@ -182,11 +182,11 @@ async def test_the_voice_spoken_in_is_the_one_the_speaker_was_handed_and_not_a_f
     home = Home(tmp_path)
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     chosen_voices = Voices(home, lines, ready, unlisted(), Voice("alba"))
-    assert await chosen_voices.speaking_in() == "alba"
+    assert chosen_voices.speaking_in() == "alba"
     # Taken up at the next start, as hands speaks on in alba until then; a name that is no voice is never read here.
     home.voice.write_text("zed!\n")
-    assert await chosen_voices.speaking_in() == "alba"
+    assert chosen_voices.speaking_in() == "alba"
     async with running([lines, speaker]):
         await chosen_voices.use(Voice("mary"))
         assert await chosen_voices.hear((Voice("eve"),)) == "mary"
-    assert await chosen_voices.speaking_in() == "mary"
+    assert chosen_voices.speaking_in() == "mary"

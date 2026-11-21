@@ -918,10 +918,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
         Call this when the user asks what voice you speak in, or which voices there are. Say a voice's name as a person
         would: bill_boerst is Bill Boerst. Voices in Kyutai's voice library are not listed here; find_voices searches them.
         """
-        try:
-            return {"speaking_in": str(await voices.speaking_in()), "voices": VOICES}
-        except (Rejected, OSError) as error:
-            return {"error": str(error)}
+        return {"speaking_in": str(voices.speaking_in()), "voices": VOICES}
 
     async def hear_voices(names: list[str]) -> Result:
         """Hands says a line in each voice named, one after another, each saying its own name, then speaks on in the

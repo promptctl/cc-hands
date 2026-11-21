@@ -40,7 +40,7 @@ class Voicing:
     used_asked: list[Chosen] = field(default_factory=list[Chosen])
     failure: Exception | None = None
 
-    async def speaking_in(self) -> Chosen:
+    def speaking_in(self) -> Chosen:
         return self.spoken
 
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen:
@@ -215,16 +215,6 @@ async def test_a_run_on_another_model_answers_a_read_that_saw_the_run_before_at_
     body = await (await page.client.get(f"/gallery/state?seen={seen}", headers=KEYED)).json()
     assert (body["running_on"], body["seen"] != seen) == (MODELS[1], True)
     assert page.events("gallery.read")[-1].facts["looks"] == 1
-
-
-@pytest.mark.outside
-async def test_a_read_whose_voice_cannot_be_read_is_a_503_and_says_why(page: Page, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def unreadable() -> Chosen:
-        raise OSError("the voice file is unreadable")
-    monkeypatch.setattr(page.voices, "speaking_in", unreadable)
-    response = await page.client.get("/gallery/state", headers=KEYED)
-    assert (response.status, await response.text()) == (503, "the voice file is unreadable")
-    assert [read.outcome for read in page.events("gallery.read")] == ["failed"]
 
 
 @pytest.mark.outside
