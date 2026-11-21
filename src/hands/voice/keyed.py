@@ -15,14 +15,18 @@ from hands.voice.phoneaddress import carries_key
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
-UNKEYED = "this page's address is missing the phone's key; open it from the address `hands phone` prints"
+
+def unkeyed() -> web.Response:
+    """The refusal of a request without the phone's key, the same from every route that asks for it."""
+    return web.Response(status=401, text="this page's address is missing the phone's key; open it from the address `hands phone` prints")
 
 
 def keyed(clock: Clock, event: str, record: Record, key: str, counts: tuple[str, ...] = ()) -> Callable[[Handler], Handler]:
     """`handler` run as the unit of work `event` for a request that carries the phone's key; one that does not is
     refused with a 401, and its event says so.
 
-    [LAW:single-enforcer] the one place a page's route checks the key.
+    [LAW:single-enforcer] the one wrapper a page's route checks the key through. The call's offer checks it itself, as its
+    refusal is the call's own event (`hands.voice.phone.call_ended`), and refuses it as these do, with `unkeyed`.
     """
 
     def wrapped(handler: Handler) -> Handler:
@@ -30,7 +34,7 @@ def keyed(clock: Clock, event: str, record: Record, key: str, counts: tuple[str,
             with unit(event, record, begun(clock), counts):
                 if not carries_key(request.headers.get("Authorization", ""), key):
                     fail("asked without the phone's key")
-                    return web.Response(status=401, text=UNKEYED)
+                    return unkeyed()
                 return await handler(request)
 
         return handled

@@ -27,7 +27,7 @@ from hands.sessions.wide import annotate, begun, continuing, unit
 from hands.voice.backlogpage import backlog_routes
 from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
-from hands.voice.keyed import UNKEYED
+from hands.voice.keyed import unkeyed
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
 from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, phone_key, tailnet
@@ -64,7 +64,7 @@ def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Appli
         began = begun(clock)
         if not carries_key(request.headers.get("Authorization", ""), key):
             call_ended(record, began, remote, None, CallRefused("offered without the phone's key"))
-            return web.Response(status=401, text=UNKEYED)
+            return unkeyed()
         try:
             offer = parse_offer(await request.json())
         except (Rejected, json.JSONDecodeError) as error:
@@ -87,12 +87,13 @@ def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Appli
     return app
 
 
-def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], conversation: Conversation, store: SummaryStore, gallery: Gallery, key: str, record: Record, environment: Mapping[str, str]) -> web.Application:
-    """The phone's page and every page served beside it under its key: the brain's, the conversation, the backlog and the
-    gallery, as `serve_phone` serves them [LAW:one-source-of-truth]."""
+def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str], gallery: Gallery) -> web.Application:
+    """The phone's page and every page served beside it under the key `home` keeps: the brain's, the conversation read
+    from `home`'s audit log, the backlog and the gallery, as `serve_phone` serves them [LAW:one-source-of-truth]."""
+    key = phone_key(clock, home)
     app = phone_app(clock, phone, key, record)
     app.add_routes(brain_routes(clock, brain, key, record))
-    app.add_routes(conversation_routes(clock, conversation, typed, key, record))
+    app.add_routes(conversation_routes(clock, Conversation(home.audit), typed, key, record))
     app.add_routes(backlog_routes(clock, store, key, record, environment))
     app.add_routes(gallery_routes(clock, gallery, key, record))
     return app
@@ -108,7 +109,7 @@ async def serve_phone(clock: Clock, phone: Phone, brain: Watched, typed: Callabl
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
     under, or, served on the LAN alone, why Tailscale gave it none.
     """
-    app = phone_pages(clock, phone, brain, typed, Conversation(home.audit), store, gallery, phone_key(clock, home), record, environment)
+    app = phone_pages(clock, phone, brain, typed, store, home, record, environment, gallery)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     try:

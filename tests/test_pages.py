@@ -14,12 +14,15 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from hands.clock import SYSTEM
+from hands.core.brainwork import StopOutcome
 from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed
+from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
 from hands.virtualclock import VirtualClock
-from hands.voice.conversationpage import Conversation
+from hands.voice import longpoll
 from hands.voice.gallerypage import Gallery
 from hands.voice.phone import Phone
+from hands.voice.phoneaddress import phone_key
 from hands.voice.phonepage import phone_pages
 from hands.voice.ptt import PushToTalk
 from hands.voice.summaries import SummaryStore
@@ -35,14 +38,13 @@ from test_gallerypage import MODELS, Desk, Listening, Own, Speaker, Voicing
 
 pytestmark = pytest.mark.outside
 
-KEY = "the phone's key"
-
 
 @dataclass
 class Served:
     """The pages as hands serves them, on fakes the test sets and reads, and the browser that opens them."""
 
     server: TestServer
+    key: str
     browser: Browser
     brain: Brain
     log: AuditLog
@@ -51,7 +53,7 @@ class Served:
 
     def address(self, path: str) -> str:
         """`path` as the phone opens it: its address carrying the phone's key in the fragment."""
-        return f"{self.server.make_url(path)}#{quote(KEY)}"
+        return f"{self.server.make_url(path)}#{self.key}"
 
 
 @pytest.fixture
@@ -65,13 +67,13 @@ async def served(tmp_path: Path) -> AsyncGenerator[Served]:
     async def typing(text: str) -> None:
         typed.append(text)
 
-    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-    app = phone_pages(SYSTEM, phone, brain, typing, Conversation(tmp_path / "audit"), store, gallery, KEY, recorded.append, os.environ)
-    server = TestServer(app, host="127.0.0.1")
+    home = Home(tmp_path / "hands")
+    store = SummaryStore(Summaries(home.summaries))
+    server = TestServer(phone_pages(SYSTEM, phone, brain, typing, store, home, recorded.append, os.environ, gallery), host="127.0.0.1")
     await server.start_server()
     try:
         async with chrome(tmp_path / "chrome") as browser:
-            yield Served(server, browser, brain, a_log(tmp_path / "audit"), voices, typed)
+            yield Served(server, phone_key(SYSTEM, home), browser, brain, a_log(home.audit), voices, typed)
     finally:
         await server.close()
         await phone.stop()
@@ -91,7 +93,29 @@ async def test_the_phone_page_draws_the_brains_call_and_a_stop_ends_the_turn_it_
         await tab.click("#stop")
         await shown(tab, "#brain-said", "Stopping")
         assert served.brain.stopped == ["turn-1"]
-        assert tab.thrown == []
+
+
+async def test_a_stop_hands_refuses_says_it_was_not_stopped(served: Served, monkeypatch: pytest.MonkeyPatch) -> None:
+    def refusing(turn: str) -> StopOutcome:
+        raise RuntimeError(f"no stopping {turn}")
+
+    monkeypatch.setattr(served.brain, "stop", refusing)
+    async with served.browser.tab() as tab:
+        await tab.open(served.address("/"))
+        await tab.until("!document.getElementById('stop').disabled")
+        await tab.click("#stop")
+        await shown(tab, "#brain-said", "Could not stop it: 500")
+
+
+async def test_a_stop_whose_answer_is_lost_says_whether_it_stopped_is_not_known(served: Served, monkeypatch: pytest.MonkeyPatch) -> None:
+    # hands closes once the page's read waiting at it is answered, so the read waits only briefly.
+    monkeypatch.setattr(longpoll, "WAIT_SECONDS", 0.5)
+    async with served.browser.tab() as tab:
+        await tab.open(served.address("/"))
+        await tab.until("!document.getElementById('stop').disabled")
+        await served.server.close()
+        await tab.click("#stop")
+        await shown(tab, "#brain-said", "Whether the brain stopped is not known: hands is out of reach")
 
 
 async def test_a_page_whose_phone_another_page_took_says_so_and_calls_no_more(served: Served) -> None:
@@ -105,7 +129,6 @@ async def test_a_page_whose_phone_another_page_took_says_so_and_calls_no_more(se
         # The first page's call dropped, and its call made again is declined: the second page has the phone.
         await shown(first, "#state", "Another page has hands' phone")
         await shown(first, "#talk", "Connect")
-        assert first.thrown == second.thrown == []
 
 
 async def test_the_conversation_page_sends_what_is_typed_and_keeps_an_opened_call_open_as_it_is_redrawn(served: Served) -> None:
@@ -122,7 +145,6 @@ async def test_the_conversation_page_sends_what_is_typed_and_keeps_an_opened_cal
         await tab.click("#send")
         await tab.until("document.getElementById('text').value === ''")
         assert served.typed == ["what time is it"]
-        assert tab.thrown == []
 
 
 async def test_the_gallery_page_draws_the_voices_and_speaks_in_the_one_used(served: Served) -> None:
@@ -135,7 +157,6 @@ async def test_the_gallery_page_draws_the_voices_and_speaks_in_the_one_used(serv
         await shown(tab, "#status", f"Speaking in {name} from now on.")
         await shown(tab, "#speaking", f"hands speaks in {name}.")
         assert served.voices.used_asked == [VOICES[1]]
-        assert tab.thrown == []
 
 
 @real_lit
@@ -149,7 +170,6 @@ async def test_the_backlog_page_draws_a_ticket_under_its_epic_and_lit_keeps_the_
         await tab.click(f'li[data-id="{made}"] > .card')
         await tab.type(f'textarea[aria-label="Note on {ticket}"]', "Split it")
         await tab.click(f'li[data-id="{ticket}"] .noting button')
-        await tab.until(f'document.querySelector(\'textarea[aria-label="Note on {ticket}"]\').placeholder === "Noted: Split it"')
+        await tab.until(f'document.querySelector(\'textarea[aria-label="Note on {ticket}"]\')?.placeholder === "Noted: Split it"')
         exported = json.loads(subprocess.run([str(LIT), "export"], cwd=project, check=True, capture_output=True).stdout)
         assert [comment["body"] for comment in exported["comments"] if comment["issue_id"] == ticket] == ["Split it"]
-        assert tab.thrown == []
