@@ -83,7 +83,7 @@
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
 <script type="module">
-import {asked} from "/hands.js";
+import {asked, unanswered} from "/hands.js";
 
 const project = new URLSearchParams(location.search).get("project");
 const tree = document.getElementById("tree");
@@ -138,7 +138,7 @@ function inTurn(work) {
 // change it sent when none did, which a read has nothing of.
 function answer(outcome, unknown) {
   if (outcome.kind === "answered") return outcome.body;
-  throw new Error(outcome.kind === "refused" ? outcome.text : `${unknown}${outcome.why}.`);
+  throw new Error(`${outcome.kind === "lost" ? unknown : ""}${unanswered(outcome)}`);
 }
 const got = async path => answer(await asked("GET", path), "");
 const changed = async (path, sent, unknown) => answer(await asked("POST", path, sent), unknown);

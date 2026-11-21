@@ -6,7 +6,7 @@ here reaches a working session.
 """
 
 import json
-from typing import Protocol
+from typing import Literal, Protocol, TypedDict
 
 from aiohttp import web
 
@@ -28,22 +28,26 @@ class Watched(Protocol):
     def stop(self, turn: str) -> StopOutcome: ...
 
 
-def shown(work: BrainWork) -> dict[str, object]:
-    """The brain's work as the page draws it."""
+class IdleShown(TypedDict):
+    doing: Literal["idle"]
+    calls: list[dict[str, object]]
+
+
+class WorkingShown(TypedDict):
+    doing: Literal["working"]
+    turn: str
+    since: float
+    calls: list[dict[str, object]]
+
+
+def shown(work: BrainWork) -> IdleShown | WorkingShown:
+    """The brain's work as the page draws it: its calls are whatever it is running, none at all while it is idle
+    [LAW:dataflow-not-control-flow]."""
     match work:
         case Idle():
-            return {"doing": "idle"}
+            return {"doing": "idle", "calls": []}
         case Working(turn=turn, since=since, calls=calls):
             return {"doing": "working", "turn": turn, "since": since, "calls": [_call(call) for call in calls]}
-
-
-def running(work: BrainWork) -> tuple[Running, ...]:
-    """The calls the brain is running now: none while it is idle."""
-    match work:
-        case Idle():
-            return ()
-        case Working(calls=calls):
-            return calls
 
 
 def _call(call: Running) -> dict[str, object]:
@@ -87,19 +91,18 @@ def brain_routes(clock: Clock, brain: Watched, key: str, record: Record) -> list
     `brain.stop`: the turn it named and what came of it, or why it was refused, which fails it.
     """
 
-    async def look() -> tuple[str, BrainWork]:
+    async def look() -> tuple[str, IdleShown | WorkingShown]:
         # [LAW:effects-at-boundaries] a look reads what the stage holds in memory, as the page draws it, at every poll.
         work = brain.work()
-        return version_of(shown(work)), work
+        drawn = shown(work)
+        return version_of(drawn), drawn
 
     @keyed(clock, "brain.read", record, key, counts=("calls",))
     async def read(request: web.Request) -> web.Response:
         read = await waited(clock, look, request.query.get("seen"))
-        work = read["shown"]
-        annotate(doing=type(work).__name__)
-        count(calls=len(running(work)))
-        # The page is shown the work as it draws it, which is what the read's version is the version of.
-        return web.json_response({**read, "shown": shown(work)})
+        annotate(doing=read["shown"]["doing"])
+        count(calls=len(read["shown"]["calls"]))
+        return web.json_response(read)
 
     @keyed(clock, "brain.stop", record, key)
     async def stop(request: web.Request) -> web.Response:

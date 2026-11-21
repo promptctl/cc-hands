@@ -79,7 +79,7 @@ async def test_the_read_shows_the_call_the_brain_runs_with_its_input_and_the_mac
     }
     assert isinstance(body["now"], float) and isinstance(body["seen"], str)
     [read] = page.events("brain.read")
-    assert (read.outcome, read.facts["doing"], read.counts["calls"]) == ("ok", "Working", 1)
+    assert (read.outcome, read.facts["doing"], read.counts["calls"]) == ("ok", "working", 1)
 
 
 async def test_an_input_that_could_not_be_read_is_shown_as_such(page: Page) -> None:

@@ -91,7 +91,7 @@
 </section>
 <audio id="out" autoplay playsinline></audio>
 <script type="module">
-import {asked, handsNow, reading, unanswered} from "/hands.js";
+import {asked, carriesKey, handsNow, reading, unanswered} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
@@ -422,6 +422,9 @@ function place(claim) {
 
 function down(event) {
   event.preventDefault();
+  // A page whose address carries no key never takes the microphone for a call hands would refuse; whether a key it
+  // carries is the phone's is hands' to say.
+  if (!carriesKey) { say("Open this page from the address `hands phone` prints.", true); return; }
   if (!call && !retry) { place("take"); return; }
   if (!call || call.channel.readyState !== "open" || held) return;
   talk.setPointerCapture(event.pointerId);
@@ -467,19 +470,17 @@ addEventListener("pagehide", () => end("This page hung up."));
 
 // The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
 // the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again.
-let work = {doing: "idle"};
+let work = {doing: "idle", calls: []};
 let stopping = false;
 let said = null;
 let unread = null;
 
 function sayOfBrain(text, bad = false) { brainSaid.textContent = text; brainSaid.classList.toggle("bad", bad); }
 
-function running() { return work.doing === "working" ? work.calls : []; }
-
 // The line that says what the brain is doing, and for how long: redrawn each second, as the time is.
 function drawDoing() {
   const now = handsNow();
-  const [first, ...rest] = running();
+  const [first, ...rest] = work.calls;
   const [what, since] = work.doing !== "working" ? ["Idle", null]
     : first === undefined ? ["Thinking", work.since]
     : [rest.length ? `Running ${rest.length + 1} calls` : `Running ${first.tool}`, first.since];
@@ -497,7 +498,7 @@ function inputOf(call) {
 // whatever it is running, none at all while it is idle or thinking.
 function drawBrain() {
   drawDoing();
-  calls.replaceChildren(...running().map((call) => {
+  calls.replaceChildren(...work.calls.map((call) => {
     const item = document.createElement("li");
     item.append(
       Object.assign(document.createElement("p"), {className: "tool", textContent: call.tool}),

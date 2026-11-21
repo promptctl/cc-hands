@@ -3,13 +3,17 @@
 // as long as the page is open; and hands' clock, as its reads last said it. Each page draws what it is answered and words
 // what came of its own choices; nothing else is a page's own.
 
-// The phone's key travels in the fragment, which the browser never sends with the page's own request. A page opened
-// without it is refused by hands, in hands' words [LAW:single-enforcer].
+// The phone's key travels in the fragment, which the browser never sends with the page's own request. Whether it is the
+// phone's key is hands' to say, and a page opened without one is refused by hands in hands' words [LAW:single-enforcer]:
+// a page asks whether its address carries one only before it takes an effect of its own, such as the microphone.
 const key = decodeURIComponent(location.hash.slice(1));
+export const carriesKey = key !== "";
 
-// How long any request is given to be answered once hands has it: a minute, past anything hands does before it answers. A
-// read waits at hands first, for as long as hands said its reads wait.
-const ANSWER_MS = 60000;
+// How long any request is given to be answered once hands has it: a minute, past anything hands does before it answers.
+// A read that has seen something waits at hands, for as long as hands said its reads wait, and is then answered at
+// once: it is given that wait and the time an answer takes to cross back, so a phone that lost its way to hands says
+// so soon after.
+const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
 // [LAW:one-source-of-truth] every request a page makes is this one, and what came of it is one of three outcomes.
 export async function asked(method, path, body, within = ANSWER_MS) {
@@ -55,7 +59,8 @@ function readOf(body) {
 }
 
 // How far hands' clock stood ahead of this page's as its last read answered, so what hands times is timed by its clock,
-// never by a phone's that runs fast or slow.
+// never by a phone's that runs fast or slow. Every read writes it and only a read does, each a reading of the one Mac's
+// clock, so the newest is the truest; it is 0 only until hands first answers, before which nothing hands times is drawn.
 let ahead = 0;
 
 // The time on hands' clock now, in seconds, as hands' reads last said it.
@@ -76,7 +81,7 @@ export async function reading(path, draw, unread) {
     let last = null;
     for (;;) {
       const outcome = await (last === null ? asked("GET", path)
-        : asked("GET", `${path}?seen=${encodeURIComponent(last.seen)}`, undefined, last.waits * 1000 + ANSWER_MS));
+        : asked("GET", `${path}?seen=${encodeURIComponent(last.seen)}`, undefined, last.waits * 1000 + CROSSING_MS));
       if (outcome.kind === "answered") {
         const read = readOf(outcome.body);
         ahead = read.now - Date.now() / 1000;

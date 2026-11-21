@@ -702,7 +702,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async with ClientSession() as session, session.get(f"https://127.0.0.1:{served.facts['port']}/backlog/tickets", headers=keyed, ssl=unverified) as unnamed:
         assert unnamed.status == 400 and "project" in await unnamed.text()
     async with ClientSession() as session, session.get(f"https://127.0.0.1:{served.facts['port']}/brain", headers=keyed, ssl=unverified) as read:
-        assert read.status == 200 and (await read.json())["shown"] == {"doing": "idle"}
+        assert read.status == 200 and (await read.json())["shown"] == {"doing": "idle", "calls": []}
     # Nothing on the page reaches a working session.
     async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/sessions/s1/interrupt", headers=keyed, ssl=unverified) as gone:
         assert gone.status == 404

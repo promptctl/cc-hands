@@ -16,7 +16,6 @@ from hands.voice.longpoll import WAIT_SECONDS, Read
 # The browser as the module meets it: an address whose fragment is the key, a page's clock that stands still, a fetch
 # hands answers when the test says, a timer that fires when the test says, and the bound each request was given.
 BROWSER = """
-var location = {hash: "#the%20key"};
 var console = {error() {}};
 Date.now = () => 1000000;
 var requests = [], timers = [], drawn = [], unread = [];
@@ -49,14 +48,15 @@ class Asked:
 class Page:
     """A page holding the script, and the fake hands it asks."""
 
-    def __init__(self) -> None:
+    def __init__(self, fragment: str = "#the%20key") -> None:
         self._js = quickjs.Context()
-        self._js.eval(BROWSER)
+        self._js.eval(f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}")
         # QuickJS here loads no module a module imports, so what the module exports is handed to the test as a page's
         # import would be.
         module = resources.files("hands.voice").joinpath("hands.js").read_text()
-        self._js.module(f"{module}\nObject.assign(globalThis, {{asked, unanswered, reading, handsNow, ANSWER_MS}});")
+        self._js.module(f"{module}\nObject.assign(globalThis, {{asked, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS}});")
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
+        self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
 
     def run(self, code: str) -> None:
         self._js.eval(code)
@@ -127,7 +127,7 @@ def test_a_read_asks_at_once_then_says_what_it_saw_bounded_by_the_wait_hands_sai
     assert reading.asking() == [Asked("GET", "/state", "Bearer the key", None, reading.answer_ms)]
     reading.read("v1", {"voice": "mary"})
     assert reading.seen("drawn") == [{"voice": "mary"}]
-    assert reading.asking() == [Asked("GET", "/state?seen=v1", "Bearer the key", None, round(WAIT_SECONDS * 1000) + reading.answer_ms)]
+    assert reading.asking() == [Asked("GET", "/state?seen=v1", "Bearer the key", None, round(WAIT_SECONDS * 1000) + reading.crossing_ms)]
 
 
 def test_a_read_answered_unchanged_draws_nothing_and_one_changed_draws_it(reading: Page) -> None:
@@ -187,3 +187,8 @@ def test_hands_clock_is_as_every_read_last_said_it_changed_or_not(reading: Page)
     assert reading.seen("handsNow()") == 5000.0
     reading.read("v1", {}, now=5025.0)
     assert (reading.seen("handsNow()"), reading.seen("drawn")) == (5025.0, [{}])
+
+
+@pytest.mark.parametrize(("fragment", "carries"), [("#the%20key", True), ("", False), ("#", False)])
+def test_a_page_knows_whether_its_address_carries_a_key(fragment: str, carries: bool) -> None:
+    assert Page(fragment).seen("carriesKey") is carries
