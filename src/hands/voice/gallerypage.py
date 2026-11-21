@@ -1,4 +1,5 @@
-"""The gallery on the phone's page: every voice hands speaks in, each heard and chosen, and hands' own options, the
+"""The gallery on the phone's page: every voice hands speaks in, each heard, chosen, and given the line it says when heard,
+and hands' own options, the
 listening level, the modality, and the model it runs on, set from the same page.
 
 Served beside the phone's page, on its port and under its key (`hands.voice.phonepage`, `hands.voice.keyed`). Each choice
@@ -35,11 +36,18 @@ T = TypeVar("T", bound=str)
 
 
 class Voicing(Protocol):
-    """The voices as the page chooses them: the one spoken, each heard, one kept, and the library searched."""
+    """The voices as the page chooses them: the one spoken, each heard, a line heard and kept, one kept, and the library
+    searched."""
 
     def speaking_in(self) -> Chosen: ...
 
+    async def said_by(self, voices: tuple[Chosen, ...]) -> tuple[str, ...]: ...
+
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen: ...
+
+    async def preview(self, voice: Chosen, line: str) -> Chosen: ...
+
+    async def keep_line(self, voice: Chosen, line: str) -> str: ...
 
     async def use(self, voice: Chosen) -> None: ...
 
@@ -93,6 +101,14 @@ class Shown(TypedDict):
 
 def parse_field(body: bytes, field: str) -> str:
     """The text a page's request names in `field`, as its body's JSON; raises Rejected naming what is wrong with it."""
+    if named := parse_line(body, field):
+        return named
+    raise Rejected(f"the page sends {{{field}: ...}}")
+
+
+def parse_line(body: bytes, field: str) -> str:
+    """The text a page's request sends in `field`, blank or not, as its body's JSON; raises Rejected naming what is wrong
+    with it. A line is blank where the user cleared it, which is a line of its own: hands' default."""
     try:
         sent: object = json.loads(body)
     except ValueError as error:
@@ -100,7 +116,7 @@ def parse_field(body: bytes, field: str) -> str:
         raise Rejected(f"the page sends JSON: {error}") from error
     if isinstance(sent, dict):
         named: object = cast(dict[str, object], sent).get(field)
-        if isinstance(named, str) and named:
+        if isinstance(named, str):
             return named
     raise Rejected(f"the page sends {{{field}: ...}}")
 
@@ -132,8 +148,9 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
     """The page, its read of the voices and options, and one route per choice.
 
     [LAW:nothing-unseen] the read is one `gallery.read` event: what it showed, what the page had seen, and how long it
-    waited for that to change; each choice one event of its own, `gallery.hear`,
-    `gallery.use`, `gallery.level`, `gallery.modality`, or `gallery.model`, naming what was asked and what came of it.
+    waited for that to change; a voice's line read for its editor is `gallery.line.read`; each choice one event of its
+    own, `gallery.hear`, `gallery.preview`, `gallery.line`, `gallery.use`, `gallery.level`, `gallery.modality`, or
+    `gallery.model`, naming what was asked and what came of it.
     """
     page = resources.files("hands.voice").joinpath("gallery.html").read_text()
 
@@ -167,6 +184,40 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
             return _refusal(error)
         annotate(heard=str(heard), speaking_in=str(speaking))
         return web.json_response({"heard": str(heard), "speaking_in": str(speaking)})
+
+    # A line is read as its editor opens, not carried on every read: it is the file's now, and the read waits on hands.
+    @keyed(clock, "gallery.line.read", record, key)
+    async def read_line(request: web.Request) -> web.Response:
+        try:
+            voice = parse_voice(request.query.get("voice", ""))
+            [line] = await gallery.voices.said_by((voice,))
+        except (Rejected, OSError) as error:
+            return _refusal(error)
+        annotate(voice=str(voice))
+        return web.json_response({"voice": str(voice), "line": line})
+
+    @keyed(clock, "gallery.preview", record, key)
+    async def preview_line(request: web.Request) -> web.Response:
+        try:
+            body = await request.read()
+            heard, line = parse_voice(parse_field(body, "voice")), parse_line(body, "line")
+            speaking = await gallery.voices.preview(heard, line)
+        except (Rejected, OSError) as error:
+            return _refusal(error)
+        # The line itself is the user's words, so the event says how long it was, not what it said.
+        annotate(heard=str(heard), line_chars=len(line), speaking_in=str(speaking))
+        return web.json_response({"heard": str(heard), "speaking_in": str(speaking)})
+
+    @keyed(clock, "gallery.line", record, key)
+    async def keep_line(request: web.Request) -> web.Response:
+        try:
+            body = await request.read()
+            voice, line = parse_voice(parse_field(body, "voice")), parse_line(body, "line")
+            saying = await gallery.voices.keep_line(voice, line)
+        except (Rejected, OSError) as error:
+            return _refusal(error)
+        annotate(voice=str(voice), line_chars=len(line.strip()), default=not line.strip())
+        return web.json_response({"voice": str(voice), "line": saying, "default": not line.strip()})
 
     @keyed(clock, "gallery.use", record, key)
     async def use_voice(request: web.Request) -> web.Response:
@@ -228,7 +279,10 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
         web.get("/gallery", served),
         web.get("/gallery/state", read_state),
         web.get("/gallery/library", find_voices),
+        web.get("/gallery/line", read_line),
         web.post("/gallery/hear", hear_voice),
+        web.post("/gallery/preview", preview_line),
+        web.post("/gallery/line", keep_line),
         web.post("/gallery/use", use_voice),
         web.post("/gallery/level", choose_level),
         web.post("/gallery/modality", choose_modality),

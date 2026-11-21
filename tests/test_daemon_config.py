@@ -843,6 +843,52 @@ async def test_a_comment_added_is_no_edit(tmp_path: Path) -> None:
     assert recorded == []
 
 
+async def test_a_sample_line_edited_is_no_edit_since_it_is_read_where_it_is_said(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.2))
+    await asyncio.sleep(0.05)
+    config.SampleLines(home).keep("mary", "Mary here.")
+    assert await watching is None
+    assert recorded == []
+    assert config.SampleLines(home).read() == {"mary": "Mary here."}
+
+
+def test_a_sample_line_kept_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    written = '# hands, by hand\n[llm]\nmodel = "claude-opus-5-5"  # for now\n\n[sample_lines]\nalba = "Alba here."  # hers\n'
+    home.config.write_text(written)
+    lines = config.SampleLines(home)
+    lines.keep("vctk/p225_023_enhanced", "  From the library.  ")
+    assert home.config.read_text() == written + '"vctk/p225_023_enhanced" = "From the library."\n'
+    lines.keep("alba", "Alba, again.")
+    assert lines.read() == {"alba": "Alba, again.", "vctk/p225_023_enhanced": "From the library."}
+    assert home.config.read_text().startswith('# hands, by hand\n[llm]\nmodel = "claude-opus-5-5"  # for now\n\n[sample_lines]\nalba = "Alba, again."')
+    lines.keep("alba", "")
+    lines.keep("vctk/p225_023_enhanced", " ")
+    # The last line taken out takes its table with it: the file is the user's as it was before any line.
+    assert home.config.read_text() == '# hands, by hand\n[llm]\nmodel = "claude-opus-5-5"  # for now\n\n'
+    assert lines.read() == {}
+
+
+def test_sample_lines_are_none_with_no_file_and_one_that_is_not_text_refuses_the_file() -> None:
+    assert config.parse('[sample_lines]\nmary = "Mary here."\n') == Config()
+    with pytest.raises(Rejected, match=r"\[sample_lines\] mary should be a non-empty string"):
+        config.parse("[sample_lines]\nmary = 3\n")
+    with pytest.raises(Rejected, match="sample_lines should be a table"):
+        config.parse('sample_lines = "Mary here."\n')
+
+
+def test_a_sample_line_is_never_kept_in_a_file_a_start_would_refuse(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[llm]\nmodel = "gpt-9"\n')
+    with pytest.raises(Rejected, match="not gpt-9"):
+        config.SampleLines(home).keep("mary", "Mary here.")
+    assert home.config.read_text() == '[llm]\nmodel = "gpt-9"\n'
+    assert config.SampleLines(Home(tmp_path / "none")).read() == {}
+
+
 async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Path) -> None:
     home = Home(tmp_path)
     recorded: list[Entry] = []

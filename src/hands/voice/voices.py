@@ -9,9 +9,9 @@ to have failed. A file edited by hand changes only the first, until the next sta
 
 import asyncio
 import re
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, NewType, cast
+from typing import Any, NewType, Protocol, cast
 
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 from pipecat.frames.frames import AggregatedTextFrame, ErrorFrame, Frame, TTSAudioRawFrame, TTSSpeakFrame, TTSUpdateSettingsFrame
@@ -153,26 +153,50 @@ def fetched(voice: Chosen) -> None:
 
 
 def sample(voice: Chosen) -> str:
-    """What a voice says when the user hears it: its name, and a line of hands' own that reports nothing, so said again
-    after a barge-in it cannot pass for a session's news."""
+    """What a voice says when the user hears it and has given it no line: its name, and a line of hands' own that reports
+    nothing, so said again after a barge-in it cannot pass for a session's news."""
     return f"This is {spoken(voice)}. This is how I would tell you a session has finished its turn and is waiting for you."
+
+
+def said(voice: Chosen, written: str) -> str:
+    """What `voice` says when it is heard, given the line written for it: that line, or hands' own where it is blank."""
+    # [LAW:single-enforcer] the one rule for a blank line, whether it is the file's, the page's unsaved text, or none.
+    return written.strip() or sample(voice)
+
+
+class SampleLines(Protocol):
+    """The lines voices say when they are heard, by the voice's name as written (hands.daemon.config.SampleLines)."""
+
+    def read(self) -> Mapping[str, str]: ...
+
+    def keep(self, voice: str, line: str) -> None: ...
+
+
+def parse_lines(written: Mapping[str, str]) -> dict[Chosen, str]:
+    """The line each voice says, by the voice each name is; raises Rejected for a name that is no voice, or two names that
+    are one voice, since which of their lines it says would be a guess."""
+    lines = {parse_voice(name): line for name, line in written.items()}
+    if len(lines) != len(written):
+        raise Rejected(f"[sample_lines] names one voice twice, spelled two ways: {', '.join(map(repr, written))}")
+    return lines
 
 
 class Voices:
     """The voices hands can speak in, heard and chosen through `lines`, the processor standing ahead of the TTS service, and
     found in `library`. `speaking` is the voice the TTS service was built in, and from then on the voice is what this owner
-    last handed it.
+    last handed it. What each voice says when it is heard is its line in `samples`, read afresh each time.
 
     A change of voice is a frame in order with the speech around it, so what was handed to the speaker before it is
     said in the old voice and what comes after in the new. Pipecat keeps a settings frame through a barge-in, which
     drops only the speech, so a hearing cut short still ends back in the chosen voice.
     """
 
-    def __init__(self, home: Home, lines: Lines, fetch: Fetch, library: Library, speaking: Chosen) -> None:
+    def __init__(self, home: Home, lines: Lines, fetch: Fetch, library: Library, speaking: Chosen, samples: SampleLines) -> None:
         self._home = home
         self._lines = lines
         self._fetch = fetch
         self._library = library
+        self._samples = samples
         # [LAW:no-ambient-temporal-coupling] the one owner of a change of voice: Pipecat runs a reply's calls side by
         # side, and a hearing and a choice interleaved would leave a sample in another's voice, or the speaker in a
         # voice the file does not hold. Each runs whole, one after another.
@@ -188,16 +212,34 @@ class Voices:
         """The library voices whose paths contain `query`, and when the listing searched was made."""
         return await self._library.search(query, limit)
 
+    async def said_by(self, voices: tuple[Chosen, ...]) -> tuple[str, ...]:
+        """What each voice says when it is heard, as the file holds its line now."""
+        written = parse_lines(await asyncio.to_thread(self._samples.read))
+        return tuple(said(voice, written.get(voice, "")) for voice in voices)
+
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen:
-        """Each voice says its sample, in order, and then hands goes back to the voice it speaks in, which it returns.
+        """Each voice says its line, in order, and then hands goes back to the voice it speaks in, which it returns.
         A voice that cannot be fetched is refused before any is heard."""
+        return await self._hear(tuple(zip(voices, await self.said_by(voices), strict=True)))
+
+    async def preview(self, voice: Chosen, line: str) -> Chosen:
+        """`voice` says `line`, a line not yet kept, as it would say it once kept; returns the voice hands speaks in."""
+        return await self._hear(((voice, said(voice, line)),))
+
+    async def keep_line(self, voice: Chosen, line: str) -> str:
+        """From its next hearing on, `voice` says `line`, or hands' own where it is blank; returns what it will say."""
+        await asyncio.to_thread(self._samples.keep, str(voice), line)
+        [saying] = await self.said_by((voice,))
+        return saying
+
+    async def _hear(self, lines: tuple[tuple[Chosen, str], ...]) -> Chosen:
         async with self._changing:
             now = self._speaking
-            await asyncio.gather(*(asyncio.to_thread(self._fetch, voice) for voice in voices))
+            await asyncio.gather(*(asyncio.to_thread(self._fetch, voice) for voice, _ in lines))
             try:
-                for voice in voices:
+                for voice, line in lines:
                     await self._speak_in(voice)
-                    await self._lines.push_frame(line_frame(hands_says(sample(voice)), append_to_context=False))
+                    await self._lines.push_frame(line_frame(hands_says(line), append_to_context=False))
             finally:
                 # A hearing cancelled or failed partway still hands the speaker back the voice it speaks in.
                 await self._speak_in(now)

@@ -17,8 +17,13 @@ run runs starts the run again, on the file as edited.
     input_device = "MacBook Pro Microphone"   # auto (the default) follows the system's default; a device's name keeps to it; off opens none
     output_device = "MacBook Pro Speakers"    # the same for the speaker
 
+    [sample_lines]
+    charles = "Charles here. A session is waiting for you."   # what a voice says when it is heard, by its name; hands' own line by default
+    "vctk/p225_023_enhanced" = "And this is a voice from Kyutai's library."   # a library voice by its path there
+
 A file left out, or a key, is the default. Secrets are not settings: the brain's login is in its own config directory. The voice is not either: the user chooses it by voice,
-and it changes while the daemon runs (hands.voice.voices). The model is a setting the user may also choose by voice:
+and it changes while the daemon runs (hands.voice.voices). The sample lines are settings that change while it runs as
+well: they are read from the file each time a voice is heard (SampleLines), so an edit to them alone is no edit. The model is a setting the user may also choose by voice:
 that choice is an edit to this file (OwnModel), taken as any edit is. `hands run --model` names one that outranks the
 file's for as long as that run runs, its restarts included.
 
@@ -187,7 +192,7 @@ def _keep(home: Home, held: bytes | None, edited: bytes) -> None:
     # [LAW:one-source-of-truth] one writer at a time: a save by hand since the choice was weighed is the user's, and is
     # never written over.
     if _held(home) != held:
-        raise Rejected(f"{home.config} was saved after the model was chosen, so the choice was not written over it")
+        raise Rejected(f"{home.config} was saved after the choice was made, so the choice was not written over it")
     # Through a link to the file, as dotfiles keep one, so the link stays and the file it names takes the edit.
     target = home.config.resolve()
     replace_whole(target, edited.decode(), 0o644 if held is None else target.stat().st_mode & 0o777)
@@ -241,7 +246,9 @@ def parse(text: str, model: str | None = None) -> Config:
         top = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
-    _known(top, "the file", ("llm", "telemetry", "talk", "audio"))
+    _known(top, "the file", ("llm", "telemetry", "talk", "audio", "sample_lines"))
+    # Checked as the file is read, so a line hands could not say is refused at the start or the edit; read where it is said.
+    _sample_lines(top)
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
     talk = _table(top, "talk")
@@ -250,6 +257,56 @@ def parse(text: str, model: str | None = None) -> Config:
     _known(audio, "[audio]", ("input_device", "output_device"))
     devices = Choices(input=_device(audio, "input_device"), output=_device(audio, "output_device"))
     return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk), devices=devices)
+
+
+def _sample_lines(top: Mapping[str, object]) -> dict[str, str]:
+    """The line each voice named says when it is heard, by the voice's name as written; which voice a name is, is the
+    voices' to say (hands.voice.voices.parse_lines)."""
+    table = _table(top, "sample_lines")
+    return {name: _text(table, "[sample_lines]", name, "") for name in table}
+
+
+class SampleLines:
+    """The lines voices say when they are heard, as config.toml holds them now, and the edit that sets one.
+
+    [LAW:one-source-of-truth] the file is the one place a line is kept, by hand or from the gallery page; nothing holds
+    a copy, so each hearing reads it afresh and no edit to it starts the run again (`edited` weighs Config, which holds
+    none). An edit from the page is an edit to the file, its every other line kept as written, as OwnModel's is.
+    """
+
+    def __init__(self, home: Home) -> None:
+        self._home = home
+
+    def read(self) -> dict[str, str]:
+        held = _readable(self._home, _held(self._home))
+        try:
+            return _sample_lines(tomllib.loads("" if held is None else held.decode()))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+            raise Rejected(f"{self._home.config} could not be read: {error}") from error
+        except Rejected as error:
+            raise Rejected(f"{self._home.config}: {error}") from error
+
+    def keep(self, voice: str, line: str) -> None:
+        """`voice` says `line` from its next hearing on; a blank line takes its line out, so it says hands' own again."""
+        held = _readable(self._home, _held(self._home))
+        # The file is taken whole first, so an edit is only ever made to settings a start would take.
+        _settings(self._home, held)
+        _keep(self._home, held, _with_line(held, voice, line.strip()))
+
+
+def _with_line(held: bytes | None, voice: str, line: str) -> bytes:
+    # Only read once `_settings` has taken the file, so it is TOML and [sample_lines], where there is one, is a table.
+    document = tomlkit.parse(b"" if held is None else held)
+    lines = cast(dict[str, object], document.setdefault("sample_lines", tomlkit.table()))
+    if line:
+        # Set in place, so a line edited keeps its place in the table.
+        lines[voice] = line
+    else:
+        lines.pop(voice, None)
+    if not lines:
+        # A table emptied by the last line taken out goes with it, so the file reads as one never given a line.
+        del document["sample_lines"]
+    return tomlkit.dumps(document).encode()
 
 
 def _device(table: Mapping[str, object], key: str) -> Choice:

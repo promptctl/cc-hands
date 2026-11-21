@@ -201,6 +201,10 @@ wake_word = "Hey Mycroft"     # what the desk listens for at its wake word level
 [audio]
 input_device = "MacBook Pro Microphone"   # auto (the default), a device's name, or off
 output_device = "MacBook Pro Speakers"
+
+[sample_lines]
+charles = "Charles here. A session is waiting for you."   # what a voice says when you hear it
+"vctk/p225_023_enhanced" = "And this is a voice from Kyutai's library."
 ```
 
 `personality` changes hands' tone and choice of words, and nothing else: replies stay short and
@@ -210,6 +214,12 @@ spoken, and hands does only what you tell it to. Leave it out and hands talks in
 any other phrase, train an ONNX model on it with `uv run --project wake-training train-wake-word "Hey Computer"`
 ([docs/wake-word-training.md](docs/wake-word-training.md)), and name it beside the phrase:
 `wake_word_model = "~/wake/hey_computer.onnx"`.
+
+`[sample_lines]` gives a voice the line it says when you hear it, in the gallery's Play or by asking hands to let you
+hear voices, by the voice's name (`bill_boerst`) or, for a library voice, its path there. A voice given none says hands'
+own line, its name and a line about a session waiting. The gallery's ✎ beside a voice opens its line in the voice's row:
+its Play speaks the text as it stands, unsaved, and Save writes it into this file, every other line kept as written; a
+line saved empty goes back to hands' own. A line is read each time a voice is heard, so changing one restarts nothing.
 
 `input_device` and `output_device` choose the microphone and speaker hands uses at the Mac. `auto`, the default,
 follows the system's default device as it changes. A device's name, as macOS shows it in Sound settings, keeps hands on
