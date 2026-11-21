@@ -57,6 +57,7 @@ from hands.sessions.child import Ran
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
+from hands.tasks import cancelled
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
@@ -1082,7 +1083,10 @@ class Brain:
         # [LAW:no-ambient-temporal-coupling] set, and replaced, each time what the model applied has been heard (`_heard`):
         # what a clear waits on to see Claude Code hold nothing of what it stopped, re-read from the model each time it moves.
         self._moved = asyncio.Event()
-        self._typing: set[asyncio.Task[None]] = set()
+        # The brain's own work (`_keep`), each task until it ends: none is ended but by itself (`drained`).
+        self._own_work: set[asyncio.Task[None]] = set()
+        # [LAW:no-ambient-temporal-coupling] set by the stop, its first step: no turn is asked of a brain being stopped.
+        self._stopped = False
         # When the last stop pressed Ctrl-C, on the brain's clock.
         self._cleared = float("-inf")
         # [LAW:no-ambient-temporal-coupling] the words of the turn last pasted and not taken, as `kept` reads them, until
@@ -1102,6 +1106,8 @@ class Brain:
         # [LAW:no-ambient-temporal-coupling] one turn in flight at a time: the next is asked once the one before is answered.
         while self._turn is not None:
             await asyncio.wait({self._turn.answered})
+        if self._stopped:
+            raise BrainGone("the brain was being stopped when it was asked")
         if self._exit.done():
             raise BrainGone(f"the brain had ended before it was asked: {exited(self._exit.result())}")
         loop = asyncio.get_running_loop()
@@ -1182,13 +1188,29 @@ class Brain:
     def _keep(self, work: Coroutine[None, None, None], turn: _Turn | None) -> None:
         """Runs on in a task of the brain's own, whoever asked for it, for `turn`, the turn in flight it was begun in."""
         task = asyncio.create_task(work)
-        self._typing.add(task)
+        self._own_work.add(task)
         task.add_done_callback(lambda done: self._kept(done, turn))
 
     def _kept(self, task: "asyncio.Task[None]", turn: _Turn | None) -> None:
-        self._typing.discard(task)
+        self._own_work.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
             self._broke(turn, error)
+
+    async def drained(self) -> int:
+        """Returns once no work of the brain's own runs and the model performs nothing that would keep more (`_took`), and
+        says how many tasks it waited on. A turn's end is no sign of that: a stop ends the turns it clears before its
+        Ctrl-C goes. What the work raised is `_broke`'s to say.
+
+        [LAW:no-ambient-temporal-coupling] the one point where the brain's own work is over. Each task ends by itself in
+        bounded time while the brain runs: a clear within INTERRUPT_SECONDS, a take within its take, a send with its turn."""
+        waited = 0
+        while self._own_work:
+            own = set(self._own_work)
+            # `asyncio.wait`: what each ended with is `_kept`'s to hear, never raised into whoever waits.
+            await asyncio.wait(own)
+            waited += len(own)
+            await self._sessions.drained(self.session)
+        return waited
 
     def _broke(self, turn: _Turn | None, error: BaseException) -> None:
         """[LAW:single-enforcer] what the brain's own work raised that nothing in it expected: said once, with where it
@@ -1270,8 +1292,7 @@ class Brain:
                 try:
                     await asyncio.wait({looking, sleeping}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
-                    looking.cancel()
-                    await asyncio.wait({looking})
+                    await cancelled(looking)
                 # A take that ran out as the prompt showed types nothing: the turn would be Claude Code's with nobody waiting.
                 if looking.cancelled() or sleeping.done():
                     # [LAW:no-silent-failure] what the screen showed instead is the reason, read with the input still held.
@@ -1297,8 +1318,7 @@ class Brain:
                     # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
                     self._over(turn, Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{shown}"))
         finally:
-            sleeping.cancel()
-            await asyncio.wait({sleeping})
+            await cancelled(sleeping)
             # [LAW:no-silent-failure] a pause that failed, however the take ended, says so, and is not taken for the time
             # running out.
             if not sleeping.cancelled():
@@ -1353,8 +1373,7 @@ class Brain:
         try:
             await asyncio.wait({*ending, sleeping}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            sleeping.cancel()
-            await asyncio.wait({sleeping})
+            await cancelled(sleeping)
         if not sleeping.cancelled():
             sleeping.result()
 
@@ -1395,8 +1414,7 @@ class Brain:
             try:
                 await self._waited(INTERRUPT_SECONDS, waiting, self._exit)
             finally:
-                waiting.cancel()
-                await asyncio.wait({waiting})
+                await cancelled(waiting)
             unstopped: StopUnrecorded | None = None
             if waiting.cancelled():
                 if self._exit.done():
@@ -1497,15 +1515,28 @@ class Brain:
         return await asyncio.shield(self._exit)
 
     async def stop(self) -> None:
-        """Ends the brain and lets go of what it held, however its end went. What stopped the model reading its turns is
-        `exited`'s to raise, to whoever waits on the brain, not the stop's."""
-        try:
-            await self._claude.stop()
-            await asyncio.shield(self._exit)
-        finally:
-            self._reading.cancel()
-            await self._listener.cleanup()
-            shutil.rmtree(self._sockets, ignore_errors=True)
+        """Ends the brain and lets go of what it held, however its end went: its own work first, while its terminal still
+        takes keys, then the terminal. What stopped the model reading its turns is `exited`'s to raise, to whoever waits on
+        the brain, not the stop's.
+
+        [LAW:no-ambient-temporal-coupling] no key of the brain's own is refused for hands having ended its terminal: what
+        runs is stopped and drained while the brain runs, and the terminal is ended with the input held, so work kept
+        meanwhile is typed only once the exit has ended every turn (`_run_out`), and finds none to stop."""
+        # [LAW:nothing-unseen] the stop is one event, with how much of the brain's own work it waited on.
+        with continuing(self._launched), unit("brain.shutdown", self._record, begun(self._clock)):
+            # Each let go of whatever the stop's steps, and the others, went: last held, first let go.
+            async with contextlib.AsyncExitStack() as held:
+                held.callback(shutil.rmtree, self._sockets, ignore_errors=True)
+                held.push_async_callback(self._listener.cleanup)
+                held.push_async_callback(cancelled, self._reading)
+                self._stopped = True
+                # [LAW:dataflow-not-control-flow] the one way a turn is stopped, every stop: none runs, and none is stopped.
+                self.interrupt(self.answering())
+                waited = await self.drained()
+                async with self._input:
+                    await self._claude.stop()
+                    await asyncio.shield(self._exit)
+                annotate(waited_on=waited + await self.drained())
 
     async def _type(self, typing: Callable[[Typist], None]) -> None:
         try:

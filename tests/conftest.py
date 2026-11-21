@@ -29,6 +29,7 @@ import mlx.core as mx
 import mlx_whisper
 import nltk
 import pytest
+from loguru import logger
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Ears, Hears
 from pipecat.frames.frames import ErrorFrame, Frame
@@ -192,6 +193,27 @@ def pytest_make_collect_report() -> Generator[None, pytest.CollectReport, pytest
 def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
     """The wide events named `name`, in the order they were emitted."""
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
+
+
+@pytest.fixture
+def errors() -> Iterator[list[str]]:
+    """[LAW:no-silent-failure] every error hands logs while a test that uses it runs: one the test does not take (`taken`)
+    fails it, so work that broke where the test did not look is never a pass. A module uses it for each of its tests by
+    `pytestmark`, which sets it up first, so it hears what every other fixture's teardown logs too."""
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR", filter="hands")
+    try:
+        yield logged
+        assert logged == [], f"logged and never asserted: {logged}"
+    finally:
+        logger.remove(sink)
+
+
+def taken(errors: list[str]) -> list[str]:
+    """What `errors` holds, taken out of it, for the test to assert."""
+    lines = errors[:]
+    errors.clear()
+    return lines
 
 
 # [LAW:locality-or-seam] the one place tests build the session registry, so a change to its constructor is one edit here.
