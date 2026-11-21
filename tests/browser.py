@@ -6,6 +6,8 @@ console.error, fails the test that opened it, and nothing a test waits on in the
 
 import asyncio
 import json
+import os
+import signal
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from itertools import count
@@ -166,7 +168,7 @@ async def chrome(profile: Path) -> AsyncGenerator[Browser]:
     process = await asyncio.create_subprocess_exec(
         str(CHROME), "--headless=new", "--no-sandbox", "--use-mock-keychain", "--remote-debugging-port=0", f"--user-data-dir={profile}", "--no-first-run",
         "--no-default-browser-check", "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "about:blank",
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, start_new_session=True,
     )
     listening = asyncio.get_running_loop().create_future()
     # Chrome's stderr is read to its end, so a Chrome that says a lot never stops on a full pipe.
@@ -177,9 +179,12 @@ async def chrome(profile: Path) -> AsyncGenerator[Browser]:
         async with aiohttp.ClientSession() as session:
             yield Browser(session, endpoint)
     finally:
-        # A Chrome that ended on its own, as one that never listened does, is past killing.
-        if process.returncode is None:
-            process.kill()
+        # Chrome's helpers hold its stderr open as it does, so its whole process group is ended, and the read of stderr
+        # reaches its end.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # every process of Chrome's had ended already, as when Chrome ends before it listens
         await process.wait()
         await reading
 
