@@ -1825,16 +1825,23 @@ async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_sto
 
 @pytest.mark.outside
 async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unrecorded_after_the_bound(tmp_path: Path, fake_claude: Path) -> None:
+    bounded = asyncio.Event()
+
     async def sleep(seconds: float) -> None:
         # The stop's bound never passes: only the brain's exit ends its wait.
-        await (asyncio.Event().wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
+        if seconds == INTERRUPT_SECONDS:
+            bounded.set()
+            await asyncio.Event().wait()
+        await asyncio.sleep(seconds)
 
     brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
         assert brain.interrupt(brain.answering()) is True
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape"])
+        # Killed once the stop waits out its bound, its Escape answered: a key the fritter dies before answering is
+        # refused, and fails the turn as what broke it.
+        await asyncio.wait_for(bounded.wait(), 10)
         os.kill(brain.pid, signal.SIGKILL)
         with pytest.raises(BrainGone):
             await asyncio.wait_for(asking, 10)

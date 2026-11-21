@@ -199,7 +199,8 @@ def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
 def errors() -> Iterator[list[str]]:
     """[LAW:no-silent-failure] every error hands logs while a test that uses it runs: one the test does not take (`taken`)
     fails it, so work that broke where the test did not look is never a pass. A module uses it for each of its tests by
-    `pytestmark`, which sets it up first, so it hears what every other fixture's teardown logs too."""
+    `pytestmark`, which sets it up before the test's own fixtures, so it hears what their teardowns log too; an autouse
+    fixture's is set up before it, and its teardown is not heard."""
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR", filter="hands")
     try:

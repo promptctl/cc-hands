@@ -316,7 +316,7 @@ async def test_a_brain_whose_reading_failed_still_lets_go_of_what_it_held_as_it_
     with pytest.raises(OSError, match="the transcript went"):
         brain._reading.result()  # pyright: ignore[reportPrivateUsage]
     [shutdown] = events(recorded, "brain.shutdown")
-    assert (shutdown.outcome, shutdown.facts) == ("ok", {"waited_on": 0})
+    assert (shutdown.outcome, shutdown.facts) == ("ok", {"interrupted": False, "waited_on": 0, "waited_after_exit": 0})
 
 
 @pytest.mark.outside
@@ -1106,7 +1106,7 @@ async def test_stopping_a_notification_turn_stops_the_turn_typed_behind_it_befor
     _took(brain, "n1", "and now?", queued=True)
     brain._input.release()  # pyright: ignore[reportPrivateUsage]
     # Its words waited behind the turn stopped, and Ctrl-C cleared them: the turn ends stopped, never left waiting.
-    await until(lambda: turn.answered.done())
+    await brain.drained()
     assert (turn.answered.result(), "escape" in keys.pressed, brain._claude_turns.open) == (BrainStopped(), True, ())  # pyright: ignore[reportPrivateUsage]
 
 
@@ -1178,28 +1178,26 @@ async def test_a_stop_s_ctrl_c_held_in_the_keyboard_holds_the_drain() -> None:
     assert (await draining, turn.answered.result()) == (1, BrainStopped())
 
 
-async def test_the_model_held_performing_holds_the_drain_and_work_it_keeps_meanwhile_is_waited_on() -> None:
+async def test_the_model_still_performing_holds_the_drain_and_work_it_keeps_meanwhile_is_waited_on() -> None:
     brain = _owning(VirtualClock())
-    _keyed(brain, [])
-    performed, kept = asyncio.Event(), asyncio.Event()
-    performing = brain._sessions.drained  # pyright: ignore[reportPrivateUsage]
-
-    async def held(session: SessionId) -> None:
-        await performed.wait()
-        await performing(session)
-
-    brain._sessions.drained = held  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-    brain._keep(asyncio.sleep(0), None)  # pyright: ignore[reportPrivateUsage]
+    keys = _keyed(brain, [])
+    gate = threading.Event()
+    keys.before["ctrl_c"] = gate.wait
+    await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path(TRANSCRIPT))))  # pyright: ignore[reportPrivateUsage]
+    brain._over(_typed_turn(brain, "hello"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
+    # The drain begins with no work of the brain's own, as the model decides the untaken words taken late and has not yet
+    # performed it: performed, it keeps their stop (`_took`), held at its Ctrl-C.
     draining = asyncio.ensure_future(brain.drained())
-    await settled()
-    assert not draining.done()
-    # What the model performs keeps work of the brain's own (`_took`): the drain waits on that too.
-    brain._keep(kept.wait(), None)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
-    performed.set()
-    await settled()
-    assert not draining.done()
-    kept.set()
-    assert await draining == 2
+    brain._sessions.hear(Prompted(SessionId("b1"), 0.0, "default", PromptId("p1"), "hello"))  # pyright: ignore[reportPrivateUsage]
+    try:
+        await until(lambda: keys.pressed == ["escape"])
+        # The Escape stopped them, as the transcript's record says.
+        await brain._apply(Interrupted(SessionId("b1"), PromptId("p1"), 1.0))  # pyright: ignore[reportPrivateUsage]
+        await until(lambda: keys.pressed == ["escape", "ctrl_c"])
+        assert not draining.done()
+    finally:
+        gate.set()
+    assert (await draining, brain._claude_turns.open) == (1, ())  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_key_that_fails_is_said_by_the_time_the_drain_returns(errors: list[str]) -> None:
@@ -1220,20 +1218,23 @@ async def test_a_key_that_fails_is_said_by_the_time_the_drain_returns(errors: li
     assert (keys.pressed, turn.answered.exception()) == (["escape", "ctrl_c"], jammed)
 
 
-async def test_a_key_the_terminal_refuses_while_the_brain_runs_is_said_as_a_failure(errors: list[str]) -> None:
+@pytest.mark.parametrize("words", ["hello", NOTICE])
+async def test_a_key_the_terminal_refuses_while_the_brain_runs_is_said_as_a_failure(errors: list[str], words: str) -> None:
     brain = _owning(VirtualClock())
     keys = _keyed(brain, [])
+    refusal = Untyped("the fritter refused")
 
     def refused() -> None:
-        raise Untyped("the fritter refused")
+        raise refusal
 
     keys.before["escape"] = refused
-    # A stop that holds no turn to end with it: one Claude Code opened itself.
-    _took(brain, "n1", NOTICE)
-    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
-    assert brain.interrupt(notified) is True
+    # The stop of a turn in flight, which ends with what broke it; or of one Claude Code opened itself, which holds none.
+    turn = _typed_turn(brain, words) if words == "hello" else None
+    _took(brain, "p1", words)
+    assert brain.interrupt(brain.answering() or brain.current()) is True
     await brain.drained()
-    assert taken(errors) == ["the brain's own work failed: BrainGone('the brain cannot be typed into: the fritter refused')"]
+    assert taken(errors) == [f"the brain's own work failed: {refusal!r}"]
+    assert turn is None or turn.answered.exception() is refusal
 
 
 async def test_a_brain_stopped_while_a_stop_of_its_own_holds_ctrl_c_ends_its_terminal_only_once_the_key_has_gone(tmp_path: Path) -> None:
@@ -1248,14 +1249,38 @@ async def test_a_brain_stopped_while_a_stop_of_its_own_holds_ctrl_c_ends_its_ter
         await settled()
         # The terminal still takes keys: the stop waits on its own work first.
         assert (stopping.done(), keys.exit.done(), listener.cleaned) == (False, False, False)
+        # No turn is asked of a brain being stopped, the turn in flight still running or not.
+        with pytest.raises(BrainGone, match="being stopped"):
+            await brain.ask("and now?", unasked)
     finally:
         gate.set()
     await stopping
     assert (keys.pressed, turn.answered.result(), keys.exit.done()) == (["escape", "ctrl_c"], BrainStopped(), True)
     assert (listener.cleaned, (tmp_path / "sockets").exists(), brain._reading.cancelled()) == (True, False, True)  # pyright: ignore[reportPrivateUsage]
-    # The stop held, and the stop's own of the same turn, which found it over and pressed nothing.
     [shutdown] = events(recorded, "brain.shutdown")
-    assert (shutdown.outcome, shutdown.facts) == ("ok", {"waited_on": 2})
+    assert (shutdown.outcome, shutdown.facts["interrupted"], shutdown.facts["waited_after_exit"]) == ("ok", True, 0)
+
+
+async def test_a_brain_stop_cancelled_while_it_drains_still_ends_the_terminal_and_lets_go_of_everything(tmp_path: Path) -> None:
+    brain = _owning(VirtualClock())
+    keys = _keyed(brain, [])
+    listener = _running(brain, tmp_path / "sockets")
+    gate = threading.Event()
+    try:
+        await _stopping_held(brain, keys, gate)
+        stopping = asyncio.ensure_future(brain.stop())
+        await settled()
+        # The caller gives up on the stop while its drain waits on the held Ctrl-C.
+        stopping.cancel()
+        await settled()
+        assert keys.exit.done() is False
+    finally:
+        gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+    # The terminal is ended once the key has gone, however the stop's caller left it.
+    await until(lambda: keys.exit.done())
+    assert (listener.cleaned, (tmp_path / "sockets").exists(), brain._reading.cancelled()) == (True, False, True)  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_turn_in_flight_as_the_brain_stops_ends_stopped_before_its_terminal_is_ended(tmp_path: Path) -> None:
@@ -1272,8 +1297,8 @@ async def test_a_turn_in_flight_as_the_brain_stops_ends_stopped_before_its_termi
     keys.before["ctrl_c"] = lambda: ended.append(keys.exit.done())
     await brain.stop()
     assert (await asking, ended) == (BrainStopped(), [False])
-    # No turn is asked of a brain being stopped.
-    with pytest.raises(BrainGone, match="being stopped"):
+    # No turn is asked of a brain that has ended.
+    with pytest.raises(BrainGone, match="had ended"):
         await brain.ask("and now?", unasked)
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"]) == ("ok", True, "p1")

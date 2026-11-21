@@ -88,7 +88,7 @@ from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
 from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, invocation, keep_beating, start
-from hands.tasks import cancelled
+from hands.tasks import cancel_and_wait
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
@@ -496,16 +496,16 @@ async def converse(
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
         # A run told to stop takes no more turns: the key stops being watched before the pipeline tears down, not after.
         talk_key.cancel()
-        await cancelled(phone)
+        await cancel_and_wait(phone)
         # [LAW:no-ambient-temporal-coupling] the follower holds the streams while it reopens them, and Pipecat's
         # cleanup closes them; the follower is done before the cleanup starts, so the two never hold them at once.
-        await cancelled(following)
+        await cancel_and_wait(following)
         await runner.cancel("quit")
         # What it raised is told already, by stop_if_failed.
         await asyncio.wait({pipeline_run})
     finally:
         # The pipeline among them: a teardown that raised before it ended leaves nothing running past the run.
-        await cancelled(pipeline_run, quitting, *background)
+        await cancel_and_wait(pipeline_run, quitting, *background)
 
 
 def stopping(stop: Stop) -> Callable[[asyncio.Task[None]], None]:
