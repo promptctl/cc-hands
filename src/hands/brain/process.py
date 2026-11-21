@@ -30,7 +30,7 @@ import tempfile
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, cast, get_args
+from typing import Any, Literal, Protocol, cast, get_args
 
 from aiohttp import web
 from loguru import logger
@@ -39,7 +39,7 @@ from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
 from hands.clock import Clock, wait
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
-from hands.core.events import Ending, Event, Prompted, Stopped
+from hands.core.events import Ending, Event, Joined, MovedOn, Prompted, Stopped
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
 from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
@@ -50,8 +50,8 @@ from hands.sessions.audit import Record
 from hands.sessions.registry import Sessions, StopHeld
 from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
-from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_declared
-from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
+from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_hook
+from hands.sessions.hooks import Hook, Own, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.child import Ran
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
@@ -111,10 +111,9 @@ STOPPED = "hands stopped this turn, so it did not run."
 LET_GO = "Claude Code went on past this dialog before anyone answered it, so it is refused."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
 
-# What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
-# dialog about to open. Escape ends a turn with none of them, so a turn told to stop is over when
-# it is told.
-HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
+# What the brain posts to hands, each to its own path (hookconfig.BRAIN_HOOKS): the session it starts and the one it ends,
+# a typed turn taken, a turn ended, a turn the API failed, and a dialog about to open. Escape ends a turn with none of
+# them, so a turn told to stop is over when it is told.
 # A paste of four lines or more, as a UserPromptSubmit hook's `prompt` holds it: what was pasted, with a line end added
 # where it had none, inside a tag pair.
 PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\1">\n', re.DOTALL)
@@ -301,7 +300,7 @@ def command(launch: Launch, claude: Path, hooks: str, mode: Mode | None) -> list
             # [LAW:single-enforcer] each hook declared as hookconfig declares the brain's: a held permission's lives as long
             # as a working session's, a day, and is denied only as that day ends, since its dialog is one nobody sees; a
             # prompt's and a Stop's as long as the order of the brain's turns rests on them (`ClaudeTurns`).
-            "hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **brain_declared(event)}]}] for event in HOOKS},
+            "hooks": {event: [{"hooks": [brain_hook(event, f"{hooks}/{event}")]}] for event in BRAIN_HOOKS},
             # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
             # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
             # which a process environment does not (hands-brain-8gb).
@@ -791,6 +790,14 @@ class Asked:
 
 
 
+def _session_of(body: bytes) -> str | None:
+    """The session a hook hands could not read names, for its record: None where even that much does not parse."""
+    try:
+        return Payload.parse(body).optional_text("session_id")
+    except Rejected:
+        return None
+
+
 def _unanswered(event: str) -> Mapping[str, object]:
     """What a hook the brain posted is answered when hands broke handling it: a dialog refused, any other hook let go."""
     match event:
@@ -805,7 +812,7 @@ def _unanswered(event: str) -> Mapping[str, object]:
 def refused(reply: HookReply) -> Allow | AllowWith | Approve | Deny | DenyAndInterrupt:
     """What a brain dialog's hook is sent for the model's reply. The model lets a brain dialog go only when Claude Code
     went on past it unanswered (at its prompt, a prompt typed, the session's end): never once its tool ran, since the
-    brain posts no PostToolUse or PostToolUseFailure (HOOKS). Left to Claude Code's own dialog, nobody would see it on the
+    brain posts no PostToolUse or PostToolUseFailure (BRAIN_HOOKS). Left to Claude Code's own dialog, nobody would see it on the
     brain's screen and its turn would wait on it, so it is refused instead."""
     match reply:
         case Withdraw():
@@ -1033,8 +1040,19 @@ def _unsaid(_heard: Heard) -> None:
     """What the brain's session would have said of its progress: the stage says the brain's turn from the wire instead."""
 
 
+class Moving(Protocol):
+    """What reads the brain's conversation off the wire, one conversation at a time: told once each time the brain moves
+    to another, in the step it moves, so what it held of the one left is let go."""
+
+    def moved(self) -> None: ...
+
+
 class Brain:
-    """A running brain: a turn is asked with `ask`, which returns once the brain has said the turn is over."""
+    """A running brain: a turn is asked with `ask`, which returns once the brain has said the turn is over.
+
+    [LAW:one-source-of-truth] `session` is the session the brain is in: the one it was launched under until a start
+    Claude Code reports for another moves it there (`_start`). A session's end leaves it where it is, until a start says
+    otherwise; the registry models each session's life, and is never asked which one the brain is in."""
 
     def __init__(
         self,
@@ -1049,11 +1067,14 @@ class Brain:
         record: Record,
         launched: Span,
         clock: Clock,
+        readers: Sequence[Moving],
     ) -> None:
         self._claude = claude
         self._fritter = fritter
         self._config_dir = config_dir
         self.session = session
+        # Told of each move, in the step it is made.
+        self._readers = readers
         self._typist = typist
         # The Claude Code fritter wrapped, and where it works: what its own hooks do not say of it.
         self._pid = typist.pid
@@ -1471,7 +1492,8 @@ class Brain:
     def hear(self, observed: Observed) -> None:
         """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""
         match observed:
-            case Sent(session=session, kind=MainTurn(), body=body) if session == self.session:
+            # [LAW:single-enforcer] only the brain's own requests are heard here: Kept fences out every other.
+            case Sent(kind=MainTurn(), body=body):
                 tools = tool_names(body)
                 # Of the turn in flight only when it rides the turn of Claude Code's the request is of.
                 if self._turn is not None and self._turn.running is not None and self._turn.running is self._claude_turns.current:
@@ -1547,13 +1569,16 @@ class Brain:
             self._refused(body)
             return DECLINED
         try:
-            hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(self._clock.uuid()))
+            hook = parse_own_hook(body, own=Own(self._pid, self._cwd), at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(self._clock.uuid()))
         except Rejected as error:
-            return self._unread(event, error)
-        if hook.session != self.session:
-            logger.info(f"the brain's {hook.name} hook came for session {hook.session}, not the brain's")
-            return self._foreign(hook)
+            return self._unread(event, body, error)
         match hook:
+            case Hook(happened=Joined() as joined):
+                # A start is how the brain enters a session, whichever it is.
+                await self._start(hook.session, joined)
+                return {}
+            case _ if hook.session != self.session:
+                return self._foreign(hook)
             case PermissionHook():
                 return hook_output(await self._permit(hook))
             case Hook():
@@ -1564,6 +1589,30 @@ class Brain:
                 await self._heard()
                 self._ordered(hook, held, self._clock.now() - arrived)
                 return {}
+
+    async def _start(self, session: SessionId, joined: Joined) -> None:
+        """The brain in `session`, which Claude Code started: at its launch, and in the same process after a /clear or a
+        /resume, a resume back to a session it held before included. Claude Code sends no request of the session before
+        this hook is answered (docs/claude-code-behavior.md).
+
+        [LAW:one-source-of-truth] the conversation file is written here alone, before the session changes in memory: a
+        write that fails fails the start, and the brain stays where it was. [LAW:no-ambient-temporal-coupling] the rest
+        is one step, with nothing awaited between: the session left ended in the model if its end never came, the brain
+        in the session it entered, every reader told of the move, and the start applied."""
+        left = self.session
+        # [LAW:nothing-unseen] each start is one event: the session entered, the one left, and how Claude Code entered it.
+        with unit("brain.start", self._record, begun(self._clock)):
+            annotate(session=session, left=left, source=joined.source)
+            hold(self._config_dir, session)
+            applying: list[asyncio.Future[None]] = []
+            if session != left:
+                if (still := self._modelled()) is not None:
+                    applying.append(self._apply(MovedOn(still.membership)))
+                self.session = session
+                for reader in self._readers:
+                    reader.moved()
+            applying.append(self._apply(joined))
+            await asyncio.gather(*applying)
 
     def _ordered(self, hook: Hook, held: StopHeld | None, took: float) -> None:
         """[LAW:no-silent-failure] whether Claude Code waited on the hook as the order of the brain's turns needs
@@ -1587,31 +1636,45 @@ class Brain:
         # The turn in flight fails with the turn of Claude Code's it rides, as each does (`_ride`).
         self._claude_turns.lost(OrderLost(why))
 
-    def _unread(self, event: str, error: Rejected) -> Mapping[str, object]:
+    def _unread(self, event: str, body: bytes, error: Rejected) -> Mapping[str, object]:
         match event:
             case "PermissionRequest":
                 # [LAW:nothing-unseen] one event, though hands could not read which turn's it is.
                 with unit("brain.permission", self._record, begun(self._clock)):
                     fail(f"hands could not read the permission request: {error}")
                 return hook_output(Deny(UNREAD))
-            case "UserPromptSubmit" | "Stop":
-                # [LAW:no-silent-failure] a turn's opening or its Stop the model never heard: which turn a telling ends is
-                # no longer known (`ClaudeTurns`), and is not guessed.
-                self._lost(f"the brain's {event} hook does not parse: {error}")
-                return {}
             case _:
-                logger.warning(f"the brain posted a hook that does not parse: {error}")
+                # [LAW:nothing-unseen] one event, naming the hook and the session it came under where that much is read.
+                with unit("brain.hook", self._record, begun(self._clock)):
+                    annotate(hook=event, session=_session_of(body))
+                    fail(f"hands could not read the brain's {event} hook: {error}")
+                if event in ("UserPromptSubmit", "Stop"):
+                    # [LAW:no-silent-failure] a turn's opening or its Stop the model never heard: which turn a telling ends
+                    # is no longer known (`ClaudeTurns`), and is not guessed.
+                    self._lost(f"the brain's {event} hook does not parse: {error}")
                 return {}
 
     def _foreign(self, hook: Hook | PermissionHook) -> Mapping[str, object]:
+        """A hook under a session the brain is not in: one it left, whose hooks Claude Code still posts once it has moved
+        on, or one it never held, the trace a start it never heard leaves. Applied to nothing, and one event."""
+        # [LAW:one-source-of-truth] the sessions the brain was ever in are the ones the model has joined.
+        left = self._sessions.membership(hook.session) is not None
         match hook:
             case PermissionHook():
                 reply = Deny(NOBODY)
                 # [LAW:nothing-unseen] one event, as every permission the brain posts is, though no turn of the brain's asked it.
                 with unit("brain.permission", self._record, begun(self._clock)):
-                    annotate(session=hook.session, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
+                    annotate(session=hook.session, left=left, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
                 return hook_output(reply)
             case Hook():
+                with unit("brain.hook", self._record, begun(self._clock)):
+                    annotate(hook=hook.name, session=hook.session, left=left)
+                    # [LAW:no-silent-failure] a turn Claude Code took in a session the brain left, or anything of one it
+                    # never held, is a turn hands does not follow: the brain is not in the session Claude Code is.
+                    if not left:
+                        fail(f"the brain's {hook.name} hook came under session {hook.session}, which the brain never held: the start of it was not heard, and the brain is in {self.session}")
+                    elif hook.name == "UserPromptSubmit":
+                        fail(f"Claude Code took a turn in session {hook.session}, which the brain had left for {self.session}")
                 return {}
 
     async def _permit(self, hook: PermissionHook) -> Allow | AllowWith | Approve | Deny | DenyAndInterrupt:
@@ -1838,9 +1901,10 @@ class Brain:
                 turn.answered.exception()
 
 
-async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
+async def start(clock: Clock, launch: Launch, record: Record, readers: Sequence[Moving]) -> Brain:
     """Start the brain under fritter in its tmux session (`in_tmux`), on the login its backend was parsed with; every bound
-    the brain keeps, a typed turn's take among them, passes on `clock`."""
+    the brain keeps, a typed turn's take among them, passes on `clock`. `readers` are told each time it moves to another
+    conversation."""
     station = launch.station
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
     with unit("brain.launch", record, begun(clock)):
@@ -1886,8 +1950,6 @@ async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
                 # Claude Code keeps its transcript (it exits "No conversation found" on one it cannot read).
                 annotate(let_go=let_go(station.config_dir))
                 raise
-            # Held once the brain is up in it, so the next start resumes what this one says.
-            hold(station.config_dir, launch.session)
         except BaseException:
             # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
             # its own, which nothing but hands' own end would hang up.
@@ -1898,7 +1960,8 @@ async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
             shutil.rmtree(sockets, ignore_errors=True)
             raise
         launched = here()
-    brain = Brain(running, wrapper, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, clock)
+    # Held once its start is heard (`Brain._start`), so the next start resumes the conversation the brain is in.
+    brain = Brain(running, wrapper, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, clock, readers)
     posting.set_result(brain.posted)
     return brain
 

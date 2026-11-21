@@ -47,33 +47,60 @@ class PermissionHook:
     asked: PermissionRequested
 
 
+@dataclass(frozen=True)
+class Own:
+    """A Claude Code hands started itself, the brain, whose process and directory hands knows: no shim writes a file for
+    it, so each of its hooks says where its session is, by the transcript the hook names."""
+
+    pid: int
+    cwd: Path
+
+
+# Where a hook's session is read from: the file its shim wrote in hands' home, or the hook itself, of the brain's.
+Members = Home | Own
+
+
 def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: RequestId) -> Hook | PermissionHook:
     """Raises Rejected, naming the problem, for anything that is not a hook hands handles."""
-    # [LAW:parse-dont-validate] past this function nothing looks at hook JSON again.
-    payload = Payload.parse(raw)
+    return _parsed(Payload.parse(raw), home, at, heard, request)
+
+
+def parse_own_hook(raw: bytes, *, own: Own, at: Instant, heard: Stamp, request: RequestId) -> Hook | PermissionHook:
+    """A hook of the brain's, `own`: it joins, and is found where it works now, by the transcript the hook names. Raises
+    Rejected as parse_hook does."""
+    return _parsed(Payload.parse(raw), own, at, heard, request)
+
+
+def _parsed(payload: Payload, members: Members, at: Instant, heard: Stamp, request: RequestId) -> Hook | PermissionHook:
+    # [LAW:parse-dont-validate] the one parser of a hook's JSON, whoever posted it: past this function nothing looks at
+    # hook JSON again.
     session = payload.session_id()
     name = payload.text("hook_event_name")
     match name:
         case "SessionStart":
-            # The shim writes the membership file before it posts, so the start reads it.
-            source = _start_source(payload.text("source"))
-            return Hook(name, session, None, Joined(read_membership(home, session), source))
+            return Hook(name, session, None, Joined(_member(members, payload, session), _start_source(payload.text("source"))))
         case "SessionEnd":
             return Hook(name, session, None, Ended(session, _end_reason(payload.text("reason"))))
         case _:
+            return _hook(payload, name, session, _joining(members, payload, session), _happened(payload, session, at, heard, request))
+
+
+def _member(members: Members, payload: Payload, session: SessionId) -> Membership:
+    """The session a start joins: the shim writes its file before it posts, so the start reads it."""
+    match members:
+        case Home() as home:
+            return read_membership(home, session)
+        case Own(pid=pid, cwd=cwd):
+            return Membership(session, pid, cwd, Path(payload.text("transcript_path")))
+
+
+def _joining(members: Members, payload: Payload, session: SessionId) -> Located | None:
+    match members:
+        case Home() as home:
             recorded = recorded_membership(home, session)
-            return _hook(payload, name, session, None if recorded is None else Located(recorded), _happened(payload, session, at, heard, request))
-
-
-def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp, request: RequestId) -> Hook | PermissionHook:
-    """A hook of a Claude Code hands started itself, the brain, whose process and directory hands knows: no shim wrote a
-    file for it, so it joins, and is found where it works now, by the transcript the hook names. Raises Rejected as
-    parse_hook does."""
-    # [LAW:parse-dont-validate] the one parser of a hook's JSON, whoever posted it.
-    payload = Payload.parse(raw)
-    session = payload.session_id()
-    located = Located(Membership(session, pid, cwd, Path(payload.text("transcript_path"))))
-    return _hook(payload, payload.text("hook_event_name"), session, located, _happened(payload, session, at, heard, request))
+            return None if recorded is None else Located(recorded)
+        case Own():
+            return Located(_member(members, payload, session))
 
 
 def _hook(payload: Payload, name: str, session: SessionId, joining: Located | None, happened: Hooked | PermissionRequested) -> Hook | PermissionHook:

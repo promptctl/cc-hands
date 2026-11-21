@@ -252,6 +252,8 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **brain:** a key typed 10 ms behind a turn joined that turn's prompt or was left in the input with it; none of 8 typed once the turn was taken (measured on 2.1.286, 2026-09-30, 2 of 4 in the first trial)
 - **brain:** Claude Code exits with "No conversation found" on a transcript it cannot read (measured on 2.1.289)
 - **brain:** Claude Code turns on bracketed paste once it reads its input, 0.19 s in, with its terminal raw from 0.02 s (measured on 2.1.289, 2026-10-04)
+- **brain:** a /clear typed at the brain's pane posts the SessionEnd of the session left (reason clear) before it runs the SessionStart command hook (source clear) under a new session id, in the same process, and the turns after it carry that id (tests/test_pinned_brain.py) (measured on 2.1.308)
+- **brain:** a session sends its first request only once its SessionStart command hook has returned, since that hook's output is in the request (the control-point line under Other); inferred from that, not timed (measured on 2.1.111)
 - **asides:** the third /btw typed into one process carried the first two and their answers; x over an answer cleared all but that answer, and /clear cleared none (measured on 2.1.286, 2026-09-30)
 - **asides:** a side question started for one question leaves no transcript, line of history or session directory in the brain's config directory (measured on 2.1.286, 2026-09-30, over 12 questions)
 - **stage:** Claude Code asks again a reply the API broke before any block of it finished, whole, and without a stream (measured on 2.1.289)

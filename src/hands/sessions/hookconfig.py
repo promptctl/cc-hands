@@ -7,6 +7,8 @@ It is imported by the shim, so it holds only the standard library and hands' dat
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal
 
 # [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The hooks below declare
 # it, and the shim waits as long. It is hands' own choice, a day, so that no answer by voice is ever hurried: hands puts
@@ -107,20 +109,48 @@ def declared(event: str) -> dict[str, object]:
     return {**({} if timeout is None else {"timeout": timeout}), **({"async": True} if event in _IN_BACKGROUND else {})}
 
 
-# [LAW:dataflow-not-control-flow] what each of the brain's hooks declares, as a table, as `_DECLARED_TIMEOUTS` is the shim's.
-_BRAIN_DECLARED_TIMEOUTS: Mapping[str, float] = {
-    "PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS,
-    "UserPromptSubmit": BRAIN_POST_TIMEOUT_SECONDS,
-    "Stop": BRAIN_POST_TIMEOUT_SECONDS,
-    "StopFailure": BRAIN_POST_TIMEOUT_SECONDS,
+@dataclass(frozen=True)
+class BrainHook:
+    """How one of the brain's hooks reaches hands: posted by Claude Code itself ("http"), or by the shim it runs, given the
+    hook's URL ("command"); and how long Claude Code waits on it, its own default where None."""
+
+    transport: Literal["http", "command"]
+    timeout: float | None
+
+
+# [LAW:one-source-of-truth] every hook the brain subscribes to, as a table: the brain's command line declares each as it
+# says here (hands.brain.process.command), and the shim waits on a command hook as long. None of them runs in the
+# background: hands answers each, and Claude Code goes on only once it has.
+BRAIN_HOOKS: Mapping[str, BrainHook] = {
+    # The pinned Claude Code runs no HTTP hook for SessionStart, and waits on its command before the session it starts
+    # sends a request (docs/claude-code-behavior.md): the brain is in the session it starts once the hook is answered.
+    "SessionStart": BrainHook("command", BRAIN_POST_TIMEOUT_SECONDS),
+    "SessionEnd": BrainHook("http", None),
+    "UserPromptSubmit": BrainHook("http", BRAIN_POST_TIMEOUT_SECONDS),
+    "Stop": BrainHook("http", BRAIN_POST_TIMEOUT_SECONDS),
+    "StopFailure": BrainHook("http", BRAIN_POST_TIMEOUT_SECONDS),
+    "PermissionRequest": BrainHook("http", PERMISSION_HOOK_TIMEOUT_SECONDS),
+    "Elicitation": BrainHook("http", None),
 }
 
 
-def brain_declared(event: str) -> dict[str, object]:
-    """What one of the brain's hooks declares beyond its URL: how long Claude Code waits on it. None of them runs in the
-    background: hands answers each, and Claude Code goes on only once it has."""
-    timeout = _BRAIN_DECLARED_TIMEOUTS.get(event)
-    return {} if timeout is None else {"timeout": timeout}
+def brain_hook(event: str, url: str) -> dict[str, object]:
+    """One of the brain's hooks as its --settings declare it, posting to `url`: a KeyError for an event the brain does not
+    subscribe to."""
+    declared = BRAIN_HOOKS[event]
+    match declared.transport:
+        case "http":
+            runs: dict[str, object] = {"type": "http", "url": url}
+        case "command":
+            # Exec form, as the plugin's: the installed shim, told where to post, which it reads the event from.
+            runs = {"type": "command", "command": SHIM_COMMAND, "args": [url]}
+    return {**runs, **({} if declared.timeout is None else {"timeout": declared.timeout})}
+
+
+def brain_post_timeout(url: str) -> float:
+    """How long the shim waits on hands for the brain's hook it posts to `url`: as long as Claude Code waits on it."""
+    timeout = BRAIN_HOOKS[url.rsplit("/", 1)[-1]].timeout
+    return POST_TIMEOUT_SECONDS if timeout is None else timeout
 
 
 def main() -> None:

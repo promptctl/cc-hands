@@ -10,7 +10,7 @@ import pytest
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
 from hands.brain.asides import AsideFailed, Unanswered
 from hands.virtualclock import VirtualClock
-from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question
+from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question, results
 from hands.core.summaries import Digest
 from hands.core.session import SessionId
 from hands.core.wire import (
@@ -166,13 +166,34 @@ class Stage:
         pass
 
 
-def sent(body: object, kind: Kind | None = None, session: SessionId = BRAIN) -> Sent:
-    return Sent("x", session, kind or classify("/v1/messages", body), None, body)
+def sent(body: object, kind: Kind | None = None, session: SessionId = BRAIN, exchange: str = "x") -> Sent:
+    return Sent(exchange, session, kind or classify("/v1/messages", body), None, body)
 
 
-def ended(kind: Kind = MainTurn(None)) -> Exchanged:
+def ended(kind: Kind = MainTurn(None), exchange: str = "x") -> Exchanged:
     message = Message("m", "claude-opus-5-5", (Text("done"),), "end_turn", {})
-    return Exchanged("x", BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root(VirtualClock(seed=2)))
+    return Exchanged(exchange, BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root(VirtualClock(seed=2)))
+
+
+class Conversation:
+    """The brain as Kept is fenced by it: the session it is in, and everything it is let hear."""
+
+    def __init__(self) -> None:
+        self.session = BRAIN
+        self.heard: list[Observed] = []
+
+    def hear(self, observed: Observed) -> None:
+        self.heard.append(observed)
+
+
+def kept(stage: Stage, keeper: Keeper, asides: NoAsides) -> Kept:
+    return Kept(VirtualClock(), Conversation(), stage, keeper, asides)
+
+
+def routed(kept: Kept, request: Sent) -> Route:
+    """`request` routed as the proxy routes it: told, then asked where it goes."""
+    kept.hear(request)
+    return kept.route(request)
 
 
 class Rig:
@@ -180,19 +201,21 @@ class Rig:
         self.asked = Asked()
         self.store = Store()
         self.recorded: list[Entry] = []
-        self.keeper = Keeper(VirtualClock(), BRAIN, self.asked.ask, self.store, every, self.recorded.append)
-        self.kept = Kept(Stage(), self.keeper, NoAsides())
+        self.brain = Conversation()
+        self.keeper = Keeper(VirtualClock(), self.asked.ask, self.store, every, self.recorded.append)
+        self.kept = Kept(VirtualClock(), self.brain, Stage(), self.keeper, NoAsides())
 
     async def turn(self, finished: int) -> Route:
         """The brain's main turn after `finished` turns: routed, heard, and ended, and its results asked about."""
-        request = sent(history(finished))
-        self.kept.hear(request)
-        route = self.kept.route(request)
+        route = routed(self.kept, sent(history(finished)))
         self.kept.hear(ended())
-        # The keeper's worker takes whatever the turn's end queued.
+        await self.asking()
+        return route
+
+    async def asking(self) -> None:
+        """Until the keeper's worker has taken whatever was queued."""
         for _ in range(20):
             await asyncio.sleep(0)
-        return route
 
 
 @pytest.fixture
@@ -244,7 +267,7 @@ async def test_a_result_with_no_summary_when_its_batch_comes_goes_whole_for_good
 
 async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the_batch(rig: Rig) -> None:
     rig.store.said.update({key(result): f"said {result.call}" for result in aged(history(6), 3)})
-    main = rig.kept.route(sent(history(6)))
+    main = routed(rig.kept, sent(history(6)))
     assert isinstance(main, Send)
     stubs = [change for change in main.changes if isinstance(change, Stub)]
     assert len(stubs) == 3
@@ -252,11 +275,11 @@ async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the
     # Past the next boundary by its own count, the side question still goes with the main turn's stubs and no more.
     side = history(9)
     side["messages"] = [*side["messages"], prompt(question)]  # pyright: ignore
-    assert rig.kept.route(sent(side)) == Send(tuple(stubs), span=SPAN)
+    assert routed(rig.kept, sent(side)) == Send(tuple(stubs), span=SPAN)
     compacting = history(9)
     kept = COMPACTION_INSTRUCTIONS + "keep the draft" + COMPACTION_REMINDER + " Respond with plain text only."
     compacting["messages"] = [*compacting["messages"][:-1], prompt(COMPACTION_OPENING + " summarise the code" + kept)]  # pyright: ignore
-    compaction = rig.kept.route(sent(compacting))
+    compaction = routed(rig.kept, sent(compacting))
     assert compaction == Send((*stubs, Steer(VOICE_COMPACTION)), span=SPAN)
     assert isinstance(sent(compacting).kind, Compaction) and isinstance(sent(side).kind, Fork)
     # The steered prompt is what goes, with what Claude Code wrote after its own, and the request is still a compaction.
@@ -266,10 +289,48 @@ async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the
     assert cast(list[dict[str, list[dict[str, str]]]], steered["messages"])[-1]["content"][0]["text"] == VOICE_COMPACTION + kept
 
 
-async def test_another_sessions_requests_and_count_tokens_go_unchanged(rig: Rig) -> None:
+async def test_count_tokens_goes_unchanged(rig: Rig) -> None:
     rig.store.said.update({key(result): "said" for result in aged(history(6), 3)})
-    assert rig.keeper.changes(sent(history(6), session=SessionId("work"))) == ()
     assert rig.keeper.changes(sent(history(6), kind=CountTokens())) == ()
+
+
+async def test_another_sessions_exchange_goes_unchanged_and_reaches_no_reader_from_its_request_to_its_end(rig: Rig) -> None:
+    # A Claude Code the brain's own shell started: neither its requests nor the end of its turn are the brain's.
+    rig.store.said.update({key(result): "said" for result in aged(history(6), 3)})
+    route = routed(rig.kept, sent(history(6), session=SessionId("work"), exchange="w"))
+    rig.kept.hear(ended(exchange="w"))
+    assert isinstance(route, Send) and route.changes == () and route.refusal == "retried"
+    assert rig.brain.heard == []
+
+
+async def test_a_turn_the_brain_moved_away_from_still_has_its_results_asked_about() -> None:
+    rig = Rig()
+    worker = asyncio.create_task(rig.keeper.keep_asking())
+    try:
+        # Claude Code ends the turn the brain left as it moves, so its reply never comes: its results are asked at the move.
+        rig.kept.hear(sent(history(2)))
+        rig.brain.session = SessionId("cleared")
+        rig.keeper.moved()
+        await rig.asking()
+    finally:
+        worker.cancel()
+    assert rig.asked.files == ["/0", "/1"]
+    # Kept by what each result holds, so a conversation that carries it again goes with its line.
+    assert set(rig.store.said) == {key(result) for result in results(history(2))}
+
+
+async def test_a_conversation_resumed_after_a_move_goes_with_the_stubs_it_went_with_before() -> None:
+    rig = Rig()
+    rig.store.said.update({key(result): f"said {result.call}" for result in aged(history(6), 3)})
+    before = routed(rig.kept, sent(history(6)))
+    rig.kept.hear(ended())
+    rig.brain.session = SessionId("cleared")
+    rig.keeper.moved()
+    rig.brain.session = BRAIN
+    rig.keeper.moved()
+    # The store learns more of them meanwhile; the history goes as it went.
+    rig.store.said.update({key(result): "later" for result in aged(history(6), 3)})
+    assert routed(rig.kept, sent(history(6), exchange="y")) == before
 
 
 async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> None:
@@ -277,8 +338,8 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
         def route(self, sent: Sent) -> Route:
             return Synthesize("(stayed silent)", SPAN)
 
-    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
-    assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Synthesize("(stayed silent)", SPAN)
+    keeper = Keeper(VirtualClock(), Asked().ask, Store(), 3, lambda _entry: None)
+    assert routed(kept(Holding(), keeper, NoAsides()), sent(history(6))) == Synthesize("(stayed silent)", SPAN)
 
 
 async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() -> None:
@@ -288,10 +349,10 @@ async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() ->
 
     store = Store()
     store.said.update({key(result): "said" for result in aged(history(6), 3)})
-    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, store, 3, lambda _entry: None)
-    routed = Kept(Final(), keeper, NoAsides()).route(sent(history(6)))
-    assert isinstance(routed, Send) and routed.refusal == "final"
-    assert routed.changes[-1] == Tail("standing") and len(routed.changes) > 1
+    keeper = Keeper(VirtualClock(), Asked().ask, store, 3, lambda _entry: None)
+    route = routed(kept(Final(), keeper, NoAsides()), sent(history(6)))
+    assert isinstance(route, Send) and route.refusal == "final"
+    assert route.changes[-1] == Tail("standing") and len(route.changes) > 1
 
 
 async def test_a_side_questions_own_request_goes_as_the_question_routes_it_and_the_stage_is_never_asked() -> None:
@@ -303,6 +364,7 @@ async def test_a_side_questions_own_request_goes_as_the_question_routes_it_and_t
         def own(self, sent: Sent) -> Send | None:
             return Send(span=SPAN)
 
-    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
-    routed = Kept(Unasked(), keeper, Owning()).route(sent(history(6), kind=Fork()))
-    assert isinstance(routed, Send) and routed.refusal == "retried" and routed.span == SPAN
+    keeper = Keeper(VirtualClock(), Asked().ask, Store(), 3, lambda _entry: None)
+    # Sent under the session it was forked from, which the brain has since left: it is still the brain's own.
+    route = routed(kept(Unasked(), keeper, Owning()), sent(history(6), kind=Fork(), session=SessionId("left")))
+    assert isinstance(route, Send) and route.refusal == "retried" and route.span == SPAN

@@ -159,16 +159,15 @@ async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
+    recorded: list[Entry] = []
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     _modelled(brain, VirtualClock())
-    warned: list[str] = []
-    sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
-    try:
-        # A prompt id that is not text names no turn: the hook is logged and passed over, never raised out of the loop that hears hooks.
-        failed = {"hook_event_name": "StopFailure", "session_id": "b1", "transcript_path": "/brain/projects/-brain-cwd/b1.jsonl", "cwd": "/brain/cwd", "permission_mode": "default", "prompt_id": {"id": "p1"}, "error": "unknown"}
-        await brain.posted("StopFailure", json.dumps(failed).encode())
-    finally:
-        logger.remove(sink)
-    assert [line.split(":")[0] for line in warned] == ["the brain posted a hook that does not parse"]
+    # A prompt id that is not text names no turn: the hook is one failed event and passed over, never raised out of the
+    # loop that hears hooks.
+    failed = {"hook_event_name": "StopFailure", "session_id": "b1", "transcript_path": "/brain/projects/-brain-cwd/b1.jsonl", "cwd": "/brain/cwd", "permission_mode": "default", "prompt_id": {"id": "p1"}, "error": "unknown"}
+    assert await brain.posted("StopFailure", json.dumps(failed).encode()) == {}
+    [event] = events(recorded, "brain.hook")
+    assert (event.outcome, event.facts) == ("failed", {"hook": "StopFailure", "session": "b1"})
 
 
 def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
@@ -183,7 +182,6 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
         with_hands = {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}
         brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), None, with_hands))
         brain.hear(Sent("x2", SessionId("b1"), MainTurn(None), None, with_hands))
-        brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), None, body))
         assert errors == []
         brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), None, body))
         # Deferred, as Claude Code offers MCP tools under tool search: the server may be connected, and is not blamed.
@@ -678,6 +676,7 @@ def _owning(clock: VirtualClock) -> Brain:
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    brain._record = lambda _entry: None  # pyright: ignore[reportPrivateUsage, reportUnknownLambdaType]
     _modelled(brain, clock)
     return brain
 
@@ -1160,3 +1159,85 @@ async def test_a_turn_is_typed_only_once_the_brains_screen_shows_its_prompt_in_p
     await passed(clock, SETTLE_SECONDS)
     await until(lambda: keys.pressed == [" and now?"])
     asking.cancel()
+
+
+class _Moves:
+    """A reader of the brain's conversation, told each time the brain moves to another."""
+
+    def __init__(self) -> None:
+        self.moves = 0
+
+    def moved(self) -> None:
+        self.moves += 1
+
+
+def _moving(clock: VirtualClock, config_dir: Path) -> tuple[Brain, _Moves, list[Entry]]:
+    """A bare brain in b1 that hears its starts: what it holds its conversation in, the reader its moves are told to,
+    and the record its hooks go to."""
+    brain = _owning(clock)
+    recorded: list[Entry] = []
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    brain._config_dir = config_dir  # pyright: ignore[reportPrivateUsage]
+    moves = _Moves()
+    brain._readers = (moves,)  # pyright: ignore[reportPrivateUsage]
+    return brain, moves, recorded
+
+
+def _session_hook(event: str, session: str, **fields: object) -> bytes:
+    """A start or an end of the brain's, under `session`, as Claude Code fills it."""
+    return json.dumps({"hook_event_name": event, "session_id": session, "transcript_path": f"/brain/projects/-brain-cwd/{session}.jsonl", "cwd": "/brain/cwd", **fields}).encode()
+
+
+async def test_a_clear_and_a_resume_back_each_move_the_brain_once_and_its_conversation_with_it(tmp_path: Path) -> None:
+    brain, moves, recorded = _moving(VirtualClock(), tmp_path)
+    assert await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup")) == {}
+    assert (brain.session, moves.moves, process.held(tmp_path).read_text()) == ("b1", 0, "b1\n")
+    # A /clear: Claude Code ends the session it leaves, then starts the one it enters.
+    await brain.posted("SessionEnd", _session_hook("SessionEnd", "b1", reason="clear"))
+    assert brain.session == "b1"
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b2", source="clear"))
+    assert (brain.session, moves.moves, process.held(tmp_path).read_text()) == ("b2", 1, "b2\n")
+    # A /resume back to the conversation left.
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="resume"))
+    assert (brain.session, moves.moves, process.held(tmp_path).read_text()) == ("b1", 2, "b1\n")
+    started = [(event.outcome, event.facts) for event in events(recorded, "brain.start")]
+    assert started == [
+        ("ok", {"session": "b1", "left": "b1", "source": "startup"}),
+        ("ok", {"session": "b2", "left": "b1", "source": "clear"}),
+        ("ok", {"session": "b1", "left": "b2", "source": "resume"}),
+    ]
+    # The model holds the session the brain is back in.
+    assert dialogs(brain) == ()
+
+
+async def test_a_hook_of_a_session_the_brain_left_is_one_event_and_applied_to_nothing(tmp_path: Path) -> None:
+    brain, _, recorded = _moving(VirtualClock(), tmp_path)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b2", source="clear"))
+    # The Stop of the turn the /clear cut off, posted after the move, and a turn Claude Code took there all the same.
+    assert await brain.posted("Stop", _hooked("Stop", "p1", last_assistant_message="", stop_hook_active=False)) == {}
+    assert await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p2", prompt="hello")) == {}
+    hooks = [(event.outcome, event.facts) for event in events(recorded, "brain.hook")]
+    assert hooks == [("ok", {"hook": "Stop", "session": "b1", "left": True}), ("failed", {"hook": "UserPromptSubmit", "session": "b1", "left": True})]
+    assert brain._claude_turns.open == ()  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_hook_of_a_session_whose_start_was_never_heard_is_a_failed_event(tmp_path: Path) -> None:
+    brain, _, recorded = _moving(VirtualClock(), tmp_path)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
+    lost = json.loads(_hooked("Stop", "p1", last_assistant_message="", stop_hook_active=False))
+    assert await brain.posted("Stop", json.dumps({**lost, "session_id": "b9"}).encode()) == {}
+    [hook] = events(recorded, "brain.hook")
+    assert (hook.outcome, hook.facts, brain.session) == ("failed", {"hook": "Stop", "session": "b9", "left": False}, "b1")
+
+
+async def test_a_start_whose_conversation_cannot_be_written_fails_and_leaves_the_brain_where_it_was(tmp_path: Path) -> None:
+    brain, moves, recorded = _moving(VirtualClock(), tmp_path / "missing")
+    errors, sink = failures()
+    try:
+        assert await brain.posted("SessionStart", _session_hook("SessionStart", "b2", source="clear")) == {}
+    finally:
+        logger.remove(sink)
+    [started] = events(recorded, "brain.start")
+    assert (started.outcome, brain.session, moves.moves) == ("failed", "b1", 0)
+    assert [error.split(":")[0] for error in errors] == ["the brain's own work failed"]

@@ -13,7 +13,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
-from hands.core.session import SessionId
 from hands.core.wire import (
     CLASS_HEADER,
     cache_marked,
@@ -107,29 +106,37 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
 
 
 class Newest:
-    """The brain's newest main turn, heard off the wire: the one thing a side question is forked from."""
+    """The newest main turn of the conversation the brain is in, heard off the wire: the one thing a side question is
+    forked from."""
 
-    def __init__(self, session: SessionId) -> None:
-        self._session = session
+    def __init__(self) -> None:
         # Main turns of the brain's told and not yet forwarded: its request is held once its bytes go upstream.
         self._main: set[str] = set()
         self._turn: Turn | None = None
-        # [LAW:no-ambient-temporal-coupling] set once, by the first turn held: a question asked before it awaits this.
-        self._first = asyncio.Event()
+        # [LAW:no-ambient-temporal-coupling] set while a turn is held: a question asked before one is awaits this, and one
+        # asked across a move awaits the first turn of the conversation the brain moved to.
+        self._held = asyncio.Event()
 
     async def turn(self) -> Turn:
-        """The brain's newest main turn, once it has sent one."""
-        await self._first.wait()
-        return cast(Turn, self._turn)
+        """The newest main turn of the brain's conversation, once it has sent one."""
+        while self._turn is None:
+            await self._held.wait()
+        return self._turn
+
+    def moved(self) -> None:
+        """The brain is in another conversation: nothing of the one left is forked from again."""
+        self._main.clear()
+        self._turn = None
+        self._held.clear()
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(exchange=exchange, session=session, kind=MainTurn()) if session == self._session:
+            case Sent(exchange=exchange, kind=MainTurn()):
                 self._main.add(exchange)
             case Forwarded(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
                 self._main.discard(exchange)
                 self._turn = Turn(exchange, path, headers, body, None)
-                self._first.set()
+                self._held.set()
             case Exchanged(exchange=exchange, reply=Reached(body=Written(message=message))) if self._turn is not None and exchange == self._turn.exchange:
                 self._turn = replace(self._turn, reply=message)
             case Exchanged(exchange=exchange):

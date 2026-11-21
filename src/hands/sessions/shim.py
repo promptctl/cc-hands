@@ -1,6 +1,10 @@
 """The hook command: record membership, post the payload to the daemon, return.
 
     HANDS_HOME=<hands home> hands-shim     # HANDS_HOME defaults to ~/.hands
+    hands-shim <url>                       # one of the brain's command hooks, posted to hands at <url>
+
+The brain's own hooks are hands' to answer in-process, each posted to a path of its own: one Claude Code does not post
+itself (hookconfig.BRAIN_HOOKS) runs the shim with that path's URL, and is posted there as it came, with no file written.
 
 It runs in Claude Code's critical path for every subscribed hook, so it imports
 only the standard library and hands' data modules, and it never waits on
@@ -22,12 +26,13 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership
 from hands.sessions import heartbeat
 from hands.sessions.home import Home, default_home
-from hands.sessions.hookconfig import post_timeout
+from hands.sessions.hookconfig import brain_post_timeout, post_timeout
 from hands.sessions.membership import holder, remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.untap import tapped, untap_script
@@ -159,6 +164,25 @@ def post(home: Home, body: bytes, timeout: float) -> str:
     return detail
 
 
+def relay(url: str, body: bytes) -> str:
+    """The reply of the brain's hands to one of the brain's hooks, posted to `url` on loopback, as Claude Code posts its
+    HTTP hooks."""
+    at = urlsplit(url)
+    connection = http.client.HTTPConnection(at.hostname or "", at.port, timeout=brain_post_timeout(url))
+    try:
+        connection.request("POST", at.path, body, {"Content-Type": "application/json"})
+        response = connection.getresponse()
+        detail = response.read().decode(errors="replace")
+    except (OSError, http.client.HTTPException) as error:
+        # [LAW:no-silent-failure] the brain's hands started the brain, so a hands that does not answer is broken, never off.
+        raise Unreached(f"cannot reach the brain's hands at {url}: {type(error).__name__}: {error}") from error
+    finally:
+        connection.close()
+    if response.status >= 300:
+        raise Refused(f"the brain's hands refused this hook ({response.status}): {detail}")
+    return detail
+
+
 def unreached(home: Home, clock: Clock, error: Unreached) -> int:
     """The exit for a hook no daemon answered: silent when hands is off or starting, loud when it is broken."""
     now = clock.wall()
@@ -185,8 +209,10 @@ def main(argv: Sequence[str], clock: Clock) -> int:
     match argv:
         case [_]:
             pass  # everything the shim is told comes on stdin and in HANDS_HOME
+        case [_, url]:
+            return relayed(url, sys.stdin.buffer.read())
         case _:
-            print("usage: hands-shim  (the home is HANDS_HOME, or ~/.hands)", file=sys.stderr)
+            print("usage: hands-shim [<brain hook url>]  (the home is HANDS_HOME, or ~/.hands)", file=sys.stderr)
             return USAGE
     body = sys.stdin.buffer.read()
     try:
@@ -205,6 +231,17 @@ def main(argv: Sequence[str], clock: Clock) -> int:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED
     # Claude Code reads a permission decision from the hook's stdout.
+    sys.stdout.write(reply)
+    return 0
+
+
+def relayed(url: str, body: bytes) -> int:
+    """One of the brain's command hooks: its reply printed for Claude Code, or the reason there is none."""
+    try:
+        reply = relay(url, body)
+    except (Unreached, Refused) as error:
+        print(f"hands: {error}", file=sys.stderr)
+        return FAILED
     sys.stdout.write(reply)
     return 0
 

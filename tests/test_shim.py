@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import socket
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from hands.virtualclock import VirtualClock
 from hands.core.effects import Summarise
 from hands.core.session import Membership, Opened, PromptId, Session, SessionId, Unreported
 from hands.sessions import heartbeat
+from hands.brain.process import _listen  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.shim import OVERVIEW
 from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
@@ -507,3 +508,41 @@ async def test_a_turn_that_closed_on_no_reply_is_not_named(home: Home) -> None:
             await asyncio.wait_for(names.next_finished(), 0.2)
     finally:
         await runner.cleanup()
+
+
+async def brain_shim(url: str, payload: Mapping[str, object]) -> tuple[int | None, str, str]:
+    """The shim's exit, stdout, and stderr for one of the brain's command hooks, run as the brain's --settings run it:
+    given the URL to post to, with no HANDS_HOME."""
+    environment = {key: value for key, value in os.environ.items() if key != "HANDS_HOME"}
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "hands.sessions.shim", url, env=environment, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate(json.dumps(payload).encode())
+    return process.returncode, stdout.decode(), stderr.decode()
+
+
+async def test_a_brain_command_hook_posts_to_the_url_it_is_given_and_prints_the_brains_reply() -> None:
+    posted: list[tuple[str, Mapping[str, object]]] = []
+
+    async def answer(event: str, body: bytes) -> Mapping[str, object]:
+        posted.append((event, json.loads(body)))
+        return {"continue": True}
+
+    posting: asyncio.Future[Callable[[str, bytes], Awaitable[Mapping[str, object]]]] = asyncio.get_running_loop().create_future()
+    posting.set_result(answer)
+    runner, url = await _listen(posting)
+    try:
+        assert await brain_shim(f"{url}/SessionStart", START) == (0, '{"continue": true}', "")
+    finally:
+        await runner.cleanup()
+    # The event is the one the URL names, as an HTTP hook's is.
+    assert posted == [("SessionStart", START)]
+
+
+async def test_a_brain_command_hook_whose_hands_does_not_answer_fails_saying_so() -> None:
+    runner, url = await _listen(asyncio.get_running_loop().create_future())
+    await runner.cleanup()
+    returned, printed, said = await brain_shim(f"{url}/SessionStart", START)
+    # Claude Code shows a failed hook's stderr and goes on: the brain's hands started it, so this is never hands being off.
+    assert (returned, printed, said.split(":")[0]) == (1, "", "hands")
+    assert f"cannot reach the brain's hands at {url}/SessionStart" in said

@@ -188,30 +188,34 @@ async def mind(
     spans = CallSpans()
     talk = conversation(llm.config_dir, SessionId(dashed(clock)))
     # The brain is behind hands' proxy, so its usage is read off the wire, and it has a tool to ask it with.
-    usage = Usage(talk.session)
+    usage = Usage()
     tools = [*tools, *brain_tools, audited(clock, usage_tool(usage), record)]
     server = await serve_mcp(clock, tools, record, spans)
     try:
-        station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
-        try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), record)
-        except Unstartable as error:
-            # hands runs on no brain it could not start: its start is refused, saying why.
-            raise CannotStart(str(error)) from error
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        asides = Asides(clock, proxy_url, Newest(brain.session), record)
+        newest = Newest()
+        asides = Asides(clock, proxy_url, newest, record)
         try:
-            stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
-            keeper = Keeper(clock, brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
-            with wire.joined(Kept(stage, keeper, asides, brain, usage)):
-                watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
-                # A summary is as long as its reply makes it: only its time is the summary's own.
-                # The brain's stage notes each turn of the user's itself, as it types it.
-                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout))
+            keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
+            station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
+            try:
+                # Each reader of the brain's conversation is told as the brain moves to another.
+                brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), record, (keeper, newest, usage))
+            except Unstartable as error:
+                # hands runs on no brain it could not start: its start is refused, saying why.
+                raise CannotStart(str(error)) from error
+            try:
+                stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
+                with wire.joined(Kept(clock, brain, stage, keeper, asides, usage)):
+                    watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
+                    # A summary is as long as its reply makes it: only its time is the summary's own.
+                    # The brain's stage notes each turn of the user's itself, as it types it.
+                    yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout))
+            finally:
+                await brain.stop()
         finally:
             await asides.close()
-            await brain.stop()
     finally:
         await server.close()
 

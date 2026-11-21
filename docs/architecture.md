@@ -1171,7 +1171,7 @@ Claude Code opened itself stops the typed turn queued in it. A telling of a turn
 behind runs only once the turn ahead of it ends. Before a turn is typed, every dialog the brain holds is refused, and the
 turn waits, within its take, for each dialog's hook to be answered, so no key answers one. This order rests on Claude Code waiting on the
 brain's hooks, so the brain bounds its prompt hook and its Stop's hold by `TAKE_SECONDS`, and declares each hook's
-timeout past that bound (`hookconfig.brain_declared`). The hold ends the moment the Stop is decided: only a Stop still
+timeout past that bound (`hookconfig.BRAIN_HOOKS`). The hold ends the moment the Stop is decided: only a Stop still
 undecided waits it out, and letting it go sooner would fail every open turn rather than answer any. A prompt hook or Stop answered past `TAKE_SECONDS`, a Stop let go undecided, or
 either hook unparsed, loses the order: every open turn fails `OrderLost`, and none is guessed. Anything the model holds untold, or waiting in
 Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the
@@ -1501,7 +1501,8 @@ ends, as a side question that shows the result, forked from the brain's newest m
 is one `context.stubbing` event, naming the calls that go as a line from then on (`stubbed`) and those
 that go whole because no summary had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
 session keeps rather than what a coding session does. A restart does not start the conversation over: each brain holds its
-session in `conversation` in its config directory, and the next one resumes it while Claude Code still has its
+session in `conversation` in its config directory, written at each start Claude Code runs (its SessionStart command hook,
+the one brain hook the shim posts), so a `/clear` or a `/resume` at its pane moves it and the brain with it, and the next one resumes it while Claude Code still has its
 transcript, so a restart, an upgrade, or a change of model goes on from what was said, its length kept by that same
 compaction. A start that fails lets the conversation go, so the next begins anew rather than failing the same way. It runs with `--system-prompt-snapshot off`, so a resumed conversation is sent the instruction this hands
 writes, not the one it began with. This is the single decision that avoids
