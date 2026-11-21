@@ -24,9 +24,11 @@ from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Record
-from hands.clock import SYSTEM, Clock
+from hands.clock import SYSTEM
+from hands.sessions.child import Children
 from hands.sessions.delta import BASELINING, HELD, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Baseline, Capture, Deltas, Standing, Unread
 from conftest import RealWall, new_sessions, patient
+from conftest import children_on
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 
@@ -51,7 +53,7 @@ class Breaks:
 
 
 def attached(tmp_path: Path) -> Sessions:
-    return new_sessions(clock=SYSTEM, changes=Breaks())
+    return new_sessions(children=children_on(SYSTEM), changes=Breaks())
 
 
 def git(repo: Path, *args: str) -> str:
@@ -646,7 +648,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
 
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
-    sessions = new_sessions(clock=SYSTEM, changes=deltas)
+    sessions = new_sessions(children=children_on(SYSTEM), changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
 
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
@@ -692,15 +694,21 @@ async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) ->
 # git happens to be, from being spawned to being read. Run in a process of its own, since a loop that never closes
 # would take the test run down with it.
 SHUT_DOWN = """
-import asyncio, os, sys, time
+import asyncio, os, sys, tempfile, time
 from pathlib import Path
 from hands.clock import SYSTEM
 from hands.sessions.delta import Deltas
+from hands.sessions.child import Children
+from hands.sessions.terminals import process_table
+
+children = Children(SYSTEM, lambda _entry: None, Path(tempfile.gettempdir()))
+# The warden first, so that it is the one child this process keeps: anything else here once a loop has closed is the loop's.
+children.run_blocking("true", limit=5.0)
 
 root = Path(sys.argv[1])
 
 async def ends(after: float) -> None:
-    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, clock=SYSTEM)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, children=children)
     await deltas.snapshot("s", root)
     (root / "a.py").write_text(f"x = {after}\\n")
     await deltas.compare("s", again=False)
@@ -713,11 +721,10 @@ for step in range(30):
         asyncio.run(ends(step * 0.002))
     except RuntimeError as ended:
         slowest = max(slowest, time.monotonic() - ended.args[0])
-    try:
-        os.waitpid(-1, os.WNOHANG)
-        sys.exit(f"a git was left unreaped when the loop ended {step * 2}ms into a reading")
-    except ChildProcessError:
-        pass
+    # Running or unreaped, a process that is still this one's child is in the table.
+    left = [pid for pid, process in process_table().items() if process.parent == os.getpid()]
+    if len(left) != 1:
+        sys.exit(f"{len(left) - 1} git was left when the loop ended {step * 2}ms into a reading")
 print(slowest)
 """
 
@@ -1183,7 +1190,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     baselined, so p2 is told only what p2 changed."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
-    sessions = new_sessions(clock=SYSTEM, changes=deltas)
+    sessions = new_sessions(children=children_on(SYSTEM), changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(Taken(SID, PromptId("p1"), None, 5.0))
@@ -1204,7 +1211,7 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     """hands-status-bpp.44l: no prompt of its own baselines it, so p1's Stop does, while its hook holds Claude Code."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
-    sessions = new_sessions(clock=SYSTEM, changes=deltas)
+    sessions = new_sessions(children=children_on(SYSTEM), changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=0.5))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
@@ -1250,7 +1257,7 @@ async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_words
     transcript is read through its firing, and its hook is let go only once that baseline is taken: Claude Code runs the
     queued turn after it."""
     repository = Baselining()
-    sessions = new_sessions(clock=SYSTEM, changes=repository)
+    sessions = new_sessions(children=children_on(SYSTEM), changes=repository)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text="Do it."))
     await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1"), text="Also this."))
@@ -1286,7 +1293,7 @@ class Reading:
 
 async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tmp_path: Path) -> None:
     repository = Reading()
-    sessions = new_sessions(clock=SYSTEM, changes=repository)
+    sessions = new_sessions(children=children_on(SYSTEM), changes=repository)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     sessions.hear(Closed(SID, PromptId("p1"), "Done."))
@@ -1355,8 +1362,8 @@ class Stalled(Deltas):
     """A repository whose next read of a stage waits at a gate the test holds, as a read waits on a loaded machine's
     scheduler. A capture is overtaken because its gate is held, never because a deadline was made short."""
 
-    def __init__(self, record: Record, inherited: Mapping[str, str], baselining: float, patience: float, clock: Clock) -> None:
-        super().__init__(record, inherited, baselining=baselining, patience=patience, clock=clock)
+    def __init__(self, record: Record, inherited: Mapping[str, str], baselining: float, patience: float, children: Children) -> None:
+        super().__init__(record, inherited, baselining=baselining, patience=patience, children=children)
         self._gates: dict[Stage, deque[Gate]] = {"baseline": deque(), "standing": deque(), "tree": deque(), "moved": deque()}
 
     def hold(self, stage: Stage) -> Gate:

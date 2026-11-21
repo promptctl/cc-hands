@@ -27,6 +27,7 @@ from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edi
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, cancelled, execv, invocation, refuse, start
 from hands.core.tmux import Keyboard
+from hands.sessions.child import Children
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
@@ -168,14 +169,14 @@ def device_lines(devices: Sequence[Listed]) -> list[str]:
     return [f"  {device.name}{' (default)' if device.default else ''}" for device in devices] or ["  none"]
 
 
-def show_phone(clock: Clock, home: Home) -> exits.Exit:
+def show_phone(children: Children, home: Home) -> exits.Exit:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
 
     from hands.voice.phoneaddress import Untailed, lan_addresses, page_urls, phone_key, tailnet_name
 
     # The name alone: the certificate is the daemon's to ask Tailscale for, as it serves the page.
-    name = asyncio.run(tailnet_name(clock))
+    name = asyncio.run(tailnet_name(children))
     match name:
         case Untailed(reason=reason):
             wide.annotate(untailed=reason)
@@ -183,7 +184,7 @@ def show_phone(clock: Clock, home: Home) -> exits.Exit:
         case str():
             pass
     try:
-        key = phone_key(clock, home)
+        key = phone_key(children.clock, home)
     except Rejected as error:
         wide.annotate(phone_key=str(error))
         return refused("hands", 1, str(error))
@@ -238,11 +239,6 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     arguments = parser.parse_args(argv)
     # [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice: the
     # token a command needs is in the process's environment by then. After parsing, so --help and --version read nothing.
-    from hands.voice.library import hub_token
-
-    token = hub_token(os.environ)
-    if token is not None:
-        os.environ["HF_TOKEN"] = token
     try:
         # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
         # A relative --home is this directory's, made absolute here, since the home is written into the shim.
@@ -252,13 +248,29 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
         return 2
     # [LAW:single-enforcer] one terminal and one audit sink for the whole process, from before anything it logs.
     with logging_to(clock, home) as audit_log:
+        # [LAW:single-enforcer] the one runner of every child this process starts, killing each at its caller's limit and
+        # every one still running once the process has ended, however it ended.
+        children = Children(clock, audit_log.record, home.audit)
+        # [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice:
+        # the token a command needs is in the process's environment by then. After parsing, so --help and --version read
+        # nothing, and once the audit log is open, so a keychain that could not say is logged where every error is.
+        from hands.voice.library import KeychainUnreadable, hub_token
+
+        try:
+            token = hub_token(children, os.environ)
+        except KeychainUnreadable as error:
+            # [LAW:no-silent-failure] said, and gone past: a voice whose weights need the token fails at its choice, naming them.
+            logger.error(f"{error}; hands goes on without a Hugging Face token")
+            token = None
+        if token is not None:
+            os.environ["HF_TOKEN"] = token
         match arguments.command:
             case "run":
-                return run_daemon(clock, home, audit_log, arguments.restarted, arguments.model)
+                return run_daemon(children, home, audit_log, arguments.restarted, arguments.model)
             case "tmux-status":
                 return show_segment(clock, home)
             case _:
-                return commanded(clock, home, audit_log.record, arguments)
+                return commanded(children, home, audit_log.record, arguments)
 
 
 def model_id(text: str) -> str:
@@ -268,12 +280,13 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
+def run_daemon(children: Children, home: Home, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
+    clock = children.clock
     match hold(clock, home, audit_log.record, restarted=restarted is not None):
         case Running(pid=pid):
             # Told where it was run, and nothing of the home touched: the heartbeat, the sockets, and the indicator
@@ -305,7 +318,7 @@ def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: i
                 refuse(cannot, held)
                 return 1
             try:
-                ran: tuple[Ending, int] | CannotStart = run_here(clock, home, restarted, after_crash, settings, heart, audit_log, run_start)
+                ran: tuple[Ending, int] | CannotStart = run_here(children, home, restarted, after_crash, settings, heart, audit_log, run_start)
             except* CannotStart as cannot:
                 # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
                 # refused once, and said so even where another error raised with it is raised on past this block.
@@ -326,7 +339,7 @@ def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: i
                     execv(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(clock: Clock, home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:
+def commanded(children: Children, home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -335,10 +348,10 @@ def commanded(clock: Clock, home: Home, record: audit.Record, arguments: argpars
     to the audit log alone, as every process but the daemon's run writes its events: a command never waits on a
     collector, or on a config.toml the daemon has yet to accept.
     """
-    with wide.unit("hands.command", record, wide.begun(clock)):
+    with wide.unit("hands.command", record, wide.begun(children.clock)):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        ended = dispatch(clock, home, arguments, record)
+        ended = dispatch(children, home, arguments, record)
         wide.annotate(exit_code=exits.code_of(ended))
         match ended:
             case exits.Failed(code=code, why=why):
@@ -366,27 +379,28 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
+def dispatch(children: Children, home: Home, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
+    clock = children.clock
     match arguments.command:
         case "status":
             return report(clock, home)
         case "check":
             from hands.voice import talkkey
 
-            return check(clock, home, talkkey.granted(), arguments.verbose)
+            return check(children, home, talkkey.granted(), arguments.verbose)
         case "log":
             return tail_log(clock, home, arguments.lines)
         case "file-tickets":
-            return file_tickets(clock, home, Path.cwd(), arguments.epic, record)
+            return file_tickets(children, home, Path.cwd(), arguments.epic, record)
         case "recall":
             return recall_moments(clock, home, record, arguments.words, arguments.most)
         case "phone":
-            return show_phone(clock, home)
+            return show_phone(children, home)
         case "devices":
             return list_devices(open_portaudio)
         case "login":
-            return login(clock, home, arguments.method, record)
+            return login(children, home, arguments.method, record)
         case "install-fritter":
             return install_fritter(clock, home, record)
         case "install-brain":
@@ -394,12 +408,12 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
         case "restart":
             return asked_to_restart(clock, home)
         case "update":
-            return updated(clock, home)
+            return updated(children, home)
         case "smoke":
             # Imported here so that no other command loads aiortc.
             from hands.daemon.smoke import run_smoke
 
-            return run_smoke(clock, home)
+            return run_smoke(children, home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -407,7 +421,7 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
             parent = os.getppid() if arguments.parent is None else arguments.parent
             from hands.daemon.menubar import show
 
-            return show(clock, home, parent)
+            return show(children, home, parent)
         case other:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
@@ -531,9 +545,10 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
+def run_here(children: Children, home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
     """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
+    clock = children.clock
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
     heart.beat("starting", None, 0, listening=False, degraded=())
@@ -546,7 +561,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(children, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, children, home), settings, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -624,14 +639,14 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def reachable(home: Home, settings: Config) -> None:
+def reachable(children: Children, home: Home, settings: Config) -> None:
     """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
     restart an edit asks for, so an edit hands could not start on, its brain logged out among them, is refused and
     outlived, not restarted on."""
-    backend(settings.llm, home, os.environ)
+    backend(children, settings.llm, home, os.environ)
 
 
-def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
+def loaded(children: Children, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -651,9 +666,9 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
-        survey(readiness.check(home, path, True, reached, running, partial(keyboards, clock)))
+        survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)), clock)
+    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, children, home)), children)
 
 
 def start_indicator(home: Home) -> int:
@@ -663,7 +678,7 @@ def start_indicator(home: Home) -> int:
     # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are. A restart
     # keeps the pid, so the indicator stays a child of the run after it, which ends it by that pid (retire).
     argv = invocation(home, "indicator", "--parent", str(os.getpid()))
-    return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
+    return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)  # [LAW:single-enforcer] exception: the indicator owns its own end, which it reads off this run's pid (menubar.show), and outlives a restart's exec by design
 
 
 # What became of the indicator the run before a restart showed: ended as this run asked, killed by it once it had not
@@ -755,9 +770,9 @@ def show_segment(clock: Clock, home: Home) -> int:
     return 0
 
 
-def check(clock: Clock, home: Home, granted: bool, verbose: bool) -> exits.Exit:
-    reached = readiness.configured(home, os.environ)
-    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, clock.wall()), partial(keyboards, clock))
+def check(children: Children, home: Home, granted: bool, verbose: bool) -> exits.Exit:
+    reached = readiness.configured(children, home, os.environ)
+    findings = readiness.check(children, home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, children.clock.wall()), partial(keyboards, children))
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
     missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]
@@ -778,9 +793,9 @@ def undone(findings: Sequence[readiness.Finding]) -> str:
     return "; ".join(f"{finding.step}: {finding.said.partition("\n")[0]}" for finding in findings)
 
 
-def keyboards(clock: Clock, pids: Sequence[int]) -> list[Keyboard]:
+def keyboards(children: Children, pids: Sequence[int]) -> list[Keyboard]:
     """The tmux pane whose keys reach each of `pids`, read on a loop of its own: the readiness check runs on none."""
-    return asyncio.run(tmux.keyboards(clock, pids, os.environ))
+    return asyncio.run(tmux.keyboards(children, pids, os.environ))
 
 
 def survey(findings: Sequence[readiness.Finding]) -> None:
@@ -845,8 +860,9 @@ def restarted(clock: Clock, home: Home) -> Outcome:
     return outcome
 
 
-def updated(clock: Clock, home: Home) -> exits.Exit:
+def updated(children: Children, home: Home) -> exits.Exit:
     """`hands update`: bring the code hands runs from up to date, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
+    clock = children.clock
     prefix = Path(sys.prefix)
     # [LAW:one-source-of-truth] the running hands' own word on the environment it runs from, and its restart starts it
     # again on; one that has stopped beating still runs from it.
@@ -860,7 +876,7 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
             runs_from = None
     wide.annotate(runs_from=None if runs_from is None else str(runs_from))
     with tempfile.TemporaryDirectory(prefix="hands-update-") as work:
-        installed = update.install(home, prefix, runs_from, os.environ, Path(work), update.run)
+        installed = update.install(home, prefix, runs_from, os.environ, Path(work), partial(update.run, children))
     # [LAW:nothing-unseen] each step, the command it ran, and how it exited; the commit installed, or the step that failed.
     match installed:
         case update.Failed(step=step, said=why, ran=ran):
@@ -929,7 +945,7 @@ def audit_log_of(clock: Clock, home: Home) -> audit.AuditLog:
     return audit.AuditLog(home.audit, clock=clock.wall)
 
 
-def login(clock: Clock, home: Home, method: "Method", record: audit.Record) -> exits.Exit:
+def login(children: Children, home: Home, method: "Method", record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
@@ -937,12 +953,12 @@ def login(clock: Clock, home: Home, method: "Method", record: audit.Record) -> e
 
     # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
     # it took Claude Code's first run, and the account it ended on.
-    with wide.unit("brain.login", record, wide.begun(clock)):
+    with wide.unit("brain.login", record, wide.begun(children.clock)):
         wide.annotate(asked=method)
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(home.brain, UPSTREAM, os.environ, method)
+            signed = brain_login(children, home.brain, UPSTREAM, os.environ, method)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             return refused("hands login", 1, str(error))
@@ -1041,7 +1057,7 @@ def tail_log(clock: Clock, home: Home, lines: int) -> Literal[0]:
 FILED_COUNTS = ("lines", "unreadable", "unparsed", "retold", "sightings", "groups", "filed", "commented", "unchanged")
 
 
-def file_tickets(clock: Clock, home: Home, project: Path, epic: str, record: audit.Record) -> exits.Exit:
+def file_tickets(children: Children, home: Home, project: Path, epic: str, record: audit.Record) -> exits.Exit:
     """`hands file-tickets`: a ticket in `project`'s backlog for each group of warnings and errors in the audit log that
     no open ticket has, under `epic`, and a comment on the ticket that has one seen again since it was last told.
 
@@ -1050,7 +1066,7 @@ def file_tickets(clock: Clock, home: Home, project: Path, epic: str, record: aud
     """
     # [LAW:nothing-unseen] one unit a pass, every count zero included, and how far back the log reached: a pass with
     # nothing new and one run after its lines rolled off the log read differently.
-    with wide.unit("tickets.file", record, wide.begun(clock), FILED_COUNTS):
+    with wide.unit("tickets.file", record, wide.begun(children.clock), FILED_COUNTS):
         wide.annotate(project=project, epic=epic)
         found = grouping.read(audit.forwards(home.audit))
         wide.annotate(oldest=found.oldest, newest=found.newest)
@@ -1058,17 +1074,17 @@ def file_tickets(clock: Clock, home: Home, project: Path, epic: str, record: aud
             lines=found.lines, unreadable=found.unreadable, unparsed=found.unparsed, retold=found.retold,
             sightings=sum(len(group.sightings) for group in found.groups), groups=len(found.groups),
         )
-        ended = asyncio.run(_filed(clock, project, epic, found.groups, filing.where(home.audit, Path.home())))
+        ended = asyncio.run(_filed(children, project, epic, found.groups, filing.where(home.audit, Path.home())))
         if isinstance(ended, exits.Failed):
             wide.fail(ended.why)
     return ended
 
 
-async def _filed(clock: Clock, project: Path, epic: str, groups: Sequence[grouping.Group], logs: str) -> exits.Exit:
+async def _filed(children: Children, project: Path, epic: str, groups: Sequence[grouping.Group], logs: str) -> exits.Exit:
     """File what `filing` decides for `groups` in `project`'s backlog, one at a time, saying each; the first lit refuses
     stops the pass, and what was filed before it stays filed, which the next pass reads back."""
     try:
-        read = await backlog.read_backlog(clock, project)
+        read = await backlog.read_backlog(children, project)
     except (backlog.LitFailed, Rejected) as failed:
         return refused("hands file-tickets", 1, f"cannot read the backlog: {failed}")
     match read:
@@ -1086,12 +1102,12 @@ async def _filed(clock: Clock, project: Path, epic: str, groups: Sequence[groupi
         try:
             match each:
                 case filing.New(group=group):
-                    filed = await backlog.file_ticket(clock, project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label)
+                    filed = await backlog.file_ticket(children, project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label)
                     wide.count(filed=1)
                     print(f"filed {filed}: {filing.title(group)}".translate(VISIBLE))
                 case filing.Again(ticket=ticket, group=group):
                     # Signed as the session file-tickets is run from, whose work it is.
-                    await backlog.comment(clock, project, ticket, filing.comment(group, logs), backlog.Inherited())
+                    await backlog.comment(children, project, ticket, filing.comment(group, logs), backlog.Inherited())
                     wide.count(commented=1)
                     print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
         except backlog.LitFailed as failed:

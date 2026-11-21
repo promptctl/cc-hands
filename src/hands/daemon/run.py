@@ -32,6 +32,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from hands.clock import Clock, dashed
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
+from hands.sessions.child import Children
 from hands.sessions import heartbeat, tmux
 from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
@@ -122,11 +123,11 @@ class Configured:
     settings: Settings
 
 
-def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
+def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
     """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
     CannotStart where hands cannot run on them."""
     try:
-        llm = backend(settings.config.llm, home, environment)
+        llm = backend(children, settings.config.llm, home, environment)
     except Rejected as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
@@ -174,17 +175,18 @@ class Mind:
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
     """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await read_front(sessions.clock, running, environment)
+    return await read_front(sessions.children, running, environment)
 
 
 @asynccontextmanager
 async def mind(
-    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    children: Children, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     log: Path, hands: str, record: Record, environment: Mapping[str, str], next_barge_in: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
     speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is given
     `brain_tools` beside `tools`: what it does with a shell, to find what they act on, and a skill saying when."""
+    clock = children.clock
     llm = config.llm
     spans = CallSpans()
     talk = conversation(llm.config_dir, SessionId(dashed(clock)))
@@ -195,7 +197,7 @@ async def mind(
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), record)
+            brain = await start_brain(children, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
@@ -229,20 +231,22 @@ async def run(
     environment: Mapping[str, str],
     run_start: Start,
     own: OwnModel,
-    clock: Clock,
+    children: Children,
 ) -> Ended:
-    """[LAW:effects-at-boundaries] `clock` is the one clock every part of the run reads time, ids, and randomness from."""
+    """[LAW:effects-at-boundaries] `children` starts every child the run starts, and its clock is the one every part of
+    the run reads time, ids, and randomness from."""
+    clock = children.clock
     voice: Voice | None = None
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
     # that raised still lets go of the socket and of every permission hook waiting on it.
     async with AsyncExitStack() as held:
         # What each turn changed in the repository it ran in, which no transcript record need name.
-        deltas = Deltas(record, environment, clock)
+        deltas = Deltas(record, environment, children)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
         sessions = Sessions(
-            clock=clock, record=record, changes=deltas, names=names,
-            typist=partial(type_into, clock, environment), keyboards=partial(tmux.keyboards, clock, environment=environment),
+            children=children, record=record, changes=deltas, names=names,
+            typist=partial(type_into, children, environment), keyboards=partial(tmux.keyboards, children, environment=environment),
         )
         # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
         # before each turn's hook is applied.
@@ -300,18 +304,18 @@ async def run(
             # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
             # no longer does.
             brain_tools = [
-                audited(clock, cued(start_session_tool(clock, home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record),
+                audited(clock, cued(start_session_tool(children, home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record),
                 audited(clock, cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
             ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
+            async with mind(children, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
                 voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, home.clips, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
                 if voice is not None:
                     summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
-                    await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
+                    await converse(children, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -345,7 +349,7 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
 
 
 async def converse(
-    clock: Clock,
+    children: Children,
     voice: Voice,
     home: Home,
     sessions: Sessions,
@@ -371,8 +375,9 @@ async def converse(
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
+    clock = children.clock
     pipeline = PipelineWatch(voice.worker)
-    channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, clock=clock), record, clock)
+    channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, children=children), record, clock)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
@@ -409,7 +414,7 @@ async def converse(
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
-        asyncio.create_task(keep_summarising(clock, store, summarise, record), name="the summary store"),
+        asyncio.create_task(keep_summarising(children, store, summarise, record), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
         asyncio.create_task(keep_beating(partial(memory.sample, clock, record), memory.SAMPLE_SECONDS, clock), name="the memory sampler"),
@@ -452,7 +457,7 @@ async def converse(
             key = phone_key(clock, home)
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery), home, partial(tailnet, clock, home), record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(clock, phone_pages(children, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery), home, partial(tailnet, children, home), record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

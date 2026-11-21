@@ -14,11 +14,10 @@ from dataclasses import dataclass
 from Foundation import NSAppleScript
 from loguru import logger
 
-from hands.clock import Clock
 from hands.core.front import Candidate, FrontUnread, InFront, Screen, in_front
 from hands.core.session import SessionId
 from hands.core.tmux import Unanswered
-from hands.sessions.child import run
+from hands.sessions.child import Children, Exited, Ran, summary
 from hands.sessions import tmux
 from hands.sessions.terminals import Process, ancestor_terminals, process_table
 from hands.threads import SerialThread
@@ -51,15 +50,15 @@ class _App:
     name: str
 
 
-async def read_front(clock: Clock, sessions: Mapping[SessionId, tuple[int, str]], environment: Mapping[str, str]) -> InFront:
+async def read_front(children: Children, sessions: Mapping[SessionId, tuple[int, str]], environment: Mapping[str, str]) -> InFront:
     """What is in front now, among `sessions`, each a session's pid and its name as it is spoken; `environment` is the
     run's, which says where tmux keeps its sockets and where tmux is."""
     try:
-        app = await _front_app(clock)
+        app = await _front_app(children)
         processes = process_table()
         screen = await _screen(app, processes)
         # A tmux client is on screen only in a terminal the app in front shows.
-        panes = dict(await _panes(clock, environment, [pid for pid, _ in sessions.values()], processes)) if screen.shown else {}
+        panes = dict(await _panes(children, environment, [pid for pid, _ in sessions.values()], processes)) if screen.shown else {}
     except _Unread as unread:
         return FrontUnread(str(unread))
     except (OSError, TimeoutError) as error:
@@ -74,12 +73,12 @@ async def read_front(clock: Clock, sessions: Mapping[SessionId, tuple[int, str]]
     return in_front(screen, panes, candidates)
 
 
-async def _front_app(clock: Clock) -> _App:
+async def _front_app(children: Children) -> _App:
     """The app LaunchServices says is in front: the one the user is using, whether or not a window of its is on screen."""
-    serial = (await _ran(clock, _LSAPPINFO, "front")).strip()
+    serial = (await _ran(children, _LSAPPINFO, "front")).strip()
     if not serial.startswith("ASN:"):
         raise _Unread(f"no app is in front: lsappinfo said {serial!r}")
-    info = await _ran(clock, _LSAPPINFO, "info", "-only", "pid", "-only", "bundleid", "-only", "name", serial)
+    info = await _ran(children, _LSAPPINFO, "info", "-only", "pid", "-only", "bundleid", "-only", "name", serial)
     fields = {match[1]: match[2] if match[3] is None else match[3] for match in _FIELD.finditer(info)}
     match fields:
         case {"pid": pid, "LSDisplayName": name}:
@@ -88,11 +87,14 @@ async def _front_app(clock: Clock) -> _App:
             raise _Unread(f"lsappinfo did not say which app {serial} is: {info!r}")
 
 
-async def _ran(clock: Clock, *argv: str) -> str:
-    ran = await run(*argv, timeout=2, clock=clock)
-    if ran.returncode != 0:
-        raise _Unread(f"{' '.join(argv)} exited {ran.returncode}: {ran.err.decode(errors='replace').strip()}")
-    return ran.out.decode()
+async def _ran(children: Children, *argv: str) -> str:
+    match await children.run(*argv, limit=2):
+        case Ran(status=Exited(code=0), out=out):
+            return out.decode()
+        case Ran(err=err) as outcome:
+            raise _Unread(f"{' '.join(argv)} {summary(outcome)}: {err.strip()}")
+        case outcome:
+            raise _Unread(f"{' '.join(argv)} {summary(outcome)}")
 
 
 async def _screen(app: _App, processes: Mapping[int, Process]) -> Screen:
@@ -123,10 +125,10 @@ def _under(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
         stack.extend(children.get(process.pid, ()))
 
 
-async def _panes(clock: Clock, environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[tuple[int, int]]:
+async def _panes(children: Children, environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[tuple[int, int]]:
     """Each tmux client's terminal, and the terminal of the pane it shows, from each server that may hold a pane of one
     of `pids`."""
-    answers = await tmux.asked(clock, environment, pids, processes, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
+    answers = await tmux.asked(children, environment, pids, processes, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
     if unanswered := [answer.reason for answer in answers if isinstance(answer, Unanswered)]:
         raise _Unread("; ".join(unanswered))
     # A client with no terminal, as one in control mode over a pipe, is on no screen; nor is one gone since it was listed.

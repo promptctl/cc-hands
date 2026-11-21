@@ -13,7 +13,6 @@ starts, and a daemon that is up says nothing about any of them, so this is where
 import os
 import re
 import shutil
-import subprocess
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import get_args
 
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
 from hands.brain import pinned
 from hands.core.effects import Fritter
 from hands.core.reach import Unwrapped, through, writer
@@ -84,12 +84,13 @@ VERSION_TIMEOUT_SECONDS = 30.0
 INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
 
 
-def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
-    """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, this terminal's grant;
+def check(children: Children, home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
+    """Every step, in the README's order, the children it asks run by `children`, waited on here: it runs on no loop.
+    `path` is the PATH sessions are started from; `granted`, this terminal's grant;
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), tmux(path), installed(path), shim(home, path), plugin(home, path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), tmux(path), installed(children, path), shim(home, path), plugin(children, home, path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -122,7 +123,7 @@ def tmux(path: str) -> Finding:
     return Ready("tmux", f"tmux is there for the brain to run in: {found}")
 
 
-def installed(path: str) -> Finding:
+def installed(children: Children, path: str) -> Finding:
     """Whether `hands` on this PATH, whose `hands-shim` and `hands-attention` Claude Code runs for the plugin's hooks and skills, is this hands."""
     this = f"hands {version('hands')}"
     found = shutil.which("hands", path=path)
@@ -132,18 +133,19 @@ def installed(path: str) -> Finding:
             "this PATH has no `hands`, so Claude Code cannot run `hands-shim` and no session gets hands' hooks",
             "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH",
         )
-    try:
-        said = subprocess.run([found, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS)
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        return Unknown("`hands` on PATH", f"cannot ask {found} which hands it is: {error}")
-    if said.returncode != 0:
-        return Unknown("`hands` on PATH", f"`{found} --version` failed ({said.returncode}), so which hands it is is unknown: {said.stderr.strip()}")
+    match children.run_blocking(found, "--version", limit=VERSION_TIMEOUT_SECONDS):
+        case Ran(status=Exited(code=0), out=out):
+            told = out.decode(errors="replace").strip()
+        case Ran(err=err) as failed:
+            return Unknown("`hands` on PATH", f"`{found} --version` {summary(failed)}, so which hands it is is unknown: {err.strip()}")
+        case TimedOut() | NeverStarted() as unasked:
+            return Unknown("`hands` on PATH", f"`{found} --version` {summary(unasked)}, so which hands it is is unknown")
     # [LAW:one-source-of-truth] the plugin's hooks are whichever hands Claude Code finds, so one that is not this hands
     # is said here, where this hands' own lines would otherwise vouch for it.
-    if said.stdout.strip() != this:
+    if told != this:
         return Missing(
             "another `hands` first on PATH",
-            f"`hands` on this PATH, {found}, is {said.stdout.strip()}, not this {this}, so sessions run its hooks",
+            f"`hands` on this PATH, {found}, is {told}, not this {this}, so sessions run its hooks",
             "put this one first on PATH, or install it again",
         )
     # [LAW:one-source-of-truth] the plugin's hooks name `hands-shim` alone: hands installs it beside `hands`, and a hands
@@ -169,7 +171,7 @@ def brain_claude(home: Home) -> Finding:
     return Ready(f"brain's Claude Code {pinned.VERSION}", f"the brain runs Claude Code {pinned.VERSION}, hands' own copy: {found}")
 
 
-def configured(home: Home, environment: Mapping[str, str]) -> Finding:
+def configured(children: Children, home: Home, environment: Mapping[str, str]) -> Finding:
     """Whether the brain has the login it reaches its model with."""
     try:
         config = load(home).config
@@ -177,7 +179,7 @@ def configured(home: Home, environment: Mapping[str, str]) -> Finding:
         # The refusal names the file and what is wrong with it, so it is the detail, and the line names the file to mend.
         return Missing("settings unreadable", f"hands cannot read its settings: {error}", f"correct {home.config}")
     try:
-        reached: Finding = reaching(resolve(config.llm, home, environment))
+        reached: Finding = reaching(resolve(children, config.llm, home, environment))
     except Rejected as error:
         # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
         # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
@@ -229,24 +231,19 @@ def plugin_environment(home: Home, caller: Mapping[str, str]) -> dict[str, str]:
     return {**{name: value for name, value in caller.items() if not (brain and name == "CLAUDE_CONFIG_DIR")}, **wrapper.EVERY_RUN}
 
 
-def plugin(home: Home, path: str) -> Finding:
+def plugin(children: Children, home: Home, path: str) -> Finding:
     """Whether Claude Code, as `claude` on this PATH runs it, has hands' plugin installed and enabled."""
     # [LAW:one-source-of-truth] Claude Code is asked, never its files read: where it keeps its plugins is its own.
-    try:
-        listed = subprocess.run(
-            PLUGIN_LIST,
-            env={**plugin_environment(home, os.environ), "PATH": path},
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=LIST_TIMEOUT_SECONDS,
-        )
-    # A ValueError is output that is not text.
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        return Unknown("plugin", f"cannot ask `claude plugin list` whether the plugin {PLUGIN_ID} is installed: {error}")
-    if listed.returncode != 0:
-        return Unknown("plugin", f"`claude plugin list` failed ({listed.returncode}), so whether the plugin {PLUGIN_ID} is installed is unknown: {listed.stderr.strip()}")
-    return plugin_listed(listed.stdout)
+    match children.run_blocking(*PLUGIN_LIST, limit=LIST_TIMEOUT_SECONDS, env={**plugin_environment(home, os.environ), "PATH": path}):
+        case Ran(status=Exited(code=0), out=out):
+            try:
+                return plugin_listed(out.decode())
+            except UnicodeDecodeError as error:
+                return Unknown("plugin", f"`claude plugin list` printed what is not text, so whether the plugin {PLUGIN_ID} is installed is unknown: {error}")
+        case Ran(err=err) as failed:
+            return Unknown("plugin", f"`claude plugin list` {summary(failed)}, so whether the plugin {PLUGIN_ID} is installed is unknown: {err.strip()}")
+        case TimedOut() | NeverStarted() as unasked:
+            return Unknown("plugin", f"`claude plugin list` {summary(unasked)}, so whether the plugin {PLUGIN_ID} is installed is unknown")
 
 
 def installed_everywhere(raw: str) -> set[bool]:

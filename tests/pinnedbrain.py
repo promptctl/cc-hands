@@ -22,6 +22,7 @@ import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
 from conftest import RUN, located, new_sessions, running, unread
+from conftest import children_on
 from spoken import Received, Spoken
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
@@ -35,7 +36,7 @@ from hands.sessions.home import Home
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.summaries import Summaries
 from hands.sessions.tmux import ran_at
-from hands.sessions.child import Ran
+from hands.sessions.child import Exited, Ran
 from hands.brain.stage import BrainStage
 from hands.voice import voices
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -204,8 +205,8 @@ class Hands:
         """A tmux command run against the brain's pane, as a terminal attached to it types: tmux writes the keys to the
         pane, and the pane's fritter forwards them to Claude Code byte for byte."""
         claude = self._claude()
-        ran = await ran_at(SYSTEM, claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
-        assert isinstance(ran, Ran) and ran.returncode == 0, ran
+        ran = await ran_at(children_on(SYSTEM), claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
+        assert isinstance(ran, Ran) and ran.status == Exited(0), ran
 
     async def keyed(self, *keys: str) -> None:
         """`keys`, as tmux's send-keys names them, typed into the brain's pane."""
@@ -240,11 +241,11 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
         # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
         # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
         environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
-        refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
+        refocus = Refocus(new_sessions(children=children_on(SYSTEM), record=recorded.append), Home(tmp_path / "hands"), recorded.append)
         config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
         out = Spoken()
         store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-        async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
+        async with mind(children_on(SYSTEM), config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:

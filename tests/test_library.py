@@ -4,6 +4,7 @@ real library: each takes its listing, its download, and its keychain from a fake
 
 import asyncio
 import os
+import signal
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -13,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 
-from conftest import KEYCHAIN_READER, PATIENCE_SECS
+from conftest import KEYCHAIN_READER, PATIENCE_SECS, Answering, keychain_holding
 from datetime import UTC, datetime
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
@@ -22,7 +23,8 @@ from hands.daemon.config import SampleLines
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import library, voices
-from hands.voice.library import LIBRARY_URL_PREFIX, Found, Library
+from hands.sessions.child import Exited, NeverStarted, Outcome, Ran, Signalled, TimedOut
+from hands.voice.library import LIBRARY_URL_PREFIX, Found, KeychainUnreadable, Library
 from hands.voice.tools import audited, voice_tools
 from hands.voice.player import Player
 from hands.voice.voices import DEFAULT, LibraryVoice, Voices, chosen, parse_voice, source
@@ -237,19 +239,19 @@ async def test_the_find_voices_tool_returns_matches_and_when_they_were_listed(tm
 # --- the token: the environment's, else the keychain's, once, and never logged ------------------------------------------
 
 def test_the_environments_token_is_used_and_the_keychain_is_not_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(library, "_keychain_token", lambda: pytest.fail("the keychain was read though the environment has a token"))
-    assert library.hub_token({"HF_TOKEN": "from-the-environment"}) == "from-the-environment"
+    unasked = Answering(lambda _argv: pytest.fail("the keychain was read though the environment has a token"))
+    assert library.hub_token(unasked, {"HF_TOKEN": "from-the-environment"}) == "from-the-environment"
 
 
 def test_with_no_environment_token_the_keychain_supplies_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(library, "_keychain_token", lambda: "from-the-keychain")
-    assert library.hub_token({}) == "from-the-keychain"
+    monkeypatch.setattr(library, "_keychain_token", KEYCHAIN_READER)
+    assert library.hub_token(Answering(lambda _argv: Ran(Exited(0), b"from-the-keychain\n", "")), {}) == "from-the-keychain"
 
 
 def test_with_neither_token_there_is_none_and_the_environment_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr(library, "_keychain_token", lambda: None)
-    assert library.hub_token({}) is None
+    monkeypatch.setattr(library, "_keychain_token", KEYCHAIN_READER)
+    assert library.hub_token(Answering(lambda _argv: Ran(Exited(44), b"", "")), {}) is None
     assert "HF_TOKEN" not in os.environ
 
 
@@ -258,25 +260,55 @@ def test_a_command_puts_the_keychains_token_in_the_environment_the_fetch_reads(t
 
     # An empty token is no token: the keychain is asked, and the environment is restored by monkeypatch at the end.
     monkeypatch.setenv("HF_TOKEN", "")
-    monkeypatch.setattr(library, "_keychain_token", lambda: "from-the-keychain")
+    monkeypatch.setattr(library, "_keychain_token", keychain_holding("from-the-keychain"))
     cli.main(["--home", str(tmp_path / "home"), "status"])
     assert os.environ["HF_TOKEN"] == "from-the-keychain"
 
 
-def test_the_keychain_is_asked_for_the_item_on_stdout_and_its_token_is_never_logged(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands: list[list[str]] = []
-
-    class Completed:
-        stdout = "secret-token\n"
-
-    def run_security(command: list[str], **_: object) -> Any:
-        commands.append(command)
-        return Completed()
-
-    monkeypatch.setattr(library.subprocess, "run", run_security)
+def test_the_keychain_is_asked_for_the_item_on_stdout() -> None:
+    security = Answering(lambda _argv: Ran(Exited(0), b"secret-token\n", ""))
     # conftest answers the keychain None in every test; the reader it replaced is what this one checks.
-    assert KEYCHAIN_READER() == "secret-token"
-    assert commands == [["security", "find-generic-password", "-s", "HF_TOKEN", "-w"]]
+    assert KEYCHAIN_READER(security) == "secret-token"
+    assert security.asked == [("security", "find-generic-password", "-s", "HF_TOKEN", "-w")]
+
+
+def test_a_keychain_with_no_such_item_has_no_token() -> None:
+    assert KEYCHAIN_READER(Answering(lambda _argv: Ran(Exited(44), b"", "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.\n"))) is None
+
+
+@pytest.mark.parametrize(
+    ("ended", "said"),
+    [
+        (Ran(Exited(51), b"", "denied"), "exited 51"),
+        (Ran(Signalled(signal.SIGKILL), b"", ""), "SIGKILL"),
+        (TimedOut(10.0, b"", ""), "10"),
+        (NeverStarted(FileNotFoundError(2, "No such file or directory")), "could not be started"),
+    ],
+    ids=["failed", "killed", "hung", "missing"],
+)
+def test_a_keychain_that_could_not_say_is_unreadable_naming_how(ended: Outcome, said: str) -> None:
+    with pytest.raises(KeychainUnreadable, match=said):
+        KEYCHAIN_READER(Answering(lambda _argv: ended))
+
+
+def test_a_token_that_is_not_text_is_unreadable_and_never_said() -> None:
+    with pytest.raises(KeychainUnreadable) as unread:
+        KEYCHAIN_READER(Answering(lambda _argv: Ran(Exited(0), b"secret-\xfftoken\n", "")))
+    assert "secret" not in str(unread.value)
+
+
+def test_a_command_goes_on_without_a_token_the_keychain_could_not_say_and_logs_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]) -> None:
+    from hands.daemon import cli
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+    def unreadable(_children: object) -> str | None:
+        raise KeychainUnreadable("`security`, asked for the keychain's HF_TOKEN, exited 51")
+
+    monkeypatch.setattr(library, "_keychain_token", unreadable)
+    cli.main(["--home", str(tmp_path / "home"), "status"])
+    assert "HF_TOKEN" not in os.environ
+    assert "exited 51; hands goes on without a Hugging Face token" in capfd.readouterr().err
 
 
 def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,7 +316,7 @@ def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
 
     reads: list[int] = []
 
-    def record() -> str | None:
+    def record(_children: object) -> str | None:
         reads.append(1)
         return None
 

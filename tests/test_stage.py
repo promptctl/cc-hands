@@ -29,6 +29,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 
 from conftest import patiently, running, settled
+from conftest import children_on
 from hands.brain.process import BARGED_IN, BROKEN, NOBODY, STOPPED, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken, model
 from hands.virtualclock import VirtualClock
 from hands.core.brainwork import AlreadyEnded, Idle, NotWorking, Running, Stopping, Working
@@ -367,7 +368,7 @@ class Rig:
 async def rig() -> AsyncGenerator[Rig, None]:
     clock = VirtualClock()
     # The brain's model on the stage's one clock: what it holds is timed as the stage times it.
-    brain = FakeBrain(sessions=model(clock, lambda _: None, lambda _: None, lambda _: None))
+    brain = FakeBrain(sessions=model(children_on(clock), lambda _: None, lambda _: None, lambda _: None))
     recorded: list[Entry] = []
     standing = [TAIL]
     refocused: list[tuple[SessionId, int]] = []

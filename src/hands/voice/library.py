@@ -6,12 +6,12 @@ hands.
 """
 
 import asyncio
-import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from huggingface_hub import list_repo_files
 
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, summary
 from hands.clock import Clock
 
 LIBRARY_REPO = "kyutai/tts-voices"
@@ -98,21 +98,36 @@ class Library:
             return Found(matches, listing.listed_at, from_cache)
 
 
-def hub_token(environment: Mapping[str, str]) -> str | None:
+KEYCHAIN_SECONDS = 10.0
+
+
+class KeychainUnreadable(Exception):
+    """The keychain could not say whether it holds the token: `security` failed, hung, or printed no text."""
+
+
+def hub_token(children: Children, environment: Mapping[str, str]) -> str | None:
     """The Hugging Face token the cloning weights are fetched with: the environment's where it has one, else the keychain's,
-    else None. A voice whose weights need a token and get none fails at its choice, naming the cloning model.
+    else None; raises KeychainUnreadable when the keychain could not say. A voice whose weights need a token and get none
+    fails at its choice, naming the cloning model.
 
     [LAW:single-enforcer] the one reader of the token. pocket_tts fetches the cloning weights with no token argument, so the
     environment is the only channel it reads; cli.main writes the token there, once, where a process starts. The token is
     never logged or written to a file.
     """
-    return environment.get("HF_TOKEN") or _keychain_token()
+    return environment.get("HF_TOKEN") or _keychain_token(children)
 
 
-def _keychain_token() -> str | None:
-    try:
-        # `security` prints the password on stdout alone; neither stream is logged.
-        found = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w"], capture_output=True, text=True, check=False, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return found.stdout.strip() or None
+def _keychain_token(children: Children) -> str | None:
+    # `security` prints the password on stdout alone; neither stream is logged.
+    match children.run_blocking("security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w", limit=KEYCHAIN_SECONDS):
+        case Ran(status=Exited(code=0), out=out):
+            try:
+                return out.decode().strip() or None
+            except UnicodeDecodeError:
+                # The token itself is never said: only that it was not text.
+                raise KeychainUnreadable(f"the keychain's {KEYCHAIN_ITEM} is not text") from None
+        # [LAW:domain-language] errSecItemNotFound, as `security` exits with it: the keychain holds no such item.
+        case Ran(status=Exited(code=44)):
+            return None
+        case Ran() | TimedOut() | NeverStarted() as unread:
+            raise KeychainUnreadable(f"`security`, asked for the keychain's {KEYCHAIN_ITEM}, {summary(unread)}")

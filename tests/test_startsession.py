@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from conftest import children_on
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import AuditLog, segment
@@ -35,7 +36,7 @@ def members(home: Home) -> list[Membership]:
 
 def start(home: Home, folder: Path, model: str = "") -> dict[str, Any]:
     """The tool called as the model calls it, in the environment hands was started in."""
-    start_session = start_session_tool(SYSTEM, home, AuditLog(home.audit, clock=datetime.now).record, os.environ, lambda: members(home))
+    start_session = start_session_tool(children_on(SYSTEM), home, AuditLog(home.audit, clock=datetime.now).record, os.environ, lambda: members(home))
 
     async def called() -> Result:
         return await start_session.body(folder=str(folder), model=model)
@@ -88,7 +89,7 @@ def test_a_session_is_started_trusting_its_projects_mcp_servers_whose_dialog_wou
     tmux.write_text(f"#!/bin/sh\nprintf '%s\\0' \"$@\" > {asked}\necho 'no server' >&2\nexit 1\n")
     tmux.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmux.parent}:{os.environ['PATH']}")
-    assert "tmux could not make session billing: no server" in start(home, folder, "opus")["error"]
+    assert "tmux could not make session billing: it exited 1: no server" in start(home, folder, "opus")["error"]
     command = asked.read_text().split("\0")
     given = command[command.index("claude") + 1:-1]
     assert given == ["--settings", '{"enableAllProjectMcpServers": true}', "--model=opus"]

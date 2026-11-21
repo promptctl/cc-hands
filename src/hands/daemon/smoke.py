@@ -40,7 +40,7 @@ from hands.daemon.exits import Exit, Failed
 from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
-from hands.sessions.child import run
+from hands.sessions.child import Children, Exited, Ran, summary
 from hands.sessions.home import Home
 from hands.sessions.liveness import live
 from hands.sessions.payload import Rejected
@@ -255,12 +255,16 @@ class Run:
     home: Home
     word: str
     offset: int
-    clock: Clock
+    children: Children
     lines: list[Line] = field(default_factory=list[Line])
     began: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.began = self.clock.now()
+
+    @property
+    def clock(self) -> Clock:
+        return self.children.clock
 
     def read(self) -> None:
         """The audit lines the daemon has written since the last read."""
@@ -288,14 +292,14 @@ async def until[T](clock: Clock, stage: Stage, seconds: float, found: Callable[[
     return seen
 
 
-async def smoke(clock: Clock, home: Home, environment: Mapping[str, str]) -> Exit:
+async def smoke(children: Children, home: Home, environment: Mapping[str, str]) -> Exit:
     """Run the test, printing each stage as it is reached; 0 once every stage is, and the first that is not, failed."""
     # Picked by the clock's randomness, so a run on a seeded clock picks the same word every time.
-    word = WORDS[int(clock.token(4), 16) % len(WORDS)]
+    word = WORDS[int(children.clock.token(4), 16) % len(WORDS)]
     folder = (home.root / FOLDER).resolve()
     annotate(word=word, folder=folder)
     _, offset = audit.tail(home.audit, 0)
-    smoked = Run(home, word, offset, clock)
+    smoked = Run(home, word, offset, children)
     try:
         await _stages(smoked, folder, environment)
     except NotReached as missed:
@@ -327,7 +331,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
-    said = [await _synthesized(smoked.clock, text) for text in SAID]
+    said = [await _synthesized(smoked.children, text) for text in SAID]
     # hands speaks of a session by its folder's name, so a live session in any folder of the smoke folder's name is one the
     # brain may take for the session the test starts; the run refuses, just before it empties the smoke folder or starts its own.
     # [LAW:single-enforcer] running as the daemon's sweep judges it.
@@ -345,7 +349,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     # The claude on PATH, the shim or not, is started as hands starts every claude: its auto-updater off.
-    session = await on_terminal(smoked.clock, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
+    session = await on_terminal(smoked.children, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
     try:
         member = await _joined(smoked, folder, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
@@ -484,18 +488,22 @@ async def _transcribed(audio: bytes) -> str:
     return " ".join(segment.text for segment in heard).strip()
 
 
-async def _synthesized(clock: Clock, text: str) -> bytes:
+async def _synthesized(children: Children, text: str) -> bytes:
     """`text` in macOS's own voice, as 16-bit mono at RATE."""
     with tempfile.TemporaryDirectory(prefix="hands-smoke-") as directory:
         spoken = Path(directory) / "said.wav"
         # The test's own voice, no part of hands: its failure is the test's, raised, never named as a stage of the pipeline.
-        ran = await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0, clock=clock)
-        if ran.returncode != 0:
-            raise RuntimeError(f"`say` could not synthesize what the test says ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
+        match await children.run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, limit=30.0):
+            case Ran(status=Exited(code=0)):
+                pass
+            case Ran(err=err) as failed:
+                raise RuntimeError(f"`say` could not synthesize what the test says: it {summary(failed)}: {err.strip()}")
+            case unrun:
+                raise RuntimeError(f"`say` could not synthesize what the test says: it {summary(unrun)}")
         with wave.open(str(spoken), "rb") as read:
             return read.readframes(read.getnframes())
 
 
-def run_smoke(clock: Clock, home: Home) -> Exit:
+def run_smoke(children: Children, home: Home) -> Exit:
     """`hands smoke`, as the CLI runs it."""
-    return asyncio.run(smoke(clock, home, os.environ))
+    return asyncio.run(smoke(children, home, os.environ))

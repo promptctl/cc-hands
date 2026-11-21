@@ -33,6 +33,7 @@ from hands.voice.wakeword import Pretrained
 from hands.voice.tool import Tool
 from hands.voice.tools import audited, defaulting_to_focus, intermediary_tools, stay_silent_tool
 from conftest import new_sessions
+from conftest import children_on
 
 HANDS = SessionId("s-hands")
 LAWS = SessionId("s-laws")
@@ -42,7 +43,7 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
     async def typist(effect: Type[Input]) -> None:
         typed.append(effect)
 
-    sessions = new_sessions(clock=SYSTEM, typist=typist)
+    sessions = new_sessions(children=children_on(SYSTEM), typist=typist)
     for id, project in ((HANDS, "cc-hands"), (LAWS, "laws")):
         await sessions.apply(Joined(Membership(id, 4242, Path("/code") / project, tmp / f"{id}.jsonl", tmp / f"{id}.sock"), "startup"))
     return sessions

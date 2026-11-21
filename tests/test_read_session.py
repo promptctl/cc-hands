@@ -22,13 +22,14 @@ from hands.voice.summarising import summarise_turns
 from hands.voice.tool import Tool
 from hands.voice.tools import READBACK_COUNT, TURNS_PAGE, session_tools
 from conftest import new_sessions
+from conftest import children_on
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 SID = SessionId("s1")
 
 
 async def joined(clock: Clock, transcript: Path) -> Sessions:
-    sessions = new_sessions(clock=clock)
+    sessions = new_sessions(children=children_on(clock))
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=transcript), "startup"))
     return sessions
 

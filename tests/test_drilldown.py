@@ -13,6 +13,7 @@ from hands.voice.narrator import Recounts
 from hands.voice.tool import Body, Result
 from hands.voice.tools import expand_tool
 from conftest import new_sessions
+from conftest import children_on
 
 SID = SessionId("s1")
 WHY = "test_splits_on_commas\nAssertionError: assert ['a,b'] == ['a', 'b']"
@@ -31,7 +32,7 @@ def held(steps: tuple[Step, ...] = STEPS, turn: str = "p1") -> Recounts:
 
 def expand(recounts: Recounts) -> Body:
     """The tool's body, as the model calls it."""
-    return expand_tool(new_sessions(clock=VirtualClock()), recounts).body
+    return expand_tool(new_sessions(children=children_on(VirtualClock())), recounts).body
 
 
 def parts(result: Result) -> list[tuple[str, str]]:

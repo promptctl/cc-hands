@@ -33,6 +33,7 @@ from test_narrator import rendered
 from hands.voice.tool import Tool
 from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, permission_tools
 from conftest import new_sessions
+from conftest import children_on
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000002")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/cc-hands"}
@@ -62,7 +63,7 @@ def clock() -> VirtualClock:
 
 @pytest.fixture
 async def sessions(home: Home, clock: VirtualClock) -> AsyncIterator[Sessions]:
-    registry = new_sessions(clock=clock)
+    registry = new_sessions(children=children_on(clock))
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     yield registry
     await runner.cleanup()
@@ -155,7 +156,7 @@ async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_tha
     def asks() -> list[WideEvent]:
         return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.facts.get("hook") == "PermissionRequest"]
 
-    sessions = new_sessions(clock=clock)
+    sessions = new_sessions(children=children_on(clock))
     runner = await serve_hooks(home, sessions, Names(), recorded.append, Reader(sessions, Tails(sessions), sessions.apply))
     try:
         shim, moment = await asked(home, sessions)
@@ -370,7 +371,7 @@ async def test_a_reply_decided_after_shutdown_let_its_hook_go_is_logged_as_never
 
 @pytest.mark.outside
 async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_day(home: Home, clock: VirtualClock) -> None:
-    registry = new_sessions(clock=clock)
+    registry = new_sessions(children=children_on(clock))
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     shim, _ = await asked(home, registry)
     await asyncio.wait_for(runner.cleanup(), WAIT_SECONDS)
@@ -562,7 +563,7 @@ async def test_a_hold_the_model_could_not_decide_raises_and_leaves_nothing_for_s
         raise RuntimeError("the reducer broke")
 
     monkeypatch.setattr("hands.sessions.registry.reduce", broken)
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
     with pytest.raises(RuntimeError, match="the reducer broke"):
         sessions.hold(asked)
@@ -581,7 +582,7 @@ async def test_a_held_request_s_reply_is_never_an_error_though_performing_what_i
     def failing(_: Heard) -> None:
         raise RuntimeError("the narration sink broke")
 
-    sessions = new_sessions(clock=VirtualClock(), heard_sink=failing)
+    sessions = new_sessions(children=children_on(VirtualClock()), heard_sink=failing)
     await sessions.apply(Joined(Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere.jsonl")), "startup"))
     asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
     replying = sessions.hold(asked)

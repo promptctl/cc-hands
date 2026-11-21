@@ -21,6 +21,7 @@ from hands.core.status import Report, Stamp
 from hands.core.session import Idle, Opened, Told, Untold, delegating
 from hands.sessions.delta import Deltas
 from conftest import new_sessions, patient
+from conftest import children_on
 from hands.sessions.hooks import Hook
 from hands.sessions.reader import Reader
 from hands.sessions.tail import KEPT, StoodIn, Tails, Telling
@@ -736,7 +737,7 @@ async def test_a_queued_command_taken_in_mid_turn_is_heard_from_the_results_clau
 async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_session_idle(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, LOOPING))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(said_busy(at=1.0))
@@ -777,7 +778,7 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_o
     ends it, so the prompt sent again is a turn of its own."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p0"), text=""))
     tails = Tails(sessions)
@@ -804,7 +805,7 @@ async def test_a_prompt_whose_first_record_is_its_interrupt_is_heard_taken_befor
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tells_the_turn_claude_code_said_is_over(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     applied: list[Event] = []
@@ -828,7 +829,7 @@ async def test_a_sessions_hook_is_applied_while_what_a_read_decided_for_another_
     other = Membership(SessionId("0f1e2d3c-aaaa-bbbb-cccc-00000000000b"), pid=4343, cwd=Path("/code/b"), transcript=tmp_path / "b.jsonl")
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     for joined in (member(transcript), other):
         await sessions.apply(Joined(joined, "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(1000)), at=1.0))
@@ -864,7 +865,7 @@ async def test_a_sessions_hook_is_applied_while_what_a_read_decided_for_another_
 async def test_what_a_read_through_now_decided_says_how_its_performing_failed_with_no_period_reading(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(1000)), at=1.0))
 
@@ -885,7 +886,7 @@ async def test_what_a_read_through_now_decided_says_how_its_performing_failed_wi
 
 
 async def test_which_turns_hands_followed_is_said_as_the_registry_held_them_when_asked(tmp_path: Path) -> None:
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Joined(member(tmp_path / "t.jsonl"), "startup"))
     before = sessions.followed(SID)
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
@@ -982,7 +983,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     interrupt and all; p2 only its own steps."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     tails = Tails(sessions)
@@ -1021,7 +1022,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
     deltas = patient(Deltas, lambda _entry: None)
-    sessions = new_sessions(clock=VirtualClock(), changes=deltas)
+    sessions = new_sessions(children=children_on(VirtualClock()), changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=transcript), "startup"))
     tails = Tails(sessions)
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
@@ -1179,7 +1180,7 @@ async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_i
     running, and reads its transcript from the start."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(*HISTORY, RUNNING, LOOPING))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(3000)), at=3.0))
     tails = Tails(sessions)
@@ -1430,7 +1431,7 @@ async def test_a_session_attached_while_its_background_subagent_works_is_delegat
     prompt with a subagent out; the report opens its own turn, and its Stop tells that turn alone."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(said_busy(3.0))
     tails = Tails(sessions)
@@ -1570,7 +1571,7 @@ async def test_a_command_run_while_a_subagent_works_in_the_background_returns_th
     stayed open until the subagent reported back, and the session read as working."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(said_busy(3.0))
     tails = Tails(sessions)

@@ -39,12 +39,13 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
+from hands.sessions.child import Children, Outcome
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
@@ -201,6 +202,33 @@ def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
 new_sessions = partial(Sessions, record=lambda _: None)
 
 
+# Where the warden of every runner the tests build writes its event, once their process has ended: no test's own home.
+WARDEN_AUDIT = Path(tempfile.gettempdir()) / "hands-tests-warden"
+
+
+def children_on(clock: Clock) -> Children:
+    """[LAW:locality-or-seam] the one place tests build the runner of children: on `clock`, its events discarded. Its
+    warden starts only with its first child, so a test that starts none starts no process."""
+    return Children(clock, lambda _: None, WARDEN_AUDIT)
+
+
+class Answering(Children):
+    """A runner that starts nothing: each run, awaited or waited on, is answered by `answer` with how it ended, and its
+    argv kept in `asked`, for a test of what a caller makes of each way a child can end."""
+
+    def __init__(self, answer: Callable[[tuple[str, ...]], Outcome], clock: Clock = SYSTEM) -> None:
+        super().__init__(clock, lambda _: None, WARDEN_AUDIT)
+        self._answer = answer
+        self.asked: list[tuple[str, ...]] = []
+
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
+        return self.run_blocking(*argv, limit=limit, cwd=cwd, env=env)
+
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
+        self.asked.append(argv)
+        return self._answer(argv)
+
+
 def model_facts(load: WideEvent) -> dict[str, Fact]:
     """A model load's facts of its own: every load says how big the process was as it ended and how much it grew, which
     are taken off here once they are shown to be there (hands.voice.loads)."""
@@ -238,7 +266,7 @@ def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None
     """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a baseline or a reading found,
     never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
     spends it; a git that never ends is ended by the suite's timeout."""
-    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, clock=clock or RealWall())
+    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, children=children_on(clock or RealWall()))
 
 
 async def settled(steps: int = 100) -> None:
@@ -349,11 +377,17 @@ PAIRS = Pairs()
 KEYCHAIN_READER = library._keychain_token  # pyright: ignore[reportPrivateUsage]
 
 
+def keychain_holding(token: str | None) -> Callable[[Children], str | None]:
+    """A keychain reader in place of KEYCHAIN_READER, for a process that builds its own runner: it answers `token` and
+    starts no `security`."""
+    return lambda _children: token
+
+
 @pytest.fixture(autouse=True)
 def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
     about but the one that checks the question, on KEYCHAIN_READER."""
-    monkeypatch.setattr(library, "_keychain_token", lambda: None)
+    monkeypatch.setattr(library, "_keychain_token", keychain_holding(None))
 
 
 @pytest.fixture(autouse=True)

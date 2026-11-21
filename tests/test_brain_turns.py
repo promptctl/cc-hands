@@ -23,6 +23,7 @@ from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
 from hands.sessions.audit import Entry
 from conftest import events, patiently, settled
+from conftest import children_on
 from brains import dialogs, failures, permissions, unasked
 
 from hands.core.events import Abandoned, Dequeued, Ending, Interrupted, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
@@ -204,7 +205,7 @@ def _modelled(brain: Brain, clock: VirtualClock) -> None:
     """A brain built bare on `clock`, given the model it reads its turns with, and what it waits on that model with, as
     `Brain` builds it; a part of a launch of its own where the test gave it none."""
     brain._clock = clock  # pyright: ignore[reportPrivateUsage]
-    brain._sessions = model(brain._clock, lambda _entry: None, brain._told, brain._took)  # pyright: ignore[reportPrivateUsage]
+    brain._sessions = model(children_on(brain._clock), lambda _entry: None, brain._told, brain._took)  # pyright: ignore[reportPrivateUsage]
     brain._reader = Reader(brain._sessions, Tails(brain._sessions), brain._apply)  # pyright: ignore[reportPrivateUsage]
     brain._moved = asyncio.Event()  # pyright: ignore[reportPrivateUsage]
     brain._claude_turns = ClaudeTurns(brain._settle)  # pyright: ignore[reportPrivateUsage]

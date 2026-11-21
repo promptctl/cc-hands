@@ -33,6 +33,7 @@ from hands.sessions.server import serve_hooks
 from hands.sessions.tail import Tails
 from hands.sessions.wide import Fact, WideEvent
 from conftest import PLUGIN_PATH, hook_argv, new_sessions
+from conftest import children_on
 
 
 pytestmark = pytest.mark.outside
@@ -58,7 +59,7 @@ def home() -> Iterator[Home]:
 
 @pytest.fixture
 async def sessions(home: Home) -> AsyncIterator[Sessions]:
-    registry = new_sessions(clock=VirtualClock())
+    registry = new_sessions(children=children_on(VirtualClock()))
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     yield registry
     await runner.cleanup()
@@ -213,7 +214,7 @@ async def test_a_stop_is_decided_on_the_status_and_transcript_claude_code_wrote_
     transcript = config / "projects" / "-code-a" / f"{SID}.jsonl"
     transcript.parent.mkdir(parents=True)
     located = {"transcript_path": str(transcript)}
-    registry = new_sessions(clock=VirtualClock())
+    registry = new_sessions(children=children_on(VirtualClock()))
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, {**START, **located})
@@ -257,7 +258,7 @@ async def test_a_hook_naming_the_transcript_claude_code_moved_moves_the_session_
     after names it there, the EnterWorktree call's own PostToolUse first. The file and the registry follow it; the cwd
     stays the start's, since a hook's cwd is the shell's, which a `cd` moves too."""
     recorded: list[Entry] = []
-    registry = new_sessions(clock=VirtualClock(), record=recorded.append)
+    registry = new_sessions(children=children_on(VirtualClock()), record=recorded.append)
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     start, entered = _entered_worktree(tmp_path)
     moved = str(entered["transcript_path"])
@@ -344,7 +345,7 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
     recorded: list[Entry] = []
     clock = VirtualClock()
     hold = 0.2
-    registry = new_sessions(clock=clock, stop_hold=hold)
+    registry = new_sessions(children=children_on(clock), stop_hold=hold)
     runner = await serve_hooks(home, registry, Names(), recorded.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
@@ -382,7 +383,7 @@ async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
     dead.bind(str(home.socket))
     dead.close()
     assert home.socket.exists()
-    registry = new_sessions(clock=VirtualClock())
+    registry = new_sessions(children=children_on(VirtualClock()))
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     try:
         assert await shim(home, START) == (0, STARTED, "")
@@ -437,7 +438,7 @@ async def test_an_untapped_session_s_commands_are_given_nothing(home: Home, tmp_
 async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_claude_code_at_the_next_prompt_once(home: Home) -> None:
     names = Names()
     given: list[Entry] = []
-    registry = new_sessions(clock=VirtualClock())
+    registry = new_sessions(children=children_on(VirtualClock()))
     runner = await serve_hooks(home, registry, names, given.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
@@ -465,7 +466,7 @@ async def test_a_name_set_since_hands_decided_one_is_not_overwritten_by_it(home:
     # The user gave the session a name with /rename after hands decided its own against the session having none.
     transcript.write_text('{"type":"custom-title","customTitle":"my thing","sessionId":"s"}\n')
     at = {"transcript_path": str(transcript)}
-    registry = new_sessions(clock=VirtualClock())
+    registry = new_sessions(children=children_on(VirtualClock()))
     runner = await serve_hooks(home, registry, names, given.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, {**START, **at})
@@ -482,7 +483,7 @@ async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, 
     given: list[Entry] = []
     # A directory where the transcript should be: reading the session's title fails.
     at = {"transcript_path": str(tmp_path)}
-    registry = new_sessions(clock=VirtualClock())
+    registry = new_sessions(children=children_on(VirtualClock()))
     runner = await serve_hooks(home, registry, names, given.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, {**START, **at})
@@ -497,7 +498,7 @@ async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, 
 
 async def test_a_turn_that_closed_on_no_reply_is_not_named(home: Home) -> None:
     names = Names()
-    registry = new_sessions(clock=VirtualClock())
+    registry = new_sessions(children=children_on(VirtualClock()))
     runner = await serve_hooks(home, registry, names, lambda _: None, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)

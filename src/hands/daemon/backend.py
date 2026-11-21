@@ -9,13 +9,14 @@ from collections.abc import Mapping
 
 from hands.core.wire import UPSTREAM
 from hands.daemon.config import Claude
+from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wrapper import Unpackaged, packaged
 from hands.voice.backends import ClaudeCodeBackend
 
 
-def backend(llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCodeBackend:
+def backend(children: Children, llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCodeBackend:
     """The brain on the model the settings name, given the login it reaches its model with; raises Rejected naming what it cannot have."""
     # [LAW:single-enforcer] where a setting meets its login: the brain's login is checked here, once, before the voice
     # loads, rather than once every turn has failed.
@@ -27,7 +28,7 @@ def backend(llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCo
     from hands.brain.process import NotLoggedIn, Unstartable, account_kept_out, answered, logged_in, settings_mode
 
     try:
-        account = logged_in(home.brain, UPSTREAM, environment)
+        account = logged_in(children, home.brain, UPSTREAM, environment)
         answered(home.brain)
         account_kept_out(home.brain)
         # A mode Claude Code does not take is refused here too, before the voice loads, not as the brain starts.

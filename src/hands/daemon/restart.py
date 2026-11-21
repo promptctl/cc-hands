@@ -110,7 +110,7 @@ def detach(clock: Clock) -> Callable[[int], bool]:
     sys.stdout.flush()
     sys.stderr.flush()
     read, write = os.pipe()
-    middle = os.fork()
+    middle = os.fork()  # [LAW:single-enforcer] exception: detach, whose fork carries on as this command, not a child of it; the warden's pipe goes with it
     if middle != 0:
         os.close(write)
         # The middle process exits at once, leaving the command to launchd.
@@ -127,7 +127,7 @@ def detach(clock: Clock) -> Callable[[int], bool]:
     os.setsid()
     os.dup2(os.open(os.devnull, os.O_RDONLY), sys.stdin.fileno())
     middle = os.getpid()
-    if os.fork() != 0:
+    if os.fork() != 0:  # [LAW:single-enforcer] exception: detach, whose second fork leaves the command to launchd, as the first did
         os._exit(0)
     # [LAW:no-ambient-temporal-coupling] out of the caller's tree once its parent has exited, not after a guess at how long that takes.
     while os.getppid() == middle:

@@ -19,6 +19,7 @@ from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 from loguru import logger
 from PyObjCTools import AppHelper, MachSignals
 
+from hands.sessions.child import Children
 from hands.clock import Clock
 from hands.daemon import indicator
 from hands.sessions import heartbeat
@@ -35,9 +36,10 @@ WAKE = AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_window
 )
 
 
-def show(clock: Clock, home: Home, run: int) -> Literal[0]:
+def show(children: Children, home: Home, run: int) -> Literal[0]:
     """Run the status item until `run`, the process that started this one, is gone and the heartbeat has said so; then
     0, the indicator's exit code. What made it stop looking at the heartbeat first is raised."""
+    clock = children.clock
     app = AppKit.NSApplication.sharedApplication()
     # A menu-bar item only: no Dock icon, no menu bar of its own, never the active app.
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
@@ -78,11 +80,11 @@ def show(clock: Clock, home: Home, run: int) -> Literal[0]:
                 # Posted before ending, not beside it: the notice that the run went is the last thing this process
                 # does, bounded so that an osascript that never returns cannot keep the process up in its place.
                 for notice in indicator.last_words(seen):
-                    asyncio.run(post_last(clock, notice))
+                    asyncio.run(post_last(children, notice))
                 end(0)
                 return
             for notice in seen.notices:
-                post(clock, notice)
+                post(children, notice)
         except Exception as error:
             # [LAW:no-silent-failure] AppKit would log a failed timer and carry on showing a stale light; ending
             # instead raises the failure into the terminal the run prints to, and takes the stale light away.
@@ -107,16 +109,16 @@ def show(clock: Clock, home: Home, run: int) -> Literal[0]:
             raise RuntimeError("the indicator's event loop ended before the run did")
 
 
-def post(clock: Clock, notice: str) -> None:
+def post(children: Children, notice: str) -> None:
     """Post off the main thread: osascript takes a moment, and the status item must keep up meanwhile."""
     # post_notification logs its own failure; nothing here waits on it.
-    threading.Thread(target=lambda: asyncio.run(post_notification(notice, clock)), name="notice", daemon=True).start()
+    threading.Thread(target=lambda: asyncio.run(post_notification(notice, children)), name="notice", daemon=True).start()
 
 
-async def post_last(clock: Clock, notice: str) -> None:
+async def post_last(children: Children, notice: str) -> None:
     """Post a notice on the way out, or say that it could not be posted in time; the indicator exits either way."""
     try:
-        async with clock.timeout(LAST_POST_SECONDS):
-            await post_notification(notice, clock)
+        async with children.clock.timeout(LAST_POST_SECONDS):
+            await post_notification(notice, children)
     except TimeoutError:
         logger.error(f"osascript did not post {notice!r} within {LAST_POST_SECONDS:.0f}s; the indicator exits without it")

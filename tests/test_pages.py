@@ -11,6 +11,7 @@ import pytest
 from aiohttp.test_utils import BaseTestServer, TestServer
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
+from conftest import children_on
 from hands.clock import SYSTEM
 from hands.sessions.audit import AuditLog, Replied, Transcribed
 from hands.sessions.home import Home
@@ -71,7 +72,7 @@ async def hands(tmp_path: Path) -> AsyncGenerator[Hands]:
 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(VirtualClock()), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
-    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery)
+    pages = phone_pages(children_on(SYSTEM), phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery)
     async with TestServer(pages) as server:
         yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices)
         await phone.stop()

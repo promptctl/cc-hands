@@ -17,9 +17,8 @@ from pathlib import Path
 
 from mlx_whisper.tokenizer import get_encoding
 
-from hands.clock import Clock
 from hands.sessions.audit import Primed, Record
-from hands.sessions.child import run, settled
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, TimedOut, settled, summary
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.home import Home
 from hands.sessions.registry import Listing, Sessions
@@ -54,11 +53,11 @@ class Lexicon:
         self._record = record
 
     async def __call__(self) -> str | None:
-        clock = self._sessions.clock
-        began = clock.now()
+        children = self._sessions.children
+        began = children.clock.now()
         # Read off the loop: a name is read from its session's transcript.
         listings = await asyncio.to_thread(self._sessions.live)
-        primed = await vocabulary(clock, listings, self._focus(), self._environment, began)
+        primed = await vocabulary(children, listings, self._focus(), self._environment, began)
         self._record(primed)
         # [LAW:dataflow-not-control-flow] no words is no prompt, which is Whisper unprimed.
         return prompt(primed.words) or None
@@ -72,13 +71,13 @@ class Lexicon:
                 return self._sessions.live_session(session)
 
 
-async def vocabulary(clock: Clock, listings: Sequence[Listing[Session]], focus: Session | Unreadable | None, environment: Mapping[str, str], began: float) -> Primed:
+async def vocabulary(children: Children, listings: Sequence[Listing[Session]], focus: Session | Unreadable | None, environment: Mapping[str, str], began: float) -> Primed:
     """The repository words of the focused session, then every running session's project and name, oldest first, the
     oldest dropped until the rest fit the prompt tokens Whisper keeps. `began` is when reading the vocabulary started,
-    `listings` among it, on `clock`."""
+    `listings` among it, on the runner's clock."""
     match focus:
         case Session() as session:
-            repository, failed = await _repository(clock, session.membership.cwd, environment, began + READING)
+            repository, failed = await _repository(children, session.membership.cwd, environment, began + READING)
             focus_id = session.membership.id
         case Unreadable(reason=reason):
             repository, failed, focus_id = (), f"the focus: {reason}", None
@@ -89,7 +88,7 @@ async def vocabulary(clock: Clock, listings: Sequence[Listing[Session]], focus: 
     words = _unique([word for word in (*repository, *sessions) if not _SPECIAL.search(word)])[-WORDS:]
     while (tokens := _tokens(words)) > TOKENS:
         words = words[1:]
-    return Primed(focus_id, words, tokens, failed, clock.now() - began)
+    return Primed(focus_id, words, tokens, failed, children.clock.now() - began)
 
 
 def prompt(words: Sequence[str]) -> str:
@@ -110,16 +109,16 @@ _WHISPER_BPE = get_encoding("multilingual")
 _SPECIAL = re.compile("|".join(map(re.escape, _WHISPER_BPE.special_tokens_set)))
 
 
-async def _repository(clock: Clock, cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:
+async def _repository(children: Children, cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:
     """The names of the files most recently changed in the repository `cwd` is in, oldest first, then its branch; or
     none, and why, where git could not say. A directory in no repository has none, and that is no failure."""
     try:
         # Every git waited out, each ended by the deadline at the latest, so none outlives the reading.
         logged, changed, branch = await settled(
             # A branch with no commits yet has no history to read, where git log would refuse its unborn HEAD.
-            _git(clock, cwd, environment, deadline, "log", "--ignore-missing", "HEAD", "--name-only", "--format=", "-z", f"-n{COMMITS}"),
-            _git(clock, cwd, environment, deadline, "status", "--porcelain=v1", "-z"),
-            _git(clock, cwd, environment, deadline, "branch", "--show-current"),
+            _git(children, cwd, environment, deadline, "log", "--ignore-missing", "HEAD", "--name-only", "--format=", "-z", f"-n{COMMITS}"),
+            _git(children, cwd, environment, deadline, "status", "--porcelain=v1", "-z"),
+            _git(children, cwd, environment, deadline, "branch", "--show-current"),
         )
     except BaseExceptionGroup as group:
         failures = [error for error in group.exceptions if isinstance(error, GitFailed)]
@@ -155,24 +154,23 @@ class NotARepository(GitFailed):
     """The directory is in no git repository."""
 
 
-async def _git(clock: Clock, cwd: Path, environment: Mapping[str, str], deadline: float, *args: str) -> str:
-    left = deadline - clock.now()
+async def _git(children: Children, cwd: Path, environment: Mapping[str, str], deadline: float, *args: str) -> str:
+    left = deadline - children.clock.now()
     if left <= 0:
         raise GitFailed(f"reading the sessions' names spent the vocabulary's {READING:.1f}s before git {args[0]} in {cwd} could run")
-    try:
-        # git says why it failed in the C locale's words, which are the ones read below.
-        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"}, clock=clock)
-    except TimeoutError:
-        raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s") from None
-    except OSError as error:
-        raise GitFailed(f"cannot run git in {cwd}: {error}") from None
-    said = ran.err.decode(errors="replace").strip()
-    # [LAW:domain-language] git's own words for a directory outside every repository, and the exit code it gives them.
-    if ran.returncode == 128 and "not a git repository" in said:
-        raise NotARepository(said)
-    if ran.returncode != 0:
-        raise GitFailed(f"git {args[0]} in {cwd} exited {ran.returncode}: {said}")
-    return ran.out.decode(errors="replace")
+    # git says why it failed in the C locale's words, which are the ones read below.
+    match await children.run("git", "--no-optional-locks", "-C", str(cwd), *args, limit=left, env={**environment, "LC_ALL": "C"}):
+        case Ran(status=Exited(code=0), out=out):
+            return out.decode(errors="replace")
+        # [LAW:domain-language] git's own words for a directory outside every repository, and the exit code it gives them.
+        case Ran(status=Exited(code=128), err=err) if "not a git repository" in err:
+            raise NotARepository(err.strip())
+        case Ran(err=err) as failed:
+            raise GitFailed(f"git {args[0]} in {cwd} {summary(failed)}: {err.strip()}")
+        case TimedOut():
+            raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s")
+        case NeverStarted() as unrun:
+            raise GitFailed(f"git in {cwd} {summary(unrun)}")
 
 
 def _unique(words: Sequence[str]) -> tuple[str, ...]:

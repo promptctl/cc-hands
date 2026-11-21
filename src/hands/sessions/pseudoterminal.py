@@ -1,5 +1,5 @@
 """A Claude Code run on a pseudo-terminal hands holds: read as fast as it draws, the last of what it showed kept, and
-ended by hands' end however that comes.
+owned as every child of hands is (hands.sessions.child), so it ends with hands however that comes.
 
 The brain and the smoke test's working session both run so; what each runs, and in what environment,
 is theirs to say.
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from hands.clock import Clock
 from hands.core.session import ESCAPES
-from hands.sessions.child import Child, reaped
+from hands.sessions.child import Children, Exited, Running, Signalled
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -73,7 +73,7 @@ class _Terminal:
 class ClaudeCode:
     """A Claude Code running on a terminal hands holds, until it ends or is stopped."""
 
-    def __init__(self, clock: Clock, child: Child[int], terminal: _Terminal) -> None:
+    def __init__(self, clock: Clock, child: Running, terminal: _Terminal) -> None:
         self._clock = clock
         self._child = child
         self._terminal = terminal
@@ -82,7 +82,7 @@ class ClaudeCode:
 
     @property
     def pid(self) -> int:
-        return self._child.process.pid
+        return self._child.pid
 
     def shown(self) -> str:
         """The last lines it showed on its terminal."""
@@ -93,7 +93,12 @@ class ClaudeCode:
         await asyncio.shield(self.exit)
 
     async def _run_out(self) -> int:
-        code = await asyncio.shield(self._child.ended)
+        match await asyncio.shield(self._child.ended):
+            case Exited(code=code):
+                pass
+            case Signalled(signal=ended):
+                # Popen's way to say it, which the brain's exit has always read: minus the signal.
+                code = -ended
         try:
             # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
             async with self._clock.timeout(DRAIN_SECONDS):
@@ -103,49 +108,43 @@ class ClaudeCode:
         return code
 
 
-async def on_terminal(clock: Clock, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode:
+async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode:
     """Run `argv` in `cwd` and `environment` on a pseudo-terminal of hands' own, as a terminal emulator runs a program."""
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        # Not asyncio's subprocesses, for the reason `hands.sessions.child.Child` gives.
-        process = subprocess.Popen(
-            _holding_terminal(os.ttyname(slave), argv),
-            cwd=cwd,
-            env={**environment, "TERM": "xterm-256color"},
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
     except BaseException:
-        os.close(master)
-        raise
-    finally:
         os.close(slave)
-    child = reaped("a Claude Code", process, process.wait)
+        os.close(master)
+        raise
     try:
-        await _held(clock, master, child)
+
+        def popen() -> subprocess.Popen[bytes]:
+            try:
+                # A session of its own, which the terminal is the controlling terminal of.
+                return subprocess.Popen(  # [LAW:single-enforcer] exception: Children.terminal owns this start, called on its owner thread; the terminal's fds are this module's
+                    _holding_terminal(os.ttyname(slave), argv),
+                    cwd=cwd,
+                    env={**environment, "TERM": "xterm-256color"},
+                    stdin=slave,
+                    stdout=slave,
+                    stderr=slave,
+                    start_new_session=True,
+                )
+            finally:
+                # Held until the child has it, on the thread that starts it.
+                os.close(slave)
+
+        child = await children.terminal("a Claude Code", popen)
     except BaseException:
         os.close(master)
-        await child.killed("its start failed or was cut short")
         raise
-    return ClaudeCode(clock, child, _Terminal(master))
-
-
-async def _held(clock: Clock, terminal: int, child: Child[int]) -> None:
-    """Until `child` holds `terminal` as its session's, or has ended without taking it.
-
-    [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
-    that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
-    while not child.ended.done() and os.tcgetpgrp(terminal) != child.process.pid:
-        await clock.sleep(0.002)
+    return ClaudeCode(children.clock, child, _Terminal(master))
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
-    """argv, run so that its terminal is its session's controlling terminal: hands' end, however it comes, hangs the
-    terminal up and ends what runs on it, as closing a window does. Without it, a hands that dies without stopping it
-    leaves it running for good.
+    """argv, run so that its terminal is its session's controlling terminal, as a terminal emulator gives the program it
+    runs one: a Claude Code reads /dev/tty and its job control of it.
 
     A session leader with no controlling terminal takes the first terminal it opens, so the shell opens it and execs
     argv in its place, keeping its pid. [LAW:no-ambient-temporal-coupling] no Python runs between fork and exec, where

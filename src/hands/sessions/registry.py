@@ -28,6 +28,7 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import Titles
+from hands.sessions.child import Children
 from hands.sessions.typing import Untyped, type_into
 
 
@@ -67,7 +68,7 @@ class Sessions:
 
     def __init__(
         self,
-        clock: Clock,
+        children: Children,
         record: Record,
         changes: Changes | None = None,
         typist: Callable[[Type[Input]], Awaitable[None]] | None = None,
@@ -82,15 +83,17 @@ class Sessions:
         self._registry = Registry(sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it, and its wall clock
         # is the one Claude Code stamps its statuses and records with [LAW:one-source-of-truth]: a Stop is heard on it and
-        # a transcript read through on it, and the two are compared.
-        self._clock = clock
+        # a transcript read through on it, and the two are compared. The runner's, which every child a session's work
+        # starts goes through.
+        self._children = children
+        self._clock = children.clock
         self._stop_hold = stop_hold
         # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes a wide event.
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
         # What types a Type into its session, or raises Untyped. A daemon given none finds no tmux to type into.
-        self._typist = typist or partial(type_into, clock, {})
+        self._typist = typist or partial(type_into, children, {})
         # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by. A daemon
         # given none reads none, so nothing it is not told to type into is typed into.
         self._keyboards = keyboards
@@ -125,6 +128,10 @@ class Sessions:
     @property
     def clock(self) -> Clock:
         return self._clock
+
+    @property
+    def children(self) -> Children:
+        return self._children
 
     def now(self) -> Instant:
         return self._clock.now()

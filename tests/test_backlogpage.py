@@ -28,6 +28,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from conftest import SYSTEM_PATH, events, executable
+from conftest import children_on
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
@@ -302,7 +303,7 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     app = web.Application()
     # [LAW:no-ambient-temporal-coupling] a clock nobody moves unless a test does, so no lit the page runs is ended by the machine being slow.
     clock = VirtualClock()
-    app.add_routes(backlog_routes(clock, store, KEY, recorded.append, os.environ))
+    app.add_routes(backlog_routes(children_on(clock), store, KEY, recorded.append, os.environ))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded, clock)
@@ -407,7 +408,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    read = await sighted(page.clock, page.store, workspace.root)
+    read = await sighted(children_on(page.clock), page.store, workspace.root)
     assert isinstance(read, Sighted)
     # The leaves are said first; the epic waits on them.
     page.store.keep({due.digest: f"Said of {due.id}." for due in page.store.reckon(read.backlog.thing()).due})
@@ -527,9 +528,9 @@ async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page
     assert not read.done(), f"the read ended before lit's bound was waited on: {read}"
     page.clock.advance(LIT_TIMEOUT_SECONDS)
     response = await read
-    assert response.status == 502 and "did not answer" in await response.text()
+    assert response.status == 502 and "ran past" in await response.text()
     [event] = page.events("backlog.read")
-    assert event.outcome == "failed" and event.error is not None and "did not answer" in event.error
+    assert event.outcome == "failed" and event.error is not None and "ran past" in event.error
 
 
 @pytest.mark.outside
@@ -597,13 +598,13 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
-    read = await sighted(page.clock, page.store, workspace.root)
+    read = await sighted(children_on(page.clock), page.store, workspace.root)
     assert isinstance(read, Sighted)
     assert await page.store.wanted()
     # Every ticket said, round by round, as the summarising task says them.
     while due := page.store.reckon(read.backlog.thing()).due:
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
-    again = await sighted(page.clock, page.store, workspace.root)
+    again = await sighted(children_on(page.clock), page.store, workspace.root)
     assert isinstance(again, Sighted) and len(again.said) == 3
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(page.store.wanted(), 0.2)
@@ -889,7 +890,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(VirtualClock(), workspace.root, hey, "Seen again.", Inherited())
+    await comment(children_on(VirtualClock()), workspace.root, hey, "Seen again.", Inherited())
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
@@ -919,7 +920,7 @@ async def test_a_note_with_no_lit_to_start_says_nothing_was_noted(page: Page, wo
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
     status, body = await noted(page, workspace, "page-a", "Split it")
-    assert status == 502 and body.startswith(f"not noted: lit could not be started in {workspace.root}: ")
+    assert status == 502 and body.startswith(f"not noted: lit in {workspace.root} could not be started: ")
     [event] = page.events("backlog.noted")
     assert event.outcome == "failed" and event.facts["noted"] == "no"
 
@@ -930,7 +931,7 @@ async def test_a_rank_whose_lit_is_gone_for_the_write_says_nothing_was_moved(pag
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     lit_gone_after_export(tmp_path, monkeypatch)
     status, body = await moved(page, workspace, parser, above=mic)
-    assert status == 502 and body.startswith(f"not moved: lit could not be started in {workspace.root}: ")
+    assert status == 502 and body.startswith(f"not moved: lit in {workspace.root} could not be started: ")
     assert workspace.order(mic, parser) == [mic, parser]
     [event] = page.events("backlog.ranked")
     assert event.outcome == "failed" and event.facts["ranked"] == "no"
@@ -942,7 +943,7 @@ async def test_a_level_whose_lit_is_gone_for_its_first_write_says_nothing_was_le
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     lit_gone_after_export(tmp_path, monkeypatch)
     status, body = await leveled(page, workspace, hey, "high")
-    assert status == 502 and body.startswith(f"not leveled: lit could not be started in {workspace.root}: ")
+    assert status == 502 and body.startswith(f"not leveled: lit in {workspace.root} could not be started: ")
     [event] = page.events("backlog.leveled")
     assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("no", "no")
 

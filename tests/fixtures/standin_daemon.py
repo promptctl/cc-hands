@@ -18,6 +18,7 @@ from hands.daemon.config import edited, load
 from hands.daemon.starting import Ended, Start, Stop, execv, keep_beating
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog
+from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.registry import Sessions
@@ -32,7 +33,7 @@ def main() -> None:
     settings = load(home)
 
     async def run(stop: Stop) -> Ended:
-        sessions = Sessions(clock=SYSTEM, record=audit.record)
+        sessions = Sessions(children=Children(SYSTEM, audit.record, home.audit), record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
         beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heart.period.total_seconds(), SYSTEM))

@@ -13,13 +13,14 @@ from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
-from conftest import running
+from conftest import Answering, running
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry
 from hands.daemon import notify
+from hands.sessions.child import TimedOut
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
 from hands.voice.player import LineFrame, Lines, Player
@@ -414,17 +415,14 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
 
 
 async def test_a_notification_osascript_never_posts_is_refused_and_said(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def stuck(*_argv: str, timeout: float, clock: object) -> None:
-        raise TimeoutError
-
-    monkeypatch.setattr(notify, "run", stuck)
+    stuck = Answering(lambda _argv: TimedOut(notify.POST_TIMEOUT_SECONDS, b"", ""))
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        assert await post_notification("hello", SYSTEM) is False
+        assert await post_notification("hello", stuck) is False
     finally:
         logger.remove(sink)
-    assert errors == [f"osascript did not post 'hello' in {notify.POST_TIMEOUT_SECONDS:.0f}s"]
+    assert errors == [f"osascript did not post 'hello': it ran past {notify.POST_TIMEOUT_SECONDS:.1f}s"]
 
 
 GONE = "a pid no process holds"

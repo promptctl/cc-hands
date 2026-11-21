@@ -36,17 +36,18 @@ not restarted, so the running hands goes on as it was and never restarts onto a 
 """
 
 import re
-import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import assert_never, cast
 
 from hands.daemon import readiness
 from hands.daemon.starting import invocation
+from hands.sessions import child
+from hands.sessions.child import Children, Exited, Fields, NeverStarted, Outcome, Signalled, Status, TimedOut, fields, summary
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.payload import Rejected
@@ -57,7 +58,7 @@ BRANCH = "master"
 # The name `uv tool install` gives hands' environment in its tool directory: the package's.
 TOOL = "hands"
 COMMIT = re.compile(r"[0-9a-f]{40}")
-# The exit `run` gives a command that could not start.
+# [LAW:domain-language] the shell's exit for a command that could not be started, which a step reads a NeverStarted as.
 UNSTARTABLE = 127
 # Every exit but success, for a step that is said and gone past whichever way it fails.
 ANY_FAILURE = frozenset(range(1, 256))
@@ -131,16 +132,36 @@ class Done:
     errors: str
 
 
-type Run = Callable[[Sequence[str], Path, Mapping[str, str]], Done]
+type Run = Callable[[Sequence[str], Path, Mapping[str, str], float], Outcome]
+
+
+def limit(step: Step) -> float:
+    """How long `step` may run before it is killed and stops the update: sized for a slow link where it downloads.
+
+    [LAW:types-are-the-program] exhaustive, so a step added without its limit is refused by pyright."""
+    match step:
+        case Step.WHERE | Step.COMMIT | Step.RENDERED_PLUGINS:
+            return 60.0
+        case Step.CONSTRAINTS | Step.PULL:
+            return 600.0
+        case Step.FETCH | Step.INSTALL | Step.SYNC | Step.INSTALL_BRAIN:
+            return 3600.0
+        case Step.INSTALL_FRITTER | Step.MARKETPLACE | Step.PLUGIN:
+            return 600.0
+        case Step.PLUGIN_LIST:
+            # [LAW:one-source-of-truth] hands check's own bound on the same listing.
+            return readiness.LIST_TIMEOUT_SECONDS
+        case _:
+            assert_never(step)
 
 
 @dataclass(frozen=True)
 class Ran:
-    """One step as the update's event records it: the step, the command it ran, and its exit code."""
+    """One step as the update's event records it: the step, the command it ran, and how it ended."""
 
     step: Step
     argv: tuple[str, ...]
-    code: int
+    ended: Fields
 
 
 @dataclass(frozen=True)
@@ -206,13 +227,23 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
         return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(*installed, name, said, tuple(ran)))
 
     def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
-        """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
-        done = run(argv, cwd, env)
-        ran.append(Ran(name, tuple(argv), done.code))
+        """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past,
+        and on running past its limit, which no step goes past."""
+        outcome = run(argv, cwd, env, limit(name))
+        ran.append(Ran(name, tuple(argv), fields(outcome)))
+        command = " ".join(argv)
+        match outcome:
+            case TimedOut(out=out, err=err):
+                # What it printed before it was killed is how far it got.
+                raise ending(name, f"`{command}` {summary(outcome)}:\n{err}{out.decode(errors='replace')}")
+            case NeverStarted(error=error):
+                done = Done(UNSTARTABLE, "", str(error))
+            case child.Ran(status=status, out=out, err=err):
+                done = Done(_code(status), out.decode(errors="replace"), err)
         if done.code in past:
             advised.append(Advised(name, done.errors.strip()))
         elif done.code != 0:
-            raise ending(name, f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}")
+            raise ending(name, f"`{command}` {summary(outcome)}:\n{done.errors}{done.output}")
         return done
 
     def commit(cwd: Path, of: str) -> str:
@@ -271,22 +302,16 @@ def made_from() -> str:
     return cast(str, getattr(sys, "_base_executable"))
 
 
-def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
-    """Run `argv` in `cwd`, with nothing to read and no terminal to ask on, and what it did."""
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
-            env={**env, "GIT_TERMINAL_PROMPT": "0"},
-            stdin=subprocess.DEVNULL,
-            # Apart: what a command prints to its output is what the update reads, a path or a commit, and a warning
-            # on its errors is no part of that.
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
-    except OSError as error:
-        # [LAW:no-silent-failure] a command that could not start, uv or git missing, is the step failing with why.
-        return Done(UNSTARTABLE, "", str(error))
-    return Done(completed.returncode, completed.stdout, completed.stderr)
+def run(children: Children, argv: Sequence[str], cwd: Path, env: Mapping[str, str], limit: float) -> Outcome:
+    """Run `argv` in `cwd`, with nothing to read and no terminal to ask on, inside `limit` seconds; how it ended."""
+    # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
+    return children.run_blocking(*argv, limit=limit, cwd=cwd, env={**env, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def _code(status: Status) -> int:
+    """`status` as the exit code a step's past is read in: a signal as a shell gives one, 128 and its number."""
+    match status:
+        case Exited(code=code):
+            return code
+        case Signalled(signal=ended):
+            return 128 + ended

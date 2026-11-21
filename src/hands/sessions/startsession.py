@@ -14,11 +14,10 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.clock import Clock
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Unanswered
 from hands.sessions import audit, wide
-from hands.sessions.child import Ran, run
+from hands.sessions.child import Children, Exited, Ran, summary
 from hands.sessions.home import Home
 from hands.sessions.terminals import Process, process_table
 from hands.sessions.tmux import ran_at, shown
@@ -102,12 +101,12 @@ def descends(pid: int, root: int, table: Mapping[int, Process]) -> bool:
     return True
 
 
-async def start(home: Home, clock: Clock, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:
+async def start(home: Home, children: Children, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:
     """Start hands' `claude` in `folder` on `model`, or on its own default with none, and wait until it is among the
     `members` of hands."""
     # [LAW:nothing-unseen] a start is one unit of work: where, on what, in which tmux session and pane, which session
     # joined, and whether tmux's session was made for it.
-    with wide.unit("session.start", record, wide.begun(clock)):
+    with wide.unit("session.start", record, wide.begun(children.clock)):
         wide.annotate(folder=folder, model=model, settings=SETTINGS)
         where = _folder(folder)
         terminal = as_from_a_terminal(environment)
@@ -121,9 +120,9 @@ async def start(home: Home, clock: Clock, record: audit.Record, folder: Path, mo
         # their own. hands' own `claude`, its shim, whatever comes first on the window's PATH: the session runs under
         # fritter, so hands can type into it.
         claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", "--settings", SETTINGS, *(() if model is None else (f"--model={model}",))]
-        made, window = await _opened(clock, tmux, terminal, name, where, ("-e", f"HANDS_HOME={home.root}", "--", *claude))
+        made, window = await _opened(children, tmux, terminal, name, where, ("-e", f"HANDS_HOME={home.root}", "--", *claude))
         wide.annotate(tmux_session=name, made_tmux_session=made, pane=window.pane, tmux_socket=window.socket)
-        member = await _joined(clock, members, where, tmux, terminal, window)
+        member = await _joined(children, members, where, tmux, terminal, window)
         wide.annotate(session=member.id, under_fritter=member.fritter is not None)
         if member.fritter is None:
             raise NotStarted(f"session {member.id} joined hands in tmux pane {window.pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
@@ -150,21 +149,24 @@ def tmux_name(folder: Path) -> str:
     return folder.name.replace(".", "_").replace(":", "_")
 
 
-async def _opened(clock: Clock, tmux: str, terminal: Mapping[str, str], name: str, folder: Path, command: Sequence[str]) -> tuple[bool, _Window]:
+async def _opened(children: Children, tmux: str, terminal: Mapping[str, str], name: str, folder: Path, command: Sequence[str]) -> tuple[bool, _Window]:
     """Open a new window, detached, of tmux session `name`, made when it is not there, running what `command` ends with:
     whether it was made, and the window."""
     printed = ("-d", "-P", "-F", "#{pane_id} #{pane_pid} #{socket_path}")
     # [LAW:no-ambient-temporal-coupling] made or not is what tmux answers the making with, never a look beforehand that a
     # second start could make stale.
-    made = await _tmux(clock, tmux, terminal, "new-session", *printed, "-s", name, "-c", str(folder), *command)
-    if made.returncode == 0:
-        return True, _window(made)
-    if not _said(made).startswith(DUPLICATE):
-        raise NotStarted(f"tmux could not make session {name}: {_said(made)}")
-    window = await _tmux(clock, tmux, terminal, "new-window", *printed, "-t", f"={name}:", "-c", str(folder), *command)
-    if window.returncode != 0:
-        raise NotStarted(f"tmux could not open a window in session {name}: {_said(window)}")
-    return False, _window(window)
+    match await _tmux(children, tmux, terminal, "new-session", *printed, "-s", name, "-c", str(folder), *command):
+        case Ran(status=Exited(code=0)) as made:
+            return True, _window(made)
+        case Ran(err=err) if err.startswith(DUPLICATE):
+            pass
+        case Ran(err=err) as refused:
+            raise NotStarted(f"tmux could not make session {name}: it {summary(refused)}: {err.strip()}")
+    match await _tmux(children, tmux, terminal, "new-window", *printed, "-t", f"={name}:", "-c", str(folder), *command):
+        case Ran(status=Exited(code=0)) as window:
+            return False, _window(window)
+        case Ran(err=err) as refused:
+            raise NotStarted(f"tmux could not open a window in session {name}: it {summary(refused)}: {err.strip()}")
 
 
 def _window(opened: Ran) -> _Window:
@@ -174,47 +176,44 @@ def _window(opened: Ran) -> _Window:
     return _Window(pane, int(pid), Path(socket))
 
 
-async def _joined(clock: Clock, members: Callable[[], Iterable[Membership]], folder: Path, tmux: str, terminal: Mapping[str, str], window: _Window) -> Membership:
+async def _joined(children: Children, members: Callable[[], Iterable[Membership]], folder: Path, tmux: str, terminal: Mapping[str, str], window: _Window) -> Membership:
     pane = window.pane
-    deadline = clock.now() + JOIN_SECONDS
+    deadline = children.clock.now() + JOIN_SECONDS
     while (member := joined(members(), window.pid, _processes())) is None:
         # list-panes, since display-message answers for a pane that is gone as though it were there (tmux 3.6); asked of
         # the server that opened the pane, the one its id names a pane of.
-        match await ran_at(clock, tmux, window.socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")):
+        match await ran_at(children, tmux, window.socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")):
             case Unanswered(reason=reason):
                 raise NotStarted(f"whether `claude` in {folder} still runs in tmux pane {pane} could not be read: {reason}")
-            case Ran(returncode=returncode) if returncode != 0:
+            case Ran(status=status) if status != Exited(0):
                 raise NotStarted(f"`claude` in {folder} ended before it joined hands, and its window closed with it")
             case Ran(out=out) if out.strip() == b"1":
-                raise NotStarted(f"`claude` in {folder} ended before it joined hands; tmux pane {pane} showed:\n{await _shown(clock, terminal, window)}")
+                raise NotStarted(f"`claude` in {folder} ended before it joined hands; tmux pane {pane} showed:\n{await _shown(children, terminal, window)}")
             case Ran():
                 pass
-        if clock.now() > deadline:
-            raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{await _shown(clock, terminal, window)}")
-        await clock.sleep(LOOK_SECONDS)
+        if children.clock.now() > deadline:
+            raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{await _shown(children, terminal, window)}")
+        await children.clock.sleep(LOOK_SECONDS)
     return member
 
 
-async def _shown(clock: Clock, terminal: Mapping[str, str], window: _Window) -> str:
+async def _shown(children: Children, terminal: Mapping[str, str], window: _Window) -> str:
     # [LAW:one-source-of-truth] the one capture read_screen reads a session's screen by.
-    match await shown(clock, terminal, window.socket, window.pane):
+    match await shown(children, terminal, window.socket, window.pane):
         case str(screen):
             return screen
         case Unanswered(reason=reason):
             return f"(tmux could not show it: {reason})"
 
 
-def _said(ran: Ran) -> str:
-    return ran.err.decode(errors="replace").strip()
-
-
-async def _tmux(clock: Clock, tmux: str, terminal: Mapping[str, str], *arguments: str) -> Ran:
+async def _tmux(children: Children, tmux: str, terminal: Mapping[str, str], *arguments: str) -> Ran:
     # The terminal's environment: a tmux server this starts takes it as every window's, so it holds nothing of hands'.
     # The home the session reports to is given its window by name.
-    try:
-        return await run(tmux, *arguments, timeout=ANSWER_SECONDS, env=terminal, clock=clock)
-    except TimeoutError as error:
-        raise NotStarted(f"tmux {arguments[0]} did not answer in {ANSWER_SECONDS:.0f} seconds") from error
+    match await children.run(tmux, *arguments, limit=ANSWER_SECONDS, env=terminal):
+        case Ran() as ran:
+            return ran
+        case unanswered:
+            raise NotStarted(f"tmux {arguments[0]} {summary(unanswered)}")
 
 
 def _processes() -> dict[int, Process]:

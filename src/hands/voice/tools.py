@@ -17,6 +17,7 @@ from typing import Literal, TypedDict
 
 from loguru import logger
 
+from hands.sessions.child import Children
 from hands.clock import Clock
 from hands.voice.modelswitch import BargedIn, OwnModel, switch_model
 from hands.voice.tool import Result, Tool, read_back, tool
@@ -152,7 +153,7 @@ def intermediary_tools(
         *voice_tools(voices),
         *model_tools(own, player),
         *playback_tools(player),
-        *spotify_tools(spotify.Player(functools.partial(spotify.osascript, sessions.clock)), catalogue),
+        *spotify_tools(spotify.Player(functools.partial(spotify.osascript, sessions.children)), catalogue),
     ]
     return [*(cued(tool, acting) for tool in acts), stay_silent_tool()]
 
@@ -272,7 +273,7 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
         listings = sessions.live()
-        panes, focus = await asyncio.gather(tmux.panes(sessions.clock, [listing.session.membership.pid for listing in listings], environment), _focus(home))
+        panes, focus = await asyncio.gather(tmux.panes(sessions.children, [listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
             "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
             "focus": focus,
@@ -298,10 +299,10 @@ def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool
         live = sessions.live_session(id)
         if live is None:
             return {"error": f"no session {session} is running: list_sessions names the ones that are"}
-        [pane] = await tmux.panes(sessions.clock, [live.membership.pid], environment)
+        [pane] = await tmux.panes(sessions.children, [live.membership.pid], environment)
         match pane:
             case Pane(socket=socket, id=pane_id):
-                match await tmux.shown(sessions.clock, environment, socket, pane_id):
+                match await tmux.shown(sessions.children, environment, socket, pane_id):
                     case str(screen):
                         return {"screen": screen, "tmux": _in_pane(pane)}
                     case Unanswered(reason=reason):
@@ -580,7 +581,7 @@ async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tup
     if member is None:
         return f"there is no session {session}"
     try:
-        read = await sighted(sessions.clock, store, member.cwd)
+        read = await sighted(sessions.children, store, member.cwd)
     except (LitFailed, Rejected) as error:
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")
@@ -1136,7 +1137,7 @@ async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind
     return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
-def start_session_tool(clock: Clock, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool:
+def start_session_tool(children: Children, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool:
     """[LAW:nothing-unseen] each start is its own session.start event, inside the call's."""
 
     async def start_session(folder: str, model: str = "") -> Result:
@@ -1149,7 +1150,7 @@ def start_session_tool(clock: Clock, home: Home, record: Record, environment: Ma
             model: The model it starts on, as the user named it (opus, sonnet, haiku, or a model id). Empty for Claude Code's own default.
         """
         try:
-            started = await startsession.start(home, clock, record, Path(folder), model or None, environment, members)
+            started = await startsession.start(home, children, record, Path(folder), model or None, environment, members)
         except startsession.NotStarted as why:
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}

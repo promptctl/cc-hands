@@ -29,6 +29,7 @@ from hands.voice.tool import Result
 from hands.voice.tools import close_session_tool
 from test_startsession import home_in
 from conftest import new_sessions
+from conftest import children_on
 
 
 pytestmark = pytest.mark.outside
@@ -111,7 +112,7 @@ def status(said: Status) -> Callable[[SessionId], Event]:
 
 def test_only_the_sessions_that_are_done_are_closed_of_those_asked_about_as_done(tmp_path: Path) -> None:
     home = home_in(tmp_path)
-    sessions = new_sessions(clock=SYSTEM)
+    sessions = new_sessions(children=children_on(SYSTEM))
     with processes(7) as (idle, busy, waiting, shelled, held, prompted, unasked):
         ids = {
             "idle": joined(home, sessions, tmp_path, idle, "idle", status(Idle())),
@@ -148,7 +149,7 @@ def test_only_the_sessions_that_are_done_are_closed_of_those_asked_about_as_done
 
 def test_a_named_session_is_closed_whatever_it_is_doing(tmp_path: Path) -> None:
     home = home_in(tmp_path)
-    sessions = new_sessions(clock=SYSTEM)
+    sessions = new_sessions(children=children_on(SYSTEM))
     with processes(2) as (busy, other):
         id = joined(home, sessions, tmp_path, busy, "billing", status(Busy()))
         joined(home, sessions, tmp_path, other, "docs", status(Idle()))
@@ -161,7 +162,7 @@ def test_a_named_session_is_closed_whatever_it_is_doing(tmp_path: Path) -> None:
 def test_a_session_that_is_not_running_and_one_that_will_not_end_are_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(closesession, "END_SECONDS", 0.5)
     home = home_in(tmp_path)
-    sessions = new_sessions(clock=SYSTEM)
+    sessions = new_sessions(children=children_on(SYSTEM))
     assert each(run(home, sessions, close(home, sessions, ["nobody"], "named"))) == [{"error": "no session nobody is running"}]
     # A claude that does not end on SIGTERM, as one wedged would not.
     with processes(1, ("/bin/sh", "-c", "trap '' TERM; while :; do sleep 0.1; done")) as (stuck,):
@@ -174,7 +175,7 @@ def test_a_session_that_is_not_running_and_one_that_will_not_end_are_said(tmp_pa
 
 def test_a_session_whose_claude_no_longer_holds_it_leaves_with_nothing_signalled(tmp_path: Path) -> None:
     home = home_in(tmp_path)
-    sessions = new_sessions(clock=SYSTEM)
+    sessions = new_sessions(children=children_on(SYSTEM))
     with processes(3) as (cleared, reused, unfiled):
         moved = joined(home, sessions, tmp_path, cleared, "moved", status(Idle()))
         # A /clear in it: the same claude holds a new session, written after the one it left.

@@ -20,12 +20,15 @@ from typing import Any, TextIO
 
 import pytest
 
+from conftest import children_on
 from hands.brain.process import PLUGIN
-from hands.clock import Clock
+from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, update
 from hands.daemon.restart import Outcome, Restarted, reply
 from hands.daemon.starting import invocation
-from hands.daemon.update import Done, Failed, Installed, Ran, Step, Unfinished
+from hands.daemon.update import Failed, Installed, Ran, Step, Unfinished
+from hands.sessions import child
+from hands.sessions.child import Children, Exited, Fields, NeverStarted, TimedOut
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -51,29 +54,40 @@ class Commands:
     """The commands an update runs, each answered as it would be: each exits 0 unless it is the one told to fail, which
     exits as `failed` says, or 1 saying it broke, as any crash does."""
 
-    def __init__(self, tools: Path, failing: Step | None = None, failed: Done | None = None, steps: Sequence[Step] = TOOL_STEPS) -> None:
+    def __init__(self, tools: Path, failing: Step | None = None, failed: child.Outcome | None = None, steps: Sequence[Step] = TOOL_STEPS) -> None:
         self.tools, self.failing, self.failed, self.ran = tools, failing, failed, list[tuple[tuple[str, ...], Path]]()
+        self.limits = list[float]()
         # Where among the update's commands the failing one is: its place in the steps the update runs.
         self.failing_at = None if failing is None else steps.index(failing)
         self.environments = list[Mapping[str, str]]()
         # What `claude plugin list --json` prints: hands' plugin installed for the user, as the README installs it.
         self.listed = json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True}])
 
-    def __call__(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
+    def __call__(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], limit: float) -> child.Outcome:
         self.ran.append((tuple(argv), cwd))
         self.environments.append(env)
+        self.limits.append(limit)
         if self.failing is not None and len(self.ran) - 1 == self.failing_at:
-            return self.failed or Done(1, "", f"{self.failing} broke\n")
+            return self.failed or exited(1, "", f"{self.failing} broke\n")
         # A warning on a command's errors is no part of what the update reads from its output.
         match tuple(argv[:3]):
             case ("uv", "tool", "dir"):
-                return Done(0, f"{self.tools}\n", "warning: `VIRTUAL_ENV=/elsewhere` does not match the tool's environment\n")
+                return exited(0, f"{self.tools}\n", "warning: `VIRTUAL_ENV=/elsewhere` does not match the tool's environment\n")
             case ("git", "rev-parse", "--verify"):
-                return Done(0, f"{SHA}\n", "warning: refname 'HEAD' is ambiguous.\n")
+                return exited(0, f"{SHA}\n", "warning: refname 'HEAD' is ambiguous.\n")
             case ("claude", "plugin", "list"):
-                return Done(0, self.listed, "")
+                return exited(0, self.listed, "")
             case _:
-                return Done(0, "", "")
+                return exited(0, "", "")
+
+    def run(self, _children: Children, argv: Sequence[str], cwd: Path, env: Mapping[str, str], limit: float) -> child.Outcome:
+        """In place of update.run, as `hands update` binds it to its process's runner."""
+        return self(argv, cwd, env, limit)
+
+
+def exited(code: int, out: str, err: str) -> child.Outcome:
+    """A step's command that ran and exited `code`, having printed `out` and `err`."""
+    return child.Ran(Exited(code), out.encode(), err)
 
 
 def expected(home: Home, work: Path) -> list[tuple[tuple[str, ...], Path]]:
@@ -110,7 +124,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     # Cloned fresh from master, installed on uv.lock's versions into this hands' own environment, and its fritter and
     # the brain's Claude Code installed by the hands just installed.
     assert commands.ran == expected(home, work)
-    assert installed == Installed(update.Tool(), SHA, tuple(Ran(step, argv, 0) for step, (argv, _cwd) in zip(TOOL_STEPS, expected(home, work), strict=True)), ())
+    assert installed == Installed(update.Tool(), SHA, tuple(Ran(step, argv, Fields("exited", returncode=0)) for step, (argv, _cwd) in zip(TOOL_STEPS, expected(home, work), strict=True)), ())
 
 
 @pytest.mark.parametrize("failing", [step for step in TOOL_STEPS if step is not Step.RENDERED_PLUGINS])
@@ -126,7 +140,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     def detach() -> None:
         raise AssertionError("a failed update went on to its restart")
 
-    monkeypatch.setattr(update, "run", commands)
+    monkeypatch.setattr(update, "run", commands.run)
     monkeypatch.setattr(cli, "detach", detach)
     monkeypatch.setattr(cli, "restart", restart)
 
@@ -149,7 +163,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     [event] = events(home)
     facts = event["facts"]
     assert (event["outcome"], facts["command"], facts["exit_code"], facts["failed"]) == ("failed", "update", 1, str(failing))
-    assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), 0) for step in TOOL_STEPS[: upto - 1]] + [(str(failing), 1)]
+    assert [(step["step"], step["ended"]["returncode"]) for step in facts["steps"]] == [(str(step), 0) for step in TOOL_STEPS[: upto - 1]] + [(str(failing), 1)]
     assert facts.get("sha") == (SHA if unfinished else None)
     # It fails saying why, in the words it said it.
     assert event["error"] == f"exited 1: {err.removeprefix('hands update: ').removesuffix('\n')}"
@@ -199,7 +213,7 @@ def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> 
 def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(stalled: timedelta, verdict: type[heartbeat.Up] | type[heartbeat.Unresponsive], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     commands = Commands(tools_of_this_hands(tmp_path))
-    monkeypatch.setattr(update, "run", commands)
+    monkeypatch.setattr(update, "run", commands.run)
     # A daemon started by a checkout's `uv run hands run`, as its heartbeat says: beating, or stopped beating long since
     # while its process runs on.
     status = status_from(Path("/checkout/.venv"))
@@ -260,7 +274,7 @@ def test_a_checkout_that_cannot_be_pulled_or_synced_is_not_restarted_onto(failin
 def test_an_update_of_a_checkout_that_fails_after_its_sync_says_the_checkout_is_what_a_start_runs_now(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home, root = Home(tmp_path / "home"), a_checkout(tmp_path)
     commands = Commands(tmp_path / "tools", Step.INSTALL_FRITTER, steps=[*CHECKOUT_STEPS, Step.INSTALL_FRITTER])
-    monkeypatch.setattr(update, "run", commands)
+    monkeypatch.setattr(update, "run", commands.run)
     monkeypatch.setattr(sys, "prefix", str(root / ".venv"))
 
     def detach(_clock: Clock) -> Callable[[int], bool]:
@@ -279,19 +293,20 @@ def test_an_update_of_a_checkout_that_fails_after_its_sync_says_the_checkout_is_
 CALLER = """
 import json, sys
 from hands.daemon import cli, update
+from hands.sessions.child import Exited, Ran
 
 home, tools, sha, log = sys.argv[1:]
 
-def run(argv, cwd, env):
+def run(children, argv, cwd, env, limit):
     with open(log, "a") as file:
         file.write(json.dumps(list(argv)) + "\\n")
     if list(argv[:3]) == ["uv", "tool", "dir"]:
-        return update.Done(0, tools + "\\n", "")
+        return Ran(Exited(0), (tools + "\\n").encode(), "")
     if list(argv[:2]) == ["git", "rev-parse"]:
-        return update.Done(0, sha + "\\n", "")
+        return Ran(Exited(0), (sha + "\\n").encode(), "")
     if list(argv[:3]) == ["claude", "plugin", "list"]:
-        return update.Done(0, json.dumps([{"id": "hands@cc-hands", "scope": "user", "enabled": True}]), "")
-    return update.Done(0, "", "")
+        return Ran(Exited(0), json.dumps([{"id": "hands@cc-hands", "scope": "user", "enabled": True}]).encode(), "")
+    return Ran(Exited(0), b"", "")
 
 update.run = run
 sys.exit(cli.main(["--home", home, "update"]))
@@ -424,7 +439,7 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
     commands = Commands(tools_of_this_hands(tmp_path))
 
     answers: list[int] = []
-    monkeypatch.setattr(update, "run", commands)
+    monkeypatch.setattr(update, "run", commands.run)
     monkeypatch.setattr(cli, "detach", detaching(lambda: answering(answers)))
 
     # Nothing ends the caller, so the caller hears it, and exits saying hands was not restarted.
@@ -473,7 +488,7 @@ def restarting_from(monkeypatch: pytest.MonkeyPatch, runs_from: Path | None) -> 
 def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_master(runs_from: Path | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     detached: list[bool] = []
-    monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
+    monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)).run)
     monkeypatch.setattr(cli, "detach", detaching(lambda: detached.append(True) or answering([])))
     # A daemon started by a checkout's `uv run hands run` starts again on the checkout, whatever the update installed.
     restarting_from(monkeypatch, runs_from)
@@ -492,9 +507,9 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     home = Home(tmp_path / "home")
     # What install-fritter says from a shell whose PATH does not have hands' bin first, as the brain's Bash tool's has not.
     said = f"`claude` on this PATH is /Users/someone/.local/bin/claude, not hands' shim, so no session started from it can be typed into: export PATH=\"{home.bin}:$PATH\""
-    unfound = Done(Installing.UNFOUND, f"copied fritter to {home.fritter}\nwrote {home.shim}\n", f"{said}\n")
+    unfound = exited(Installing.UNFOUND, f"copied fritter to {home.fritter}\nwrote {home.shim}\n", f"{said}\n")
     commands = Commands(tools_of_this_hands(tmp_path), Step.INSTALL_FRITTER, unfound)
-    monkeypatch.setattr(update, "run", commands)
+    monkeypatch.setattr(update, "run", commands.run)
     monkeypatch.setattr(cli, "detach", detaching(lambda: answering([])))
     restarting_from(monkeypatch, Path(sys.prefix))
 
@@ -509,13 +524,13 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     [event] = events(home)
     facts = event["facts"]
     assert (event["outcome"], facts["exit_code"], facts["runs_updated"]) == ("ok", 0, True)
-    assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), Installing.UNFOUND if step is Step.INSTALL_FRITTER else 0) for step in TOOL_STEPS]
+    assert [(step["step"], step["ended"]["returncode"]) for step in facts["steps"]] == [(str(step), Installing.UNFOUND if step is Step.INSTALL_FRITTER else 0) for step in TOOL_STEPS]
     assert facts["went_past"] == [{"type": "Advised", "step": "install-fritter", "said": said}]
 
 
 def test_an_install_fritter_whose_install_does_not_work_stops_the_update(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
-    broken = Done(Installing.BROKEN, "", "hands install-fritter: hands' package carries no fritter\n")
+    broken = exited(Installing.BROKEN, "", "hands install-fritter: hands' package carries no fritter\n")
     commands = Commands(tools_of_this_hands(tmp_path), Step.INSTALL_FRITTER, broken)
 
     work = tmp_path / "work"
@@ -550,7 +565,7 @@ def hung_up_terminal() -> tuple[TextIO, str]:
 def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller: Callable[[], tuple[TextIO, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     gone, why = caller()
-    monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
+    monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)).run)
     monkeypatch.setattr(cli, "detach", detaching(lambda: monkeypatch.setattr(sys, "stdout", gone) or answering([], taken=False)))
     restarting_from(monkeypatch, Path(sys.prefix))
 
@@ -565,7 +580,8 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
 @pytest.mark.outside
 def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> None:
     # A warning uv or git prints is never taken for the path or the commit the update reads.
-    assert update.run([sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ) == Done(0, "/tools\n", "warning: stale\n")
+    printed = update.run(children_on(SYSTEM), [sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ, 30.0)
+    assert printed == child.Ran(Exited(0), b"/tools\n", "warning: stale\n")
 
 
 @pytest.mark.parametrize(
@@ -589,15 +605,29 @@ def test_a_user_who_never_installed_the_plugin_is_not_blocked_by_it(listed: str,
     assert commands.ran == [step for step in expected(home, work) if step[0][:3] not in (("claude", "plugin", "marketplace"), ("claude", "plugin", "update"))]
 
 
+def test_a_step_that_runs_past_its_limit_stops_the_update_saying_so(tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    # The clone, which a slow link makes the longest step, killed at its limit.
+    commands = Commands(tools_of_this_hands(tmp_path), Step.FETCH, TimedOut(update.limit(Step.FETCH), b"", "Receiving objects:  12%\n"))
+
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    assert isinstance(installed, Failed) and installed.step is Step.FETCH
+    assert installed.said.endswith(f"ran past {update.limit(Step.FETCH):.1f}s:\nReceiving objects:  12%\n")
+    # [LAW:nothing-unseen] the update's event says the step ran past its limit, not that it exited.
+    assert installed.ran[-1].ended == Fields("timed_out", limit=update.limit(Step.FETCH))
+    assert commands.limits == [update.limit(step) for step in TOOL_STEPS[: TOOL_STEPS.index(Step.FETCH) + 1]]
+
+
 def test_no_claude_at_all_is_said_and_gone_past(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
-    gone = Done(update.UNSTARTABLE, "", "[Errno 2] No such file or directory: 'claude'")
+    gone = NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory", "claude"))
     commands = Commands(tools_of_this_hands(tmp_path), Step.PLUGIN_LIST, gone)
 
     installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     assert isinstance(installed, Installed)
-    assert installed.advised == (update.Advised(Step.PLUGIN_LIST, gone.errors),)
+    assert installed.advised == (update.Advised(Step.PLUGIN_LIST, "[Errno 2] No such file or directory: 'claude'"),)
     # The rendered trees are removed all the same.
     assert commands.ran[-1] == (("rm", "-rf", str(home.root / "plugins")), work)
 
@@ -615,7 +645,7 @@ def test_a_list_hands_cannot_read_leaves_master_installed_and_the_plugin_untouch
 
 def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
-    refused = Done(1, "", "rm: permission denied\n")
+    refused = exited(1, "", "rm: permission denied\n")
     commands = Commands(tools_of_this_hands(tmp_path), Step.RENDERED_PLUGINS, refused)
 
     installed = update.install(home, Path(sys.prefix), None, {}, work, commands)

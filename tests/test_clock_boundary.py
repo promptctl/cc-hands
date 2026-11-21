@@ -44,7 +44,7 @@ CLOCKS = ("clock", "_clock")
 
 # The composition roots, each binding the machine's clock for its process and reaching nothing else of the machine's time:
 # every hands command's, and the hook shim's, a process of its own that must not import the CLI in Claude Code's path.
-ROOTS = ("daemon/cli.py", "sessions/shim.py")
+ROOTS = ("daemon/cli.py", "sessions/shim.py", "sessions/warden.py")
 
 
 def reached(source: str, package: str = "hands") -> set[str]:

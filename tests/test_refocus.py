@@ -12,12 +12,13 @@ from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.refocus import Refocus
 from conftest import new_sessions
+from conftest import children_on
 
 ONE, OTHER = SessionId("one"), SessionId("other")
 
 
 async def running_sessions(*names: SessionId) -> Sessions:
-    sessions = new_sessions(clock=VirtualClock())
+    sessions = new_sessions(children=children_on(VirtualClock()))
     for name in names:
         await sessions.apply(Joined(Membership(name, pid=zlib.crc32(name.encode()), cwd=Path("/code") / name, transcript=Path("/unread") / name), "startup"))
     return sessions
