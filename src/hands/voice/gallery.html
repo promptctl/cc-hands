@@ -17,15 +17,19 @@
   button, select { font: inherit; min-height: 2.25rem; padding: .3rem .8rem; border-radius: .5rem; border: 1px solid currentColor; background: transparent; color: inherit; }
   button[aria-pressed="true"] { font-weight: 600; text-decoration: underline; }
   button:disabled, select:disabled { opacity: .4; }
-  #status { min-height: 1.5rem; margin-top: 1rem; }
-  #status.error { color: #c0392b; }
+  fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+  #reading, #status { min-height: 1.5rem; margin-top: 1rem; }
+  #reading.error, #status.error { color: #c0392b; }
 </style>
 </head>
 <body>
 <h1>hands' voices and options</h1>
+<p id="reading" role="status" aria-live="polite"></p>
 <p id="status" role="status" aria-live="polite"></p>
 
+<fieldset id="controls">
 <h2>Voices</h2>
+<p class="muted" id="speaking"></p>
 <p class="muted">Play hears a voice through the Mac's speaker. Use makes it the voice hands speaks in from now on.</p>
 <ul id="voices"></ul>
 
@@ -46,103 +50,98 @@
 
 <h2>Model</h2>
 <p class="muted" id="running"></p>
-<form id="model-form" class="choices">
-  <select id="model" aria-label="Model"></select>
-  <button type="submit">Switch model</button>
-</form>
-<p class="muted">Switching restarts hands. This page loses its connection for a few seconds while it does.</p>
+<div id="models" class="choices"></div>
+<p class="muted">Switching restarts hands. This page shows hands out of reach while it does, and what it runs on once it is back.</p>
+</fieldset>
 
 <script>
 // The phone's key travels in the fragment, which the browser never sends with the page's own request.
 const key = decodeURIComponent(location.hash.slice(1));
-const status = document.getElementById("status");
-let busy = false;
 
 // The name a voice, level, or modality is shown by: bill_boerst is Bill Boerst, audio-only is Audio Only.
 const label = text => text.replace(/[_-]/g, " ").replace(/\b\w/g, letter => letter.toUpperCase());
 
-function say(text, failed = false) {
-  status.textContent = text;
-  status.className = failed ? "error" : "";
+// Two lines: `reading` says how the page's read of hands stands, and `status` what came of the last choice.
+function say(line, text, failed = false) {
+  const shown = document.getElementById(line);
+  shown.textContent = text;
+  shown.className = failed ? "error" : "";
 }
 
-// A request hands does not answer within a minute is given up on by the page, not by hands: the choice may still be made.
+// A request hands does not answer within a minute, well past a read's own wait, is given up on by the page, not by hands.
 const ANSWER_MS = 60000;
 
-async function call(method, path, body) {
+// [LAW:one-source-of-truth] every request the page makes, a read or a choice, is this one, and what came of it is one of
+// three outcomes: hands' answer, hands' refusal in its own words, or no answer, lost on the way or never sent back.
+async function asked(method, path, body) {
   const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(ANSWER_MS) };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
+  // Each step of the crossing fails its own way: never reached, an answer cut off on its way back, or one that is not JSON.
   let response;
   try {
     response = await fetch(path, init);
   } catch (error) {
-    if (error.name === "TimeoutError") throw new Error("hands did not answer within a minute; it may still make the choice");
-    throw error;
+    return { kind: "lost", why: error.name === "TimeoutError" ? "hands did not answer within a minute" : "hands is out of reach" };
   }
-  const text = await response.text();
-  if (!response.ok) throw new Error(text || `the page got ${response.status}`);
-  return JSON.parse(text);
+  let text;
+  try {
+    text = await response.text();
+  } catch (error) {
+    return { kind: "lost", why: `hands' answer was cut off: ${error.message}` };
+  }
+  if (!response.ok) return { kind: "refused", status: response.status, text: text || `hands refused with ${response.status}` };
+  try {
+    return { kind: "answered", body: JSON.parse(text) };
+  } catch (error) {
+    return { kind: "lost", why: `hands' answer is not one this page reads: ${error.message}` };
+  }
 }
+
+// What a request hands did not answer says: its refusal, or why no answer came.
+const unanswered = outcome => outcome.kind === "refused" ? outcome.text : outcome.why;
 
 function button(text, onClick, pressed) {
   const control = document.createElement("button");
   control.type = "button";
   control.textContent = text;
   control.addEventListener("click", onClick);
-  // A control made while a choice is being answered waits with the rest.
-  control.disabled = busy;
   if (pressed !== undefined) control.setAttribute("aria-pressed", String(pressed));
   return control;
 }
 
-// One choice at a time: every control is off until the last one has been heard back.
-function setBusy(value) {
-  busy = value;
-  document.querySelectorAll("button, select").forEach(control => { control.disabled = value; });
-}
+// One choice at a time: the controls, those drawn while a choice is out too, are off until it has been heard back.
+const controls = document.getElementById("controls");
 
-// A choice that restarts hands is not refreshed after: the restart drops the connection the refresh would read on.
-async function act(path, body, readback, restarts = false) {
-  if (busy) return;
-  setBusy(true);
-  let restarting = false;
+// A choice is said back once hands answers it; what it changed reaches the page through the read, never a read of its own.
+async function act(path, body, readback) {
+  controls.disabled = true;
   try {
-    const result = await call("POST", path, body);
-    say(readback(result));
-    // Once hands restarts, its controls stay off: the page is loaded again when it is back.
-    if (restarts) {
-      restarting = true;
-      return;
+    const outcome = await asked("POST", path, body);
+    switch (outcome.kind) {
+      case "answered": say("status", readback(outcome.body)); break;
+      case "refused": say("status", outcome.text, true); break;
+      case "lost": say("status", `${outcome.why}; the choice may still have been made`, true); break;
     }
-    await refresh();
   } catch (error) {
-    say(error.message, true);
+    say("status", `This page could not say what came of the choice: ${error.message}`, true);
   } finally {
-    if (!restarting) setBusy(false);
+    controls.disabled = false;
   }
 }
 
 function render(state) {
-  // What was picked in the model list and not yet switched to is kept across a refresh.
-  const pending = document.getElementById("model").value;
-
+  // A library voice is named by its path, shown whole as its row in the library is.
+  const speaking = state.voices.includes(state.speaking_in) ? label(state.speaking_in) : state.speaking_in;
+  document.getElementById("speaking").textContent = `hands speaks in ${speaking}.`;
   document.getElementById("voices").replaceChildren(...state.voices.map(voice => {
     const item = document.createElement("li");
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = label(voice);
-    if (voice === state.speaking_in) {
-      const mark = document.createElement("span");
-      mark.className = "muted";
-      mark.textContent = "speaking in";
-      item.append(name, mark);
-    } else {
-      item.append(name);
-    }
-    item.append(
+    item.append(name,
       button("Play", () => act("/gallery/hear", { voice }, () => `Heard ${label(voice)}.`)),
       button("Use", () => act("/gallery/use", { voice }, () => `Speaking in ${label(voice)} from now on.`)),
     );
@@ -156,17 +155,39 @@ function render(state) {
     button(label(modality), () => act("/gallery/modality", { modality }, () => `Taking you as ${label(modality)}.`), modality === state.modality)));
 
   document.getElementById("running").textContent = `hands runs on ${state.running_on}.`;
-  document.getElementById("model").replaceChildren(...state.models.map(model => {
-    const option = document.createElement("option");
-    option.value = model;
-    option.textContent = model;
-    option.selected = model === (pending || state.running_on);
-    return option;
-  }));
+  document.getElementById("models").replaceChildren(...state.models.map(model =>
+    button(model, () => act("/gallery/model", { model }, result => result.said), model === state.running_on)));
 }
 
-async function refresh() {
-  render(await call("GET", "/gallery/state"));
+// How long the page waits to read hands again after a read that failed.
+const AGAIN_MS = 2000;
+
+// Read hands for as long as the page is open: each read waits at hands until what it shows changes from what was seen.
+// [LAW:one-source-of-truth] the page draws what hands answers and nothing else, so a restart, and the run after it,
+// reach the page as reads that fail and then a read that answers.
+async function reading() {
+  let seen = null;
+  for (;;) {
+    const outcome = await asked("GET", seen === null ? "/gallery/state" : `/gallery/state?seen=${encodeURIComponent(seen)}`);
+    if (outcome.kind === "answered") {
+      const state = outcome.body;
+      // An answer with no version would be asked for again at once, and again, never waiting at hands.
+      if (typeof state.seen !== "string") throw new Error("hands' answer carries no version");
+      // A read that answers at the end of its wait with nothing changed has nothing new to draw.
+      if (state.seen !== seen) render(state);
+      say("reading", "");
+      seen = state.seen;
+    } else if (outcome.kind === "refused" && outcome.status === 401) {
+      say("reading", outcome.text, true);
+      return;
+    } else {
+      say("reading", `${unanswered(outcome)}; reading it again…`, true);
+      // The next read says it has seen nothing, so hands answers it at once and the red line clears as soon as hands is
+      // back, whether a new run answers it or the one that was there all along.
+      seen = null;
+      await new Promise(done => setTimeout(done, AGAIN_MS));
+    }
+  }
 }
 
 // A library voice is named by its path there, which is what hands is told to speak in, so the path is shown whole.
@@ -188,25 +209,17 @@ function renderLibrary(found) {
   }));
 }
 
-document.getElementById("library-form").addEventListener("submit", event => {
+document.getElementById("library-form").addEventListener("submit", async event => {
   event.preventDefault();
   const query = document.getElementById("library-query").value;
-  call("GET", `/gallery/library?q=${encodeURIComponent(query)}&limit=25`)
-    .then(renderLibrary)
-    .catch(error => say(error.message, true));
+  const outcome = await asked("GET", `/gallery/library?q=${encodeURIComponent(query)}&limit=25`);
+  if (outcome.kind === "answered") renderLibrary(outcome.body);
+  else say("status", unanswered(outcome), true);
 });
 
-document.getElementById("model-form").addEventListener("submit", event => {
-  event.preventDefault();
-  const model = document.getElementById("model").value;
-  act("/gallery/model", { model }, result => `${result.said} Reload this page when hands is back.`, true);
-});
-
-if (!key) {
-  say("Open this page from the address `hands phone` prints, with gallery on its path.", true);
-} else {
-  refresh().catch(error => say(error.message, true));
-}
+// [LAW:no-silent-failure] a read this page cannot draw stops the reading, and the page says so and why: reading the same
+// answer again would fail the same way.
+reading().catch(error => say("reading", `This page stopped reading hands: ${error.message}. Reload it to read again.`, true));
 </script>
 </body>
 </html>

@@ -10,13 +10,14 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from hands.clock import SYSTEM
 from hands.core.place import Modality
 from hands.core.playback import Labelled
 from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level
+from hands.virtualclock import VirtualClock
+from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.library import Found
 from hands.voice.voices import Chosen
@@ -39,7 +40,7 @@ class Voicing:
     used_asked: list[Chosen] = field(default_factory=list[Chosen])
     failure: Exception | None = None
 
-    async def speaking_in(self) -> Chosen:
+    def speaking_in(self) -> Chosen:
         return self.spoken
 
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen:
@@ -79,15 +80,17 @@ class Desk:
 
 @dataclass
 class Speaker:
-    """Hands' speech as the model switch reads it: a line, and whether the user heard it to its end."""
+    """Hands' speech as the model switch reads it: a line, heard for `hold` on the page's clock, and whether the user
+    heard it to its end."""
 
+    clock: VirtualClock
     heard_in_full: bool = True
     hold: float = 0.0
     said: list[str] = field(default_factory=list[str])
 
     async def heard(self, line: Labelled) -> bool:
         self.said.append(line.text)
-        await asyncio.sleep(self.hold)
+        await self.clock.sleep(self.hold)
         return self.heard_in_full
 
 
@@ -121,6 +124,7 @@ class Own:
 @dataclass
 class Page:
     client: TestClient[web.Request, web.Application]
+    clock: VirtualClock
     voices: Voicing
     levels: Listening
     desk: Desk
@@ -134,13 +138,15 @@ class Page:
 
 @pytest.fixture
 async def page() -> AsyncGenerator[Page]:
-    voices, levels, desk, speaker, own = Voicing(), Listening(), Desk(), Speaker(), Own()
+    # A read's wait passes only as a test moves the page's clock.
+    clock = VirtualClock()
+    voices, levels, desk, speaker, own = Voicing(), Listening(), Desk(), Speaker(clock), Own()
     recorded: list[Entry] = []
     gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, speaker=speaker, wake=Pretrained(), models=MODELS)
     app = web.Application()
-    app.add_routes(gallery_routes(SYSTEM, gallery, KEY, recorded.append))
+    app.add_routes(gallery_routes(clock, gallery, KEY, recorded.append))
     async with TestClient(TestServer(app)) as client:
-        yield Page(client, voices, levels, desk, speaker, own, recorded)
+        yield Page(client, clock, voices, levels, desk, speaker, own, recorded)
 
 
 @pytest.mark.outside
@@ -162,6 +168,7 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
     page.levels.level = "engaged"
     response = await page.client.get("/gallery/state", headers=KEYED)
     body = await response.json()
+    assert isinstance(body.pop("seen"), str)
     assert body == {
         "voices": list(VOICES), "speaking_in": "charles",
         "levels": ["off", "wake word", "engaged"], "level": "engaged",
@@ -169,7 +176,45 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
         "models": list(MODELS), "running_on": MODELS[0],
     }
     [read] = page.events("gallery.read")
-    assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"]) == ("ok", "charles", "engaged", "screen")
+    assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"], read.facts["running_on"]) == ("ok", "charles", "engaged", "screen", MODELS[0])
+
+
+async def _seen(page: Page) -> str:
+    return (await (await page.client.get("/gallery/state", headers=KEYED)).json())["seen"]
+
+
+@pytest.mark.outside
+async def test_a_read_that_has_seen_the_state_answers_once_a_choice_changes_it(page: Page) -> None:
+    seen = await _seen(page)
+    waiting = asyncio.create_task(page.client.get(f"/gallery/state?seen={seen}", headers=KEYED))
+    await page.clock.sleeping(POLL_SECONDS)
+    assert not waiting.done()
+    await page.client.post("/gallery/use", headers=KEYED, json={"voice": "bill_boerst"})
+    page.clock.advance(POLL_SECONDS)
+    body = await (await waiting).json()
+    assert (body["speaking_in"], body["seen"] != seen) == ("bill_boerst", True)
+    assert page.events("gallery.read")[-1].facts["changed"] is True
+
+
+@pytest.mark.outside
+async def test_a_read_that_has_seen_the_state_answers_it_unchanged_at_the_end_of_its_wait(page: Page) -> None:
+    seen = await _seen(page)
+    waiting = asyncio.create_task(page.client.get(f"/gallery/state?seen={seen}", headers=KEYED))
+    await page.clock.sleeping(POLL_SECONDS)
+    page.clock.advance(WAIT_SECONDS)
+    body = await (await waiting).json()
+    assert body["seen"] == seen
+    assert page.events("gallery.read")[-1].facts["changed"] is False
+
+
+@pytest.mark.outside
+async def test_a_run_on_another_model_answers_a_read_that_saw_the_run_before_at_once(page: Page) -> None:
+    # A restart's run is told apart by what it runs on: a page that saw the run before is answered without waiting.
+    seen = await _seen(page)
+    page.own.running_on = MODELS[1]
+    body = await (await page.client.get(f"/gallery/state?seen={seen}", headers=KEYED)).json()
+    assert (body["running_on"], body["seen"] != seen) == (MODELS[1], True)
+    assert page.events("gallery.read")[-1].facts["looks"] == 1
 
 
 @pytest.mark.outside
@@ -275,11 +320,16 @@ async def test_a_model_switch_talked_over_is_refused_and_hands_stays_on_its_mode
 @pytest.mark.outside
 async def test_two_model_switches_at_once_are_made_one_after_the_other(page: Page) -> None:
     # Each weighs the file as the one before it kept it: never two weighed and open at once.
-    page.speaker.hold = 0.05
-    first, second = await asyncio.gather(
+    page.speaker.hold = 1.0
+    switches = asyncio.gather(
         page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-5-5"}),
         page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-sonnet-5-5"}),
     )
+    # The first is heard out while the second waits on it, and then the second is.
+    for heard_until in (1.0, 2.0):
+        await page.clock.sleeping(heard_until)
+        page.clock.advance_to(heard_until)
+    first, second = await switches
     assert (first.status, second.status) == (200, 200)
     assert page.own.most_open == 1
     assert sorted(page.own.kept) == ["claude-opus-5-5", "claude-sonnet-5-5"]
@@ -316,8 +366,9 @@ async def test_the_library_search_returns_matches_and_records_the_listing(page: 
 
 def test_the_routes_are_the_gallery_and_its_five_choices_and_a_read() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
-    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(), wake=Pretrained(), models=MODELS)
-    routes: list[Any] = [route for route in gallery_routes(SYSTEM, gallery, KEY, lambda _entry: None)]
+    clock = VirtualClock()
+    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(clock), wake=Pretrained(), models=MODELS)
+    routes: list[Any] = [route for route in gallery_routes(clock, gallery, KEY, lambda _entry: None)]
     assert sorted(f"{route.method} {route.path}" for route in routes) == sorted([
         "GET /gallery", "GET /gallery/state", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",
         "POST /gallery/level", "POST /gallery/modality", "POST /gallery/model",
