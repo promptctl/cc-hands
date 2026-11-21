@@ -18,7 +18,7 @@ from hands.core.summaries import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, parse_export, read_backlog
+from hands.sessions.backlog import BACKLOG, LitFailed, LitNotStarted, Untracked, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.voice.summarising import summarise_backlog, told
@@ -373,6 +373,26 @@ async def test_a_removed_directory_reads_as_no_backlog_saying_it_is_gone(project
     # The spawn's failure names the missing directory, not lit (which the project fixture put on PATH).
     gone = project / "removed-worktree"
     assert await read_backlog(SYSTEM, gone) == Untracked(gone, gone=True)
+
+
+@pytest.mark.outside
+async def test_a_project_path_that_is_a_file_is_a_lit_that_never_started_not_a_removed_directory(project: Path) -> None:
+    file = project / "a-file"
+    file.write_text("")
+    with pytest.raises(LitNotStarted, match="Not a directory"):
+        await read_backlog(SYSTEM, file)
+
+
+@pytest.mark.outside
+async def test_a_project_hands_cannot_enter_is_a_lit_that_never_started_not_a_removed_directory(project: Path) -> None:
+    locked = project / "locked"
+    (locked / "inside").mkdir(parents=True)
+    locked.chmod(0)
+    try:
+        with pytest.raises(LitNotStarted, match="Permission denied"):
+            await read_backlog(SYSTEM, locked / "inside")
+    finally:
+        locked.chmod(0o700)
 
 
 def fake_lit(script: str) -> None:

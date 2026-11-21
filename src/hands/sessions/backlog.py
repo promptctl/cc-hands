@@ -6,6 +6,7 @@ order is changed only by the lit writes here: `lit rank`, and the `lit new` and 
 """
 
 import asyncio
+import errno
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -430,8 +431,8 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
     except SpawnFailed as error:
-        # Whichever path the OS names, a directory that is not there is what lit could not start in.
-        if not project.is_dir():
+        # The spawn names the path it could not use: the project directory as given, where the chdir failed, not lit.
+        if error.errno == errno.ENOENT and str(error.filename) == str(project):
             raise ProjectGone(project) from error
         raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
     except OSError as error:

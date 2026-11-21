@@ -534,6 +534,18 @@ async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page
 
 @pytest.mark.outside
 @real_lit
+async def test_a_rank_lit_made_in_a_project_it_then_no_longer_tracks_says_it_was_ranked_and_why(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    # lit ranks, and the workspace is gone before the read after.
+    stub_lit(tmp_path, monkeypatch, rank=f'{LIT} "$@" || exit\nrm -rf .git\nexit 0')
+    status, body = await moved(page, workspace, parser, above=mic)
+    assert status == 502 and body.startswith(f"lit ranked {parser} as it was asked to go above {mic}, and lit no longer tracks {workspace.root}: ")
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.error == body and event.facts["ranked"] == "yes"
+
+
+@pytest.mark.outside
+@real_lit
 async def test_a_rank_lit_made_whose_backlog_could_not_be_read_again_says_it_was_ranked(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     ranked = tmp_path / "ranked"
