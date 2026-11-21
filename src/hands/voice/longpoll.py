@@ -1,10 +1,13 @@
 """A page's read that waits for what the page shows to change before it answers: the conversation page's
-(`hands.voice.conversationpage`) and the brain on the phone's page (`hands.voice.brainpage`) alike.
+(`hands.voice.conversationpage`), the brain on the phone's page (`hands.voice.brainpage`), and the gallery's
+(`hands.voice.gallerypage`) alike.
 
 [LAW:one-type-per-behavior] each page versions what it shows, and says with each read the version it was last given; the one
 loop here waits on any version.
 """
 
+import hashlib
+import json
 from collections.abc import Awaitable, Callable
 
 from hands.clock import Clock
@@ -14,6 +17,11 @@ from hands.sessions.wide import Fact, annotate
 # browser or a proxy between gives a request; and how often it looks meanwhile.
 WAIT_SECONDS = 25.0
 POLL_SECONDS = 0.25
+
+
+def version_of(shown: object) -> str:
+    """The version of what a page shows: the same for the same JSON, whatever order its keys were built in."""
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()[:16]
 
 
 async def waited[V: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[V, T]]], seen: V | None) -> tuple[V, T]:

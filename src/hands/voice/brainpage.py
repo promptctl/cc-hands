@@ -5,7 +5,6 @@ brain is doing is its stage's to say (`hands.brain.stage.BrainStage.work`), and 
 here reaches a working session.
 """
 
-import hashlib
 import json
 from typing import Protocol
 
@@ -18,7 +17,7 @@ from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
-from hands.voice.longpoll import waited
+from hands.voice.longpoll import version_of, waited
 
 
 class Watched(Protocol):
@@ -91,7 +90,7 @@ def brain_routes(clock: Clock, brain: Watched, key: str, record: Record) -> list
     async def look() -> tuple[str, BrainWork]:
         # [LAW:effects-at-boundaries] a look reads what the stage holds in memory, as the page draws it, at every poll.
         work = brain.work()
-        return hashlib.sha256(json.dumps(shown(work), sort_keys=True).encode()).hexdigest()[:16], work
+        return version_of(shown(work)), work
 
     @keyed(clock, "brain.read", record, key, counts=("calls",))
     async def read(request: web.Request) -> web.Response:

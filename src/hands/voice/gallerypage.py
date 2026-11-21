@@ -10,7 +10,7 @@ the same change.
 import json
 from dataclasses import dataclass
 from importlib import resources
-from typing import Protocol, TypeVar, cast, get_args
+from typing import Protocol, TypeVar, TypedDict, cast, get_args
 
 from aiohttp import web
 
@@ -21,10 +21,11 @@ from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, fail
 from hands.voice.desk import LEVELS, Level
 from hands.voice.keyed import keyed
+from hands.voice.longpoll import version_of, waited
 from hands.voice.modelswitch import Heard, OwnModel, switch_model
 from hands.voice.trigger import described
 from hands.voice.library import Found
-from hands.voice.voices import VOICES, Chosen, parse_voice
+from hands.voice.voices import VOICES, Chosen, Voice, parse_voice
 from hands.voice.wakeword import Word
 
 # [LAW:one-source-of-truth] the modalities are the ones Modality names; the page offers and accepts exactly those.
@@ -77,6 +78,19 @@ class Gallery:
     models: tuple[str, ...]
 
 
+class Shown(TypedDict):
+    """What the page shows of hands, as the read answers it: what each choice offers and what hands is on now."""
+
+    voices: tuple[Voice, ...]
+    speaking_in: str
+    levels: tuple[Level, ...]
+    level: Level
+    modalities: tuple[Modality, ...]
+    modality: Modality
+    models: tuple[str, ...]
+    running_on: str
+
+
 def parse_field(body: bytes, field: str) -> str:
     """The text a page's request names in `field`, as its body's JSON; raises Rejected naming what is wrong with it."""
     try:
@@ -117,7 +131,8 @@ def _refusal(error: Exception) -> web.Response:
 def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> list[web.RouteDef]:
     """The page, its read of the voices and options, and one route per choice.
 
-    [LAW:nothing-unseen] the read is one `gallery.read` event; each choice one event of its own, `gallery.hear`,
+    [LAW:nothing-unseen] the read is one `gallery.read` event: what it showed, what the page had seen, and how long it
+    waited for that to change; each choice one event of its own, `gallery.hear`,
     `gallery.use`, `gallery.level`, `gallery.modality`, or `gallery.model`, naming what was asked and what came of it.
     """
     page = resources.files("hands.voice").joinpath("gallery.html").read_text()
@@ -125,19 +140,25 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
-    @keyed(clock, "gallery.read", record, key)
-    async def read_state(_request: web.Request) -> web.Response:
-        try:
-            speaking = await gallery.voices.speaking_in()
-        except (Rejected, OSError) as error:
-            return _refusal(error)
-        annotate(speaking_in=str(speaking), level=gallery.levels.level, modality=gallery.desk.modality)
-        return web.json_response({
-            "voices": VOICES, "speaking_in": str(speaking),
+    async def look() -> tuple[str, Shown]:
+        shown: Shown = {
+            "voices": VOICES, "speaking_in": str(await gallery.voices.speaking_in()),
             "levels": LEVELS, "level": gallery.levels.level,
             "modalities": MODALITIES, "modality": gallery.desk.modality,
             "models": gallery.models, "running_on": gallery.own.running(),
-        })
+        }
+        return version_of(shown), shown
+
+    # [LAW:one-source-of-truth] the page shows what hands answers here and keeps no picture of its own, so a choice made
+    # anywhere, by voice, by hand in the settings file, or by a model switch's restart, is on the page by the next answer.
+    @keyed(clock, "gallery.read", record, key)
+    async def read_state(request: web.Request) -> web.Response:
+        try:
+            version, shown = await waited(clock, look, request.query.get("seen"))
+        except (Rejected, OSError) as error:
+            return _refusal(error)
+        annotate(speaking_in=shown["speaking_in"], level=shown["level"], modality=shown["modality"], running_on=shown["running_on"])
+        return web.json_response({"seen": version, **shown})
 
     @keyed(clock, "gallery.hear", record, key)
     async def hear_voice(request: web.Request) -> web.Response:

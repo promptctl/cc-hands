@@ -17,6 +17,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level
+from hands.voice import longpoll
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.library import Found
 from hands.voice.voices import Chosen
@@ -133,7 +134,10 @@ class Page:
 
 
 @pytest.fixture
-async def page() -> AsyncGenerator[Page]:
+async def page(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Page]:
+    # A read that has seen the state looks again soon and gives up soon, so a test waits on neither.
+    monkeypatch.setattr(longpoll, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(longpoll, "WAIT_SECONDS", 0.5)
     voices, levels, desk, speaker, own = Voicing(), Listening(), Desk(), Speaker(), Own()
     recorded: list[Entry] = []
     gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, speaker=speaker, wake=Pretrained(), models=MODELS)
@@ -162,6 +166,7 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
     page.levels.level = "engaged"
     response = await page.client.get("/gallery/state", headers=KEYED)
     body = await response.json()
+    assert isinstance(body.pop("seen"), str)
     assert body == {
         "voices": list(VOICES), "speaking_in": "charles",
         "levels": ["off", "wake word", "engaged"], "level": "engaged",
@@ -169,7 +174,51 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
         "models": list(MODELS), "running_on": MODELS[0],
     }
     [read] = page.events("gallery.read")
-    assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"]) == ("ok", "charles", "engaged", "screen")
+    assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"], read.facts["running_on"]) == ("ok", "charles", "engaged", "screen", MODELS[0])
+
+
+async def _seen(page: Page) -> str:
+    return (await (await page.client.get("/gallery/state", headers=KEYED)).json())["seen"]
+
+
+@pytest.mark.outside
+async def test_a_read_that_has_seen_the_state_answers_once_a_choice_changes_it(page: Page) -> None:
+    seen = await _seen(page)
+    waiting = asyncio.ensure_future(page.client.get(f"/gallery/state?seen={seen}", headers=KEYED))
+    await asyncio.sleep(0.05)
+    assert not waiting.done()
+    await page.client.post("/gallery/use", headers=KEYED, json={"voice": "bill_boerst"})
+    body = await (await waiting).json()
+    assert (body["speaking_in"], body["seen"] != seen) == ("bill_boerst", True)
+    assert page.events("gallery.read")[-1].facts["changed"] is True
+
+
+@pytest.mark.outside
+async def test_a_read_that_has_seen_the_state_answers_it_unchanged_at_the_end_of_its_wait(page: Page) -> None:
+    seen = await _seen(page)
+    body = await (await page.client.get(f"/gallery/state?seen={seen}", headers=KEYED)).json()
+    assert body["seen"] == seen
+    assert page.events("gallery.read")[-1].facts["changed"] is False
+
+
+@pytest.mark.outside
+async def test_a_run_on_another_model_answers_a_read_that_saw_the_run_before_at_once(page: Page) -> None:
+    # A restart's run is told apart by what it runs on: a page that saw the run before is answered without waiting.
+    seen = await _seen(page)
+    page.own.running_on = MODELS[1]
+    body = await (await page.client.get(f"/gallery/state?seen={seen}", headers=KEYED)).json()
+    assert (body["running_on"], body["seen"] != seen) == (MODELS[1], True)
+    assert page.events("gallery.read")[-1].facts["looks"] == 1
+
+
+@pytest.mark.outside
+async def test_a_read_whose_voice_cannot_be_read_is_a_503_and_says_why(page: Page, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unreadable() -> Chosen:
+        raise OSError("the voice file is unreadable")
+    monkeypatch.setattr(page.voices, "speaking_in", unreadable)
+    response = await page.client.get("/gallery/state", headers=KEYED)
+    assert (response.status, await response.text()) == (503, "the voice file is unreadable")
+    assert [read.outcome for read in page.events("gallery.read")] == ["failed"]
 
 
 @pytest.mark.outside
