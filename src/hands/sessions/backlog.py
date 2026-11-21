@@ -6,6 +6,7 @@ order is changed by `lit rank` alone.
 """
 
 import asyncio
+import errno
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from typing import Literal, get_args
 
 from hands.clock import Clock
 from hands.core.summaries import Thing
-from hands.sessions.child import run
+from hands.sessions.child import SpawnFailed, run
 from hands.sessions.payload import Payload, Rejected
 
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s to export; past this lit is stuck, not slow.
@@ -86,7 +87,7 @@ Signer = Person | Inherited
 
 
 class LitFailed(Exception):
-    """lit did not do what it was asked in a directory: it could not run, did not answer, or failed or refused, and the
+    """lit did not do what it was asked in a directory: it never ran, did not answer, or failed or refused, and the
     message says why; `reason` is the token lit's refusal names, None where lit named none."""
 
     def __init__(self, message: str, reason: str | None) -> None:
@@ -95,16 +96,28 @@ class LitFailed(Exception):
 
     @property
     def refused(self) -> bool:
-        """Whether lit refused, saying why on its reason line: the one failure that proves it changed nothing. A lit that
-        did not answer, could not be run, or ended without a reason may have written before it stopped."""
+        """Whether lit refused, saying why on its reason line."""
         return self.reason is not None
 
 
-class ProjectGone(LitFailed):
+class LitNotStarted(LitFailed):
+    """lit's program never ran in the directory, so it wrote nothing there; the message says what the OS said."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, None)
+
+
+class ProjectGone(LitNotStarted):
     """The directory lit was to run in no longer exists: lit never started there."""
 
     def __init__(self, project: Path) -> None:
-        super().__init__(f"{project} no longer exists", None)
+        super().__init__(f"{project} no longer exists")
+
+
+def wrote_nothing(error: LitFailed) -> bool:
+    """Whether lit is known to have written nothing: it refused, or it never ran. A lit that did not answer, ended
+    without a reason, or failed once it was running may have written before it stopped."""
+    return error.refused or isinstance(error, LitNotStarted)
 
 
 @dataclass(frozen=True)
@@ -407,8 +420,8 @@ async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signe
 
 
 async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
-    """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitFailed when
-    it could not run, did not answer, or exited non-zero.
+    """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitNotStarted
+    when it never ran, and LitFailed when it did not answer, exited non-zero, or failed once it was running.
 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
@@ -417,11 +430,13 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
         ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment, clock=clock)
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
-    except OSError as error:
+    except SpawnFailed as error:
         # The spawn names the missing path: the project directory, not lit, is what is gone.
-        if isinstance(error, FileNotFoundError) and str(error.filename) == str(project):
+        if error.errno == errno.ENOENT and str(error.filename) == str(project):
             raise ProjectGone(project) from error
-        raise LitFailed(f"cannot run lit in {project}: {error}", None) from error
+        raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
+    except OSError as error:
+        raise LitFailed(f"{command} in {project} ran, and then failed: {error}", None) from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
         line = ERROR_LINE.match(err)

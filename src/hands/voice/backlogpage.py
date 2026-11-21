@@ -25,7 +25,7 @@ from aiohttp import web
 
 from hands.clock import Clock
 from hands.sessions.audit import Record
-from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
+from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog, wrote_nothing
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
@@ -221,9 +221,9 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
         try:
             said = await rank(clock, project, move, person)
         except LitFailed as error:
-            if error.refused:
+            if wrote_nothing(error):
                 return _refused(502, f"not moved: {error}")
-            # [LAW:no-silent-failure] lit stopped without saying why, and may have written first: neither is claimed.
+            # [LAW:no-silent-failure] lit may have written before it stopped: neither is claimed.
             annotate(ranked="unknown")
             return _refused(502, f"whether lit ranked {ticket} {place} is not known: {error}")
         annotate(ranked="yes", lit_said=said)
@@ -333,7 +333,7 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
         try:
             await comment(clock, project, ticket, text, person)
         except LitFailed as error:
-            if error.refused:
+            if wrote_nothing(error):
                 return _refused(502, f"not noted: {error}")
             annotate(noted="unknown")
             return _refused(502, f"whether lit kept the note on {ticket} is not known: {error}")
@@ -373,12 +373,12 @@ async def _read(clock: Clock, project: Path, unread: str, status: int, untracked
             return read
 
 
-def _unwritten(error: LitFailed, fact: str, refused: str, unknown: str) -> Halted:
-    """A leveling's stop when a lit write in it failed: lit's refusal proves it wrote nothing, and the answer says
-    `refused`; a lit that stopped without saying why may have written first, so `fact` on the event is "unknown", and the
-    answer says `unknown` [LAW:no-silent-failure]."""
-    if error.refused:
-        return Halted(502, f"{refused}: {error}")
+def _unwritten(error: LitFailed, fact: str, unchanged: str, unknown: str) -> Halted:
+    """A leveling's stop when a lit write in it failed: where lit is known to have written nothing, the answer says
+    `unchanged`; else it may have written first, so `fact` on the event is "unknown", and the answer says `unknown`
+    [LAW:no-silent-failure]."""
+    if wrote_nothing(error):
+        return Halted(502, f"{unchanged}: {error}")
     annotate(**{fact: "unknown"})
     return Halted(502, f"{unknown}: {error}")
 

@@ -1,11 +1,13 @@
 """A child run to its end inside a time limit, and never left running by a caller that stops waiting on it."""
 
 import asyncio
+import errno
 import os
 import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 from loguru import logger
@@ -13,7 +15,7 @@ from loguru import logger
 from conftest import BrokenClock, VirtualClock
 from hands.clock import SYSTEM
 from hands.sessions import child
-from hands.sessions.child import Ran, run
+from hands.sessions.child import Ran, SpawnFailed, run
 
 
 @pytest.fixture
@@ -131,14 +133,48 @@ async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pyte
         raise OSError("the output could not be read")
 
     monkeypatch.setattr(child, "_ended", unreadable)
-    with pytest.raises(OSError, match="could not be read"):
+    with pytest.raises(OSError, match="could not be read") as raised:
         await run("true", timeout=5, clock=SYSTEM)
+    assert not isinstance(raised.value, SpawnFailed), "a child that ran was said never to have run"
     assert not any("killed" in line or "already ended" in line for line in logged), "a failure of its own was told as a kill"
 
 
 async def test_a_child_that_cannot_start_says_so() -> None:
-    with pytest.raises(OSError):
+    with pytest.raises(SpawnFailed):
         await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
+
+
+@pytest.mark.outside
+async def test_a_program_that_is_not_there_never_ran_and_the_os_says_why() -> None:
+    with pytest.raises(SpawnFailed) as raised:
+        await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
+    assert (raised.value.errno, raised.value.filename) == (errno.ENOENT, "/nonexistent/hands-no-such-program")
+    assert "No such file or directory" in str(raised.value)
+
+
+@pytest.mark.outside
+async def test_a_directory_that_is_gone_is_a_child_that_never_ran_there(tmp_path: Path) -> None:
+    gone = tmp_path / "gone"
+    with pytest.raises(SpawnFailed) as raised:
+        await run("true", timeout=5, cwd=gone, clock=SYSTEM)
+    assert (raised.value.errno, str(raised.value.filename)) == (errno.ENOENT, str(gone))
+
+
+async def test_output_files_that_cannot_be_made_are_a_child_that_never_ran_and_none_is_left_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    made: list[IO[bytes]] = []
+
+    def second_refused() -> IO[bytes]:
+        if made:
+            raise OSError(errno.EMFILE, "Too many open files")
+        made.append(file := real())
+        return file
+
+    real = child.tempfile.TemporaryFile
+    monkeypatch.setattr(child.tempfile, "TemporaryFile", second_refused)
+    with pytest.raises(SpawnFailed, match="Too many open files"):
+        await run("true", timeout=5, clock=SYSTEM)
+    [first] = made
+    assert first.closed
 
 
 @pytest.mark.outside
