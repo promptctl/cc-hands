@@ -100,6 +100,7 @@ from hands.voice.tools import audited, close_session_tool, cued, intermediary_to
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
+from hands.brain.session import BrainSession
 from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
@@ -187,23 +188,26 @@ async def mind(
     llm = config.llm
     spans = CallSpans()
     talk = conversation(llm.config_dir, SessionId(dashed(clock)))
+    # [LAW:one-source-of-truth] the session the brain holds, from the one it starts in to each it moves to: what everything
+    # that reads the brain's traffic reads it by.
+    held = BrainSession(talk.session)
     # The brain is behind hands' proxy, so its usage is read off the wire, and it has a tool to ask it with.
-    usage = Usage(talk.session)
+    usage = Usage(held)
     tools = [*tools, *brain_tools, audited(clock, usage_tool(usage), record)]
     server = await serve_mcp(clock, tools, record, spans)
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), record)
+            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, held), record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        asides = Asides(clock, proxy_url, Newest(brain.session), record)
+        asides = Asides(clock, proxy_url, Newest(held), record)
         try:
             stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
-            keeper = Keeper(clock, brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
+            keeper = Keeper(clock, held, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
             with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                 # A summary is as long as its reply makes it: only its time is the summary's own.

@@ -27,7 +27,7 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, cast, get_args
@@ -36,10 +36,11 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain import pinned
+from hands.brain.session import BrainSession
 from hands.brain.mcp import SERVER_NAME
 from hands.clock import Clock, wait
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
-from hands.core.events import Ending, Event, Prompted, Stopped
+from hands.core.events import Ended, EndReason, Ending, Event, Prompted, StartSource, Stopped
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
 from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
@@ -51,7 +52,7 @@ from hands.sessions.registry import Sessions, StopHeld
 from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_declared
-from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
+from hands.sessions.hooks import Hook, PermissionHook, Started, hook_output, parse_own_hook, parse_start
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.child import Ran
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
@@ -115,6 +116,11 @@ DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elici
 # dialog about to open. Escape ends a turn with none of them, so a turn told to stop is over when
 # it is told.
 HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
+# And the session its process holds, said at its launch and at each /clear or /resume that moves it to another.
+START = "SessionStart"
+# [LAW:dataflow-not-control-flow] the end each start makes of the session the brain left, as Claude Code's own SessionEnd
+# gives it (docs/claude-code-behavior.md, session-end): a /clear and a /resume each end the session before.
+LEFT: Mapping[StartSource, EndReason] = {"clear": "clear", "resume": "resume", "startup": "other", "compact": "other", "fork": "other"}
 # A paste of four lines or more, as a UserPromptSubmit hook's `prompt` holds it: what was pasted, with a line end added
 # where it had none, inside a tag pair.
 PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\1">\n', re.DOTALL)
@@ -185,6 +191,9 @@ class Launch:
     instruction: str
     mcp_config: str
     conversation: "Conversation"
+    # The session the brain holds, `conversation`'s at the launch, moved by the brain as its Claude Code moves: read by
+    # whatever reads the brain's traffic, some of it built before the brain is.
+    held: BrainSession
 
     @property
     def session(self) -> SessionId:
@@ -301,7 +310,12 @@ def command(launch: Launch, claude: Path, hooks: str, mode: Mode | None) -> list
             # [LAW:single-enforcer] each hook declared as hookconfig declares the brain's: a held permission's lives as long
             # as a working session's, a day, and is denied only as that day ends, since its dialog is one nobody sees; a
             # prompt's and a Stop's as long as the order of the brain's turns rests on them (`ClaudeTurns`).
-            "hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **brain_declared(event)}]}] for event in HOOKS},
+            "hooks": {
+                **{event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **brain_declared(event)}]}] for event in HOOKS},
+                # By command: the pin runs no HTTP hook for SessionStart (docs/claude-code-behavior.md). Failed loudly (-f),
+                # so a start hands could not take shows as a hook error in the pane, and its event says why.
+                START: [{"hooks": [{"type": "command", "command": f"curl -sS -f -o /dev/null -H 'Content-Type: application/json' --data-binary @- {hooks}/{START}", **brain_declared(START)}]}],
+            },
             # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
             # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
             # which a process environment does not (hands-brain-8gb).
@@ -1040,7 +1054,7 @@ class Brain:
         self,
         claude: InTmux,
         fritter: int,
-        session: SessionId,
+        held: BrainSession,
         typist: Typist,
         listener: web.AppRunner,
         sockets: Path,
@@ -1053,7 +1067,7 @@ class Brain:
         self._claude = claude
         self._fritter = fritter
         self._config_dir = config_dir
-        self.session = session
+        self._held = held
         self._typist = typist
         # The Claude Code fritter wrapped, and where it works: what its own hooks do not say of it.
         self._pid = typist.pid
@@ -1096,6 +1110,11 @@ class Brain:
     def pid(self) -> int:
         """The brain's fritter."""
         return self._fritter
+
+    @property
+    def session(self) -> SessionId:
+        """The session the brain's Claude Code holds now."""
+        return self._held.session
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         """One turn of the brain's, from its typing to its end; `asks` is told of each permission the turn holds for the user."""
@@ -1551,7 +1570,6 @@ class Brain:
         except Rejected as error:
             return self._unread(event, error)
         if hook.session != self.session:
-            logger.info(f"the brain's {hook.name} hook came for session {hook.session}, not the brain's")
             return self._foreign(hook)
         match hook:
             case PermissionHook():
@@ -1564,6 +1582,19 @@ class Brain:
                 await self._heard()
                 self._ordered(hook, held, self._clock.now() - arrived)
                 return {}
+
+    async def move(self, started: Started) -> None:
+        """The brain's Claude Code holds `started`'s session from now on: the session it left ends as any session ends, its
+        held dialogs and Stops let go and an untold turn told, and the next brain resumes the one it moved to.
+
+        [LAW:single-enforcer] the one writer of the brain's session. [LAW:no-ambient-temporal-coupling] done whole before
+        its hook is answered, and Claude Code sends nothing of the new session until it is: a request of it is the brain's
+        from the first."""
+        left = self._held.session
+        annotate(left=left)
+        await self._apply(Ended(left, LEFT[started.source]))
+        self._held.session = started.session
+        hold(self._config_dir, started.session)
 
     def _ordered(self, hook: Hook, held: StopHeld | None, took: float) -> None:
         """[LAW:no-silent-failure] whether Claude Code waited on the hook as the order of the brain's turns needs
@@ -1612,6 +1643,12 @@ class Brain:
                     annotate(session=hook.session, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
                 return hook_output(reply)
             case Hook():
+                # [LAW:nothing-unseen] only the brain's own process has its hooks (`command`), so a hook under a session it
+                # does not hold is of the session it left, or of a start it missed, whose every turn would go unanswered:
+                # said, never taken for the brain's.
+                with unit("brain.hook", self._record, begun(self._clock)):
+                    annotate(hook=hook.name, session=hook.session, held=self.session)
+                    fail(f"the brain's {hook.name} hook came for session {hook.session}, which the brain does not hold")
                 return {}
 
     async def _permit(self, hook: PermissionHook) -> Allow | AllowWith | Approve | Deny | DenyAndInterrupt:
@@ -1869,9 +1906,9 @@ async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
         annotate(keybindings=SUBMIT)
         # [LAW:no-ambient-temporal-coupling] the listener is up before the brain is spawned, and the brain exists only
         # once its input is up: a hook posted between waits for the brain, behind no other hook. No turn is typed in
-        # that window, so only an MCP server's Elicitation can come.
-        posting: asyncio.Future[Callable[[str, bytes], Awaitable[Mapping[str, object]]]] = asyncio.get_running_loop().create_future()
-        listener, url = await _listen(posting)
+        # that window, so only an MCP server's Elicitation can come, and the launch's start, which waits on nothing.
+        posting: asyncio.Future[Brain] = asyncio.get_running_loop().create_future()
+        listener, url = await _listen(posting, launch.held, clock, record)
         # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
         sockets = Path(tempfile.mkdtemp(prefix="hands-brain-"))
         running: InTmux | None = None
@@ -1898,25 +1935,46 @@ async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
             shutil.rmtree(sockets, ignore_errors=True)
             raise
         launched = here()
-    brain = Brain(running, wrapper, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, clock)
-    posting.set_result(brain.posted)
+    brain = Brain(running, wrapper, launch.held, typist, listener, sockets, station.config_dir, station.cwd, record, launched, clock)
+    posting.set_result(brain)
     return brain
 
 
-async def _listen(posting: "asyncio.Future[Callable[[str, bytes], Awaitable[Mapping[str, object]]]]") -> tuple[web.AppRunner, str]:
+async def _listen(posting: "asyncio.Future[Brain]", held: BrainSession, clock: Clock, record: Record) -> tuple[web.AppRunner, str]:
     """The listener the brain posts its hooks to, on loopback, each answered with what the brain's `posted` settles for
-    it, once there is a brain."""
+    it, once there is a brain; and its SessionStart, answered once the brain holds the session it names."""
+
+    async def start(request: web.Request) -> web.Response:
+        body = await request.read()
+        # [LAW:nothing-unseen] one event per start, the launch's own among them.
+        with unit("brain.hook", record, begun(clock)):
+            annotate(hook=START, held=held.session)
+            try:
+                started = parse_start(body)
+            except Rejected as error:
+                fail(f"the brain's {START} hook does not parse: {error}")
+                return web.Response(status=400, text=str(error))
+            annotate(session=started.session, source=started.source)
+            # The launch's start names the session hands launched in, so it moves nothing and waits on no brain: Claude
+            # Code may run it before its input is up, and the brain exists only once it is. Any other start is a /clear
+            # or a /resume typed into that input, so the brain is there to move.
+            if started.session != held.session:
+                brain = await asyncio.shield(posting)
+                # Shielded, as every hook is: a handler aiohttp cancels leaves the move whole.
+                await asyncio.shield(asyncio.ensure_future(brain.move(started)))
+            return web.json_response({})
 
     async def hook(request: web.Request) -> web.Response:
         # The event read off the path, so a body hands cannot read is still answered as its hook asks, by the brain,
         # whose record of the hook says it could not be read.
         event, body = request.match_info["event"], await request.read()
-        posted = await asyncio.shield(posting)
+        brain = await asyncio.shield(posting)
         # Shielded: a handler aiohttp cancels leaves the hook to be applied and answered by the brain, which is never
         # refused a hook.
-        return web.json_response(await asyncio.shield(asyncio.ensure_future(posted(event, body))))
+        return web.json_response(await asyncio.shield(asyncio.ensure_future(brain.posted(event, body))))
 
     app = web.Application()
+    app.router.add_post(f"/{START}", start)
     app.router.add_post("/{event}", hook)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()

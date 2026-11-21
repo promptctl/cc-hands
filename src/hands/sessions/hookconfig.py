@@ -113,6 +113,8 @@ _BRAIN_DECLARED_TIMEOUTS: Mapping[str, float] = {
     "UserPromptSubmit": BRAIN_POST_TIMEOUT_SECONDS,
     "Stop": BRAIN_POST_TIMEOUT_SECONDS,
     "StopFailure": BRAIN_POST_TIMEOUT_SECONDS,
+    # Answered once the brain holds the session it names, so nothing of that session reaches the wire before it does.
+    "SessionStart": BRAIN_POST_TIMEOUT_SECONDS,
 }
 
 

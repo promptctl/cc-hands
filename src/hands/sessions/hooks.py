@@ -76,6 +76,26 @@ def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp
     return _hook(payload, payload.text("hook_event_name"), session, located, _happened(payload, session, at, heard, request))
 
 
+@dataclass(frozen=True)
+class Started:
+    """A SessionStart of the brain's: the session its process holds from now on, and what put it there."""
+
+    session: SessionId
+    source: StartSource
+
+
+def parse_start(raw: bytes) -> Started:
+    """The brain's SessionStart, read before anything else of the brain is known, its process included: a start names
+    only the session it begins. Raises Rejected as parse_hook does."""
+    # [LAW:parse-dont-validate] past this function nothing looks at the start's JSON again.
+    payload = Payload.parse(raw)
+    match payload.text("hook_event_name"):
+        case "SessionStart":
+            return Started(payload.session_id(), _start_source(payload.text("source")))
+        case other:
+            raise Rejected(f"hook event {other!r} is not taken here: only SessionStart is posted to this route")
+
+
 def _hook(payload: Payload, name: str, session: SessionId, joining: Located | None, happened: Hooked | PermissionRequested) -> Hook | PermissionHook:
     match happened:
         case PermissionRequested() as asked:

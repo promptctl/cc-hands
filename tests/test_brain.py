@@ -27,13 +27,14 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
+from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
-from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
+from hands.sessions.hookconfig import BRAIN_POST_TIMEOUT_SECONDS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, segment
 from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, unread
 import turns
@@ -205,7 +206,7 @@ def station(tmp: Path) -> Station:
 
 
 def launch(tmp: Path) -> Launch:
-    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
+    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None), BrainSession(SessionId("b1")))
 
 
 def untimed(facts: Mapping[str, Fact]) -> dict[str, Fact]:
@@ -284,6 +285,10 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     waits = {"UserPromptSubmit": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "Stop": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "StopFailure": TAKE_SECONDS + POST_TIMEOUT_SECONDS}
     assert {event: hooks.pop(event) for event in waits} == {event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}", "timeout": wait}]}] for event, wait in waits.items()}
     # A permission is held while the user is asked, as long as a working session's is.
+    # The start by command, the pin running no HTTP hook for it, failing on any answer but a 2xx.
+    [[start]] = [matcher["hooks"] for matcher in hooks.pop("SessionStart")]
+    assert start["type"] == "command" and start["timeout"] == BRAIN_POST_TIMEOUT_SECONDS
+    assert " -f " in start["command"] and start["command"].endswith("--data-binary @- http://127.0.0.1:7/SessionStart")
     assert hooks == {"PermissionRequest": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/PermissionRequest", "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]}]}
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
         "PATH": "/bin",
@@ -346,8 +351,11 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     # Behind a space, so a turn that opens with a slash is the words it is and not a command.
     assert typed(tmp_path) == [["prompt", " what is running?"], ["prompt", " /and now?"]]
     # Each event the model applies to the brain's session is one of its own (`applied`), as a working session's is, beside these.
-    launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
-    assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
+    started, launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
+    assert isinstance(started, WideEvent) and isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
+    # Its start, said before its input was up, answered as a part of its launch and moving nothing.
+    assert (started.event, started.outcome, started.parent_id) == ("brain.hook", "ok", launched.span_id)
+    assert started.facts == {"hook": "SessionStart", "held": "b1", "session": "b1", "source": "startup"}
     # Each turn is its own, with the prompt Claude Code took it as, typed at the first settled look at a screen showing
     # its prompt, however long that look took.
     assert all(isinstance(turn.facts["at_prompt_after"], float) for turn in (first, second))

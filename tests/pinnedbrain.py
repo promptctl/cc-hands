@@ -12,6 +12,7 @@ imported by the modules that use them."""
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ from hands.sessions.wide import WideEvent
 # Code's screen forces: nothing tells a test its screen changed, so it is read until it shows what the test waits for.
 PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
+# How long the brain's SessionStart command takes on the pin here: long past a turn's round trip to the mock, so a
+# request sent before its start was answered shows.
+START_DELAY_SECONDS = 2
 # What only the brain's own turns carry, among every request its Claude Code makes: hands' tools offered to the model.
 # A title or a summary Claude Code asks for beside a turn carries the user's words too, but none of hands' tools.
 TURN = f"mcp__{SERVER_NAME}__{stay_silent_tool().name}"
@@ -239,7 +243,13 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
         # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
         # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
         # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
-        environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
+        # The brain's curl, the one its SessionStart command runs, slowed: a request Claude Code sent before the command
+        # returned would reach the proxy before hands held the session the start names.
+        slowed = tmp_path / "slowed"
+        slowed.mkdir()
+        (slowed / "curl").write_text(f'#!/bin/sh\nsleep {START_DELAY_SECONDS}\nexec {shutil.which("curl")} "$@"\n')
+        (slowed / "curl").chmod(0o755)
+        environment = os.environ | {"PATH": f"{slowed}:{os.environ['PATH']}", "HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
         refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
         config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
         out = Spoken()

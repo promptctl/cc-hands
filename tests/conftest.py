@@ -736,7 +736,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import datetime, itertools, json, os, select, signal, sys, termios, threading, time, tty, urllib.request
+import datetime, itertools, json, os, select, signal, subprocess, sys, termios, threading, time, tty, urllib.request
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -768,9 +768,13 @@ import turns
 transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
 status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
 def post(event, **fields):
-    [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
+    [[hook]] = [matcher["hooks"] for matcher in hooks[event]]
     body = json.dumps({{"session_id": session, "transcript_path": transcript, "cwd": os.getcwd(), "permission_mode": "default", "hook_event_name": event, **fields}}).encode()
-    return json.loads(urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=30).read())
+    if hook["type"] == "command":
+        # As Claude Code runs a command hook: in a shell, the body on its stdin; a hook that fails fails loudly here.
+        out = subprocess.run(["sh", "-c", hook["command"]], input=body, capture_output=True, check=True, timeout=30).stdout
+        return json.loads(out) if out.strip() else {{}}
+    return json.loads(urllib.request.urlopen(urllib.request.Request(hook["url"], body, {{"Content-Type": "application/json"}}), timeout=30).read())
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
@@ -791,6 +795,9 @@ time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 # Raw without flushing: Claude Code keeps what was typed while it started (keys typed
 # 0.05s in).
 tty.setraw(0, termios.TCSANOW)
+# Its start said before its input is up, the order hands must not wait on.
+if "SessionStart" in hooks:
+    post("SessionStart", source="resume" if "--resume" in sys.argv else "startup")
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h")
 stated("idle")
@@ -842,7 +849,8 @@ def ended(event, prompt, reply, **fields):
 # opening prompt on both channels that carry it. It runs the recording's prompts, the typed one first.
 def play(name, text):
     global prompts, last, tail
-    lines = turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text))
+    # A turn starts no session: the recording's start was its process's, said once at launch here.
+    lines = turns.played(turns.RECORDINGS[name], subscribed=[event for event in hooks if event != "SessionStart"], session=session, first=prompts, prompt=taken(text))
     opening, pause = True, float(os.environ.get("PLAY_PAUSE", "0"))
     with open(os.path.join(os.path.dirname(os.environ["TYPED"]), "said.log"), "a", buffering=1) as said:
         for line in lines:
