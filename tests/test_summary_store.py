@@ -421,7 +421,8 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
 
 @pytest.mark.outside
 async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project: Path) -> None:
-    fake_lit(NEVER_INITIALIZED.replace("reason=workspace_not_initialized", "reason=workspace_busy"))
+    # lit's busy refusal arrives on code 1 (docs/cli-reference.md in links, "Every reason").
+    fake_lit('echo "error (code=1, reason=workspace_busy): another lit process holds the store" >&2\nexit 1\n')
     with pytest.raises(LitFailed, match="workspace_busy"):
         await read_backlog(SYSTEM, project)
 
