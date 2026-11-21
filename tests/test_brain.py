@@ -334,7 +334,7 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
 
 
 @pytest.mark.outside
-async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_run_and_stop_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
     try:
@@ -346,8 +346,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     # Behind a space, so a turn that opens with a slash is the words it is and not a command.
     assert typed(tmp_path) == [["prompt", " what is running?"], ["prompt", " /and now?"]]
     # Each event the model applies to the brain's session is one of its own (`applied`), as a working session's is, beside these.
-    launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
-    assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
+    launched, first, second, ran, stopped = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
+    assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent) and isinstance(stopped, WideEvent)
     # Each turn is its own, with the prompt Claude Code took it as, typed at the first settled look at a screen showing
     # its prompt, however long that look took.
     assert all(isinstance(turn.facts["at_prompt_after"], float) for turn in (first, second))
@@ -366,6 +366,9 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     # Its run is a part of its launch, from its input coming up to its process's end.
     assert (ran.event, ran.outcome, ran.trace_id, ran.parent_id) == ("brain.run", "ok", launched.trace_id, launched.span_id)
     assert ran.facts["pid"] == brain.pid and isinstance(ran.facts["code"], int) and isinstance(ran.facts["shown"], str)
+    # Its stop is a part of its launch too, and waited on none of its own work: each turn was over before it.
+    assert (stopped.event, stopped.outcome, stopped.trace_id, stopped.parent_id) == ("brain.stop", "ok", launched.trace_id, launched.span_id)
+    assert stopped.facts == {"own_work_running": 0}
 
 
 def transcript(config_dir: Path, session: str) -> None:
@@ -1670,7 +1673,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
         with pytest.raises(RuntimeError, match="joined the wire"), wire.joined(minded.llm):
             pass
-    assert isinstance(ran := recorded[-1], WideEvent) and ran.event == "brain.run"
+    assert [entry.event for entry in recorded[-2:] if isinstance(entry, WideEvent)] == ["brain.run", "brain.stop"]
     # Gone with the brain: the wire forwards everything again.
     with wire.joined(minded.llm):
         pass
