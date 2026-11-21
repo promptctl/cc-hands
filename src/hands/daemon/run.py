@@ -87,7 +87,8 @@ from hands.voice.briefing import as_sent
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, cancelled, invocation, keep_beating, start
+from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, invocation, keep_beating, start
+from hands.tasks import cancelled
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices

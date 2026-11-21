@@ -14,7 +14,8 @@ from hands.virtualclock import VirtualClock
 from hands.daemon.cli import launch
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.run import stopping, until_told
-from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, Failing, cancelled
+from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, Failing
+from hands.tasks import cancelled
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import SettingsEdited
 from hands.sessions.wide import WideEvent

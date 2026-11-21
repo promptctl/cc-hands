@@ -57,6 +57,7 @@ from hands.sessions.child import Ran
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
+from hands.tasks import cancelled
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
@@ -552,6 +553,10 @@ async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace
 
 class BrainGone(Exception):
     """The brain ended, or cannot be typed into, while a turn waited on it, or before one was asked."""
+
+
+class BrainExited(BrainGone):
+    """The brain's process exited: what it ended is the brain's end, which `brain.run` says, and no failure of the work."""
 
 
 class StopUnrecorded(Exception):
@@ -1104,7 +1109,7 @@ class Brain:
         while self._turn is not None:
             await asyncio.wait({self._turn.answered})
         if self._exit.done():
-            raise BrainGone(f"the brain had ended before it was asked: {exited(self._exit.result())}")
+            raise BrainExited(f"the brain had ended before it was asked: {exited(self._exit.result())}")
         loop = asyncio.get_running_loop()
         # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
         turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(self._clock), TAKE_SECONDS, Text(pasted(text)).typed)
@@ -1191,8 +1196,7 @@ class Brain:
         match None if task.cancelled() else task.exception():
             case None:
                 pass
-            case BrainGone() if self._exit.done():
-                # [LAW:single-enforcer] work the brain's exit ended: its end, which `brain.run` says, not a failure of its own.
+            case BrainExited():
                 pass
             case error:
                 self._broke(turn, error)
@@ -1295,8 +1299,7 @@ class Brain:
                 try:
                     await asyncio.wait({looking, sleeping}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
-                    looking.cancel()
-                    await asyncio.wait({looking})
+                    await cancelled({looking})
                 # A take that ran out as the prompt showed types nothing: the turn would be Claude Code's with nobody waiting.
                 if looking.cancelled() or sleeping.done():
                     # [LAW:no-silent-failure] what the screen showed instead is the reason, read with the input still held.
@@ -1322,8 +1325,7 @@ class Brain:
                     # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
                     self._over(turn, Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{shown}"))
         finally:
-            sleeping.cancel()
-            await asyncio.wait({sleeping})
+            await cancelled({sleeping})
             # [LAW:no-silent-failure] a pause that failed, however the take ended, says so, and is not taken for the time
             # running out.
             if not sleeping.cancelled():
@@ -1378,8 +1380,7 @@ class Brain:
         try:
             await asyncio.wait({*ending, sleeping}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            sleeping.cancel()
-            await asyncio.wait({sleeping})
+            await cancelled({sleeping})
         if not sleeping.cancelled():
             sleeping.result()
 
@@ -1420,12 +1421,11 @@ class Brain:
             try:
                 await self._waited(INTERRUPT_SECONDS, waiting, self._exit)
             finally:
-                waiting.cancel()
-                await asyncio.wait({waiting})
+                await cancelled({waiting})
             unstopped: StopUnrecorded | None = None
             if waiting.cancelled():
                 if self._exit.done():
-                    raise BrainGone("the brain exited while hands stopped what it ran")
+                    raise BrainExited("the brain exited while hands stopped what it ran")
                 unstopped = StopUnrecorded(f"the brain's Claude Code did not stop what hands pressed Escape for in {INTERRUPT_SECONDS:g}s: the model holds {self._modelled()}; it showed:\n{self._claude.shown()}")
             else:
                 waiting.result()
@@ -1528,24 +1528,23 @@ class Brain:
         with continuing(self._launched), unit("brain.shutdown", self._record, begun(self._clock)):
             # Each let go of whatever the stop's steps, and the others, went: last held, first let go.
             async with contextlib.AsyncExitStack() as held:
-                held.callback(shutil.rmtree, self._sockets, ignore_errors=True)
+                held.callback(shutil.rmtree, self._sockets)
                 held.push_async_callback(self._listener.cleanup)
-                held.push_async_callback(self._read_out)
+                held.push_async_callback(cancelled, {self._reading})
                 await self._claude.stop()
                 await asyncio.shield(self._exit)
                 # [LAW:no-ambient-temporal-coupling] waited on, never cancelled: once the brain has exited, each task of its
                 # own ends by itself, its turn answered (`_run_out`), its keys going into a terminal that is gone.
                 annotate(waited_on=await self.drained())
 
-    async def _read_out(self) -> None:
-        self._reading.cancel()
-        await asyncio.wait({self._reading})
-
     async def _type(self, typing: Callable[[Typist], None]) -> None:
         try:
             await asyncio.to_thread(typing, self._typist)
         except Untyped as error:
-            raise BrainGone(f"the brain cannot be typed into: {error}") from error
+            # [LAW:types-are-the-program] the cause is told where the keys failed: into a brain that has exited, they are
+            # its end; into one that runs, a failure of their own.
+            gone = BrainExited if self._exit.done() else BrainGone
+            raise gone(f"the brain cannot be typed into: {error}") from error
 
     async def _run_out(self, up: Begun) -> int:
         # [LAW:nothing-unseen] the brain's run, from its input coming up to its process's end, is one event as it ends:
@@ -1557,9 +1556,9 @@ class Brain:
             self._sessions.hear(Ending(self.session, DenyAndInterrupt(f"the brain ended: {exited(code)}")))
             # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
             gone = f"the brain ended before it answered: {exited(code)}"
-            self._claude_turns.failed(BrainGone(gone))
+            self._claude_turns.failed(BrainExited(gone))
             if self._turn is not None:
-                self._over(self._turn, BrainGone(gone))
+                self._over(self._turn, BrainExited(gone))
         return code
 
     async def posted(self, event: str, body: bytes) -> Mapping[str, object]:

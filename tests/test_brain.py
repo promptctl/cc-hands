@@ -35,10 +35,10 @@ from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, segment
-from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, unread
+from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, taken, unread
 import turns
 from turns import RECORDINGS, prompts, stops
-from brains import dialogs, permissions, said, taken, unasked  # pyright: ignore[reportUnusedImport]
+from brains import dialogs, permissions, unasked
 
 from hands.brain.stage import BrainStage
 from hands.core.session import Keystroke, PromptText, SessionId, Submit, pasted
@@ -1040,8 +1040,8 @@ async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_
 
 @pytest.mark.outside
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path
-, said: list[str]) -> None:
+    tmp_path: Path, fake_claude: Path, said: list[str]
+) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
     try:
@@ -1084,8 +1084,7 @@ async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_
         await brain.stop()
     # Each time the broken clock fails is said: the take's, and, for a turn that was taken, the wait of the stop that
     # ends it, which waits on the same clock.
-    lines = taken(said)
-    assert lines and set(lines) == {"the brain's own work failed: RuntimeError('no clock')"}
+    assert set(taken(said)) == {"the brain's own work failed: RuntimeError('no clock')"}
     [failed] = events(recorded, "brain.turn")
     assert (failed.outcome, failed.error) == ("failed", "RuntimeError: no clock")
 
@@ -1135,7 +1134,7 @@ async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_an
     try:
         with pytest.raises(RuntimeError, match="no voice"):
             await asyncio.wait_for(brain.ask("write", asks), 5)
-        await until(lambda: len(said) == 2)
+        await brain.drained()
     finally:
         await brain.stop()
     # A second stop would press Escape again, and its Ctrl-C would land inside Claude Code's exit window.
@@ -1664,7 +1663,8 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         # The stage speaks from the wire while the brain runs, so a second one cannot join it.
         with pytest.raises(RuntimeError, match="joined the wire"), wire.joined(minded.llm):
             pass
-    assert [event.event for event in recorded[-2:] if isinstance(event, WideEvent)] == ["brain.run", "brain.shutdown"]
+    [ran], [shutdown] = events(recorded, "brain.run"), events(recorded, "brain.shutdown")
+    assert (ran.outcome, shutdown.outcome, shutdown.parent_id) == ("ok", "ok", launched.span_id)
     # Gone with the brain: the wire forwards everything again.
     with wire.joined(minded.llm):
         pass
