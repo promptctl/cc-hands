@@ -285,6 +285,9 @@ class Outcome:
     meanwhile: Callable[["FakeLit"], object] = lambda _: None
     reason: str | None = None
     exports: Ran | None = None
+    # Set as lit is asked; lit answers only once `answer` is.
+    asked: asyncio.Event | None = None
+    answer: asyncio.Event | None = None
     gone: bool = False
 
 
@@ -326,6 +329,9 @@ class FakeLit:
                 return self.exports
             ranked = [{**each, "rank": f"{at:04d}"} for at, each in enumerate(self.issues)]
             return Ran(0, export(ranked, self.relations, self.comments), b"")
+        if outcome.asked is not None and outcome.answer is not None:
+            outcome.asked.set()
+            await outcome.answer.wait()
         outcome.meanwhile(self)
         ran = self.written(command, rest) if outcome.writes else said("")
         self.exports = outcome.exports or self.exports
@@ -500,6 +506,19 @@ async def test_a_write_whose_backlog_cannot_be_read_again_is_not_known(tmp_path:
 
 
 @pytest.mark.parametrize("write", WRITES)
+async def test_a_write_whose_request_is_cancelled_while_lit_is_asked_is_not_known(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: Case) -> None:
+    asked = asyncio.Event()
+    routes = routed(tmp_path, monkeypatch, FakeLit(write.backlog, {write.command: Outcome(asked=asked, answer=asyncio.Event())}))
+    request = asyncio.create_task(routes.post(write.path, **write.sent))
+    await asked.wait()
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    # lit may have written before the request ended, and no read after it settled whether it did.
+    assert routes.fact(write.event, write.step) == "unknown"
+
+
+@pytest.mark.parametrize("write", WRITES)
 async def test_a_write_lit_cannot_be_started_for_is_not_done_and_no_read_is_made_after_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: Case) -> None:
     lit = FakeLit(write.backlog, {write.command: Outcome(gone=True)})
     routes = routed(tmp_path, monkeypatch, lit)
@@ -520,7 +539,7 @@ async def test_a_drop_in_a_project_lit_does_not_track_is_refused_before_anything
     lit = FakeLit(DROP, {}, exports=UNTRACKED)
     routes = routed(tmp_path, monkeypatch, lit)
     assert await routes.post("/backlog/rank", ticket="e.b", above="e.a") == (404, f"not moved: {routes.project} has no backlog: lit has no workspace there")
-    assert lit.calls == ["export"] and routes.fact("backlog.ranked", "ranked") == "no"
+    assert lit.calls == ["export"] and "ranked" not in routes.event("backlog.ranked").facts
 
 
 def unranked_target(lit: FakeLit) -> None:
@@ -534,7 +553,7 @@ async def test_an_epic_made_that_cannot_be_ranked_where_asked_is_said_made_at_th
     status, body = await routes.post("/backlog/level", ticket="w.a", level="high")
     event = routes.event("backlog.leveled")
     assert (status, body) == (409, f"lit made {event.facts['epic']}, wake word - high, at the bottom of its frame, and it cannot be ranked above w: the backlog has no ticket w")
-    assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("yes", "no", "no") and lit.calls == ["export", "new", "export"]
+    assert event.facts["created"] == "yes" and not {"ranked", "moved", "placed"} & event.facts.keys() and lit.calls == ["export", "new", "export"]
 
 
 async def test_a_drop_reads_the_backlog_once_after_its_rank_and_answers_with_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -600,7 +619,7 @@ async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_before_anything_i
     routes = routed(tmp_path, monkeypatch, lit)
     status, body = await routes.post("/backlog/note", ticket="page-nope", text="Split it")
     assert (status, body) == (404, f"not noted: lit holds no ticket page-nope in {routes.project}")
-    assert lit.calls == ["export"] and routes.fact("backlog.noted", "noted") == "no"
+    assert lit.calls == ["export"] and "noted" not in routes.event("backlog.noted").facts
 
 
 async def test_a_note_is_kept_only_where_the_page_signed_the_comment_that_says_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1067,20 +1086,21 @@ async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_p
 @pytest.mark.parametrize(
     "before_rank, status, ranked, moved",
     [
-        ('echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1', 409, "no", "no"),
+        ('echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1', 409, "no", None),
         (f'{LIT} "$@" >/dev/null\nkill -9 $$', 204, "yes", "yes"),
     ],
     ids=["refused", "killed after writing"],
 )
 async def test_a_rank_lit_fails_after_the_epic_is_made_is_settled_by_the_backlog_after_it(
-    page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_rank: str, status: int, ranked: str, moved: str
+    page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_rank: str, status: int, ranked: str, moved: str | None
 ) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     stub_lit(tmp_path, monkeypatch, rank=before_rank)
     answered, body = await leveled(page, workspace, hey, "high")
     [event] = page.events("backlog.leveled")
     assert answered == status, body
-    assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("yes", ranked, moved)
+    # The move is never asked of lit where the epic's rank does not hold.
+    assert (event.facts["created"], event.facts["ranked"], event.facts.get("moved")) == ("yes", ranked, moved)
     assert status == 204 or body.startswith(f"the backlog lit holds after does not have {event.facts['epic']} above ")
 
 
@@ -1097,7 +1117,7 @@ async def test_a_ticket_whose_epic_is_inside_an_archived_one_is_refused_before_l
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     assert not [entry for entry in exported["issues"] if entry["title"] == "wake word - high"]
     [event] = page.events("backlog.leveled")
-    assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("no", "no", "no")
+    assert not {"created", "ranked", "moved", "placed"} & event.facts.keys()
     # The page is given no level for it, so it draws no buttons for it.
     response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)
     [shelved] = [node for node in (await response.json())["items"] if node["id"] == wake]
@@ -1160,7 +1180,7 @@ async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 409 and body.startswith("the backlog lit holds after does not have the epic wake word - high; lit exited 0: ")
     [event] = page.events("backlog.leveled")
-    assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("no", "no", "no") and "epic" not in event.facts
+    assert event.facts["created"] == "no" and not {"ranked", "moved"} & event.facts.keys() and "epic" not in event.facts
 
 
 @pytest.mark.outside
@@ -1199,7 +1219,7 @@ async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_before_lit_is_ask
     status, body = await noted(page, workspace, "page-nope", "Split it")
     assert (status, body) == (404, f"not noted: lit holds no ticket page-nope in {workspace.root}")
     [event] = page.events("backlog.noted")
-    assert event.outcome == "failed" and event.facts["noted"] == "no"
+    assert event.outcome == "failed" and "noted" not in event.facts
 
 
 @pytest.mark.outside
@@ -1208,7 +1228,7 @@ async def test_a_note_for_a_flag_is_refused_before_lit_is_asked(page: Page, work
     # lit would read it as its own flag, and `--help` exits 0 keeping nothing; no ticket lit holds is one.
     assert await noted(page, workspace, "--help", "Split it") == (404, f"not noted: lit holds no ticket --help in {workspace.root}")
     [event] = page.events("backlog.noted")
-    assert event.outcome == "failed" and event.facts["noted"] == "no"
+    assert event.outcome == "failed" and "noted" not in event.facts
 
 
 def actors(workspace: Workspace) -> list[tuple[str, str]]:
@@ -1264,7 +1284,7 @@ async def test_a_note_whose_lit_is_gone_for_the_write_says_nothing_was_noted(pag
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     lit_gone_after_export(tmp_path, monkeypatch)
     status, body = await noted(page, workspace, hey, "Split it")
-    assert status == 502 and body.startswith(f"lit could not be started in {workspace.root}: ")
+    assert status == 502 and body.startswith(f"not noted: lit could not be started in {workspace.root}: ")
     [event] = page.events("backlog.noted")
     assert event.outcome == "failed" and event.facts["noted"] == "no"
 
@@ -1275,7 +1295,7 @@ async def test_a_rank_whose_lit_is_gone_for_the_write_says_nothing_was_moved(pag
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     lit_gone_after_export(tmp_path, monkeypatch)
     status, body = await moved(page, workspace, parser, above=mic)
-    assert status == 502 and body.startswith(f"lit could not be started in {workspace.root}: ")
+    assert status == 502 and body.startswith(f"not moved: lit could not be started in {workspace.root}: ")
     assert workspace.order(mic, parser) == [mic, parser]
     [event] = page.events("backlog.ranked")
     assert event.outcome == "failed" and event.facts["ranked"] == "no"
@@ -1287,9 +1307,9 @@ async def test_a_level_whose_lit_is_gone_for_its_first_write_says_nothing_was_le
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     lit_gone_after_export(tmp_path, monkeypatch)
     status, body = await leveled(page, workspace, hey, "high")
-    assert status == 502 and body.startswith(f"lit could not be started in {workspace.root}: ")
+    assert status == 502 and body.startswith(f"not leveled: lit could not be started in {workspace.root}: ")
     [event] = page.events("backlog.leveled")
-    assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("no", "no")
+    assert event.outcome == "failed" and event.facts["created"] == "no" and "moved" not in event.facts
 
 
 @pytest.mark.outside

@@ -2235,12 +2235,13 @@ keeps a moved ticket's rank, so once moved it is ranked below the last other ope
 it is checked against to the read that shows it, so two pages never both make one level's epic. Each of a press's writes
 is settled by the one read after it, as a drop's rank is, and the press goes on from that read: the epic made, found by
 its title and topic; the epic where it was ranked; the ticket in the epic; and the ticket last among the epic's open
-tickets. A write that read does not have is a conflict. An answer refused before lit wrote anything opens with what was
-not done ("not moved", "not leveled", "not noted"); one that stopped after a write says what the read after it shows,
-since lit may have written. Each press is one `backlog.leveled` event, with the ticket, the level, the epic it went
+tickets. A write that read does not have is a conflict. While no lit has run for a request, its answer opens with what was
+not done ("not moved", "not leveled", "not noted"); once one has, it says what the read after shows, since lit may have
+written. Each press is one `backlog.leveled` event, with the ticket, the level, the epic it went
 into, and whether the read after each write has the epic made, the epic ranked, the ticket in it, and the ticket last
-there, each "yes", "no", "unknown" where the backlog could not be read again, or "unneeded" where the backlog had it
-already, each beside what lit said of it (`<fact>_said`), and why it was refused or failed. A level epic carries its topic, so a ticket in `wake word - high` pressed Low goes to `wake
+there, each "yes", "no", "unknown" from when lit is asked until the read after settles it (and where it could not be
+read, or the request was cancelled meanwhile), or "unneeded" where the backlog had it already, each beside what lit said
+of it (`<fact>_said`), and why it was refused or failed. A step the press never reached is not on its event. A level epic carries its topic, so a ticket in `wake word - high` pressed Low goes to `wake
 word - low`.
 A press shows on its card at once and nothing is redrawn, so the next card is where it was and a person goes down the
 list pressing: nothing on the page moves on a press, a note's save, or either's answer, and what went wrong is said over
