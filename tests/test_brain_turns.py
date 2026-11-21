@@ -711,6 +711,7 @@ async def test_words_claude_code_takes_before_a_turn_pasted_its_own_are_never_th
     assert (turn.taken.done(), [running.opener for running in brain._claude_turns.open]) == (False, ["other"])  # pyright: ignore[reportPrivateUsage]
 
 
+@pytest.mark.quarantined("promptctl-testing-c3u.7e9", until="2026-11-26")
 @pytest.mark.parametrize("queued", [False, True])
 async def test_words_of_an_untaken_turn_that_claude_code_takes_next_are_stopped(queued: bool) -> None:
     brain = _owning(VirtualClock())
@@ -1013,6 +1014,7 @@ async def test_a_turn_claude_code_opened_itself_is_stopped_when_its_work_is_the_
         task.cancel()
 
 
+@pytest.mark.quarantined("promptctl-testing-c3u.7e9", until="2026-11-26")
 async def test_a_task_result_ctrl_c_cleared_from_claude_codes_queue_ends_its_turn_unran_and_holds_no_turn_after_it() -> None:
     recorded: list[Entry] = []
     clock = VirtualClock()

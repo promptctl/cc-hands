@@ -534,6 +534,18 @@ async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page
 
 @pytest.mark.outside
 @real_lit
+async def test_a_rank_lit_made_in_a_project_it_then_no_longer_tracks_says_it_was_ranked_and_why(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    # lit ranks, and the workspace is gone before the read after.
+    stub_lit(tmp_path, monkeypatch, rank=f'{LIT} "$@" || exit\nrm -rf .git\nexit 0')
+    status, body = await moved(page, workspace, parser, above=mic)
+    assert status == 502 and body.startswith(f"lit ranked {parser} as it was asked to go above {mic}, and lit no longer tracks {workspace.root}: ")
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.error == body and event.facts["ranked"] == "yes"
+
+
+@pytest.mark.outside
+@real_lit
 async def test_a_rank_lit_made_whose_backlog_could_not_be_read_again_says_it_was_ranked(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     ranked = tmp_path / "ranked"
@@ -641,8 +653,8 @@ async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_a
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     stub_lit(tmp_path, monkeypatch, parent='echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5')
     status, body = await leveled(page, workspace, hey, "high")
-    assert status == 502 and body.startswith("not leveled: ") and "workspace_busy" in body
     [event] = page.events("backlog.leveled")
+    assert status == 502 and body.startswith(f"not leveled: lit made {event.facts['epic']}, wake word - high, and ranked it ") and f", and did not move {hey} into it: " in body and "workspace_busy" in body
     assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("yes", "no")
     # The epic stands made and empty, and the next press puts the ticket in it rather than making another.
     monkeypatch.undo()
@@ -658,9 +670,9 @@ async def test_a_move_lit_stops_without_a_reason_is_said_to_be_unknown(page: Pag
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     stub_lit(tmp_path, monkeypatch, parent=f'{LIT} "$@" >/dev/null\nkill -9 $$')
     status, body = await leveled(page, workspace, hey, "low")
-    assert status == 502 and body.startswith(f"whether lit moved {hey} into ") and "is not known" in body
     [event] = page.events("backlog.leveled")
-    assert event.outcome == "failed" and event.facts["moved"] == "unknown"
+    assert status == 502 and body.startswith(f"lit made {event.facts['epic']}, wake word - low, and ranked it ") and f", and whether it moved {hey} into it is not known: " in body
+    assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("yes", "unknown")
 
 
 @pytest.mark.outside
@@ -893,6 +905,46 @@ async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: 
     assert status == 502 and body.startswith(f"whether lit kept the note on {hey} is not known: ")
     [event] = page.events("backlog.noted")
     assert event.outcome == "failed" and event.facts["noted"] == "unknown"
+
+
+def lit_gone_after_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """lit answers the page's read of the backlog and is gone from PATH for whatever the page asks it next."""
+    stub_lit(tmp_path, monkeypatch, export='rm -f "$0"')
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_note_with_no_lit_to_start_says_nothing_was_noted(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    status, body = await noted(page, workspace, "page-a", "Split it")
+    assert status == 502 and body.startswith(f"not noted: lit could not be started in {workspace.root}: ")
+    [event] = page.events("backlog.noted")
+    assert event.outcome == "failed" and event.facts["noted"] == "no"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_rank_whose_lit_is_gone_for_the_write_says_nothing_was_moved(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    lit_gone_after_export(tmp_path, monkeypatch)
+    status, body = await moved(page, workspace, parser, above=mic)
+    assert status == 502 and body.startswith(f"not moved: lit could not be started in {workspace.root}: ")
+    assert workspace.order(mic, parser) == [mic, parser]
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.facts["ranked"] == "no"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_level_whose_lit_is_gone_for_its_first_write_says_nothing_was_leveled(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    lit_gone_after_export(tmp_path, monkeypatch)
+    status, body = await leveled(page, workspace, hey, "high")
+    assert status == 502 and body.startswith(f"not leveled: lit could not be started in {workspace.root}: ")
+    [event] = page.events("backlog.leveled")
+    assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("no", "no")
 
 
 @pytest.mark.outside
