@@ -48,9 +48,13 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
     return sessions
 
 
+async def reached(_config: Config) -> None:
+    """Every settings edit reachable: no test here weighs one."""
+
+
 def tools(sessions: Sessions, home: Home, record: Record = lambda _: None, acting: Callable[[], None] = lambda: None) -> dict[str, Tool]:
     """The tools as the daemon gives them, focus defaulting and each call its event in `record`."""
-    given = intermediary_tools(sessions, SummaryStore(Summaries(home.root / "summaries.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(SYSTEM, lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(home, Settings(None, Config()), lambda _config: None), Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, Library(SYSTEM, lambda: []), DEFAULT, SampleLines(home)), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": str(home.root)}, acting)
+    given = intermediary_tools(sessions, SummaryStore(Summaries(home.root / "summaries.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(SYSTEM, lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(home, Settings(None, Config()), reached), Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, Library(SYSTEM, lambda: []), DEFAULT, SampleLines(home)), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": str(home.root)}, acting)
     return {tool.name: audited(SYSTEM, tool, record) for tool in given}
 
 

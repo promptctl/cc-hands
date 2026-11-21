@@ -6,7 +6,6 @@ Neutral to both callers: the brain's tools (`hands.voice.tools`) and the phone's
 """
 
 import asyncio
-import functools
 from collections.abc import Callable
 from typing import Protocol
 
@@ -26,7 +25,7 @@ class OwnModel(Protocol):
 
     def running(self) -> str: ...
 
-    def weigh(self, model: str) -> Callable[[], None]: ...
+    async def weigh(self, model: str) -> Callable[[], None]: ...
 
 
 class BargedIn(Rejected):
@@ -49,7 +48,7 @@ async def switch_model(own: OwnModel, player: Heard, model: str) -> Result:
     weighing, saying, and keeping is the same whoever asks.
     """
     async with own.changing:
-        keep = await off_loop(functools.partial(own.weigh, model), "weighing a model chosen by voice")
+        keep = await own.weigh(model)
         line = f"Switching to {model.strip()}. I'll be back in a few seconds."
         # [LAW:no-ambient-temporal-coupling] written only once heard: the edit restarts hands, which would cut the line off.
         if not await player.heard(hands_says(line)):

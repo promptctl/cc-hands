@@ -14,13 +14,17 @@ from pathlib import Path
 
 from hands.clock import SYSTEM
 from hands.daemon.cli import launch
-from hands.daemon.config import edited, load
+from hands.daemon.config import Config, edited, load
 from hands.daemon.starting import Ended, Start, Stop, execv, keep_beating
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog
 from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.registry import Sessions
+
+
+async def reached(_settings: Config) -> None:
+    """Every edit reachable: the stand-in reaches no model."""
 
 
 def main() -> None:
@@ -42,7 +46,7 @@ def main() -> None:
         beating.cancel()
         return Ended(None, sessions.live_count())
 
-    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, lambda _settings: None, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
+    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, reached, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
         case "quit":
             return
         case "restart":

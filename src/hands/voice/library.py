@@ -6,13 +6,13 @@ hands.
 """
 
 import asyncio
-import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from huggingface_hub import list_repo_files
 
 from hands.clock import Clock
+from hands.sessions.child import run
 
 LIBRARY_REPO = "kyutai/tts-voices"
 LIBRARY_URL_PREFIX = f"hf://{LIBRARY_REPO}/"
@@ -33,6 +33,8 @@ LISTING_SECONDS = 60 * 60.0
 
 # The keychain item the Hugging Face token is kept under.
 KEYCHAIN_ITEM = "HF_TOKEN"
+# `security` answers at once unless the keychain is locked and asks for its password, which nobody may be there to type.
+KEYCHAIN_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -98,7 +100,7 @@ class Library:
             return Found(matches, listing.listed_at, from_cache)
 
 
-def hub_token(environment: Mapping[str, str]) -> str | None:
+async def hub_token(environment: Mapping[str, str], clock: Clock) -> str | None:
     """The Hugging Face token the cloning weights are fetched with: the environment's where it has one, else the keychain's,
     else None. A voice whose weights need a token and get none fails at its choice, naming the cloning model.
 
@@ -106,13 +108,13 @@ def hub_token(environment: Mapping[str, str]) -> str | None:
     environment is the only channel it reads; cli.main writes the token there, once, where a process starts. The token is
     never logged or written to a file.
     """
-    return environment.get("HF_TOKEN") or _keychain_token()
+    return environment.get("HF_TOKEN") or await _keychain_token(clock)
 
 
-def _keychain_token() -> str | None:
+async def _keychain_token(clock: Clock) -> str | None:
     try:
         # `security` prints the password on stdout alone; neither stream is logged.
-        found = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w"], capture_output=True, text=True, check=False, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
+        found = await run("security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w", timeout=KEYCHAIN_SECONDS, clock=clock)
+    except (OSError, TimeoutError):
         return None
-    return found.stdout.strip() or None
+    return found.out.decode().strip() or None

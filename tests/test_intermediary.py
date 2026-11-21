@@ -38,9 +38,13 @@ AUTH = {"id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34", "name": "cc-hands, auth re
 FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "state": "working", "mode": "not reported yet"}
 
 
+async def reached(_config: Config) -> None:
+    """Every settings edit reachable: no test here weighs one."""
+
+
 def names(sessions: Sessions) -> list[str]:
     with tempfile.TemporaryDirectory() as home:
-        return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Summaries(Path(home) / "summaries.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(sessions.clock, lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(Home(Path(home)), Settings(None, Config()), lambda _config: None), Voices(Home(Path(home)), Player(lambda _entry: None).lines, lambda _voice: None, Library(sessions.clock, lambda: []), DEFAULT, SampleLines(Home(Path(home)))), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": home}, lambda: None)]
+        return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Summaries(Path(home) / "summaries.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(sessions.clock, lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(Home(Path(home)), Settings(None, Config()), reached), Voices(Home(Path(home)), Player(lambda _entry: None).lines, lambda _voice: None, Library(sessions.clock, lambda: []), DEFAULT, SampleLines(Home(Path(home)))), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": home}, lambda: None)]
 
 
 def test_the_tail_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools_and_says_it_is_current() -> None:

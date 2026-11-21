@@ -53,7 +53,7 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_declared
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.child import Ran
+from hands.sessions.child import Ran, run
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
@@ -121,6 +121,8 @@ PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\
 
 # `claude auth status` answers in about a second; one that has not answered in this long is not going to.
 AUTH_STATUS_SECONDS = 20.0
+# pgrep reads the process table in milliseconds; one that has not in this long is not going to.
+PGREP_SECONDS = 5.0
 # How long fritter has to start the brain and open its socket, and the brain to turn its input on.
 START_SECONDS = 10.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
@@ -646,7 +648,7 @@ type Method = Literal["claudeai", "console"]
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
-def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
+def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method, clock: Clock) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
     account it holds after.
 
@@ -661,12 +663,14 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
+    # [LAW:single-enforcer] exception: not `run`, since this one is the person's at the terminal. It reads their keys in
+    # the terminal's foreground group, which their Ctrl-C ends with hands, and has no time limit while they answer it.
     signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
     answered(config_dir)
-    held = logged_in(config_dir, base_url, inherited)
+    held = asyncio.run(logged_in(config_dir, base_url, inherited, clock))
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
     # brain on another login than the one asked for.
     if held.method != AUTH_METHODS[method]:
@@ -708,22 +712,15 @@ def account_kept_out(config_dir: Path) -> None:
         raise Unstartable(f"the brain would load its account's {' and '.join(synced)}: {fix}")
 
 
-def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
+async def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str], clock: Clock) -> Account:
     """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
     none, or one whose requests do not reach hands' proxy."""
     try:
-        # A timed-out child is killed and reaped by run itself.
-        asked = subprocess.run(
-            [brain_claude(config_dir), "auth", "status"],
-            env=environment(config_dir, base_url, inherited),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=AUTH_STATUS_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
+        asked = await run(str(brain_claude(config_dir)), "auth", "status", timeout=AUTH_STATUS_SECONDS, env=environment(config_dir, base_url, inherited), clock=clock)
+    except TimeoutError:
         raise NotLoggedIn(f"`claude auth status` for the brain did not answer in {AUTH_STATUS_SECONDS:.0f}s") from None
     try:
-        status = Payload.parse(asked.stdout)
+        status = Payload.parse(asked.out)
         if not status.flag("loggedIn"):
             raise NotLoggedIn("the brain has no login: `hands login` gives it one")
         # [LAW:no-silent-failure] hands' proxy, which hears what the brain says, forwards to Anthropic's API alone, so a
@@ -732,7 +729,7 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
             raise NotLoggedIn(f"the brain reaches Claude through {provider}, not the Anthropic API hands' proxy forwards to: {config_dir / 'settings.json'} or the machine's managed settings choose {provider}")
         return Account(status.text("authMethod"), status.optional_text("email") or status.optional_text("apiKeySource"))
     except Rejected as error:
-        raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
+        raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.out[:200]!r} {asked.err[:200]!r}, not its status: {error}") from None
 
 
 @dataclass(frozen=True)
@@ -1938,7 +1935,7 @@ async def _typist(clock: Clock, running: InTmux, sockets: Path, session: Session
     while clock.now() < deadline and not running.exit.done():
         found = [path for path in sockets.rglob("*") if path.is_socket()]
         wrapper = running.fritter
-        child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
+        child = None if wrapper is None else await _child_of(clock, wrapper)
         if found and wrapper is not None and child is not None:
             typist = Typist(session, found[0], child)
             try:
@@ -1969,7 +1966,7 @@ def exited(code: int) -> str:
     return "the brain's tmux session was ended under it" if code == PANE_ENDED else f"fritter exited ({code})"
 
 
-def _child_of(pid: int) -> int | None:
+async def _child_of(clock: Clock, pid: int) -> int | None:
     """The process `pid` started: fritter starts one, the claude it wraps."""
-    found = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    found = (await run("pgrep", "-P", str(pid), timeout=PGREP_SECONDS, clock=clock)).out.split()
     return int(found[0]) if found else None

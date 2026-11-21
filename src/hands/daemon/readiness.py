@@ -13,9 +13,8 @@ starts, and a daemon that is up says nothing about any of them, so this is where
 import os
 import re
 import shutil
-import subprocess
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import get_args
 
 from hands.brain import pinned
+from hands.clock import Clock
 from hands.core.effects import Fritter
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
@@ -31,6 +31,7 @@ from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
 from hands.sessions import heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions.child import run, settled
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
@@ -75,7 +76,7 @@ class Unknown:
 Finding = Ready | Missing | Unknown
 
 # The tmux pane whose keys reach each of a list of processes, as `hands.sessions.tmux.keyboards` reads it.
-Keyboards = Callable[[Sequence[int]], list[Keyboard]]
+Keyboards = Callable[[Sequence[int]], Awaitable[list[Keyboard]]]
 
 # `claude plugin list` answers in a quarter of a second; one that has not answered in this long is not going to.
 LIST_TIMEOUT_SECONDS = 20.0
@@ -84,12 +85,13 @@ VERSION_TIMEOUT_SECONDS = 30.0
 INSTALL_CLAUDE = "`curl -fsSL https://claude.ai/install.sh | bash`"
 
 
-def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
+async def check(home: Home, path: str, granted: bool, reached: Finding, running: Finding, keyboards: Keyboards, clock: Clock) -> list[Finding]:
     """Every step, in the README's order. `path` is the PATH sessions are started from; `granted`, this terminal's grant;
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), tmux(path), installed(path), shim(home, path), plugin(home, path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
+    hands_on_path, plugin_installed, running_sessions = await settled(installed(path, clock), plugin(home, path, clock), sessions(home, path, keyboards))
+    return [claude(path), portaudio(), tmux(path), hands_on_path, shim(home, path), plugin_installed, brain_claude(home), reached, grant(granted), running, running_sessions]
 
 
 def claude(path: str) -> Finding:
@@ -122,7 +124,7 @@ def tmux(path: str) -> Finding:
     return Ready("tmux", f"tmux is there for the brain to run in: {found}")
 
 
-def installed(path: str) -> Finding:
+async def installed(path: str, clock: Clock) -> Finding:
     """Whether `hands` on this PATH, whose `hands-shim` and `hands-attention` Claude Code runs for the plugin's hooks and skills, is this hands."""
     this = f"hands {version('hands')}"
     found = shutil.which("hands", path=path)
@@ -133,17 +135,19 @@ def installed(path: str) -> Finding:
             "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH",
         )
     try:
-        said = subprocess.run([found, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS)
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        said = await run(found, "--version", timeout=VERSION_TIMEOUT_SECONDS, clock=clock)
+        out, err = said.out.decode(), said.err.decode()
+    # A ValueError is output that is not text.
+    except (OSError, ValueError, TimeoutError) as error:
         return Unknown("`hands` on PATH", f"cannot ask {found} which hands it is: {error}")
     if said.returncode != 0:
-        return Unknown("`hands` on PATH", f"`{found} --version` failed ({said.returncode}), so which hands it is is unknown: {said.stderr.strip()}")
+        return Unknown("`hands` on PATH", f"`{found} --version` failed ({said.returncode}), so which hands it is is unknown: {err.strip()}")
     # [LAW:one-source-of-truth] the plugin's hooks are whichever hands Claude Code finds, so one that is not this hands
     # is said here, where this hands' own lines would otherwise vouch for it.
-    if said.stdout.strip() != this:
+    if out.strip() != this:
         return Missing(
             "another `hands` first on PATH",
-            f"`hands` on this PATH, {found}, is {said.stdout.strip()}, not this {this}, so sessions run its hooks",
+            f"`hands` on this PATH, {found}, is {out.strip()}, not this {this}, so sessions run its hooks",
             "put this one first on PATH, or install it again",
         )
     # [LAW:one-source-of-truth] the plugin's hooks name `hands-shim` alone: hands installs it beside `hands`, and a hands
@@ -169,7 +173,7 @@ def brain_claude(home: Home) -> Finding:
     return Ready(f"brain's Claude Code {pinned.VERSION}", f"the brain runs Claude Code {pinned.VERSION}, hands' own copy: {found}")
 
 
-def configured(home: Home, environment: Mapping[str, str]) -> Finding:
+async def configured(home: Home, environment: Mapping[str, str], clock: Clock) -> Finding:
     """Whether the brain has the login it reaches its model with."""
     try:
         config = load(home).config
@@ -177,7 +181,7 @@ def configured(home: Home, environment: Mapping[str, str]) -> Finding:
         # The refusal names the file and what is wrong with it, so it is the detail, and the line names the file to mend.
         return Missing("settings unreadable", f"hands cannot read its settings: {error}", f"correct {home.config}")
     try:
-        reached: Finding = reaching(resolve(config.llm, home, environment))
+        reached: Finding = reaching(await resolve(config.llm, home, environment, clock))
     except Rejected as error:
         # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
         # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
@@ -229,24 +233,18 @@ def plugin_environment(home: Home, caller: Mapping[str, str]) -> dict[str, str]:
     return {**{name: value for name, value in caller.items() if not (brain and name == "CLAUDE_CONFIG_DIR")}, **wrapper.EVERY_RUN}
 
 
-def plugin(home: Home, path: str) -> Finding:
+async def plugin(home: Home, path: str, clock: Clock) -> Finding:
     """Whether Claude Code, as `claude` on this PATH runs it, has hands' plugin installed and enabled."""
     # [LAW:one-source-of-truth] Claude Code is asked, never its files read: where it keeps its plugins is its own.
     try:
-        listed = subprocess.run(
-            PLUGIN_LIST,
-            env={**plugin_environment(home, os.environ), "PATH": path},
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=LIST_TIMEOUT_SECONDS,
-        )
+        listed = await run(*PLUGIN_LIST, timeout=LIST_TIMEOUT_SECONDS, env={**plugin_environment(home, os.environ), "PATH": path}, clock=clock)
+        out, err = listed.out.decode(), listed.err.decode()
     # A ValueError is output that is not text.
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+    except (OSError, ValueError, TimeoutError) as error:
         return Unknown("plugin", f"cannot ask `claude plugin list` whether the plugin {PLUGIN_ID} is installed: {error}")
     if listed.returncode != 0:
-        return Unknown("plugin", f"`claude plugin list` failed ({listed.returncode}), so whether the plugin {PLUGIN_ID} is installed is unknown: {listed.stderr.strip()}")
-    return plugin_listed(listed.stdout)
+        return Unknown("plugin", f"`claude plugin list` failed ({listed.returncode}), so whether the plugin {PLUGIN_ID} is installed is unknown: {err.strip()}")
+    return plugin_listed(out)
 
 
 def installed_everywhere(raw: str) -> set[bool]:
@@ -322,7 +320,7 @@ def grant(granted: bool) -> Ready | Missing:
     )
 
 
-def sessions(home: Home, path: str, keyboards: Keyboards) -> Finding:
+async def sessions(home: Home, path: str, keyboards: Keyboards) -> Finding:
     """Whether every running session can be typed into, those hands knows of and those it does not, each by the fritter
     that wrapped it or the tmux pane in front of it, as `keyboards` reads them. Nothing is removed or dialled."""
     try:
@@ -336,7 +334,7 @@ def sessions(home: Home, path: str, keyboards: Keyboards) -> Finding:
     # One read of the panes, for every session the check looks at.
     joining = found.sessions if isinstance(found, Unrecorded) else []
     pids = [*(member.pid for member in running), *(session.process.pid for session in joining)]
-    return sessions_found(running, listening, unreadable, found, dict(zip(pids, keyboards(pids), strict=True)))
+    return sessions_found(running, listening, unreadable, found, dict(zip(pids, await keyboards(pids), strict=True)))
 
 
 SESSIONS = "running sessions"

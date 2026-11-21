@@ -33,7 +33,7 @@ would be a flag is a variant with a real alternative, or it does not exist.
 
 import asyncio
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -47,7 +47,6 @@ from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.threads import off_loop
 from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
 
@@ -102,7 +101,7 @@ def load(home: Home, model: str | None = None) -> Settings:
     return Settings(held, _settings(home, held, model), model)
 
 
-async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
+async def edited(home: Home, record: Record, reachable: Callable[[Config], Awaitable[object]], running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
     """The edit, once the file holds settings other than `running`, the ones the run was started on: written, rewritten,
     or removed.
 
@@ -127,8 +126,7 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
             if settings != running.config:
-                # reachable blocks, on the brain's login check, on a thread a stop does not wait for.
-                await off_loop(partial(reachable, settings), "weighing a settings edit")
+                await reachable(settings)
                 if _held(home) == now:
                     return SettingsEdited(path=str(home.config), refused=None)
                 # Saved over while weighed: no verdict, so these bytes are weighed again should they come back.
@@ -147,7 +145,7 @@ class OwnModel:
     starting again on it once `edited` has weighed it.
     """
 
-    def __init__(self, home: Home, running: Settings, reachable: Callable[[Config], object]) -> None:
+    def __init__(self, home: Home, running: Settings, reachable: Callable[[Config], Awaitable[object]]) -> None:
         self._home = home
         self._running = running
         self._reachable = reachable
@@ -158,7 +156,7 @@ class OwnModel:
         """The model the run is on: the one --model named, or the file's as it started."""
         return self._running.config.llm.model
 
-    def weigh(self, model: str) -> Callable[[], None]:
+    async def weigh(self, model: str) -> Callable[[], None]:
         """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
         a start on it could not reach its model: weighed here as `edited` weighs an edit by hand, so a choice by voice is
         refused while the user is there to hear why, never written to be refused after."""
@@ -176,7 +174,7 @@ class OwnModel:
             # The file names it, and the run is not on it: an edit `edited` has yet to take, or one it refused, which the
             # same bytes written again would not change. Which of the two is not known here, so the reason names both.
             raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
-        self._reachable(chosen)
+        await self._reachable(chosen)
         return partial(_keep, self._home, held, edited)
 
 

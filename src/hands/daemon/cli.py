@@ -26,7 +26,6 @@ from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, cancelled, execv, invocation, refuse, start
-from hands.core.tmux import Keyboard
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
@@ -240,7 +239,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     # token a command needs is in the process's environment by then. After parsing, so --help and --version read nothing.
     from hands.voice.library import hub_token
 
-    token = hub_token(os.environ)
+    token = asyncio.run(hub_token(os.environ, clock))
     if token is not None:
         os.environ["HF_TOKEN"] = token
     try:
@@ -546,7 +545,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, clock, home), settings, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -624,11 +623,11 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def reachable(home: Home, settings: Config) -> None:
+async def reachable(clock: Clock, home: Home, settings: Config) -> None:
     """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
     restart an edit asks for, so an edit hands could not start on, its brain logged out among them, is refused and
     outlived, not restarted on."""
-    backend(settings.llm, home, os.environ)
+    await backend(settings.llm, home, os.environ, clock)
 
 
 def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
@@ -644,16 +643,16 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
     # This run is hands running, and the backend it reaches is the one it was configured on.
     running = readiness.Ready("hands running", f"hands is running here: pid {os.getpid()}")
 
-    def surveyed(read: Configured | CannotStart) -> None:
+    async def surveyed(read: Configured | CannotStart) -> None:
         match read:
             case Configured(voice=voice):
                 reached: readiness.Finding = readiness.reaching(voice.llm)
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
-        survey(readiness.check(home, path, True, reached, running, partial(keyboards, clock)))
+        survey(await readiness.check(home, path, True, reached, running, partial(tmux.keyboards, clock, environment=os.environ), clock))
 
-    return lambda stop: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)), clock)
+    return lambda stop: run(lambda environment: configured_from(home, settings, environment, clock), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, clock, home)), clock)
 
 
 def start_indicator(home: Home) -> int:
@@ -756,8 +755,7 @@ def show_segment(clock: Clock, home: Home) -> int:
 
 
 def check(clock: Clock, home: Home, granted: bool, verbose: bool) -> exits.Exit:
-    reached = readiness.configured(home, os.environ)
-    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, clock.wall()), partial(keyboards, clock))
+    findings = asyncio.run(checked(clock, home, granted))
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
     missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]
@@ -778,9 +776,10 @@ def undone(findings: Sequence[readiness.Finding]) -> str:
     return "; ".join(f"{finding.step}: {finding.said.partition("\n")[0]}" for finding in findings)
 
 
-def keyboards(clock: Clock, pids: Sequence[int]) -> list[Keyboard]:
-    """The tmux pane whose keys reach each of `pids`, read on a loop of its own: the readiness check runs on none."""
-    return asyncio.run(tmux.keyboards(clock, pids, os.environ))
+async def checked(clock: Clock, home: Home, granted: bool) -> list[readiness.Finding]:
+    """`hands check`'s findings, on this command's loop."""
+    reached = await readiness.configured(home, os.environ, clock)
+    return await readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, clock.wall()), partial(tmux.keyboards, clock, environment=os.environ), clock)
 
 
 def survey(findings: Sequence[readiness.Finding]) -> None:
@@ -860,7 +859,7 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
             runs_from = None
     wide.annotate(runs_from=None if runs_from is None else str(runs_from))
     with tempfile.TemporaryDirectory(prefix="hands-update-") as work:
-        installed = update.install(home, prefix, runs_from, os.environ, Path(work), update.run)
+        installed = asyncio.run(update.install(home, prefix, runs_from, os.environ, Path(work), partial(update.run, clock=clock)))
     # [LAW:nothing-unseen] each step, the command it ran, and how it exited; the commit installed, or the step that failed.
     match installed:
         case update.Failed(step=step, said=why, ran=ran):
@@ -942,7 +941,7 @@ def login(clock: Clock, home: Home, method: "Method", record: audit.Record) -> e
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(home.brain, UPSTREAM, os.environ, method)
+            signed = brain_login(home.brain, UPSTREAM, os.environ, method, clock)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             return refused("hands login", 1, str(error))

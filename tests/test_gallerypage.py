@@ -122,7 +122,7 @@ class Own:
     def running(self) -> str:
         return self.running_on
 
-    def weigh(self, model: str) -> Callable[[], None]:
+    async def weigh(self, model: str) -> Callable[[], None]:
         if self.refused is not None:
             raise self.refused
         self.open_weighings += 1

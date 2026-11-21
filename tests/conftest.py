@@ -39,7 +39,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
 from hands.core.front import FrontUnread, InFront
@@ -353,7 +353,10 @@ KEYCHAIN_READER = library._keychain_token  # pyright: ignore[reportPrivateUsage]
 def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
     about but the one that checks the question, on KEYCHAIN_READER."""
-    monkeypatch.setattr(library, "_keychain_token", lambda: None)
+    async def unread(_clock: Clock) -> None:
+        return None
+
+    monkeypatch.setattr(library, "_keychain_token", unread)
 
 
 @pytest.fixture(autouse=True)

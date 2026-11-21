@@ -1,7 +1,7 @@
 """hands' own model: chosen by voice as an edit to config.toml, made only once the user has heard hands say it is switching."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
@@ -36,21 +36,25 @@ collector = "http://otel.example:4318"
 """
 
 
-def _own(home: Home, reachable: Callable[[Config], object] = lambda _config: None) -> config.OwnModel:
+async def _reached(_config: Config) -> None:
+    pass
+
+
+def _own(home: Home, reachable: Callable[[Config], Awaitable[object]] = _reached) -> config.OwnModel:
     return config.OwnModel(home, config.load(home), reachable)
 
 
-def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
+async def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    _own(home).weigh("claude-opus-5-5")()
+    (await _own(home).weigh("claude-opus-5-5"))()
     assert home.config.read_text() == SPOKEN_FILE.replace('model = "claude-sonnet-5-5"', 'model = "claude-opus-5-5"')
     assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
 
 
-def test_a_model_chosen_with_no_file_is_the_default_backend_on_that_model(tmp_path: Path) -> None:
+async def test_a_model_chosen_with_no_file_is_the_default_backend_on_that_model(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    _own(home).weigh(" claude-opus-5-5 ")()
+    (await _own(home).weigh(" claude-opus-5-5 "))()
     assert home.config.read_text() == '[llm]\nmodel = "claude-opus-5-5"\n'
     assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"))
 
@@ -73,65 +77,65 @@ def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_
         ("claude-opus-9", "hands runs Claude on .*, not claude-opus-9$"),
     ],
 )
-def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_path: Path, model: str, said: str) -> None:
+async def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_path: Path, model: str, said: str) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     with pytest.raises(Rejected, match=said):
-        _own(home).weigh(model)
+        await _own(home).weigh(model)
     assert home.config.read_text() == SPOKEN_FILE
 
 
-def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_ways_that_happens(tmp_path: Path) -> None:
+async def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_ways_that_happens(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     own = _own(home)
     # Saved while the run went on: an edit `edited` has yet to take, or refused.
     home.config.write_text(SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-5-5"))
     with pytest.raises(Rejected, match="names claude-opus-5-5 already and hands is not on it yet: an edit it is about to take, or one it refused.*hands restart"):
-        own.weigh(" claude-opus-5-5 ")
+        await own.weigh(" claude-opus-5-5 ")
 
 
-def test_a_model_a_start_could_not_reach_is_refused_before_it_is_written(tmp_path: Path) -> None:
+async def test_a_model_a_start_could_not_reach_is_refused_before_it_is_written(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
 
-    def unreachable(_settings: Config) -> None:
+    async def unreachable(_settings: Config) -> None:
         raise Rejected("the brain is not logged in")
 
     with pytest.raises(Rejected, match="not logged in"):
-        _own(home, unreachable).weigh("claude-opus-5-5")
+        await _own(home, unreachable).weigh("claude-opus-5-5")
     assert home.config.read_text() == SPOKEN_FILE
 
 
-def test_a_save_by_hand_after_the_choice_was_weighed_is_not_written_over(tmp_path: Path) -> None:
+async def test_a_save_by_hand_after_the_choice_was_weighed_is_not_written_over(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    keep = _own(home).weigh("claude-opus-5-5")
+    keep = await _own(home).weigh("claude-opus-5-5")
     home.config.write_text(SPOKEN_FILE + "# saved by hand\n")
     with pytest.raises(Rejected, match="saved after the choice was made"):
         keep()
     assert home.config.read_text() == SPOKEN_FILE + "# saved by hand\n"
 
 
-def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_path: Path) -> None:
+async def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_path: Path) -> None:
     kept = tmp_path / "dotfiles" / "hands.toml"
     kept.parent.mkdir()
     kept.write_text(SPOKEN_FILE)
     home = Home(tmp_path / "home")
     home.root.mkdir()
     home.config.symlink_to(kept)
-    _own(home).weigh("claude-opus-5-5")()
+    (await _own(home).weigh("claude-opus-5-5"))()
     assert home.config.is_symlink()
     assert 'model = "claude-opus-5-5"' in kept.read_text()
 
 
-def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
+async def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    flagged = config.OwnModel(home, config.load(home, "claude-haiku-4-5-20251001"), lambda _config: None)
+    flagged = config.OwnModel(home, config.load(home, "claude-haiku-4-5-20251001"), _reached)
     assert flagged.running() == "claude-haiku-4-5-20251001"
     with pytest.raises(Rejected, match=f"^hands was started with --model claude-haiku-4-5-20251001, which it keeps over {home.config} until it is started without it$"):
-        flagged.weigh("claude-opus-5-5")
+        await flagged.weigh("claude-opus-5-5")
     assert home.config.read_text() == SPOKEN_FILE
 
 
@@ -139,8 +143,8 @@ async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     running_on = config.load(home)
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, lambda _config: None, running_on, SYSTEM, period=0.01), 2.0))
-    config.OwnModel(home, running_on, lambda _config: None).weigh("claude-opus-5-5")()
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, _reached, running_on, SYSTEM, period=0.01), 2.0))
+    (await config.OwnModel(home, running_on, _reached).weigh("claude-opus-5-5"))()
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 
@@ -155,7 +159,7 @@ class FakeOwn:
     def running(self) -> str:
         return "claude-sonnet-5-5"
 
-    def weigh(self, model: str) -> Callable[[], None]:
+    async def weigh(self, model: str) -> Callable[[], None]:
         if self.refusal is not None:
             raise Rejected(self.refusal)
         return lambda: self.kept.append(model)

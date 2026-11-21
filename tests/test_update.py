@@ -18,10 +18,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
+import asyncio
+
 import pytest
 
+from conftest import VirtualClock
 from hands.brain.process import PLUGIN
-from hands.clock import Clock
+from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, update
 from hands.daemon.restart import Outcome, Restarted, reply
 from hands.daemon.starting import invocation
@@ -59,7 +62,8 @@ class Commands:
         # What `claude plugin list --json` prints: hands' plugin installed for the user, as the README installs it.
         self.listed = json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True}])
 
-    def __call__(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
+    # `clock` is the one `hands update` binds to the real run; these commands take no time to measure.
+    async def __call__(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], clock: Clock | None = None) -> Done:
         self.ran.append((tuple(argv), cwd))
         self.environments.append(env)
         if self.failing is not None and len(self.ran) - 1 == self.failing_at:
@@ -101,11 +105,11 @@ def events(home: Home) -> list[dict[str, Any]]:
     return [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line.get("event") == "hands.command"]
 
 
-def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Path) -> None:
+async def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     commands = Commands(tools_of_this_hands(tmp_path))
 
-    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+    installed = await update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     # Cloned fresh from master, installed on uv.lock's versions into this hands' own environment, and its fritter and
     # the brain's Claude Code installed by the hands just installed.
@@ -182,12 +186,12 @@ def test_where_hands_runs_from_is_the_target_its_update_brings_current(tmp_path:
     assert [update.parse_target(prefix, tool) for prefix in (other / ".venv", bare, broken / ".venv", renamed / "env")] == [update.Unsupported()] * 4
 
 
-def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> None:
+async def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> None:
     commands = Commands(tmp_path / "tools")
     elsewhere = tmp_path / "elsewhere" / ".venv"
     elsewhere.mkdir(parents=True)
 
-    installed = update.install(Home(tmp_path / "home"), elsewhere, None, {}, tmp_path / "work", commands)
+    installed = await update.install(Home(tmp_path / "home"), elsewhere, None, {}, tmp_path / "work", commands)
 
     # Its restart would start it again on what it runs now, so nothing is fetched or installed.
     assert [argv for argv, _cwd in commands.ran] == [("uv", "tool", "dir")]
@@ -220,11 +224,11 @@ def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(s
 CHECKOUT_STEPS = [Step.WHERE, Step.PULL, Step.COMMIT, Step.SYNC]
 
 
-def test_a_hands_run_from_a_checkout_pulls_it_and_syncs_it(tmp_path: Path) -> None:
+async def test_a_hands_run_from_a_checkout_pulls_it_and_syncs_it(tmp_path: Path) -> None:
     home, root = Home(tmp_path / "home"), a_checkout(tmp_path)
     commands = Commands(tmp_path / "tools")
 
-    installed = update.install(home, root / ".venv", root / ".venv", {}, tmp_path / "work", commands)
+    installed = await update.install(home, root / ".venv", root / ".venv", {}, tmp_path / "work", commands)
 
     # Pulled and synced in the checkout, with no clone of master and no uv tool install; the steps after, the fritter,
     # the brain, and the plugin, are the ones the tool environment's update runs.
@@ -240,11 +244,11 @@ def test_a_hands_run_from_a_checkout_pulls_it_and_syncs_it(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("failing", CHECKOUT_STEPS[1:])
-def test_a_checkout_that_cannot_be_pulled_or_synced_is_not_restarted_onto(failing: Step, tmp_path: Path) -> None:
+async def test_a_checkout_that_cannot_be_pulled_or_synced_is_not_restarted_onto(failing: Step, tmp_path: Path) -> None:
     root = a_checkout(tmp_path)
     commands = Commands(tmp_path / "tools", failing, steps=CHECKOUT_STEPS)
 
-    installed = update.install(Home(tmp_path / "home"), root / ".venv", None, {}, tmp_path / "work", commands)
+    installed = await update.install(Home(tmp_path / "home"), root / ".venv", None, {}, tmp_path / "work", commands)
 
     # Nothing after the failed step ran. A pull that failed changed nothing; once it has succeeded the checkout's source
     # is what a start runs, so a sync that fails after it leaves that commit in place: Unfinished, not "as it was".
@@ -282,7 +286,7 @@ from hands.daemon import cli, update
 
 home, tools, sha, log = sys.argv[1:]
 
-def run(argv, cwd, env):
+async def run(argv, cwd, env, clock):
     with open(log, "a") as file:
         file.write(json.dumps(list(argv)) + "\\n")
     if list(argv[:3]) == ["uv", "tool", "dir"]:
@@ -294,7 +298,9 @@ def run(argv, cwd, env):
     return update.Done(0, "", "")
 
 update.run = run
-sys.exit(cli.main(["--home", home, "update"]))
+# Through the `hands` script's own entry, as the brain runs it.
+sys.argv = ["hands", "--home", home, "update"]
+sys.exit(cli.entry())
 """
 
 
@@ -513,14 +519,14 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     assert facts["went_past"] == [{"type": "Advised", "step": "install-fritter", "said": said}]
 
 
-def test_an_install_fritter_whose_install_does_not_work_stops_the_update(tmp_path: Path) -> None:
+async def test_an_install_fritter_whose_install_does_not_work_stops_the_update(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
     broken = Done(Installing.BROKEN, "", "hands install-fritter: hands' package carries no fritter\n")
     commands = Commands(tools_of_this_hands(tmp_path), Step.INSTALL_FRITTER, broken)
 
     work = tmp_path / "work"
 
-    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+    installed = await update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     # Anything but the one exit it goes past is the step failing, the brain's Claude Code left uninstalled.
     assert isinstance(installed, update.Unfinished) and (installed.sha, installed.step) == (SHA, Step.INSTALL_FRITTER)
@@ -563,9 +569,19 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
 
 
 @pytest.mark.outside
-def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> None:
+async def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> None:
     # A warning uv or git prints is never taken for the path or the commit the update reads.
-    assert update.run([sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ) == Done(0, "/tools\n", "warning: stale\n")
+    assert await update.run([sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ, clock=SYSTEM) == Done(0, "/tools\n", "warning: stale\n")
+
+
+@pytest.mark.outside
+async def test_a_command_that_never_ends_is_killed_and_is_its_step_failing_with_why(tmp_path: Path) -> None:
+    # A fetch hung on a dead network is bounded: the update fails at that step, saying so, rather than waiting for ever.
+    clock = VirtualClock()
+    running = asyncio.create_task(update.run(["sleep", "3600"], tmp_path, os.environ, clock=clock))
+    await clock.sleeping(update.STEP_SECONDS)
+    clock.advance(update.STEP_SECONDS)
+    assert await running == Done(update.TIMED_OUT, "", f"sleep ran past {update.STEP_SECONDS:.1f}s")
 
 
 @pytest.mark.parametrize(
@@ -577,24 +593,24 @@ def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> Non
     ],
     ids=["none", "another-plugin", "project-scope-only"],
 )
-def test_a_user_who_never_installed_the_plugin_is_not_blocked_by_it(listed: str, tmp_path: Path) -> None:
+async def test_a_user_who_never_installed_the_plugin_is_not_blocked_by_it(listed: str, tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     commands = Commands(tools_of_this_hands(tmp_path))
     commands.listed = listed
 
-    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+    installed = await update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     # The list is asked and the plugin is not touched: a project's install is that project's to update.
     assert isinstance(installed, Installed)
     assert commands.ran == [step for step in expected(home, work) if step[0][:3] not in (("claude", "plugin", "marketplace"), ("claude", "plugin", "update"))]
 
 
-def test_no_claude_at_all_is_said_and_gone_past(tmp_path: Path) -> None:
+async def test_no_claude_at_all_is_said_and_gone_past(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     gone = Done(update.UNSTARTABLE, "", "[Errno 2] No such file or directory: 'claude'")
     commands = Commands(tools_of_this_hands(tmp_path), Step.PLUGIN_LIST, gone)
 
-    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+    installed = await update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     assert isinstance(installed, Installed)
     assert installed.advised == (update.Advised(Step.PLUGIN_LIST, gone.errors),)
@@ -602,23 +618,23 @@ def test_no_claude_at_all_is_said_and_gone_past(tmp_path: Path) -> None:
     assert commands.ran[-1] == (("rm", "-rf", str(home.root / "plugins")), work)
 
 
-def test_a_list_hands_cannot_read_leaves_master_installed_and_the_plugin_untouched(tmp_path: Path) -> None:
+async def test_a_list_hands_cannot_read_leaves_master_installed_and_the_plugin_untouched(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     commands = Commands(tools_of_this_hands(tmp_path))
     commands.listed = "not json"
 
-    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+    installed = await update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     assert isinstance(installed, update.Unfinished) and (installed.sha, installed.step) == (SHA, Step.PLUGIN_LIST)
     assert commands.ran == expected(home, work)[: TOOL_STEPS.index(Step.PLUGIN_LIST) + 1]
 
 
-def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(tmp_path: Path) -> None:
+async def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     refused = Done(1, "", "rm: permission denied\n")
     commands = Commands(tools_of_this_hands(tmp_path), Step.RENDERED_PLUGINS, refused)
 
-    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+    installed = await update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     # Nothing reads those trees, so hands is still restarted onto master.
     assert isinstance(installed, Installed)
@@ -626,14 +642,14 @@ def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(t
 
 
 @pytest.mark.parametrize("name", ["brain", "users"])
-def test_the_plugin_commands_run_under_the_callers_claude_config_not_the_brain_s(name: str, tmp_path: Path) -> None:
+async def test_the_plugin_commands_run_under_the_callers_claude_config_not_the_brain_s(name: str, tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     # The brain runs `hands update` from a shell whose config is the brain's, which holds none of the user's plugins;
     # a user's own config is theirs to keep.
     config = {"brain": home.brain, "users": tmp_path / "users-claude"}[name]
     commands = Commands(tools_of_this_hands(tmp_path))
 
-    update.install(home, Path(sys.prefix), None, {"CLAUDE_CONFIG_DIR": str(config), "KEPT": "yes"}, work, commands)
+    await update.install(home, Path(sys.prefix), None, {"CLAUDE_CONFIG_DIR": str(config), "KEPT": "yes"}, work, commands)
 
     steps = list(zip(commands.ran, commands.environments, strict=True))
     claudes = [env for (argv, _cwd), env in steps if argv[0] == "claude"]

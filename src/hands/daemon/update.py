@@ -36,17 +36,18 @@ not restarted, so the running hands goes on as it was and never restarts onto a 
 """
 
 import re
-import subprocess
 import sys
 import tomllib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
+from hands.clock import Clock
 from hands.daemon import readiness
 from hands.daemon.starting import invocation
+from hands.sessions import child
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.payload import Rejected
@@ -59,6 +60,10 @@ TOOL = "hands"
 COMMIT = re.compile(r"[0-9a-f]{40}")
 # The exit `run` gives a command that could not start.
 UNSTARTABLE = 127
+# The exit `run` gives a command it killed for running past STEP_SECONDS: timeout(1)'s.
+TIMED_OUT = 124
+# No step of an update takes ten minutes, `uv tool install` building hands' environment the longest; one that has is not going to end.
+STEP_SECONDS = 600.0
 # Every exit but success, for a step that is said and gone past whichever way it fails.
 ANY_FAILURE = frozenset(range(1, 256))
 # The marketplace hands' plugin comes from, named by the plugin's own id.
@@ -131,7 +136,7 @@ class Done:
     errors: str
 
 
-type Run = Callable[[Sequence[str], Path, Mapping[str, str]], Done]
+type Run = Callable[[Sequence[str], Path, Mapping[str, str]], Awaitable[Done]]
 
 
 @dataclass(frozen=True)
@@ -191,7 +196,7 @@ class _Stopped(Exception):
         self.stopped = stopped
 
 
-def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[str, str], work: Path, run: Run) -> Installed | Failed | Unfinished:
+async def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[str, str], work: Path, run: Run) -> Installed | Failed | Unfinished:
     """Bring the code hands runs from, at `prefix`, up to date, as `parse_target` judges it, cloning master into `work`
     for the uv tool environment; or the step that failed. `runs_from` is the environment the running hands runs from,
     and its restart starts it again on, by its own word: None with none running, or one from before its heartbeat said. `caller` is the caller's
@@ -205,9 +210,9 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
     def ending(name: Step, said: str) -> _Stopped:
         return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(*installed, name, said, tuple(ran)))
 
-    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
+    async def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
         """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
-        done = run(argv, cwd, env)
+        done = await run(argv, cwd, env)
         ran.append(Ran(name, tuple(argv), done.code))
         if done.code in past:
             advised.append(Advised(name, done.errors.strip()))
@@ -215,16 +220,16 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
             raise ending(name, f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}")
         return done
 
-    def commit(cwd: Path, of: str) -> str:
+    async def commit(cwd: Path, of: str) -> str:
         # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
-        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).output.strip()
+        sha = (await step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd)).output.strip()
         if not COMMIT.fullmatch(sha):
             raise ending(Step.COMMIT, f"git named the commit {of} is at as {sha!r}, not a commit's 40 hex digits")
         return sha
 
     clone, constraints = work / "cc-hands", work / "constraints.txt"
     try:
-        tool = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
+        tool = Path((await step(Step.WHERE, ("uv", "tool", "dir"), work)).output.strip()) / TOOL
         target = parse_target(prefix, tool)
         if isinstance(target, Unsupported):
             raise ending(Step.WHERE, f"this hands runs from {prefix}, which is neither {tool}, the uv tool environment the update installs master into, nor the .venv of a checkout of hands, so a restart would not run what it updated: run `hands update` with the hands `uv tool install` put on PATH, or from a checkout's own .venv")
@@ -232,35 +237,35 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
             raise ending(Step.WHERE, f"the running hands runs from {runs_from}, not from {prefix}, the environment the update brings current, so the update would leave it running what it runs now: run hands from {prefix}")
         match target:
             case Tool():
-                step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)
-                sha = commit(clone, BRANCH)
-                step(Step.CONSTRAINTS, ("uv", "export", "--quiet", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--format", "requirements.txt", "-o", str(constraints)), clone)
+                await step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)
+                sha = await commit(clone, BRANCH)
+                await step(Step.CONSTRAINTS, ("uv", "export", "--quiet", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--format", "requirements.txt", "-o", str(constraints)), clone)
                 # The interpreter itself, not its version: uv keeps an environment in place only on the one it was made from
                 # (measured, uv 0.12.15: `--python 3.12` found another 3.12 and made the environment anew).
-                step(Step.INSTALL, ("uv", "tool", "install", "--reinstall-package", TOOL, "--python", made_from(), "--constraints", str(constraints), f"{TOOL} @ git+{REPOSITORY}@{sha}"), work)
+                await step(Step.INSTALL, ("uv", "tool", "install", "--reinstall-package", TOOL, "--python", made_from(), "--constraints", str(constraints), f"{TOOL} @ git+{REPOSITORY}@{sha}"), work)
                 installed = (target, sha)
             case Checkout(root=root):
-                step(Step.PULL, ("git", "pull", "--quiet", "--ff-only"), root)
-                sha = commit(root, "the checkout")
+                await step(Step.PULL, ("git", "pull", "--quiet", "--ff-only"), root)
+                sha = await commit(root, "the checkout")
                 # The checkout's source is hands' own, editable in its .venv: the pull is what a start runs from now, so a
                 # sync that fails after it leaves the checkout's commit in place beside an environment not brought to it.
                 installed = (target, sha)
-                step(Step.SYNC, ("uv", "sync", "--locked", "--reinstall-package", TOOL), root)
+                await step(Step.SYNC, ("uv", "sync", "--locked", "--reinstall-package", TOOL), root)
         # Run by the interpreter the install just filled, so each is the target's own command.
-        step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
-        step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
+        await step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
+        await step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
         # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
         # installed for the user or it is not; no claude at all is no plugin.
         under = readiness.plugin_environment(home, caller)
-        listing = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
+        listing = await step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
         try:
             held = listing.code != UNSTARTABLE and bool(readiness.installed_everywhere(listing.output))
         except Rejected as error:
             raise ending(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
         if held:
-            step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
-            step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
-        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
+            await step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
+            await step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
+        await step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
     except _Stopped as stopped:
         return stopped.stopped
     return Installed(target, sha, tuple(ran), tuple(advised))
@@ -271,22 +276,17 @@ def made_from() -> str:
     return cast(str, getattr(sys, "_base_executable"))
 
 
-def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
+async def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str], *, clock: Clock) -> Done:
     """Run `argv` in `cwd`, with nothing to read and no terminal to ask on, and what it did."""
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
-            env={**env, "GIT_TERMINAL_PROMPT": "0"},
-            stdin=subprocess.DEVNULL,
-            # Apart: what a command prints to its output is what the update reads, a path or a commit, and a warning
-            # on its errors is no part of that.
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
-    except OSError as error:
-        # [LAW:no-silent-failure] a command that could not start, uv or git missing, is the step failing with why.
+        # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
+        ran = await child.run(*argv, timeout=STEP_SECONDS, cwd=cwd, env={**env, "GIT_TERMINAL_PROMPT": "0"}, clock=clock)
+    # [LAW:no-silent-failure] a command that could not start, uv or git missing, or one that never ended, is the step
+    # failing with why.
+    except child.SpawnFailed as error:
         return Done(UNSTARTABLE, "", str(error))
-    return Done(completed.returncode, completed.stdout, completed.stderr)
+    except TimeoutError as error:
+        return Done(TIMED_OUT, "", str(error))
+    # Apart: what a command prints to its output is what the update reads, a path or a commit, and a warning on its
+    # errors is no part of that.
+    return Done(ran.returncode, ran.out.decode(errors="replace"), ran.err.decode(errors="replace"))

@@ -1,4 +1,7 @@
-"""A child process run to its end inside a time limit, and never left behind by a caller that stops waiting on it."""
+"""A child process run to its end inside a time limit, and never left behind by a caller that stops waiting on it.
+
+[LAW:single-enforcer] every process hands starts is run here by `run`, or is a `Child` its owner stops; the few that
+are neither name their owner where they start, and tests/test_child.py lists them."""
 
 import asyncio
 import os

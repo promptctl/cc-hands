@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -52,11 +51,11 @@ def test_the_file_names_the_backend_and_its_model(tmp_path: Path) -> None:
 
 
 @pytest.mark.outside
-def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: Path, tmp_path: Path) -> None:
+async def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(home, config.load(home), os.environ).voice.personality == "Dry and wry."
+    assert (await run.configured_from(home, config.load(home), os.environ, SYSTEM)).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -73,7 +72,7 @@ def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_
 
 
 @pytest.mark.outside
-def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake_claude: Path, tmp_path: Path) -> None:
+async def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake_claude: Path, tmp_path: Path) -> None:
     # Left out, each side follows the system's default, as auto does, however it is capitalised.
     assert config.parse("").devices == Choices(Auto(), Auto())
     assert config.parse('[audio]\ninput_device = "Auto"\noutput_device = "auto"\n').devices == Choices(Auto(), Auto())
@@ -86,7 +85,7 @@ def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
-    assert run.configured_from(home, config.load(home), os.environ).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+    assert (await run.configured_from(home, config.load(home), os.environ, SYSTEM)).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
 
 
 @pytest.mark.parametrize(
@@ -157,34 +156,34 @@ def test_a_file_naming_a_transcription_server_or_a_whisper_model_is_refused() ->
 
 
 @pytest.mark.outside
-def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+async def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(tmp_path / ".hands")
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(home, config.load(home), os.environ)
+        await run.configured_from(home, config.load(home), os.environ, SYSTEM)
 
 
-def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
+async def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
     # The variables settings used to be: one still exported would run hands on the default backend, silently.
     home = Home(tmp_path)
     with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
-        run.configured_from(home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
+        await run.configured_from(home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}, SYSTEM)
 
 
 @pytest.mark.outside
-def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
+async def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(Claude(), home, os.environ) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
-    assert backend(Claude(model="claude-opus-5-5"), home, os.environ).model == "claude-opus-5-5"
+    assert await backend(Claude(), home, os.environ, SYSTEM) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
+    assert (await backend(Claude(model="claude-opus-5-5"), home, os.environ, SYSTEM)).model == "claude-opus-5-5"
 
 
 @pytest.mark.outside
 @pytest.mark.parametrize("model", CLAUDE_MODELS)
-def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
+async def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(Claude(model=model), home, os.environ).model == model
+    assert (await backend(Claude(model=model), home, os.environ, SYSTEM)).model == model
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
@@ -300,47 +299,47 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
 
 
 @pytest.mark.outside
-def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
+async def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     (home.brain / "settings.json").unlink()
     with pytest.raises(Rejected, match="settings could not be read"):
-        backend(Claude(), home, os.environ)
+        await backend(Claude(), home, os.environ, SYSTEM)
     (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
     with pytest.raises(Rejected, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
-        backend(Claude(), home, os.environ)
+        await backend(Claude(), home, os.environ, SYSTEM)
 
 
 @pytest.mark.outside
-def test_a_brain_whose_settings_name_a_mode_claude_code_does_not_take_stops_the_run_naming_the_modes(fake_claude: Path, tmp_path: Path) -> None:
+async def test_a_brain_whose_settings_name_a_mode_claude_code_does_not_take_stops_the_run_naming_the_modes(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "permissions": {"defaultMode": "acceptedits"}}')
     with pytest.raises(Rejected, match='a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in'):
-        backend(Claude(), home, os.environ)
+        await backend(Claude(), home, os.environ, SYSTEM)
 
 
 @pytest.mark.outside
-def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(fake_claude: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(fake_claude: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
     with pytest.raises(Rejected, match=r"hands' package carries no fritter at .*/package/bin/fritter: install hands again"):
-        backend(Claude(), home, os.environ)
+        await backend(Claude(), home, os.environ, SYSTEM)
 
 
 @pytest.mark.outside
-def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_naming_hands_login(fake_claude: Path, tmp_path: Path) -> None:
+async def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_naming_hands_login(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain, trusted=False)
     with pytest.raises(Rejected, match=r"first screens \(.*/cwd untrusted\): `hands login` answers them"):
-        backend(Claude(), home, os.environ)
+        await backend(Claude(), home, os.environ, SYSTEM)
 
 
 @pytest.mark.outside
-def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+async def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(Rejected, match="`hands login` gives it one"):
-        backend(Claude(), HOME, os.environ)
+        await backend(Claude(), HOME, os.environ, SYSTEM)
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
@@ -353,16 +352,16 @@ def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.Voic
 async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # A login check answered slowly is a start that is waiting, never one that looks stuck.
     home, sessions, heart, config = _starting(tmp_path)
-    answered = threading.Event()
+    answered = asyncio.Event()
 
-    def prompted() -> run.Configured:
-        answered.wait()
+    async def prompted() -> run.Configured:
+        await answered.wait()
         return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
 
     run_start = Start(restarted=False, clock=SYSTEM)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
     exporting_down = heartbeat.Degradation("can't export traces", "the collector has not taken all of its traces")
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, _unsurveyed, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -393,15 +392,15 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
 
 async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Path) -> None:
     home, sessions, heart, _config = _starting(tmp_path)
-    never = threading.Event()
+    never = asyncio.Event()
 
-    def prompted() -> run.Configured:
-        never.wait()
+    async def prompted() -> run.Configured:
+        await never.wait()
         raise AssertionError("the prompt was never answered")
 
     stop = Stop()
     stop.tell(QuitKey())
-    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
+    assert await start(lambda: run.configured(prompted, _unsurveyed, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
     never.set()
 
 
@@ -409,12 +408,16 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
     # Run as the CLI runs it, so only asyncio.run's caller sees it.
     home, sessions, heart, _config = _starting(tmp_path)
 
-    def refused() -> run.Configured:
+    async def refused() -> run.Configured:
         raise CannotStart("no key")
 
     surveyed: list[run.Configured | CannotStart] = []
+
+    async def survey(read: run.Configured | CannotStart) -> None:
+        surveyed.append(read)
+
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+        asyncio.run(start(lambda: run.configured(refused, survey, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     # Every other step is still said: the readiness check is given the refusal, as the backend's step.
     [refusal] = surveyed
     assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
@@ -427,12 +430,15 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
     async def swept(*_: object) -> None:
         order.append("sweep")
 
-    def configure() -> run.Configured:
+    async def configure() -> run.Configured:
         order.append("configure")
         return run.Configured(config, run.Settings(b"", Config()))
 
+    async def survey(_: run.Configured | CannotStart) -> None:
+        order.append("survey")
+
     monkeypatch.setattr(run, "sweep", swept)
-    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+    asyncio.run(start(lambda: run.configured(configure, survey, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     assert order == ["sweep", "configure", "survey"]
 
 
@@ -445,14 +451,14 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     monkeypatch.setattr(run, "DISPLAY_PORT", 0)
     heart = heartbeat.Heart(root / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
 
-    def refused(_environment: Mapping[str, str]) -> run.Configured:
+    async def refused(_environment: Mapping[str, str]) -> run.Configured:
         raise CannotStart("no key")
 
     run_start = Start(restarted=False, clock=SYSTEM)
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable), SYSTEM)
+            await run.run(refused, _unsurveyed, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable), SYSTEM)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -485,8 +491,8 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:
-            configure = partial(run.configured_from, home, settings, {"HANDS_LLM": "claude"})
-            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
+            configure = partial(run.configured_from, home, settings, {"HANDS_LLM": "claude"}, clock)
+            await start(lambda: run.configured(configure, _unsurveyed, home, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
@@ -677,7 +683,7 @@ def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_sayin
 
 
 @pytest.mark.outside
-def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(fake_claude: Path, tmp_path: Path) -> None:
+async def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(fake_claude: Path, tmp_path: Path) -> None:
     """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
     is built in.
 
@@ -690,26 +696,30 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     logged_in = os.environ
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert run.configured_from(home, config.load(home), logged_in).voice.voice == "charles"
+    assert (await run.configured_from(home, config.load(home), logged_in, SYSTEM)).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voices.keep(home, voices.parse_voice("Bill Boerst"))
-    assert run.configured_from(home, config.load(home), logged_in).voice.voice == "bill_boerst"
+    assert (await run.configured_from(home, config.load(home), logged_in, SYSTEM)).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(home, config.load(home), logged_in)
+        await run.configured_from(home, config.load(home), logged_in, SYSTEM)
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(home, config.load(home), logged_in)
+        await run.configured_from(home, config.load(home), logged_in, SYSTEM)
 
 
 # The settings of a run started with no file: every default.
 _NO_FILE = config.Settings(None, Config())
 
 
-def _reachable(_settings: Config) -> None:
+async def _reachable(_settings: Config) -> None:
+    pass
+
+
+async def _unsurveyed(_: run.Configured | CannotStart) -> None:
     pass
 
 
@@ -819,7 +829,7 @@ async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tm
     onboard(home.brain)
     monkeypatch.setenv("LOGGED_IN", "0")
     recorded: list[Entry] = []
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), config.load(home), SYSTEM, period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, SYSTEM, home), config.load(home), SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     while not recorded:
@@ -894,17 +904,17 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
     recorded: list[Entry] = []
     checked: list[Config] = []
 
-    def overwritten(settings: Config) -> None:
+    async def overwritten(settings: Config) -> None:
         checked.append(settings)
         # The first edit is saved over with a typo while its backend is checked.
         if settings.llm == Claude(model="claude-opus-5-5"):
             home.config.write_text('[llm]\nbackend = "claud"\n')
 
-    # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
+    # Polled, not spun: a watch with no period would hold the loop against this test.
     watching = asyncio.create_task(config.edited(home, recorded.append, overwritten, config.load(home), SYSTEM, period=0.01))
     try:
         home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
-        # Moved by each backend check, the hop to a thread that a loaded machine is slowest to take.
+        # Moved by each backend check.
         await patiently(lambda: bool(recorded) or watching.done(), lambda: len(checked))
         # Had the edit saved over been taken, the watch would have ended on it before ever weighing the typo.
         assert not watching.done(), watching.result()

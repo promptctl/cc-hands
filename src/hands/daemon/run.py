@@ -122,20 +122,22 @@ class Configured:
     settings: Settings
 
 
-def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
+async def configured_from(home: Home, settings: Settings, environment: Mapping[str, str], clock: Clock) -> Configured:
     """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
     CannotStart where hands cannot run on them."""
     try:
-        llm = backend(settings.config.llm, home, environment)
+        llm = await backend(settings.config.llm, home, environment, clock)
     except Rejected as error:
         raise CannotStart(str(error)) from error
-    return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
+    # Off the loop: a kept library voice may be fetched.
+    voice = await off_loop(lambda: _voice(home), "the kept voice's check")
+    return Configured(VoiceConfig(llm=llm, voice=voice, personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
 
 
-def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
+async def _attempted(configure: Callable[[], Awaitable[Configured]]) -> Configured | CannotStart:
     """The configuration, or why hands cannot start on the settings, as a value the readiness check can say."""
     try:
-        return configure()
+        return await configure()
     except CannotStart as error:
         return error
 
@@ -224,7 +226,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
+    configure: Callable[[Mapping[str, str]], Awaitable[Configured]], survey: Callable[[Configured | CannotStart], Awaitable[None]], home: Home, heart: heartbeat.Heart, record: Record,
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     run_start: Start,
@@ -315,16 +317,17 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
+async def configured(configure: Callable[[], Awaitable[Configured]], survey: Callable[[Configured | CannotStart], Awaitable[None]], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
     await sweep(home, sessions, frozenset())
-    read = await off_loop(lambda: _attempted(configure), "the configuration read")
+    # On the loop, so that a stop ends the brain's `claude auth status` with the run.
+    read = await _attempted(configure)
     # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and
     # [LAW:dataflow-not-control-flow] every step is said whether or not hands can start, so a start refused on its
     # settings still names each other step it is missing.
-    await off_loop(lambda: survey(read), "the readiness check")
+    await survey(read)
     if isinstance(read, CannotStart):
         raise read
     config = read.voice

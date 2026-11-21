@@ -1,5 +1,6 @@
 """A child run to its end inside a time limit, and never left running by a caller that stops waiting on it."""
 
+import ast
 import asyncio
 import errno
 import os
@@ -182,3 +183,56 @@ async def test_a_child_stopped_on_a_clock_that_fails_is_killed_and_reaped_before
         await stopping.stopped(BrokenClock(), 5)
     assert reaped(process)
     assert any(f"killed stubborn ({process.pid})" in line and "its wait failed" in line for line in logged)
+
+
+# What starts a process: the stdlib calls that make a child, by module.
+STARTS = {
+    "subprocess": {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"},
+    "os": {"system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe"},
+    "asyncio": {"create_subprocess_exec", "create_subprocess_shell"},
+    "pty": {"spawn"},
+}
+# [LAW:single-enforcer] where hands starts a process other than through `run`, each with its owner named where it does:
+# the runner itself, a Claude Code its Child's owner stops, the login on the person's terminal, the indicator that ends
+# itself, and hands detaching itself to outlive a restart.
+OWNED = {
+    ("sessions/child.py", "run"),
+    ("sessions/pseudoterminal.py", "on_terminal"),
+    ("brain/process.py", "login"),
+    ("daemon/cli.py", "start_indicator"),
+    ("daemon/restart.py", "detach"),
+}
+
+
+def starts(tree: ast.AST) -> list[tuple[str, str]]:
+    """Each call in `tree` that starts a process, by the function it is in and what it calls."""
+    found: list[tuple[str, str]] = []
+
+    def visit(node: ast.AST, within: str) -> None:
+        match node:
+            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name):
+                within = name
+            case ast.Call(func=ast.Attribute(value=ast.Name(id=module), attr=called)) if called in STARTS.get(module, ()):
+                found.append((within, f"{module}.{called}"))
+            case ast.ImportFrom(module=module, names=names) if module in STARTS and any(alias.name in STARTS[module] for alias in names):
+                found.append((within, f"from {module} import"))
+            case _:
+                pass
+        for inner in ast.iter_child_nodes(node):
+            visit(inner, within)
+
+    visit(tree, "<module>")
+    return found
+
+
+def test_every_process_hands_starts_is_run_by_the_runner_or_has_its_owner_named() -> None:
+    source = Path(child.__file__).resolve().parent.parent
+    spawned = {
+        (str(path.relative_to(source)), within): called
+        for path in sorted(source.rglob("*.py"))
+        for within, called in starts(ast.parse(path.read_text(), str(path)))
+    }
+    # A start anywhere else is a child no timeout or shutdown ends: it goes through `hands.sessions.child.run`.
+    assert {site: called for site, called in spawned.items() if site not in OWNED} == {}
+    # And every owner named still starts one, so none is named for a start that has gone.
+    assert OWNED <= spawned.keys()
