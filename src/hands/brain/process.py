@@ -1083,8 +1083,6 @@ class Brain:
         # what a clear waits on to see Claude Code hold nothing of what it stopped, re-read from the model each time it moves.
         self._moved = asyncio.Event()
         self._typing: set[asyncio.Task[None]] = set()
-        # What the work in `_typing` raised that nothing in the brain expected, since the last `drained`.
-        self._failed: list[BaseException] = []
         # When the last stop pressed Ctrl-C, on the brain's clock.
         self._cleared = float("-inf")
         # [LAW:no-ambient-temporal-coupling] the words of the turn last pasted and not taken, as `kept` reads them, until
@@ -1190,19 +1188,17 @@ class Brain:
     def _kept(self, task: "asyncio.Task[None]", turn: _Turn | None) -> None:
         self._typing.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
-            self._failed.append(error)
             self._broke(turn, error)
 
-    async def drained(self) -> tuple[BaseException, ...]:
-        """Returns once the brain runs no work of its own (`_keep`), what it kept while this waited included, with what
-        that work raised that nothing in the brain expected since the last drain, each said already (`_broke`).
+    async def drained(self) -> None:
+        """Returns once the brain runs no work of its own (`_keep`), what it kept while this waited included: every stop,
+        late clear and halt, and every turn being sent, which runs until the turn is over.
 
         [LAW:single-enforcer] the one end of the brain's kept work: what a stop did, its last key included, is done when
-        this returns, and a turn's end is no sign of it, since a stop ends the turns it clears before its Ctrl-C goes."""
+        this returns, and a turn's end is no sign of it, since a stop ends the turns it clears before its Ctrl-C goes.
+        [LAW:one-source-of-truth] what that work raised that nothing in the brain expected is `_broke`'s to say, not this."""
         while self._typing:
             await asyncio.wait(set(self._typing))
-        failed, self._failed = tuple(self._failed), []
-        return failed
 
     def _broke(self, turn: _Turn | None, error: BaseException) -> None:
         """[LAW:single-enforcer] what the brain's own work raised that nothing in it expected: said once, with where it
@@ -1513,16 +1509,23 @@ class Brain:
     async def stop(self) -> None:
         """Ends the brain and lets go of what it held, however its end went. What stopped the model reading its turns is
         `exited`'s to raise, to whoever waits on the brain, not the stop's."""
-        try:
-            await self._claude.stop()
-            await asyncio.shield(self._exit)
-            # Its kept work ends now the brain has: a clear waiting on Claude Code ends BrainGone. Nothing it holds goes while
-            # a stop is still typing; what that work raised is `_broke`'s, said already.
-            await self.drained()
-        finally:
-            self._reading.cancel()
-            await self._listener.cleanup()
-            shutil.rmtree(self._sockets, ignore_errors=True)
+        # [LAW:nothing-unseen] the stop is one event: how long it took, and how much of the brain's own work it waited on.
+        with continuing(self._launched), unit("brain.stop", self._record, begun(self._clock)):
+            try:
+                try:
+                    await self._claude.stop()
+                    await asyncio.shield(self._exit)
+                finally:
+                    # [LAW:no-ambient-temporal-coupling] what keeps work of the brain's own ends first, the model's
+                    # reading and the hooks, so nothing is kept once the drain has returned.
+                    self._reading.cancel()
+                    await self._listener.cleanup()
+                # Only once the brain's end is heard does its kept work end by itself: the turn it ran is over, and a clear
+                # waiting on Claude Code ends BrainGone. Nothing it holds goes while a stop is still typing.
+                annotate(kept=len(self._typing))
+                await self.drained()
+            finally:
+                shutil.rmtree(self._sockets, ignore_errors=True)
 
     async def _type(self, typing: Callable[[Typist], None]) -> None:
         try:
