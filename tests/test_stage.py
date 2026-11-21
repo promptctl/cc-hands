@@ -110,7 +110,7 @@ async def stage_draft(session: str, text: str) -> Result:
 
 def amended(session: str, text: str) -> Result:
     """What amending a draft hands back: its change, read back by hands, and told the brain by its label."""
-    return read_back(f"amended for {session}: {text}", f"the change to the draft for {session} read back")
+    return read_back(f"amended for {session}: {text}", f"the amended draft for {session} read back")
 
 
 async def amend_draft(session: str, text: str) -> Result:
@@ -927,7 +927,7 @@ async def test_a_stay_silent_after_an_act_beside_a_readback_hands_says_is_held(r
     rig.calls(exchange, ("t1", "mcp__hands__read_session"), ("t2", "mcp__hands__amend_draft"))
     both = {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": json.dumps({"steps": []})}]},
-        {"type": "tool_result", "tool_use_id": "t2", "content": [{"type": "text", "text": json.dumps(read_back("Amended it.", "the change to the draft for api read back"))}]},
+        {"type": "tool_result", "tool_use_id": "t2", "content": [{"type": "text", "text": json.dumps(read_back("Amended it.", "the amended draft for api read back"))}]},
     ]}
     exchange, route = rig.request({"messages": [{"role": "user", "content": "hi"}, both]})
     assert isinstance(route, Send)
@@ -1195,7 +1195,7 @@ async def test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_
     rig.brain.end()
     # The draft changed, and the brain, told the user never heard how, judges whether to say it.
     await rig.until(lambda: len(rig.brain.asked) == 2)
-    assert rig.brain.asked[1] == f'{heard("wait, no")}\n\n[hands] The user spoke over you, and nothing more was said aloud. They did not hear: the change to the draft for api read back.'
+    assert rig.brain.asked[1] == f'{heard("wait, no")}\n\n[hands] The user spoke over you, and nothing more was said aloud. They did not hear: the amended draft for api read back.'
     # Its text is in no turn typed: the brain is told which line the user missed, never what it said.
     assert not any("amended for api: add tests too" in typed for typed in rig.brain.asked)
     assert "amended for api: add tests too" not in rig.out.said()
@@ -1203,7 +1203,7 @@ async def test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_
 
 
 # What hands said for amend_draft below, and the label the brain is told it by.
-CHANGE = Labelled("amended for api: add tests too", "the change to the draft for api read back")
+CHANGE = Labelled("amended for api: add tests too", "the amended draft for api read back")
 
 
 async def test_a_cut_in_a_readback_after_the_turn_ended_reaches_the_next_turn_by_its_label(rig: Rig) -> None:
@@ -1217,7 +1217,7 @@ async def test_a_cut_in_a_readback_after_the_turn_ended_reaches_the_next_turn_by
     rig.out.playing = Bookmark((CHANGE,), 0)
     await rig.interrupt()
     await rig.say("wait, which one?")
-    assert rig.brain.asked[1] == f"{heard('wait, which one?')}\n\n[hands] The user cut in. They did not hear: the change to the draft for api read back."
+    assert rig.brain.asked[1] == f"{heard('wait, which one?')}\n\n[hands] The user cut in. They did not hear: the amended draft for api read back."
     rig.brain.end()
 
 

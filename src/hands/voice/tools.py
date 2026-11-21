@@ -1257,7 +1257,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
             case DraftStaged():
                 return read_back(readback(outcome, name), f"the draft for {name} read back")
             case DraftAmended():
-                return read_back(readback(outcome, name), f"the change to the draft for {name} read back")
+                return read_back(readback(outcome, name), f"the amended draft for {name} read back")
             case _:
                 return {"error": readback(outcome, name)}
 
@@ -1276,7 +1276,8 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
     async def amend_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Replace a session's staged draft with a corrected one when the user changes it.
 
-        Hands reads back what changed. Calling it is the whole reply: add no words of your own.
+        Hands reads the new draft back as it will be typed, or, when it is long, the sentences that changed as they now
+        read. Calling it is the whole reply: add no words of your own.
 
         Args:
             session: The session's id, from list_sessions.

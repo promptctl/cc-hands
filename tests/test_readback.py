@@ -17,24 +17,68 @@ def amended(before: str, after: str, *resolutions: Resolution) -> str:
 
 
 @pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("fix the old bug", "fix the new bug"),
+        ("fix the bug", "fix the bug and test it"),
+        ("fix the bug quickly", "fix the bug"),
+    ],
+)
+def test_a_short_amended_draft_is_heard_whole_as_it_will_be_typed(before: str, after: str) -> None:
+    assert amended(before, after) == f"New draft for cc-hands: {after}"
+
+
+@pytest.mark.parametrize(
     ("before", "after", "heard"),
     [
-        ("fix the old bug", "fix the new bug", "'old' is now 'new'"),
-        ("fix the bug", "fix the bug and test it", "added 'and test it'"),
-        ("fix the bug quickly", "fix the bug", "removed 'quickly'"),
-        ("fix the bug then test", "fix the bug\nthen test", "added 'a line break'"),
         ("fix the  bug", "fix the bug", "only the spacing changed"),
         ("fix the bug", "fix the bug", "nothing changed"),
     ],
 )
-def test_an_amend_is_heard_as_what_changed(before: str, after: str, heard: str) -> None:
+def test_an_amend_that_changed_no_words_says_so(before: str, after: str, heard: str) -> None:
     assert amended(before, after) == f"In the draft for cc-hands: {heard}"
 
 
 def test_an_amend_names_only_the_resolutions_it_added() -> None:
     assert amended("use the helper", "use the token helper", HELPER) == (
-        "In the draft for cc-hands, reading 'token helper' as token Helper dot ts: added 'token'"
+        "New draft for cc-hands, reading 'token helper' as token Helper dot ts: use the token helper"
     )
+
+
+# Long enough, at over sixty words, that only what changed in it is read back.
+LONG = " ".join(
+    [
+        "Rename the helper in src/auth.py.",
+        *["Keep the rest of the module exactly as it is now."] * 6,
+        "Then run the tests.",
+        "Tell me when it is done.",
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    ("after", "heard"),
+    [
+        (LONG.replace("run the tests", "run the unit tests"), "it now says: Then run the unit tests."),
+        # Each sentence holding a change is read whole, in the draft's order, and once however many changes it holds.
+        (
+            LONG.replace("Rename the", "Move the").replace("Tell me", "Please tell me").replace("it is done", "it is all done"),
+            "it now says: Move the helper in src slash auth dot py. Please tell me when it is all done.",
+        ),
+        # A cut inside a sentence is heard as the sentence that is left.
+        (LONG.replace("the tests.", "the"), "it now says: Then run the Tell me when it is done."),
+        # A cut that took whole sentences leaves no sentence to read, so what was removed is said.
+        (LONG.replace(" Then run the tests.", ""), "removed: Then run the tests."),
+        (
+            LONG.replace(" Then run the tests.", "").replace("Rename", "Move"),
+            "it now says: Move the helper in src slash auth dot py. And removed: Then run the tests.",
+        ),
+        (LONG + "\nAlso lint it.", "it now says: Tell me when it is done. Also lint it."),
+    ],
+)
+def test_a_long_amended_draft_is_heard_as_the_sentences_that_changed(after: str, heard: str) -> None:
+    assert len(LONG.split()) > 60
+    assert amended(LONG, after) == f"In the draft for cc-hands, {heard}"
 
 
 def heard(text: str, *resolutions: Resolution) -> str:
@@ -90,8 +134,9 @@ def test_a_resolution_is_heard_as_the_exact_token_it_resolved_to(meant: str, sai
 
 
 def test_an_amended_path_is_heard_whole() -> None:
-    assert spoken(amended("fix src/auth.py", "fix lib/auth.py")).text == (
-        "In the draft for cc-hands: 'src slash auth dot py' is now 'lib slash auth dot py'"
+    assert spoken(amended("fix src/auth.py", "fix lib/auth.py")).text == "New draft for cc-hands: fix lib slash auth dot py"
+    assert spoken(amended(LONG, LONG.replace("src/auth.py", "lib/auth.py"))).text == (
+        "In the draft for cc-hands, it now says: Rename the helper in lib slash auth dot py."
     )
 
 

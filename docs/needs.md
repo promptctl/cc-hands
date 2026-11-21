@@ -29,7 +29,7 @@ then **Whole keyboard by voice** and **Ending a session by voice**.
 
 Speech-to-text turns "auth middleware" into a filename guess and a flag into a word.
 The need is not perfect recognition, which does not exist, but that the user hears
-what was resolved and can fix it before it goes: the readback speaks what changed,
+what was resolved and can fix it before it goes: the readback speaks what will be typed,
 identifiers are biased toward the words this repo actually uses, a spoken reference
 to a file resolves to a real path, and a hard word can be spelled.
 

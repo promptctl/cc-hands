@@ -1624,7 +1624,8 @@ prompt, answers "which one did you mean".
 **Drafts** are per target: `NoDraft | Staged(text, resolutions)`. The readback is
 generated from the stored resolutions, never from the model repeating itself:
 "Draft for cc-hands, reading 'auth middleware' as `authMiddleware.ts`: refactor the
-auth middleware to use the new token helper." Speak what changed, not what you said.
+auth middleware to use the new token helper." An amended draft is read back whole, as it
+will be typed; past sixty words, only its sentences that changed are, as they now read.
 A draft is staged, amended, discarded, and sent with `send_draft`, as the Type effect;
 `send_command` and `interrupt_session` emit the same effect with a `Command` or the Escape
 `Key` (`hands.core.keyboard`). fritter holds the session's
