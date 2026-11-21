@@ -495,7 +495,7 @@ async def converse(
     try:
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
         # A run told to stop takes no more turns: the key stops being watched before the pipeline tears down, not after.
-        talk_key.cancel()
+        await cancel_and_wait(talk_key)
         await cancel_and_wait(phone)
         # [LAW:no-ambient-temporal-coupling] the follower holds the streams while it reopens them, and Pipecat's
         # cleanup closes them; the follower is done before the cleanup starts, so the two never hold them at once.

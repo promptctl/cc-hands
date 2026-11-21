@@ -105,7 +105,7 @@ async def test_a_turn_whose_input_keeps_its_words_is_untaken_saying_what_it_show
 def _bare() -> Brain:
     """A Brain no launch built, holding what every turn's take reads from `__init__`: the tests set the rest."""
     brain = object.__new__(Brain)
-    brain._untaken, brain._own_work, brain._stopped = None, set(), False  # pyright: ignore[reportPrivateUsage]
+    brain._untaken, brain._own_work, brain._shutdown = None, set(), None  # pyright: ignore[reportPrivateUsage]
     return brain
 
 
@@ -1237,6 +1237,25 @@ async def test_a_key_the_terminal_refuses_while_the_brain_runs_is_said_as_a_fail
     assert turn is None or turn.answered.exception() is refusal
 
 
+async def test_a_turn_in_flight_whose_escape_is_refused_as_claude_code_s_own_turn_is_halted_ends_with_the_refusal(errors: list[str]) -> None:
+    brain = _owning(VirtualClock())
+    keys = _keyed(brain, [])
+    refusal = Untyped("the fritter refused")
+
+    def refused() -> None:
+        raise refusal
+
+    keys.before["escape"] = refused
+    # The turn in flight taken, and a turn Claude Code opened itself behind it, whose work is stopped as it is shown.
+    turn = _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    _took(brain, "n1", NOTICE)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    assert brain.interrupt(notified) is True
+    await brain.drained()
+    assert (taken(errors), turn.answered.exception(), brain.answering()) == ([f"the brain's own work failed: {refusal!r}"], refusal, None)
+
+
 async def test_a_brain_stopped_while_a_stop_of_its_own_holds_ctrl_c_ends_its_terminal_only_once_the_key_has_gone(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     brain = _owning(VirtualClock())
@@ -1262,8 +1281,9 @@ async def test_a_brain_stopped_while_a_stop_of_its_own_holds_ctrl_c_ends_its_ter
 
 
 async def test_a_brain_stop_cancelled_while_it_drains_still_ends_the_terminal_and_lets_go_of_everything(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
     brain = _owning(VirtualClock())
-    keys = _keyed(brain, [])
+    keys = _keyed(brain, recorded)
     listener = _running(brain, tmp_path / "sockets")
     gate = threading.Event()
     try:
@@ -1278,9 +1298,10 @@ async def test_a_brain_stop_cancelled_while_it_drains_still_ends_the_terminal_an
         gate.set()
     with pytest.raises(asyncio.CancelledError):
         await stopping
-    # The terminal is ended once the key has gone, however the stop's caller left it.
-    await until(lambda: keys.exit.done())
-    assert (listener.cleaned, (tmp_path / "sockets").exists(), brain._reading.cancelled()) == (True, False, True)  # pyright: ignore[reportPrivateUsage]
+    # The shutdown runs on, whole, however its caller left it: a stop made again awaits that one.
+    await brain.stop()
+    assert (keys.exit.done(), listener.cleaned, (tmp_path / "sockets").exists(), brain._reading.cancelled()) == (True, True, False, True)  # pyright: ignore[reportPrivateUsage]
+    assert [shutdown.outcome for shutdown in events(recorded, "brain.shutdown")] == ["ok"]
 
 
 async def test_a_turn_in_flight_as_the_brain_stops_ends_stopped_before_its_terminal_is_ended(tmp_path: Path) -> None:

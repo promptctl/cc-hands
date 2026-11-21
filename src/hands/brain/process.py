@@ -1085,8 +1085,9 @@ class Brain:
         self._moved = asyncio.Event()
         # The brain's own work (`_keep`), each task until it ends: none is ended but by itself (`drained`).
         self._own_work: set[asyncio.Task[None]] = set()
-        # [LAW:no-ambient-temporal-coupling] set by the stop, its first step: no turn is asked of a brain being stopped.
-        self._stopped = False
+        # [LAW:no-ambient-temporal-coupling] the brain's one shutdown, begun by the first stop and awaited by every one: no
+        # turn is asked of a brain once it is begun.
+        self._shutdown: asyncio.Task[None] | None = None
         # When the last stop pressed Ctrl-C, on the brain's clock.
         self._cleared = float("-inf")
         # [LAW:no-ambient-temporal-coupling] the words of the turn last pasted and not taken, as `kept` reads them, until
@@ -1109,7 +1110,7 @@ class Brain:
             # An end already heard is the reason, whether or not a stop came after it.
             if self._exit.done():
                 raise BrainGone(f"the brain had ended before it was asked: {exited(self._exit.result())}")
-            if self._stopped:
+            if self._shutdown is not None:
                 raise BrainGone("the brain was being stopped when it was asked")
             if self._turn is None:
                 break
@@ -1185,6 +1186,11 @@ class Brain:
         except (BrainGone, StopUnrecorded) as error:
             self._over(turn, error)
             return
+        except Exception as error:
+            # [LAW:single-enforcer] whatever else broke the clear ends the turn it stopped here, on every stop's path (`_stop`,
+            # `_halt`), as its turn was stopped; and is raised on, for `_broke` to say.
+            self._over(turn, error)
+            raise
         # Over now Claude Code holds nothing of it: the turn the Escape stopped told, and the words it put back in the
         # input from Claude Code's queue, which Ctrl-C cleared, taken out of it.
         self._over(turn, BrainStopped())
@@ -1525,38 +1531,32 @@ class Brain:
         takes keys, then the terminal. What stopped the model reading its turns is `exited`'s to raise, to whoever waits on
         the brain, not the stop's.
 
-        [LAW:no-ambient-temporal-coupling] no key of the brain's own is refused for hands having ended its terminal: what
-        runs is stopped and drained while the brain runs, and the terminal is ended with the input held, so work kept
-        meanwhile is typed only once the exit has ended every turn (`_run_out`), and finds none to stop."""
-        # [LAW:nothing-unseen] the stop is one event: whether it stopped a turn, and how much of the brain's own work it
-        # waited on, while the brain ran and after its exit.
+        [LAW:no-ambient-temporal-coupling] one shutdown, in a task of the brain's own: every stop awaits it, and a caller's
+        cancel ends only that caller's wait, so its steps run whole, and in order, however the stop is left."""
+        if self._shutdown is None:
+            self._shutdown = asyncio.ensure_future(self._shut_down())
+        await asyncio.shield(self._shutdown)
+
+    async def _shut_down(self) -> None:
+        """No key of the brain's own is refused for hands having ended its terminal: what runs is stopped and drained
+        while the brain runs, and the terminal is ended with the input held, so work kept meanwhile is typed only once the
+        exit has ended every turn (`_run_out`), and finds none to stop."""
+        # [LAW:nothing-unseen] the shutdown is one event: whether it stopped a turn, and how much of the brain's own work it
+        # waited on, while the brain ran and after its exit; and, failed, what failed it, for whoever no longer waits.
         with continuing(self._launched), unit("brain.shutdown", self._record, begun(self._clock)):
-            # Each let go however the stop's steps, and the others, went: last held, first let go, so the terminal is ended
-            # while the listener still answers its hooks.
+            # Each let go however the steps went: last held, first let go.
             async with contextlib.AsyncExitStack() as held:
                 held.callback(shutil.rmtree, self._sockets)
                 held.push_async_callback(self._listener.cleanup)
                 held.push_async_callback(cancel_and_wait, self._reading)
-                held.push_async_callback(self._end)
-                self._stopped = True
                 # [LAW:single-enforcer] the turn in flight is stopped the one way a turn is, and nothing if none is; a turn
                 # Claude Code opened itself, which no turn waits on, ends with the terminal.
                 annotate(interrupted=self.interrupt(self.answering()))
                 annotate(waited_on=await self.drained())
-
-    async def _end(self) -> None:
-        """Ends the terminal, with the input held, and waits for the exit, which ends every turn (`_run_out`); then for
-        the work kept meanwhile, which finds none to stop.
-
-        [LAW:no-ambient-temporal-coupling] in a task of its own, so a caller's cancel ends only its wait: however the stop
-        ends, the terminal is ended."""
-        async def ending() -> None:
-            async with self._input:
-                await self._claude.stop()
-                await asyncio.shield(self._exit)
-
-        await asyncio.shield(asyncio.ensure_future(ending()))
-        annotate(waited_after_exit=await self.drained())
+                async with self._input:
+                    await self._claude.stop()
+                    await asyncio.shield(self._exit)
+                annotate(waited_after_exit=await self.drained())
 
     async def _type(self, typing: Callable[[Typist], None]) -> None:
         # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, which no turn's end catches: `_broke` says it.
@@ -1944,7 +1944,7 @@ async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
                 await running.stop()
             posting.cancel()
             await listener.cleanup()
-            shutil.rmtree(sockets, ignore_errors=True)
+            shutil.rmtree(sockets)
             raise
         launched = here()
     brain = Brain(running, wrapper, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, clock)
