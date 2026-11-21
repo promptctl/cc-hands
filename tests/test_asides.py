@@ -22,6 +22,13 @@ from hands.core.trace import Span
 from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("b1")
+
+
+class In:
+    """The brain, in the session it is in now."""
+
+    def __init__(self, session: SessionId | None = BRAIN) -> None:
+        self.session = session
 MARK = {"type": "ephemeral", "ttl": "1h"}
 HEADERS = (("authorization", "Bearer the-brains-own"), ("x-claude-code-session-id", "b1"), (CLASS_HEADER, "main"), ("content-type", "application/json"))
 
@@ -99,7 +106,7 @@ def test_markers_the_loop_put_on_earlier_messages_stay_and_a_lone_message_has_no
 
 
 async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_reply_once_read() -> None:
-    newest = Newest(BRAIN)
+    newest = Newest(In())
     waiting = asyncio.create_task(newest.turn())
     message = reply(Text("Done."))
     clock = VirtualClock()
@@ -123,6 +130,28 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     newest.hear(exchanged("o1", SessionId("other")))
     newest.hear(exchanged("x1", BRAIN))
     assert (await newest.turn()).reply == message
+
+
+async def test_the_newest_is_the_one_of_the_conversation_the_brain_is_in_and_one_it_goes_back_to_has_its_own() -> None:
+    brain = In()
+    newest = Newest(brain)
+    newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {}))
+    newest.hear(Forwarded("x1", "/v1/messages", HEADERS, b"b1"))
+    # Between a /clear's end and its start, and in the conversation it began before its first turn, nothing is forked.
+    brain.session = None
+    waiting = asyncio.create_task(newest.turn())
+    await asyncio.sleep(0)
+    brain.session = SessionId("b2")
+    newest.hear(Sent("x2", SessionId("other"), MainTurn(None), "main", {}))
+    newest.hear(Forwarded("x2", "/v1/messages", HEADERS, b"other"))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    newest.hear(Sent("x3", SessionId("b2"), MainTurn(None), "main", {}))
+    newest.hear(Forwarded("x3", "/v1/messages", HEADERS, b"b2"))
+    assert (await waiting).body == b"b2"
+    # A /resume back to b1 forks from b1's own newest turn.
+    brain.session = BRAIN
+    assert (await newest.turn()).body == b"b1"
 
 
 def sse(event: dict[str, object]) -> bytes:
@@ -213,7 +242,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         clock = VirtualClock(epoch=datetime.fromtimestamp(0, UTC))
         wire = Wire(clock, lambda _observed: None)
         proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=clock)
-        asides = Asides(clock, proxy.url, Newest(BRAIN), recorded.append)
+        asides = Asides(clock, proxy.url, Newest(In()), recorded.append)
 
         class Listening:
             def route(self, sent: Sent) -> Route:
@@ -458,7 +487,7 @@ async def test_a_timeout_that_is_not_its_askers_fails_the_question_broken_not_ti
         async def turn(self) -> Turn:
             raise TimeoutError("a wait of its own")
 
-    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(BRAIN), lambda _entry: None)
+    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(In()), lambda _entry: None)
     try:
         with pytest.raises(AsideFailed, match="not its asker's time") as failed:
             await asides.ask(AsideKind.LINE, "q", Deadline(10))

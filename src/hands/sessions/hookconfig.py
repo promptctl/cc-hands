@@ -113,6 +113,9 @@ _BRAIN_DECLARED_TIMEOUTS: Mapping[str, float] = {
     "UserPromptSubmit": BRAIN_POST_TIMEOUT_SECONDS,
     "Stop": BRAIN_POST_TIMEOUT_SECONDS,
     "StopFailure": BRAIN_POST_TIMEOUT_SECONDS,
+    # Answered once applied, as a prompt is; a launch's start is applied only once the brain's input is up.
+    "SessionStart": BRAIN_POST_TIMEOUT_SECONDS,
+    "SessionEnd": BRAIN_POST_TIMEOUT_SECONDS,
 }
 
 
@@ -121,6 +124,11 @@ def brain_declared(event: str) -> dict[str, object]:
     background: hands answers each, and Claude Code goes on only once it has."""
     timeout = _BRAIN_DECLARED_TIMEOUTS.get(event)
     return {} if timeout is None else {"timeout": timeout}
+
+
+def brain_post_timeout(event: str) -> float:
+    """How long the shim waits on hands for one of the brain's hooks it posts: as long as Claude Code waits on the hook."""
+    return float(_BRAIN_DECLARED_TIMEOUTS.get(event, POST_TIMEOUT_SECONDS))
 
 
 def main() -> None:

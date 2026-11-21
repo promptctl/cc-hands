@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import subprocess
+import shlex
 import sys
 import tempfile
 import time
@@ -28,7 +29,7 @@ from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
-from hands.core.effects import Allow, Deny, Effect, Summarise
+from hands.core.effects import Allow, Command, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
 from hands.core.stopfailure import StopFailed
@@ -41,7 +42,7 @@ from turns import RECORDINGS, prompts, stops
 from brains import dialogs, failures, permissions, unasked
 
 from hands.brain.stage import BrainStage
-from hands.core.session import Keystroke, PromptText, SessionId, Submit, pasted
+from hands.core.session import CommandName, Keystroke, PromptText, SessionId, Submit, pasted
 from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Sent, Written
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
@@ -283,6 +284,10 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     # turn has to be taken, and a Stop's past the hold the model puts on it, as the shim's outlives a working session's.
     waits = {"UserPromptSubmit": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "Stop": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "StopFailure": TAKE_SECONDS + POST_TIMEOUT_SECONDS}
     assert {event: hooks.pop(event) for event in waits} == {event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}", "timeout": wait}]}] for event, wait in waits.items()}
+    # A session's end and start are answered once applied, as a prompt is; the start, which Claude Code posts no HTTP hook
+    # for, is the shim's command posting it to the same listener, run by this hands' own interpreter.
+    assert hooks.pop("SessionEnd") == [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/SessionEnd", "timeout": TAKE_SECONDS + POST_TIMEOUT_SECONDS}]}]
+    assert hooks.pop("SessionStart") == [{"hooks": [{"type": "command", "command": shlex.join([sys.executable, "-I", "-m", "hands.sessions.shim", "http://127.0.0.1:7/SessionStart"]), "timeout": TAKE_SECONDS + POST_TIMEOUT_SECONDS}]}]
     # A permission is held while the user is asked, as long as a working session's is.
     assert hooks == {"PermissionRequest": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/PermissionRequest", "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]}]}
     env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
@@ -334,6 +339,37 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
 
 
 @pytest.mark.outside
+async def test_after_a_clear_and_a_resume_back_the_brain_answers_its_turns_and_its_conversation_follows(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(SYSTEM, launch(tmp_path), recorded.append)
+
+    async def moved(name: str, args: str | None) -> SessionId:
+        # Typed at the brain's terminal as a person would, between its turns.
+        before = len(typed(tmp_path))
+        brain._typist.command(Command(CommandName(name), None if args is None else PromptText(args)))  # pyright: ignore[reportPrivateUsage]
+        await patiently(lambda: brain.session is not None and any(line[0] == name for line in typed(tmp_path)[before:]), lambda: len(recorded))
+        assert brain.session is not None
+        return brain.session
+
+    try:
+        assert await brain.ask("one", unasked) == BrainAnswered("p1", None)
+        cleared = await moved("clear", None)
+        # Held as soon as it starts; with no turn in it yet, a restart now would begin anew, saying which it found untranscribed.
+        assert cleared != "b1" and conversation(tmp_path / "brain", SessionId("new")) == Fresh(SessionId("new"), cleared)
+        assert await brain.ask("two", unasked) == BrainAnswered("p2", None)
+        assert conversation(tmp_path / "brain", SessionId("new")) == Resumed(cleared)
+        assert await moved("resume", "b1") == "b1"
+        assert await brain.ask("three", unasked) == BrainAnswered("p3", None)
+    finally:
+        await brain.stop()
+    assert conversation(tmp_path / "brain", SessionId("new")) == Resumed(SessionId("b1"))
+    assert [(hook.facts["hook"], hook.facts["session"]) for hook in events(recorded, "brain.hook") if hook.facts["hook"] in ("SessionStart", "SessionEnd")] == [
+        ("SessionStart", "b1"), ("SessionEnd", "b1"), ("SessionStart", cleared), ("SessionEnd", cleared), ("SessionStart", "b1"),
+    ]
+    assert all(hook.outcome == "ok" for hook in events(recorded, "brain.hook"))
+
+
+@pytest.mark.outside
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
@@ -345,8 +381,10 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert (tmp_path / "brain" / "cwd").is_dir()
     # Behind a space, so a turn that opens with a slash is the words it is and not a command.
     assert typed(tmp_path) == [["prompt", " what is running?"], ["prompt", " /and now?"]]
-    # Each event the model applies to the brain's session is one of its own (`applied`), as a working session's is, beside these.
-    launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
+    # Each event the model applies to the brain's session is one of its own (`applied`), as a working session's is, and
+    # so is each hook it posts (`brain.hook`), beside these.
+    launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event in ("applied", "brain.hook"))]
+    assert [hook.facts["hook"] for hook in events(recorded, "brain.hook")][:1] == ["SessionStart"]
     assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
     # Each turn is its own, with the prompt Claude Code took it as, typed at the first settled look at a screen showing
     # its prompt, however long that look took.
@@ -1677,7 +1715,12 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
     transcript(tmp_path / "brain", str(launched.facts["session"]))
     async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
-        # Its usage is heard under the session it resumed, not one begun for it.
+        # Its usage is heard under the session it resumed, not one begun for it, once its start is applied: Claude Code
+        # sends no request of the session before then (docs/claude-code-behavior.md).
+        def started() -> list[WideEvent]:
+            return [hook for hook in events(recorded, "brain.hook") if hook.facts["hook"] == "SessionStart"]
+
+        await patiently(lambda: [(hook.facts["session"], hook.facts["source"]) for hook in started()][-1:] == [(launched.facts["session"], "resume")], lambda: len(recorded))
         wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
         assert isinstance(minded.llm, BrainStage)

@@ -725,18 +725,18 @@ def pinned_to(script: Path) -> str:
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what Claude Code says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
-    reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and says each turn as Claude Code does on each channel hands reads: the hooks its --settings name, as Claude Code fills them, the records of its transcript, and the status in its sessions/<pid>.json, idle as it starts; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
+    reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and says each turn as Claude Code does on each channel hands reads: the hooks its --settings name, as Claude Code fills and runs them (a command hook that fails written to TYPED), its SessionStart begun as its input comes up and waited on by the first prompt, the records of its transcript, and the status in its sessions/<pid>.json, idle as it starts; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under, and
     each prompt a Return sent is a line in the file ANSWERED names once it is done with all it does with it at once; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "stuck" runs whatever is pressed, "fail" is failed by the API, "deaf"
-    is never taken, "garbled" is taken as other words and runs until Escape, an Escape writing the record of the interruption and setting it idle, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
+    is never taken, "garbled" is taken as other words and runs until Escape, an Escape writing the record of the interruption and setting it idle, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; "/clear" and "/resume <session>" end its session and start a new one or that one, as the pin does (tests/test_pinned_session_moves.py), writing ["clear" or "resume", the session started]; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
     that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
     ["played", name] once it has said all of it. It writes a line to said.log beside TYPED as each line of the recording starts, and with
     PLAY_PAUSE named waits that many seconds before starting each line ahead of the first transcript record."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import datetime, itertools, json, os, select, signal, sys, termios, threading, time, tty, urllib.request
+import datetime, itertools, json, os, select, signal, subprocess, sys, termios, threading, time, tty, urllib.request, uuid
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -768,9 +768,30 @@ import turns
 transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
 status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
 def post(event, **fields):
-    [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
+    # Each hook its --settings name for the event, run as Claude Code runs it: an HTTP hook posted, a command hook run by
+    # the shell with the body on its stdin. An event they name none for runs none.
     body = json.dumps({{"session_id": session, "transcript_path": transcript, "cwd": os.getcwd(), "permission_mode": "default", "hook_event_name": event, **fields}}).encode()
-    return json.loads(urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=30).read())
+    reply = {{}}
+    for hook in [hook for matcher in hooks.get(event, []) for hook in matcher["hooks"]]:
+        if hook["type"] == "command":
+            ran = subprocess.run(["sh", "-c", hook["command"]], input=body, capture_output=True)
+            if ran.returncode:
+                # A command hook that failed is in the log for the test to read, as Claude Code shows it.
+                typed(["hook", event, ran.returncode, ran.stderr.decode()])
+            reply = json.loads(ran.stdout or b"{{}}")
+        else:
+            reply = json.loads(urllib.request.urlopen(urllib.request.Request(hook["url"], body, {{"Content-Type": "application/json"}}), timeout=30).read())
+    return reply
+def moved(to, how):
+    # A /clear or a /resume, as the pin was measured doing it (tests/test_pinned_session_moves.py): the session left
+    # ended, then the one entered started, its start returned before anything else is done in it.
+    global session, transcript
+    post("SessionEnd", reason=how)
+    session = to
+    transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
+    post("SessionStart", source=how)
+    stated("idle")
+    typed([how, session])
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
@@ -791,6 +812,9 @@ time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 # Raw without flushing: Claude Code keeps what was typed while it started (keys typed
 # 0.05s in).
 tty.setraw(0, termios.TCSANOW)
+# The launch's start runs as the input comes up, and nothing typed is done until it returns (tests/test_pinned_session_moves.py).
+starting = threading.Thread(target=post, args=("SessionStart",), kwargs={{"source": "resume" if "--resume" in sys.argv else "startup"}})
+starting.start()
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h")
 stated("idle")
@@ -868,6 +892,13 @@ def play(name, text):
     typed(["played", name])
 def submit(text):
     global turn, turn_text, prompts, last, tail
+    starting.join()
+    if text == "/clear":
+        moved(str(uuid.uuid4()), "clear")
+        return
+    if text.startswith("/resume "):
+        moved(text[len("/resume "):], "resume")
+        return
     if text.startswith("/btw "):
         if text == "/btw stubborn":
             signal.signal(signal.SIGTERM, lambda *_: typed(["sigterm", text, session]))

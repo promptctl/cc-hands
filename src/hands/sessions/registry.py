@@ -151,6 +151,12 @@ class Sessions:
         while (performing := self._performing.get(session)) is not None and not performing.done():
             await asyncio.wait({performing})
 
+    async def drained_all(self) -> None:
+        """Returns once nothing decided for any session is still being performed: `drained` for every session the registry
+        has performed for, one it moved on from among them."""
+        for session in list(self._performing):
+            await self.drained(session)
+
     def _performed(self, hearing: asyncio.Future[None]) -> None:
         self._hearing.discard(hearing)
         if not hearing.cancelled() and (error := hearing.exception()) is not None:

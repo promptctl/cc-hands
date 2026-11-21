@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from aiohttp import web
 
 from hands.virtualclock import VirtualClock
 from hands.core.effects import Summarise
@@ -64,8 +65,9 @@ async def sessions(home: Home) -> AsyncIterator[Sessions]:
     await runner.cleanup()
 
 
-async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = None, given: Mapping[str, str] = {}) -> tuple[int | None, str, str]:
-    """The shim's exit, stdout, and stderr for one hook, run as the plugin runs it: with only HANDS_HOME to go on."""
+async def shim(home: Home, payload: Mapping[str, object] | bytes, fritter: str | None = None, given: Mapping[str, str] = {}, url: str | None = None) -> tuple[int | None, str, str]:
+    """The shim's exit, stdout, and stderr for one hook, run as the plugin runs it, with only HANDS_HOME to go on, or as
+    the brain's start hook runs it, posting to the listener at `url`."""
     environment = os.environ | dict(given)
     if fritter is not None:
         environment["FRITTER_SOCKET"] = fritter
@@ -73,12 +75,13 @@ async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = 
         sys.executable,
         "-m",
         "hands.sessions.shim",
+        *([] if url is None else [url]),
         env={**environment, "HANDS_HOME": str(home.root)},
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate(json.dumps(payload).encode())
+    stdout, stderr = await process.communicate(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
     return process.returncode, stdout.decode(), stderr.decode()
 
 
@@ -507,3 +510,41 @@ async def test_a_turn_that_closed_on_no_reply_is_not_named(home: Home) -> None:
             await asyncio.wait_for(names.next_finished(), 0.2)
     finally:
         await runner.cleanup()
+
+
+@pytest.fixture
+async def listener() -> AsyncIterator[tuple[str, list[tuple[str, object]]]]:
+    """A brain's hook listener: it answers /SessionStart with a reply of its own and refuses anything else."""
+    heard: list[tuple[str, object]] = []
+
+    async def answer(request: web.Request) -> web.Response:
+        heard.append((request.path, await request.json()))
+        if request.path == "/SessionStart":
+            return web.json_response({"continue": True})
+        return web.Response(status=500, text="no such hook")
+
+    runner = web.AppRunner(web.Application())
+    runner.app.router.add_post("/{event}", answer)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    yield f"http://127.0.0.1:{runner.addresses[0][1]}", heard
+    await runner.cleanup()
+
+
+async def test_a_brain_hook_is_posted_to_its_listener_and_its_reply_is_what_claude_code_reads_with_nothing_recorded(home: Home, listener: tuple[str, list[tuple[str, object]]]) -> None:
+    url, heard = listener
+    # A home with no hands in it: the brain's hook goes to the hands that started the brain, not the daemon's socket.
+    assert await shim(home, START, url=f"{url}/SessionStart") == (0, '{"continue": true}', "")
+    assert heard == [("/SessionStart", START)]
+    assert list(home.root.iterdir()) == []
+
+
+async def test_a_brain_hook_nothing_answers_or_its_listener_refuses_fails_saying_where_and_why(home: Home, listener: tuple[str, list[tuple[str, object]]]) -> None:
+    url, _ = listener
+    # hands started this Claude Code, so a listener gone is hands broken, never hands off.
+    code, stdout, stderr = await shim(home, START, url="http://127.0.0.1:9/SessionStart")
+    assert (code, stdout) == (1, "") and stderr.startswith("hands: cannot reach hands at http://127.0.0.1:9/SessionStart: ")
+    assert await shim(home, END, url=f"{url}/SessionEnd") == (1, "", f"hands: hands at {url}/SessionEnd refused this hook (500): no such hook\n")
+    code, _, stderr = await shim(home, b"not json", url=f"{url}/SessionStart")
+    assert code == 1 and stderr.startswith("hands: ")

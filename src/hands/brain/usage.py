@@ -9,7 +9,6 @@ calls from its main conversation reads a figure that already holds the request i
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
-from hands.core.session import SessionId
 from hands.core.wire import Exchanged, Heard, MainTurn, MessageDelta, MessageStarted, Observed, Sent, usage_after
 
 # The three parts of what a request put into the model's context, as the API counts them.
@@ -60,11 +59,12 @@ def _count(value: object) -> int:
 
 
 class Usage:
-    """Hears the wire for one session's replies: `reading` says what its main conversation holds and it has spent."""
+    """Hears the wire for the brain's replies, as Kept hands them on: `reading` says what its main conversation holds and
+    it has spent. The tool that reads it is called from a main turn whose request was heard, so the latest main turn is
+    always of the conversation the brain is in."""
 
-    def __init__(self, session: SessionId) -> None:
-        self._session = session
-        # The session's exchanges sent and not yet whole, by whether each is a main turn.
+    def __init__(self) -> None:
+        # The exchanges sent and not yet whole, by whether each is a main turn.
         self._sent: dict[str, bool] = {}
         self._replies: dict[str, _Reply] = {}
         # [LAW:one-source-of-truth] what whole exchanges spent, folded in once each is whole, and the latest main turn.
@@ -73,7 +73,7 @@ class Usage:
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(exchange=exchange, session=session, kind=kind) if session == self._session:
+            case Sent(exchange=exchange, kind=kind):
                 self._sent[exchange] = isinstance(kind, MainTurn)
             case Heard(exchange=exchange, event=MessageStarted(model=model, usage=usage)) if exchange in self._sent:
                 reply = self._replies[exchange] = _Reply(exchange, model, usage)

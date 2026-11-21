@@ -1,6 +1,7 @@
 """The hook command: record membership, post the payload to the daemon, return.
 
     HANDS_HOME=<hands home> hands-shim     # HANDS_HOME defaults to ~/.hands
+    hands-shim <url>                       # a hook of the brain's, posted to its listener at <url>
 
 It runs in Claude Code's critical path for every subscribed hook, so it imports
 only the standard library and hands' data modules, and it never waits on
@@ -22,12 +23,13 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership
 from hands.sessions import heartbeat
 from hands.sessions.home import Home, default_home
-from hands.sessions.hookconfig import post_timeout
+from hands.sessions.hookconfig import brain_post_timeout, post_timeout
 from hands.sessions.membership import holder, remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.untap import tapped, untap_script
@@ -143,19 +145,28 @@ def _membership(payload: Payload) -> Membership:
 
 def post(home: Home, body: bytes, timeout: float) -> str:
     """The daemon's reply: empty for every hook but a decided permission request."""
-    connection = _UnixConnection(home.socket, timeout)
+    return _posted(_UnixConnection(home.socket, timeout), "/hook", body, f"the hands daemon at {home.socket}")
+
+
+def post_to(url: str, body: bytes, timeout: float) -> str:
+    """The reply of hands' listener at `url`, which a Claude Code hands started posts its hooks to."""
+    where = urlsplit(url)
+    return _posted(http.client.HTTPConnection(where.netloc, timeout=timeout), where.path, body, f"hands at {url}")
+
+
+def _posted(connection: http.client.HTTPConnection, path: str, body: bytes, to: str) -> str:
     try:
-        connection.request("POST", "/hook", body, {"Content-Type": "application/json"})
+        connection.request("POST", path, body, {"Content-Type": "application/json"})
         response = connection.getresponse()
         detail = response.read().decode(errors="replace")
     # A reply cut off halfway (the daemon died answering) is an HTTPException, not an OSError; both leave the hook
     # unanswered, and the heartbeat says why.
     except (OSError, http.client.HTTPException) as error:
-        raise Unreached(f"cannot reach the hands daemon at {home.socket}: {type(error).__name__}: {error}") from error
+        raise Unreached(f"cannot reach {to}: {type(error).__name__}: {error}") from error
     finally:
         connection.close()
     if response.status >= 300:
-        raise Refused(f"the hands daemon refused this hook ({response.status}): {detail}")
+        raise Refused(f"{to} refused this hook ({response.status}): {detail}")
     return detail
 
 
@@ -184,11 +195,16 @@ def unreached(home: Home, clock: Clock, error: Unreached) -> int:
 def main(argv: Sequence[str], clock: Clock) -> int:
     match argv:
         case [_]:
-            pass  # everything the shim is told comes on stdin and in HANDS_HOME
+            # everything the shim is told comes on stdin and in HANDS_HOME
+            return _hooked(sys.stdin.buffer.read(), clock)
+        case [_, url]:
+            return _posted_to(url, sys.stdin.buffer.read())
         case _:
-            print("usage: hands-shim  (the home is HANDS_HOME, or ~/.hands)", file=sys.stderr)
+            print("usage: hands-shim [url]  (the home is HANDS_HOME, or ~/.hands)", file=sys.stderr)
             return USAGE
-    body = sys.stdin.buffer.read()
+
+
+def _hooked(body: bytes, clock: Clock) -> int:
     try:
         home = default_home(os.environ)
     except Rejected as error:
@@ -205,6 +221,19 @@ def main(argv: Sequence[str], clock: Clock) -> int:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED
     # Claude Code reads a permission decision from the hook's stdout.
+    sys.stdout.write(reply)
+    return 0
+
+
+def _posted_to(url: str, body: bytes) -> int:
+    """A hook of a Claude Code hands started, the brain, posted to the listener at `url`: a hook Claude Code runs no HTTP
+    hook for (docs/claude-code-behavior.md). hands runs that Claude Code, so a listener nothing answers on is a failure,
+    never hands being off; nothing is recorded, as hands knows the process it started."""
+    try:
+        reply = post_to(url, body, brain_post_timeout(Payload.parse(body).text("hook_event_name")))
+    except (Rejected, Unreached, Refused) as error:
+        print(f"hands: {error}", file=sys.stderr)
+        return FAILED
     sys.stdout.write(reply)
     return 0
 
