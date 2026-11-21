@@ -17,6 +17,8 @@ import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from loguru import logger
+
 from hands.clock import Clock
 from hands.core.session import ESCAPES
 from hands.sessions.child import Child, reaped
@@ -99,7 +101,8 @@ class ClaudeCode:
             async with self._clock.timeout(DRAIN_SECONDS):
                 await asyncio.shield(self._terminal.closed)
         except TimeoutError:
-            pass
+            # [LAW:no-silent-failure] what it showed last may be cut short of its end, and says so.
+            logger.warning(f"the terminal of pid {self.pid} was still held {DRAIN_SECONDS:g}s after it exited: what it showed last may be cut short")
         return code
 
 

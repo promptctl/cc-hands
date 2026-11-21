@@ -496,18 +496,16 @@ async def converse(
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
         # A run told to stop takes no more turns: the key stops being watched before the pipeline tears down, not after.
         talk_key.cancel()
-        phone.cancel()
-        await asyncio.wait({phone})
+        await cancelled(phone)
         # [LAW:no-ambient-temporal-coupling] the follower holds the streams while it reopens them, and Pipecat's
         # cleanup closes them; the follower is done before the cleanup starts, so the two never hold them at once.
-        following.cancel()
-        await asyncio.wait({following})
+        await cancelled(following)
         await runner.cancel("quit")
         # What it raised is told already, by stop_if_failed.
         await asyncio.wait({pipeline_run})
     finally:
         # The pipeline among them: a teardown that raised before it ended leaves nothing running past the run.
-        await cancelled((*background, pipeline_run, quitting))
+        await cancelled(pipeline_run, quitting, *background)
 
 
 def stopping(stop: Stop) -> Callable[[asyncio.Task[None]], None]:

@@ -596,7 +596,7 @@ async def launch(
                 # No session has joined before the hooks are served, which is after the import.
                 run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop, clock)
                 last = Ended(None, 0) if run is None else await run(stop)
-                await cancelled({watching})
+                await cancelled(watching)
                 match stop.end:
                     case Failed():
                         # A run that failed leaves its last heartbeat naming a pid that is gone, or, as it restarts, one

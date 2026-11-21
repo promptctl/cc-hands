@@ -204,7 +204,7 @@ async def test_a_task_that_raises_as_it_is_cancelled_is_told_before_the_cancel_r
     task = asyncio.create_task(closes_badly(), name="the phone")
     task.add_done_callback(stopping(stop))
     await asyncio.sleep(0)
-    await cancelled({task})
+    await cancelled(task)
     assert stop.named == ("q key", "the phone")
     assert stop.end == Failed((TEARDOWN,))
 

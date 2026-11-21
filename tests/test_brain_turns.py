@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import threading
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
 
 import aiohttp
@@ -110,7 +110,7 @@ def _order_lost(why: object) -> str:
 def _bare() -> Brain:
     """A Brain no launch built, holding what every turn's take reads from `__init__`: the tests set the rest."""
     brain = object.__new__(Brain)
-    brain._untaken, brain._own_work = None, set()  # pyright: ignore[reportPrivateUsage]
+    brain._untaken, brain._own_work, brain._ending = None, set(), asyncio.Event()  # pyright: ignore[reportPrivateUsage]
     return brain
 
 
@@ -310,12 +310,11 @@ async def test_a_brain_whose_reading_failed_still_lets_go_of_what_it_held_as_it_
     recorded: list[Entry] = []
     brain = _owning(VirtualClock())
     _keyed(brain, recorded)
-    listener = _running(brain, tmp_path / "sockets")
 
     async def reading() -> None:
         raise OSError("the transcript went")
 
-    brain._reading = asyncio.ensure_future(reading())  # pyright: ignore[reportPrivateUsage]
+    listener = _running(brain, tmp_path / "sockets", reading)
     await asyncio.wait({brain._reading})  # pyright: ignore[reportPrivateUsage]
     await brain.stop()
     assert (listener.cleaned, brain._sockets.exists()) == (True, False)  # pyright: ignore[reportPrivateUsage]
@@ -388,7 +387,7 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
     brain._broke(over, RuntimeError("late"))  # pyright: ignore[reportPrivateUsage]
     held = brain._modelled()  # pyright: ignore[reportPrivateUsage]
     assert held is not None
-    assert (taken(said), held.ending, current.broken, brain._own_work) == (["the brain's own work failed: RuntimeError('late')"], None, None, set())  # pyright: ignore[reportPrivateUsage]
+    assert (taken(said), held.ending, current.broken, await brain.drained()) == (["the brain's own work failed: RuntimeError('late')"], None, None, 0)
 
 
 async def test_a_permission_another_session_posts_to_the_brain_is_refused_and_is_one_event_naming_that_session() -> None:
@@ -701,7 +700,7 @@ async def test_words_of_an_untaken_turn_taken_after_a_stop_cleared_the_input_are
     brain._over(_typed_turn(brain, "yes"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
     await brain._clear(None)  # pyright: ignore[reportPrivateUsage]
     _took(brain, "p1", "yes")
-    assert (len(brain._claude_turns.open), keys.pressed, brain._own_work) == (1, ["escape", "ctrl_c"], set())  # pyright: ignore[reportPrivateUsage]
+    assert (len(brain._claude_turns.open), keys.pressed, await brain.drained()) == (1, ["escape", "ctrl_c"], 0)  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_words_of_an_untaken_turn_a_turn_asked_since_was_filed_into_run_on_to_answer_it() -> None:
@@ -727,7 +726,7 @@ async def test_words_of_an_untaken_turn_taken_after_other_words_are_a_person_s_a
     _took(brain, "p1", "something else")
     _told(brain, "p1", ["p1"])
     _took(brain, "p2", "yes")
-    assert (len(brain._claude_turns.open), keys.pressed, brain._own_work) == (1, [], set())  # pyright: ignore[reportPrivateUsage]
+    assert (len(brain._claude_turns.open), keys.pressed, await brain.drained()) == (1, [], 0)  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_telling_that_names_no_prompt_ends_the_turn_its_ids_are() -> None:
@@ -854,15 +853,15 @@ async def _reads_on() -> None:
     await asyncio.Event().wait()
 
 
-def _running(brain: Brain, sockets: Path) -> _Listener:
+def _running(brain: Brain, sockets: Path, reading: Callable[[], Coroutine[None, None, None]] = _reads_on) -> _Listener:
     """A keyed brain that runs until its terminal is stopped: its exit heard as `_run_out` hears it, its sockets under
-    `sockets`, its transcript read on until the stop ends the reading."""
+    `sockets`, its transcript read by `reading` until the stop ends it."""
     brain._fritter = 4241  # pyright: ignore[reportPrivateUsage]
     brain._exit = asyncio.ensure_future(brain._run_out(begun(brain._clock)))  # pyright: ignore[reportPrivateUsage]
     listener = brain._listener = _Listener()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     brain._sockets = sockets  # pyright: ignore[reportPrivateUsage]
     sockets.mkdir()
-    brain._reading = asyncio.ensure_future(_reads_on())  # pyright: ignore[reportPrivateUsage]
+    brain._reading = asyncio.ensure_future(reading())  # pyright: ignore[reportPrivateUsage]
     return listener
 
 
@@ -974,6 +973,37 @@ async def test_a_brain_stopped_while_a_stop_of_its_own_holds_ctrl_c_returns_once
     assert (listener.cleaned, (tmp_path / "sockets").exists(), brain._reading.cancelled()) == (True, False, True)  # pyright: ignore[reportPrivateUsage]
     [shutdown] = events(recorded, "brain.shutdown")
     assert (shutdown.outcome, shutdown.facts) == ("ok", {"waited_on": 1})
+
+
+async def test_a_key_the_terminal_refuses_once_the_stop_has_ended_it_is_the_brain_s_end_though_its_exit_is_not_yet_heard(tmp_path: Path) -> None:
+    brain = _owning(VirtualClock())
+    keys = _keyed(brain, [])
+    _running(brain, tmp_path / "sockets")
+    gate, ended = threading.Event(), asyncio.Event()
+
+    def gone() -> None:
+        gate.wait()
+        raise Untyped("the fritter is gone")
+
+    async def stop() -> None:
+        # The terminal is ended, and its exit is heard only later, as `_run_out` hears it.
+        ended.set()
+
+    keys.stop = stop  # pyright: ignore[reportAttributeAccessIssue]
+    keys.before["ctrl_c"] = gone
+    _took(brain, "n1", NOTICE)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    assert brain.interrupt(notified) is True
+    try:
+        await until(lambda: keys.pressed == ["escape", "ctrl_c"])
+        stopping = asyncio.ensure_future(brain.stop())
+        await ended.wait()
+    finally:
+        gate.set()
+    # The Ctrl-C the gone terminal refused is the stop's end of it: nothing is said to have failed (`said`).
+    await brain.drained()
+    keys.exit.set_result(0)
+    await stopping
 
 
 async def test_a_turn_in_flight_as_the_brain_stops_records_its_event_failed_with_the_brain_s_end(tmp_path: Path) -> None:
