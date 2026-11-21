@@ -64,6 +64,9 @@ from hands.voice.tool import Result, tool
 from hands.voice.tools import Called, audited
 from hands.voice import voices
 
+# [LAW:no-silent-failure] an error the brain says that a test does not assert fails it (`said`).
+pytestmark = pytest.mark.usefixtures("said")
+
 
 def never_barged_in() -> asyncio.Future[Bookmark]:
     """The speaker's reading at a barge-in, which a test with no speaker never has."""
@@ -686,7 +689,9 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
         assert brain.interrupt(brain.answering()) is True
         assert await asyncio.wait_for(asking, 10) == BrainStopped()
         assert brain.interrupt(brain.answering()) is False
-        # Escape, then Ctrl-C, which empties whatever Escape put back in the input: read by the fake as it reads them.
+        # Escape, then Ctrl-C, which empties whatever Escape put back in the input: once the stop's keys have gone, read
+        # by the fake as it reads them.
+        await brain.drained()
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
     finally:
         await brain.stop()
@@ -777,6 +782,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
             await asyncio.wait_for(asking, 10)
         # The stop's Ctrl-C went only once its time had passed, never while Claude Code might still read it with the ESC
         # as one chord that does neither (promptctl-testing-px1f.6i5).
+        await brain.drained()
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
     finally:
         await brain.stop()
@@ -1100,6 +1106,7 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
         with pytest.raises(RuntimeError, match="no voice"):
             await asyncio.wait_for(brain.ask("write", asks), 10)
         # The brain heard the refusal, so its dialog did not hold it: its Stop comes, and the next turn is its own.
+        await brain.drained()
         await until(lambda: ["permission", "deny", BROKEN, True] in typed(tmp_path))
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p2", None)
     finally:
@@ -1131,7 +1138,7 @@ async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_an
     try:
         with pytest.raises(RuntimeError, match="no voice"):
             await asyncio.wait_for(brain.ask("write", asks), 5)
-        await until(lambda: len(said) == 2)
+        await brain.drained()
     finally:
         await brain.stop()
     # A second stop would press Escape again, and its Ctrl-C would land inside Claude Code's exit window.

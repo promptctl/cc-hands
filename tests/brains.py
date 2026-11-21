@@ -22,18 +22,13 @@ def permissions(recorded: Sequence[Entry]) -> list[tuple[Fact, Fact, Fact]]:
     return [(event.facts["prompt"], event.facts["tool"], event.facts["decision"]) for event in events(recorded, "brain.permission")]
 
 
-def failures() -> tuple[list[str], int]:
-    """What is said on the terminal as an error, as it is said, and the sink that hears it."""
-    said: list[str] = []
-    return said, logger.add(lambda message: said.append(message.record["message"]), level="ERROR")
-
-
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def said() -> Iterator[list[str]]:
-    """[LAW:no-silent-failure] every error said while a brain's test runs, what the brain's own work raised among them
-    (`_broke`): one the test does not take (`taken`) fails it, so work that broke where the test did not look is never a
-    pass. Autouse in each test module that imports it."""
-    said, sink = failures()
+    """[LAW:no-silent-failure] every error said while a test that uses it runs, what the brain's own work raised among
+    them (`_broke`): one the test does not take (`taken`) fails it, so work that broke where the test did not look is
+    never a pass. A module of the brain's tests uses it for each of its tests (`pytestmark`)."""
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="ERROR")
     try:
         yield said
     finally:

@@ -35,6 +35,9 @@ from claudescreen import ClaudeScreen
 from hands.sessions.tmux import KEYS
 from terminalcontract import CHORD
 
+# [LAW:no-silent-failure] an error the brain says that a test does not assert fails it (`said`).
+pytestmark = pytest.mark.usefixtures("said")
+
 
 async def until(check: Callable[[], bool]) -> None:
     """Until `check` holds: what a bare brain does next it does in the loop's turns, so a wait that stalls is the failure."""
@@ -96,6 +99,11 @@ async def test_a_turn_whose_input_keeps_its_words_is_untaken_saying_what_it_show
         await asking
     assert "a person's words" in str(untaken.value) and "\x1b" not in str(untaken.value)
     assert not any("and now?" in key for key in keys.pressed) and "escape" not in keys.pressed and "ctrl_c" not in keys.pressed
+
+
+def _order_lost(why: object) -> str:
+    """The error the brain says as the order of its turns is lost, `why`."""
+    return f"the brain lost the order of its turns: {why}"
 
 
 def _bare() -> Brain:
@@ -322,7 +330,10 @@ async def _reads_on() -> None:
 async def _stopped(brain: Brain, keys: "_Keys") -> None:
     """Stops the brain, whose process is heard ending once its terminal is stopped, as `_run_out` hears it."""
     stopping = asyncio.ensure_future(brain.stop())
-    await keys.stopped.wait()
+    terminal = asyncio.ensure_future(keys.stopped.wait())
+    # A stop that fails before it stops the terminal raises here, not waits on a terminal stop that never comes.
+    await asyncio.wait({stopping, terminal}, return_when=asyncio.FIRST_COMPLETED)
+    terminal.cancel()
     brain._exit.set_result(0)  # pyright: ignore[reportPrivateUsage]
     await stopping
 
@@ -380,6 +391,36 @@ async def test_a_brain_stopped_while_a_stop_of_its_own_holds_ctrl_c_ends_that_st
     assert shutdown.facts == {"ended": "hands stopped it", "cancelled": 1}
 
 
+async def test_a_stop_cancelled_again_and_again_while_a_key_is_held_lets_go_only_once_it_has_stopped_everything(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+    brain = _owning(VirtualClock())
+    keys = _keyed(brain, recorded)
+    gate = threading.Event()
+    keys.before["ctrl_c"] = gate.wait
+    listener = _held(brain, tmp_path / "sockets", _reads_on())
+    _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    assert brain.interrupt(brain.answering()) is True
+    await until(lambda: keys.pressed == ["escape"])
+    stopping = asyncio.ensure_future(brain.stop())
+    try:
+        await until(lambda: any(task.cancelling() for task in brain._own_work))  # pyright: ignore[reportPrivateUsage]
+        # Its waiter cancelled twice over while the key is held: neither the key's work nor the stop is let go of.
+        for _ in range(2):
+            stopping.cancel()
+            await settled()
+        assert not stopping.done() and not keys.stopped.is_set()
+    finally:
+        gate.set()
+    await until(lambda: keys.stopped.is_set())
+    brain._exit.set_result(0)  # pyright: ignore[reportPrivateUsage]
+    # The cancel is raised once the stop has let go of everything it held.
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+    assert keys.pressed == ["escape", "ctrl_c"]
+    assert (listener.cleaned, (tmp_path / "sockets").exists()) == (True, False)
+
+
 async def test_a_key_that_fails_after_the_brain_s_stop_ended_its_work_is_said(tmp_path: Path, said: list[str]) -> None:
     recorded: list[Entry] = []
     brain = _owning(VirtualClock())
@@ -398,7 +439,8 @@ async def test_a_key_that_fails_after_the_brain_s_stop_ended_its_work_is_said(tm
     assert brain.interrupt(brain.answering()) is True
     await until(lambda: keys.pressed == ["escape"])
     stopping = asyncio.ensure_future(_stopped(brain, keys))
-    await settled()
+    # The key raises only once the stop has cancelled the work pressing it.
+    await until(lambda: any(task.cancelling() for task in brain._own_work))  # pyright: ignore[reportPrivateUsage]
     gate.set()
     await stopping
     # Ended by what its key raised, not by the stop's cancel: said once, and not counted as cancelled.
@@ -1084,7 +1126,7 @@ async def test_a_brain_stop_let_go_undecided_fails_every_turn_open_and_the_turn_
     await until(lambda: len(events(recorded, "brain.turn")) == 1)
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["order_lost"], turn.facts["ids"]) == ("failed", "the Stop of q was let go before it was decided", ("p1",))
-    assert [line.split(":")[0] for line in taken(said)] == ["the brain lost the order of its turns"]
+    assert taken(said) == [_order_lost(turn.facts["order_lost"])]
 
 
 def _heard_late(brain: Brain, clock: VirtualClock) -> None:
@@ -1110,7 +1152,7 @@ async def test_a_brain_prompt_hook_answered_past_its_timeout_fails_every_turn_op
     with pytest.raises(process.OrderLost):
         turn.answered.result()
     assert (turn.order_lost, brain._claude_turns.open) == (f"the UserPromptSubmit hook of p2 was answered in {TAKE_SECONDS + 1:.1f}s, past the {TAKE_SECONDS:g}s hands has to answer it in", ())  # pyright: ignore[reportPrivateUsage]
-    assert [line.split(":")[0] for line in taken(said)] == ["the brain lost the order of its turns"]
+    assert taken(said) == [_order_lost(turn.order_lost)]
 
 
 async def test_a_permission_hook_claude_code_gave_up_on_fails_no_turn() -> None:
@@ -1213,7 +1255,7 @@ async def test_a_brain_prompt_hook_that_does_not_parse_fails_every_turn_open_as_
     with pytest.raises(process.OrderLost):
         turn.answered.result()
     assert brain._claude_turns.open == ()  # pyright: ignore[reportPrivateUsage]
-    assert [line.split(":")[0] for line in taken(said)] == ["the brain lost the order of its turns"]
+    assert taken(said) == [_order_lost(str(turn.answered.exception()))]
 
 
 async def test_a_brain_stop_answered_past_its_bound_fails_every_turn_open(said: list[str]) -> None:
@@ -1230,7 +1272,7 @@ async def test_a_brain_stop_answered_past_its_bound_fails_every_turn_open(said: 
     assert turn.answered.result() == BrainAnswered(PromptId("p1"), None)
     with pytest.raises(process.OrderLost, match="the Stop hook of p1 was answered in"):
         notified.ended.result()
-    assert [line.split(":")[0] for line in taken(said)] == ["the brain lost the order of its turns"]
+    assert taken(said) == [_order_lost(str(notified.ended.exception()))]
 
 
 async def test_a_notification_that_opens_while_a_turn_waits_for_the_input_is_never_escaped_for_it() -> None:
@@ -1298,7 +1340,7 @@ async def test_words_queued_while_which_turn_runs_is_unknown_take_no_turn_for_th
     assert brain.current() is None
     _took(brain, "p2", "next")
     assert brain.current() is not None and brain.current().ids == {"p2"}  # pyright: ignore[reportOptionalMemberAccess]
-    assert [line.split(":")[0] for line in taken(said)] == ["the brain lost the order of its turns"]
+    assert taken(said) == [_order_lost("a test")]
 
 
 async def test_a_turn_is_typed_only_once_the_brains_screen_shows_its_prompt_in_place_of_a_dialog() -> None:
