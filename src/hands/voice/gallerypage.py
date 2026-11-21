@@ -137,28 +137,28 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
     """
     page = resources.files("hands.voice").joinpath("gallery.html").read_text()
 
-    async def shown(_request: web.Request) -> web.Response:
+    async def served(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def look() -> tuple[str, Shown]:
-        shown: Shown = {
+        state: Shown = {
             "voices": VOICES, "speaking_in": str(await gallery.voices.speaking_in()),
             "levels": LEVELS, "level": gallery.levels.level,
             "modalities": MODALITIES, "modality": gallery.desk.modality,
             "models": gallery.models, "running_on": gallery.own.running(),
         }
-        return version_of(shown), shown
+        return version_of(state), state
 
     # [LAW:one-source-of-truth] the page shows what hands answers here and keeps no picture of its own, so a choice made
     # anywhere, by voice, by hand in the settings file, or by a model switch's restart, is on the page by the next answer.
     @keyed(clock, "gallery.read", record, key)
     async def read_state(request: web.Request) -> web.Response:
         try:
-            version, shown = await waited(clock, look, request.query.get("seen"))
+            version, state = await waited(clock, look, request.query.get("seen"))
         except (Rejected, OSError) as error:
             return _refusal(error)
-        annotate(speaking_in=shown["speaking_in"], level=shown["level"], modality=shown["modality"], running_on=shown["running_on"])
-        return web.json_response({"seen": version, **shown})
+        annotate(speaking_in=state["speaking_in"], level=state["level"], modality=state["modality"], running_on=state["running_on"])
+        return web.json_response({"seen": version, **state})
 
     @keyed(clock, "gallery.hear", record, key)
     async def hear_voice(request: web.Request) -> web.Response:
@@ -227,7 +227,7 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
         return web.json_response(result)
 
     return [
-        web.get("/gallery", shown),
+        web.get("/gallery", served),
         web.get("/gallery/state", read_state),
         web.get("/gallery/library", find_voices),
         web.post("/gallery/hear", hear_voice),
