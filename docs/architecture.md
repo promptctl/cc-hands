@@ -2260,14 +2260,14 @@ hands shows the certificate `tailscale cert` issues for it, which the phone trus
 as it is; under a LAN address it shows a self-signed one, which the phone is asked
 once to accept, and which hands makes again at a start within 30 days of its end;
 the tailnet's is asked of Tailscale again daily while the page is served. Serving it is one
-`phone.served` event, naming the tailnet name it is served under and when its certificate
-ends, or why it is served on the LAN alone; it follows the pipeline's start, so it is no
-part of `hands.start`. Each daily ask is one `phone.renewed` event, the root of a trace of
-its own: a certificate Tailscale issues, once it has loaded, is the one served from then on,
-so a page served on the LAN alone at the start is served under the tailnet name once
-Tailscale gives one; one it refuses, or one that will not load, keeps the certificate served
-and fails the event in Tailscale's words or the certificate's, naming when the one still
-served ends. The page is open to anyone who reaches the port; a call is not: an
+`phone.served` event, and each daily ask of Tailscale after it one `phone.renewed` event,
+the root of a trace of its own; `phone.served` follows the pipeline's start, so it is no
+part of `hands.start`. A certificate Tailscale issues, once it has loaded, is the one served
+under the tailnet name from then on, so a page Tailscale refused at the start is served
+under that name once it gives one. Each event names the tailnet name served and when its
+certificate ends; one Tailscale refused, or whose certificate would not load, fails in
+Tailscale's words or the certificate's and keeps the one served; on a machine with no
+Tailscale, the event is ok and says so. The page is open to anyone who reaches the port; a call is not: an
 offer must carry the phone's key, a secret in the home that travels in the page
 address's fragment, which a browser never sends with the page request. `hands phone`
 prints the addresses with the key, the first as a QR code. aiortc never notices a

@@ -11,14 +11,11 @@ an offer without it is refused.
 import json
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
-from functools import partial
 from importlib import resources
 from pathlib import Path
 from typing import Never
 
 from aiohttp import web
-from loguru import logger
 
 from hands.clock import Clock
 from hands.core.bearer import bears
@@ -31,7 +28,7 @@ from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
-from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, server_context, tailnet
+from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, NoTailscale, Tailnet, Untailed, own_certificate, server_context
 from hands.voice.summaries import SummaryStore
 
 # How often the page asks Tailscale for the tailnet's certificate again: Tailscale renews one a month before its 90
@@ -102,88 +99,76 @@ def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str
     return app
 
 
-async def serve_phone(clock: Clock, pages: web.Application, home: Home, record: Record) -> Never:
+async def serve_phone(clock: Clock, pages: web.Application, home: Home, asked: Callable[[], Awaitable[Tailnet | Untailed]], record: Record) -> Never:
     """Serve `pages` on every address this machine has, until cancelled; under the tailnet's name, with the certificate
-    Tailscale renews, asked for again every RENEW_SECONDS.
+    Tailscale gives `asked`, asked for again every RENEW_SECONDS.
 
-    [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
-    under, or, served on the LAN alone, why Tailscale gave it none. Each renewal after it is one of its own,
-    `phone.renewed`.
+    [LAW:nothing-unseen] serving it is one unit of work, `phone.served`, and each renewal after it one of its own,
+    `phone.renewed`, the root of a trace of its own: each says the port or what Tailscale answered, as `_Served` says it.
     """
     runner = web.AppRunner(pages, access_log=None)
     await runner.setup()
     try:
         with unit("phone.served", record, begun(clock)):
-            shown = _Shown(server_context(*own_certificate(clock, home)), _kept(None, await tailnet(clock, home)))
+            served = _Served(own_certificate(clock, home))
+            served.answered(await asked())
             # Every request the site takes is work for no unit open here: the server's tasks copy the context it is
             # started in, and `phone.served` ends as the page comes up.
             with continuing(None):
-                await _site(runner, shown.own)
+                await _site(runner, served.context)
             # The port the page was bound on, which a phone's address names.
             [(_host, port, *_)] = runner.addresses
             annotate(port=port)
-        await _renewing(clock, shown, partial(tailnet, clock, home), record)
+        # No renewal is part of whatever unit is open where the page is served.
+        with continuing(None):
+            while True:
+                await clock.sleep(RENEW_SECONDS)
+                with unit("phone.renewed", record, begun(clock)):
+                    served.answered(await asked())
     finally:
         await runner.cleanup()
 
 
-@dataclass
-class _Shown:
-    """The certificate a phone's handshake is answered with: the tailnet's under its name, if Tailscale has given one,
-    and hands' own under any other.
+class _Served:
+    """The certificate a phone's handshake is answered with: hands' own, and the tailnet's under its name once Tailscale
+    has issued one.
 
-    [LAW:one-source-of-truth] the one holder of the tailnet chain served: the handshake reads it, and an ask of
-    Tailscale replaces it whole, with a context that has already loaded, so the name and the chain shown never part.
+    [LAW:one-source-of-truth] the one holder of the tailnet chain served, and its one writer: the handshake reads it, and
+    an answer of Tailscale's replaces it whole with a context that has already loaded, so the name and the chain served
+    never part.
     """
 
-    own: ssl.SSLContext
-    tailnet: Tailnet | None
+    def __init__(self, own: tuple[Path, Path]) -> None:
+        self.context = server_context(*own)
+        self._tailnet: Tailnet | None = None
+        self.context.sni_callback = self._chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
 
-    def __post_init__(self) -> None:
-        self.own.sni_callback = self._chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
+    def answered(self, answer: Tailnet | Untailed) -> None:
+        """Serve what Tailscale answered: a chain it issued replaces the one served, and a refusal keeps it.
+
+        [LAW:nothing-unseen] said on the unit open here: failed in Tailscale's words when it refused, ok saying why when
+        this machine has no Tailscale, and the tailnet name served and when its certificate ends, if one is.
+        """
+        match answer:
+            case Tailnet():
+                self._tailnet = answer
+            case NoTailscale(reason=reason):
+                annotate(untailed=reason)
+            case Untailed(reason=reason):
+                fail(reason)
+        match self._tailnet:
+            case Tailnet(name=name, not_after=ends):
+                annotate(tailnet=name, tailnet_not_after=ends)
+            case None:
+                pass
 
     def _chosen(self, connection: ssl.SSLObject, server_name: str | None, _context: ssl.SSLContext) -> None:
         # [LAW:single-enforcer] the one place a name picks its certificate: the name the phone asked for.
-        match self.tailnet:
+        match self._tailnet:
             case Tailnet(name=name, context=context) if server_name == name:
                 connection.context = context
             case _:
-                connection.context = self.own
-
-
-def _kept(shown: Tailnet | None, answer: Tailnet | Untailed) -> Tailnet | None:
-    """The tailnet chain served once Tailscale has answered `answer`, with `shown` served before it: a chain it issued
-    replaces any other; a refusal keeps the one served, and is a failure while there is one.
-
-    [LAW:nothing-unseen] said on the unit open here: the tailnet name served and when its certificate ends, or why the
-    page is served on the LAN alone.
-    """
-    match shown, answer:
-        case _, Tailnet(name=name, not_after=not_after):
-            annotate(tailnet=name, tailnet_not_after=not_after)
-            return answer
-        case Tailnet(name=name, not_after=not_after), Untailed(reason=reason):
-            annotate(tailnet=name, tailnet_not_after=not_after)
-            fail(reason)
-            return shown
-        case None, Untailed(reason=reason):
-            # [LAW:no-silent-failure] the page is still served on the LAN; why the tailnet name is not, is said.
-            logger.warning(f"the phone's page is served on the LAN alone: {reason}")
-            annotate(untailed=reason)
-            return None
-
-
-async def _renewing(clock: Clock, shown: _Shown, asked: Callable[[], Awaitable[Tailnet | Untailed]], record: Record) -> Never:
-    """Ask Tailscale again every RENEW_SECONDS, as `asked`, and serve what `_kept` keeps of its answer.
-
-    [LAW:nothing-unseen] each renewal is one unit of work, `phone.renewed`, the root of a trace of its own whatever is
-    open where it is started.
-    """
-    with continuing(None):
-        while True:
-            await clock.sleep(RENEW_SECONDS)
-            with unit("phone.renewed", record, begun(clock)):
-                shown.tailnet = _kept(shown.tailnet, await asked())
+                connection.context = self.context
 
 
 async def _site(runner: web.AppRunner, context: ssl.SSLContext) -> None:
