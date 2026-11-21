@@ -94,23 +94,12 @@ class LitFailed(Exception):
         super().__init__(message)
         self.reason = reason
 
-    @property
-    def wrote_nothing(self) -> bool:
-        """Whether lit is known to have written nothing: it refused, saying why on its reason line. A lit that did not
-        answer, ended without a reason, or failed once it was running may have written before it stopped."""
-        return self.reason is not None
-
 
 class LitNotStarted(LitFailed):
     """lit's program never ran in the directory; the message says what the OS said."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message, None)
-
-    @property
-    def wrote_nothing(self) -> bool:
-        """A lit that never ran wrote nothing."""
-        return True
 
 
 class ProjectGone(LitNotStarted):
@@ -391,17 +380,17 @@ async def rank(clock: Clock, project: Path, move: Move, by: Signer) -> str:
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    return (await _lit(clock, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)).decode(errors="replace").strip()
+    return await _said(clock, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)
 
 
-async def make_epic(clock: Clock, project: Path, new: NewEpic, by: Signer) -> None:
-    """Have lit in `project` make `new`, at the bottom of its frame, signed `by`; raises LitFailed when it fails. It is found after by its frame, title, and topic, as every level's epic is (`Backlog.level_epics`)."""
-    await _lit(clock, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, environment=by.runs_in)
+async def make_epic(clock: Clock, project: Path, new: NewEpic, by: Signer) -> str:
+    """Have lit in `project` make `new`, at the bottom of its frame, signed `by`, and what lit said; raises LitFailed when it fails. It is found after by its frame, title, and topic, as every level's epic is (`Backlog.level_epics`)."""
+    return await _said(clock, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, environment=by.runs_in)
 
 
-async def adopt(clock: Clock, project: Path, ticket: str, epic: str, by: Signer) -> None:
-    """Have lit in `project` move `ticket` inside `epic`, keeping its id, signed `by`; raises LitFailed when it fails."""
-    await _lit(clock, project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, environment=by.runs_in)
+async def adopt(clock: Clock, project: Path, ticket: str, epic: str, by: Signer) -> str:
+    """Have lit in `project` move `ticket` inside `epic`, keeping its id, signed `by`, and what lit said; raises LitFailed when it fails."""
+    return await _said(clock, project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, environment=by.runs_in)
 
 
 async def file_ticket(clock: Clock, project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
@@ -414,9 +403,14 @@ async def file_ticket(clock: Clock, project: Path, epic: str, topic: str, title:
     return said[0]
 
 
-async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signer) -> None:
-    """Have lit in `project` add a comment to `ticket`, signed `by`; raises LitFailed when it fails."""
-    await _lit(clock, project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
+async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signer) -> str:
+    """Have lit in `project` add a comment to `ticket`, signed `by`, and what lit said; raises LitFailed when it fails."""
+    return await _said(clock, project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
+
+
+async def _said(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> str:
+    """What lit run as `_lit` runs it said, as text: a write's own account of what it wrote."""
+    return (await _lit(clock, project, *arguments, environment=environment)).decode(errors="replace").strip()
 
 
 async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
