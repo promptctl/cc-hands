@@ -108,7 +108,7 @@ def test_a_save_by_hand_after_the_choice_was_weighed_is_not_written_over(tmp_pat
     home.config.write_text(SPOKEN_FILE)
     keep = _own(home).weigh("claude-opus-5-5")
     home.config.write_text(SPOKEN_FILE + "# saved by hand\n")
-    with pytest.raises(Rejected, match="saved after the model was chosen"):
+    with pytest.raises(Rejected, match="saved after the choice was made"):
         keep()
     assert home.config.read_text() == SPOKEN_FILE + "# saved by hand\n"
 

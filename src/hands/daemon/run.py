@@ -31,7 +31,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.workers.runner import WorkerRunner
 
 from hands.clock import Clock, dashed
-from hands.daemon.config import CLAUDE_MODELS, OwnModel, Settings
+from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
 from hands.sessions import heartbeat, tmux
 from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
@@ -291,7 +291,7 @@ async def run(
         if config is not None:
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
-            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice)
+            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home))
             tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)

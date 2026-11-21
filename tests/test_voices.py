@@ -15,6 +15,7 @@ from conftest import running
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
+from hands.daemon.config import SampleLines
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import voices
@@ -103,7 +104,7 @@ def test_a_choice_that_is_not_text_is_refused_by_name(tmp_path: Path) -> None:
 async def test_a_voice_that_cannot_be_fetched_is_neither_heard_nor_kept(tmp_path: Path) -> None:
     home = Home(tmp_path)
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
-    tools = {tool.name: tool for tool in voice_tools(Voices(home, lines, offline, unlisted(), voices.DEFAULT))}
+    tools = {tool.name: tool for tool in voice_tools(Voices(home, lines, offline, unlisted(), voices.DEFAULT, SampleLines(home)))}
     async with running([lines, speaker]) as run:
         assert "cannot reach the hub for mary" in str((await tools["hear_voices"].body(names=["Mary"]))["error"])
         assert "cannot reach the hub for mary" in str((await tools["use_voice"].body(name="Mary"))["error"])
@@ -115,7 +116,7 @@ async def test_a_voice_that_cannot_be_fetched_is_neither_heard_nor_kept(tmp_path
 async def test_the_voices_heard_each_say_their_line_in_their_own_voice_and_the_next_line_is_in_the_kept_one(tmp_path: Path) -> None:
     home = Home(tmp_path)
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
-    chosen_voices = Voices(home, lines, ready, unlisted(), voices.DEFAULT)
+    chosen_voices = Voices(home, lines, ready, unlisted(), voices.DEFAULT, SampleLines(home))
     async with running([lines, speaker]) as run:
         assert await chosen_voices.hear((Voice("mary"), Voice("bill_boerst"))) == DEFAULT
         await run.worker.queue_frame(TTSSpeakFrame("Back to you."))
@@ -131,7 +132,7 @@ async def test_a_library_voice_chosen_is_told_by_what_the_tts_service_is_handed(
     # One string names the voice to the TTS service and to the speaker's SpeakingIn.
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     async with running([lines, speaker]) as run:
-        await Voices(Home(tmp_path), lines, ready, unlisted(), voices.DEFAULT).use(LibraryVoice("vctk/p225_023_enhanced"))
+        await Voices(Home(tmp_path), lines, ready, unlisted(), voices.DEFAULT, SampleLines(Home(tmp_path))).use(LibraryVoice("vctk/p225_023_enhanced"))
         await run.worker.queue_frame(TTSSpeakFrame("In the library's voice."))
         [(spoke_in, _)] = await speaker.until(1)
     assert spoke_in == voices.source(LibraryVoice("vctk/p225_023_enhanced")) and spoke_in.startswith("hf://")
@@ -140,7 +141,7 @@ async def test_a_library_voice_chosen_is_told_by_what_the_tts_service_is_handed(
 async def test_a_hearing_and_a_choice_called_together_each_run_whole(tmp_path: Path) -> None:
     home = Home(tmp_path)
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
-    chosen_voices = Voices(home, lines, downloading, unlisted(), voices.DEFAULT)
+    chosen_voices = Voices(home, lines, downloading, unlisted(), voices.DEFAULT, SampleLines(home))
     async with running([lines, speaker]) as run:
         # As Pipecat runs two calls of one reply: side by side.
         await asyncio.gather(chosen_voices.hear((Voice("alba"), Voice("bill_boerst"))), chosen_voices.use(Voice("mary")))
@@ -154,7 +155,7 @@ async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_p
     home = Home(tmp_path)
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     async with running([lines, speaker]) as run:
-        await Voices(home, lines, ready, unlisted(), voices.DEFAULT).hear(VOICES[:3])
+        await Voices(home, lines, ready, unlisted(), voices.DEFAULT, SampleLines(home)).hear(VOICES[:3])
         await run.worker.queue_frame(InterruptionFrame())
         await run.worker.queue_frame(TTSSpeakFrame("After the barge-in."))
         said = await speaker.until(1)
@@ -166,7 +167,7 @@ async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_p
 async def test_each_voice_tool_answers_with_the_voice_spoken_in_after_it_and_refuses_a_voice_hands_lacks(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
-    tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in voice_tools(Voices(Home(tmp_path), lines, ready, unlisted(), voices.DEFAULT))}
+    tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in voice_tools(Voices(Home(tmp_path), lines, ready, unlisted(), voices.DEFAULT, SampleLines(Home(tmp_path))))}
     async with running([lines, speaker]):
         assert await tools["voices_on_offer"].body() == {"speaking_in": DEFAULT, "voices": VOICES}
         assert await tools["hear_voices"].body(names=["Eve"]) == {"heard": ["eve"], "speaking_in": "charles"}
@@ -181,7 +182,7 @@ async def test_each_voice_tool_answers_with_the_voice_spoken_in_after_it_and_ref
 async def test_the_voice_spoken_in_is_the_one_the_speaker_was_handed_and_not_a_file_edited_by_hand(tmp_path: Path) -> None:
     home = Home(tmp_path)
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
-    chosen_voices = Voices(home, lines, ready, unlisted(), Voice("alba"))
+    chosen_voices = Voices(home, lines, ready, unlisted(), Voice("alba"), SampleLines(home))
     assert chosen_voices.speaking_in() == "alba"
     # Taken up at the next start, as hands speaks on in alba until then; a name that is no voice is never read here.
     home.voice.write_text("zed!\n")
@@ -190,3 +191,47 @@ async def test_the_voice_spoken_in_is_the_one_the_speaker_was_handed_and_not_a_f
         await chosen_voices.use(Voice("mary"))
         assert await chosen_voices.hear((Voice("eve"),)) == "mary"
     assert chosen_voices.speaking_in() == "mary"
+
+
+async def test_a_voice_heard_says_the_line_config_toml_gives_it_and_a_voice_given_none_says_hands_own(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[sample_lines]\nmary = "Mary here, with your news."\n')
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
+    async with running([lines, speaker]):
+        await Voices(home, lines, ready, unlisted(), DEFAULT, SampleLines(home)).hear((Voice("mary"), Voice("alba")))
+        assert await speaker.until(2) == [("mary", "Mary here, with your news."), ("alba", sample(Voice("alba")))]
+
+
+async def test_a_line_previewed_is_said_in_its_voice_and_kept_nowhere_and_a_blank_one_is_hands_own(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
+    chosen_voices = Voices(home, lines, ready, unlisted(), DEFAULT, SampleLines(home))
+    async with running([lines, speaker]) as run:
+        assert await chosen_voices.preview(Voice("mary"), "Not saved yet.") == DEFAULT
+        await chosen_voices.preview(Voice("mary"), "  ")
+        await run.worker.queue_frame(TTSSpeakFrame("Back to you."))
+        assert await speaker.until(3) == [("mary", "Not saved yet."), ("mary", sample(Voice("mary"))), (DEFAULT, "Back to you.")]
+    assert not home.config.exists()
+
+
+async def test_a_line_kept_is_said_from_the_next_hearing_on_and_a_blank_one_goes_back_to_hands_own(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
+    chosen_voices = Voices(home, lines, ready, unlisted(), DEFAULT, SampleLines(home))
+    async with running([lines, speaker]):
+        assert await chosen_voices.keep_line(Voice("bill_boerst"), " Bill, at your service. ") == "Bill, at your service."
+        await chosen_voices.hear((Voice("bill_boerst"),))
+        assert await chosen_voices.keep_line(Voice("bill_boerst"), "") == sample(Voice("bill_boerst"))
+        await chosen_voices.hear((Voice("bill_boerst"),))
+        assert await speaker.until(2) == [("bill_boerst", "Bill, at your service."), ("bill_boerst", sample(Voice("bill_boerst")))]
+
+
+async def test_a_line_kept_for_a_name_that_is_no_voice_or_one_voice_named_twice_refuses_the_hearing_naming_it(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    chosen_voices = Voices(home, Player(lambda _: None).lines, ready, unlisted(), DEFAULT, SampleLines(home))
+    home.config.write_text('[sample_lines]\n"Zed!" = "Who?"\n')
+    with pytest.raises(Rejected, match="no voice called 'Zed!'"):
+        await chosen_voices.hear((Voice("mary"),))
+    home.config.write_text('[sample_lines]\nbill_boerst = "One."\n"Bill Boerst" = "Two."\n')
+    with pytest.raises(Rejected, match="names one voice twice"):
+        await chosen_voices.said_by((Voice("bill_boerst"),))

@@ -921,8 +921,8 @@ def voice_tools(voices: Voices) -> list[Tool]:
         return {"speaking_in": str(voices.speaking_in()), "voices": VOICES}
 
     async def hear_voices(names: list[str]) -> Result:
-        """Hands says a line in each voice named, one after another, each saying its own name, then speaks on in the
-        voice it was using.
+        """Hands says a line in each voice named, one after another, each saying the line the user set for it or, where
+        they set none, its own name, then speaks on in the voice it was using.
 
         Call this when the user wants to hear what voices sound like: a few at a time, at most five unless they ask for
         more, since each takes a few seconds. Say nothing before calling it. What you say after it is heard after the

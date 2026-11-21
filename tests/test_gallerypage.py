@@ -20,9 +20,9 @@ from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.library import Found
-from hands.voice.voices import Chosen
+from hands.voice.voices import Chosen, LibraryVoice
 from hands.voice.trigger import described
-from hands.voice.voices import VOICES, Voice
+from hands.voice.voices import VOICES, Voice, said
 from hands.voice.wakeword import Pretrained
 from conftest import events
 
@@ -33,10 +33,12 @@ MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
 
 @dataclass
 class Voicing:
-    """The voices as the test sets them: the one spoken, and what each call was asked."""
+    """The voices as the test sets them: the one spoken, the lines written for them, and what each call was asked."""
 
     spoken: Chosen = Voice("charles")
+    written: dict[Chosen, str] = field(default_factory=dict[Chosen, str])
     heard_asked: list[tuple[Chosen, ...]] = field(default_factory=list[tuple[Chosen, ...]])
+    previewed: list[tuple[Chosen, str]] = field(default_factory=list[tuple[Chosen, str]])
     used_asked: list[Chosen] = field(default_factory=list[Chosen])
     failure: Exception | None = None
 
@@ -48,6 +50,18 @@ class Voicing:
         if self.failure is not None:
             raise self.failure
         return self.spoken
+
+    async def said_by(self, voices: tuple[Chosen, ...]) -> tuple[str, ...]:
+        return tuple(said(voice, self.written.get(voice, "")) for voice in voices)
+
+    async def preview(self, voice: Chosen, line: str) -> Chosen:
+        self.previewed.append((voice, line))
+        return self.spoken
+
+    async def keep_line(self, voice: Chosen, line: str) -> str:
+        self.written[voice] = line
+        [saying] = await self.said_by((voice,))
+        return saying
 
     async def use(self, voice: Chosen) -> None:
         self.used_asked.append(voice)
@@ -246,6 +260,42 @@ async def test_a_voice_that_cannot_be_fetched_is_a_503_and_says_why(page: Page) 
 
 
 @pytest.mark.outside
+async def test_a_voices_line_is_read_as_the_file_holds_it_now_or_hands_own_where_it_holds_none(page: Page) -> None:
+    page.voices.written[Voice("mary")] = "Mary here."
+    response = await page.client.get("/gallery/line?voice=Mary", headers=KEYED)
+    assert await response.json() == {"voice": "mary", "line": "Mary here."}
+    response = await page.client.get("/gallery/line?voice=vctk/p225", headers=KEYED)
+    assert await response.json() == {"voice": "vctk/p225", "line": said(LibraryVoice("vctk/p225"), "")}
+    refused = await page.client.get("/gallery/line?voice=Zed!", headers=KEYED)
+    assert refused.status == 400
+    assert [event.outcome for event in page.events("gallery.line.read")] == ["ok", "ok", "failed"]
+
+
+@pytest.mark.outside
+async def test_a_line_previewed_is_heard_in_its_voice_and_its_event_says_its_length_not_its_words(page: Page) -> None:
+    response = await page.client.post("/gallery/preview", headers=KEYED, json={"voice": "Mary", "line": "Not saved yet."})
+    assert await response.json() == {"heard": "mary", "speaking_in": "charles"}
+    blank = await page.client.post("/gallery/preview", headers=KEYED, json={"voice": "mary", "line": ""})
+    assert blank.status == 200
+    assert page.voices.previewed == [("mary", "Not saved yet."), ("mary", "")]
+    assert page.voices.written == {}
+    first, _ = page.events("gallery.preview")
+    assert (first.outcome, first.facts["heard"], first.facts["line_chars"]) == ("ok", "mary", 14)
+    assert "Not saved yet." not in str(first.facts)
+
+
+@pytest.mark.outside
+async def test_a_line_saved_is_kept_for_its_voice_and_a_blank_one_is_hands_own_again(page: Page) -> None:
+    response = await page.client.post("/gallery/line", headers=KEYED, json={"voice": "bill_boerst", "line": "Bill here."})
+    assert await response.json() == {"voice": "bill_boerst", "line": "Bill here.", "default": False}
+    response = await page.client.post("/gallery/line", headers=KEYED, json={"voice": "bill_boerst", "line": " "})
+    assert await response.json() == {"voice": "bill_boerst", "line": said(Voice("bill_boerst"), ""), "default": True}
+    refused = await page.client.post("/gallery/line", headers=KEYED, json={"voice": "bill_boerst"})
+    assert refused.status == 400 and "{line: ...}" in await refused.text()
+    assert [(event.outcome, event.facts.get("default")) for event in page.events("gallery.line")] == [("ok", False), ("ok", True), ("failed", None)]
+
+
+@pytest.mark.outside
 async def test_choosing_a_voice_keeps_it_as_the_one_hands_speaks_in(page: Page) -> None:
     response = await page.client.post("/gallery/use", headers=KEYED, json={"voice": "mary"})
     assert response.status == 200
@@ -364,12 +414,12 @@ async def test_the_library_search_returns_matches_and_records_the_listing(page: 
     assert (search.outcome, search.facts["query"], search.facts["matches"], search.facts["from_cache"]) == ("ok", "vctk", 1, True)
 
 
-def test_the_routes_are_the_gallery_and_its_five_choices_and_a_read() -> None:
+def test_the_routes_are_the_gallery_and_its_seven_choices_and_two_reads() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
     clock = VirtualClock()
     gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(clock), wake=Pretrained(), models=MODELS)
     routes: list[Any] = [route for route in gallery_routes(clock, gallery, KEY, lambda _entry: None)]
     assert sorted(f"{route.method} {route.path}" for route in routes) == sorted([
-        "GET /gallery", "GET /gallery/state", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",
-        "POST /gallery/level", "POST /gallery/modality", "POST /gallery/model",
+        "GET /gallery", "GET /gallery/state", "GET /gallery/line", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",
+        "POST /gallery/preview", "POST /gallery/line", "POST /gallery/level", "POST /gallery/modality", "POST /gallery/model",
     ])
