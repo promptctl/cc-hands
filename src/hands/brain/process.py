@@ -1639,8 +1639,7 @@ class Brain:
 
     def _ordered(self, hook: Hook, held: StopHeld | None, took: float) -> None:
         """[LAW:no-silent-failure] whether Claude Code waited on the hook as the order of the brain's turns needs
-        (`ClaudeTurns`): a prompt's and an end's answered within its declared timeout, a Stop's decided within its hold;
-        and a start's answered before the session it enters sends anything the brain must take as its own."""
+        (`ClaudeTurns`): a prompt's and an end's answered within its declared timeout, a Stop's decided within its hold."""
         match hook.happened:
             case Stopped(prompt=prompt) if held == "let go":
                 self._lost(f"the Stop of {prompt} was let go before it was decided")
@@ -1649,9 +1648,6 @@ class Brain:
             case Ended(session=session, reason="clear" | "resume") if took > TAKE_SECONDS:
                 # Claude Code may have entered the next session before the model heard this one end.
                 self._lost(f"the end of session {session} was answered in {took:.1f}s, past the {TAKE_SECONDS:g}s hands has to answer it in")
-            case Joined(membership=membership) if took > TAKE_SECONDS:
-                # Claude Code may have sent the entered session's first requests before the brain was in it.
-                self._adrift_by(f"the start of session {membership.id} was answered in {took:.1f}s, past the {TAKE_SECONDS:g}s hands has to answer it in")
             case _:
                 pass
 
