@@ -61,7 +61,10 @@ Router = Callable[[Sent], Route]
 
 
 class Listener(Protocol):
-    """What speaks from the wire: it hears everything the proxy observes, and decides where each request goes."""
+    """What speaks from the wire: it hears everything the proxy observes, and decides where each request goes.
+
+    [LAW:no-ambient-temporal-coupling] the proxy tells a request before it routes it, in the one handler that does both
+    (`serve_proxy`), so a listener routes only what it has heard."""
 
     def route(self, sent: Sent) -> Route: ...
     def hear(self, observed: Observed) -> None: ...
@@ -88,8 +91,12 @@ class Wire:
         self._listener: Listener = _NoOne(clock)
 
     def observe(self, observed: Observed) -> None:
-        self._record(observed)
-        self._listener.hear(observed)
+        # [LAW:no-ambient-temporal-coupling] heard whether or not the record took it: what the listener routes by is never
+        # the record's to lose. A record that fails still raises, once the listener has heard.
+        try:
+            self._record(observed)
+        finally:
+            self._listener.hear(observed)
 
     def route(self, sent: Sent) -> Route:
         return self._listener.route(sent)

@@ -93,12 +93,8 @@ from hands.voice.tool import Result, Tool, said_back, silent, whole
 
 
 class Asking(Protocol):
-    """What the stage needs of the brain: the session its requests carry, a turn asked, told of each permission it holds
-    for the user, which of Claude Code's turns runs and which answers the turn asked, and a turn of Claude Code's stopped,
-    saying whether there was one."""
-
-    @property
-    def session(self) -> SessionId: ...
+    """What the stage needs of the brain: a turn asked, told of each permission it holds for the user, which of Claude
+    Code's turns runs and which answers the turn asked, and a turn of Claude Code's stopped, saying whether there was one."""
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded: ...
 
@@ -978,11 +974,8 @@ class BrainStage(FrameProcessor):
         return turn
 
     def route(self, sent: Sent) -> Route:
-        """Where a request on the wire goes: each of a turn's own requests with hands' tail on it, and the next one after
-        stay_silent held."""
-        # Another session's request is made for no unit of the stage's: the root of a trace of its own.
-        if sent.session != self._brain.session:
-            return Send(span=root(self._clock))
+        """Where a request of the brain's goes, as Kept admits it: each of a turn's own requests with hands' tail on it, and
+        the next one after stay_silent held."""
         # [LAW:single-enforcer] every request Claude Code sends for the brain is final, whatever its kind and whether a turn
         # asked it: asked again, Claude Code would keep the user waiting minutes on its retries, and a spent limit it
         # would wait out to continue the task on its own at the reset, hours on, with nobody asking (hands-wire-zi2).

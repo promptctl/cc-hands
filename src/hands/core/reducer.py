@@ -64,6 +64,7 @@ from hands.core.events import (
     Progressed,
     SessionEvent,
     StartSource,
+    UnknownSource,
     StatusReported,
     Stopped,
     Tick,
@@ -137,7 +138,7 @@ def _located(registry: Registry, membership: Membership) -> Registry:
             return registry
 
 
-def _started(membership: Membership, source: StartSource, previous: Known | None) -> Session:
+def _started(membership: Membership, source: StartSource | UnknownSource, previous: Known | None) -> Session:
     # Compaction starts a session again in the middle of what it was doing, in the same process, so all of it carries
     # over. Every other start is a new process, or a new session in one, whose status is read afresh: a session resumed
     # after a crash was never told it stopped. SessionStart carries no permission_mode, and a session started or resumed
@@ -234,12 +235,12 @@ def _enter(registry: Registry, event: SessionEvent) -> tuple[Registry, list[Effe
                     return _moved(registry, was, event)
 
 
-def _said_at_start(session: SessionId, source: StartSource) -> list[Effect]:
+def _said_at_start(session: SessionId, source: StartSource | UnknownSource) -> list[Effect]:
     match source:
         case "clear":
             # The session the /clear started, in the process the cleared one ran in; the cleared one ended saying nothing.
             return [Tell(session, Cleared())]
-        case "startup" | "resume" | "compact" | "fork":
+        case "startup" | "resume" | "compact" | "fork" | UnknownSource():
             return []
 
 

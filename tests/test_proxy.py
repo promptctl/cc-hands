@@ -16,7 +16,7 @@ import zstandard
 from aiohttp import web
 from loguru import logger
 
-from hands.brain.usage import Spent, Usage
+from hands.brain.usage import InContext, Spent, Tally, Usage
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
@@ -242,11 +242,11 @@ async def test_a_message_sent_whole_is_heard_as_the_message_it_is(serve: Callabl
     assert texts == ["said whole"]
     assert isinstance(wire.seen[-1], Exchanged)
     # The turn counts toward what the conversation holds, as a streamed one does.
-    heard = Usage(SessionId("s1"))
+    heard = Usage(lambda: SessionId("s1"))
     for seen in wire.seen:
         heard.hear(seen)
     reading = heard.reading()
-    assert reading is not None and (reading.in_context, reading.spent) == (100, Spent(97, 3, 1))
+    assert reading == Tally(InContext("m", 100), Spent(97, 3, 1))
 
 
 @pytest.mark.outside
