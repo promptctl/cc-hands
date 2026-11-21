@@ -1264,6 +1264,17 @@ async def test_a_conversation_that_cannot_be_held_is_said_and_leaves_the_brain_a
         brain._adrift.result()  # pyright: ignore[reportPrivateUsage]
 
 
+async def test_a_start_answered_past_its_bound_leaves_the_brain_adrift(tmp_path: Path) -> None:
+    # Claude Code may have sent the entered session's first requests before the brain was in it.
+    brain = await _moving(tmp_path, [])
+    clock = brain._clock  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(clock, VirtualClock)
+    _heard_late(brain, clock)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b2", source="clear"))
+    with pytest.raises(process.Adrift, match="the start of session b2 was answered in"):
+        brain._adrift.result()  # pyright: ignore[reportPrivateUsage]
+
+
 async def test_an_end_answered_past_its_bound_fails_every_turn_open_as_the_order_lost() -> None:
     # Claude Code may have entered the next session before the model heard this one end.
     clock = VirtualClock()
