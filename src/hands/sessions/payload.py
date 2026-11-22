@@ -88,6 +88,14 @@ class Payload:
         """A list that may be left out, which is the same as empty."""
         return [] if self.fields.get(key) is None else self.items(key)
 
+    def optional_texts(self, key: str) -> list[str]:
+        """A list of strings that may be left out, which is the same as empty."""
+        items = self.optional_items(key)
+        texts = [item for item in items if isinstance(item, str)]
+        if len(texts) != len(items):
+            raise self._wrong(key, "a list of strings", items)
+        return texts
+
     def flag(self, key: str) -> bool:
         """A flag that must be there: left out, it would be read as whichever answer the caller guessed."""
         match self._field(key):

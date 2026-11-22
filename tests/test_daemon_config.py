@@ -323,12 +323,33 @@ def test_a_brain_whose_settings_name_a_mode_claude_code_does_not_take_stops_the_
         backend(children_on(SYSTEM), Claude(), home, {})
 
 
-def test_a_hands_built_without_its_fritter_stops_the_start_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_hands_built_without_its_fritter_is_weighed_as_refused_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / ".hands")
     startable_home(home, monkeypatch)
     monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
-    with pytest.raises(Rejected, match=r"hands' package carries no fritter at .*/package/bin/fritter: install hands again"):
-        backend(children_on(SYSTEM), Claude(), home, {})
+    with pytest.raises(Rejected, match=r"^hands' package carries no fritter at .*/package/bin/fritter: install hands again, or in a checkout, `uv sync --reinstall-package hands`$"):
+        weigh(home)
+
+
+def test_every_refusal_of_a_brain_whose_settings_cannot_be_read_is_said_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
+    # Settings that cannot be read hide no other refusal: its first screens are weighed all the same.
+    home = Home(tmp_path / ".hands")
+    startable_home(home, monkeypatch)
+    (home.brain / "settings.json").write_text('{"permissions": {"defaultMode": "yolo"}}')
+    (home.brain / ".claude.json").write_text(json.dumps({"projects": {}}))
+    with pytest.raises(Rejected) as refused:
+        weigh(home)
+    assert str(refused.value) == (
+        f'the brain\'s settings name a defaultMode Claude Code does not take, "yolo": name one of default, acceptEdits, plan, auto, dontAsk, bypassPermissions, manual in {home.brain / "settings.json"}; '
+        f"the brain has not been through Claude Code's first screens (its onboarding unfinished; {(home.brain / 'cwd').resolve()} untrusted): `hands login` answers them"
+    )
+
+
+def test_a_blank_api_key_in_the_brains_settings_is_no_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
+    home = Home(tmp_path / ".hands")
+    startable_home(home, monkeypatch)
+    (home.brain / "settings.json").write_text('{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": ""}}')
+    weigh(home)
 
 
 def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_start_naming_hands_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
@@ -708,6 +729,21 @@ def test_a_home_whose_shim_is_not_the_one_hands_writes_refuses_the_start_at_the_
     assert [event.facts["shim"] for event in events] == ["stale", "current"]
 
 
+def test_a_hands_built_without_its_fritter_is_refused_at_the_door_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hands.voice import talkkey
+
+    home = Home(tmp_path / ".hands")
+    startable_home(home, monkeypatch)
+    monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    run_start = Start(restarted=False, clock=SYSTEM)
+    with pytest.raises(CannotStart, match=re.escape(f"hands' package carries no fritter at {wrapper.PACKAGED}")):
+        cli.door(home, run_start, None)
+    events: list[WideEvent] = []
+    run_start.ended(events.append, None)
+    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("unpackaged", "not-a-shim")]
+
+
 def test_a_stale_shim_in_a_hands_built_without_its_fritter_is_refused_naming_the_rebuild_before_install_fritter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # `hands install-fritter` cannot run in a hands that carries no fritter, so the door names the rebuild first.
     from hands.voice import talkkey
@@ -722,7 +758,7 @@ def test_a_stale_shim_in_a_hands_built_without_its_fritter_is_refused_naming_the
     with pytest.raises(CannotStart) as refused:
         cli.door(home, run_start, None)
     rebuild = f"hands' package carries no fritter at {wrapper.PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
-    assert str(refused.value).endswith(f"{rebuild}, then run `hands install-fritter`, then run hands again.")
+    assert str(refused.value) == f"{rebuild}; {home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`, then run hands again."
     events: list[WideEvent] = []
     run_start.ended(events.append, None)
     assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("unpackaged", "stale")]

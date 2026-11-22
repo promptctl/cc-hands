@@ -10,7 +10,7 @@ from loguru import logger
 from hands.core.effects import Allow, AllowWith, Approve, Deny, DenyAndInterrupt, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Displayed, Ended, EndReason, Hooked, Joined, Located, Occurred, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished, UnknownSource
 from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised
-from hands.core.session import AskedQuestion, Blocker, Instant, Membership, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
+from hands.core.session import AskedQuestion, Blocker, Instant, Membership, Mode, Option, PERMISSION_MODES, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
 from hands.core.stopfailure import StopFailed
 from hands.sessions.home import Home
@@ -238,7 +238,7 @@ def _mode(payload: Payload) -> Mode | None:
             return None
         case (_, str() as name):
             # An unknown mode is not logged: it is said by its name wherever the mode is, which is louder.
-            return _KNOWN_MODES.get(name) or UnknownMode(name)
+            return PERMISSION_MODES.get(name) or UnknownMode(name)
         case (_, None):
             logger.error(f"{event} carried no permission_mode, so the session keeps the mode it last reported")
             return None
@@ -257,7 +257,6 @@ def _prompt(payload: Payload) -> PromptId:
 
 # [LAW:one-source-of-truth] the modes, start sources and end reasons hands knows are their types', read off them
 # rather than listed again.
-_KNOWN_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in get_args(PermissionMode)}
 _KNOWN_SOURCES: Mapping[str, StartSource] = {source: source for source in get_args(StartSource)}
 _KNOWN_REASONS: Mapping[str, EndReason] = {reason: reason for reason in get_args(EndReason)}
 

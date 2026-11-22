@@ -118,6 +118,8 @@ async def edited(home: Home, record: Record, weigh: Callable[[], None], running:
     handed it.
     """
     seen: bytes | _Unreadable | None = running.held
+    # Bytes known to hold the run's own settings, so they are parsed once, not at every poll.
+    ran = seen
     # The refusal said of the bytes the file holds, once.
     said: str | None = None
     while True:
@@ -126,10 +128,13 @@ async def edited(home: Home, record: Record, weigh: Callable[[], None], running:
             # [LAW:no-silent-failure] bytes the file left and came back to are an edit saved again, said again if refused.
             seen, said = now, None
             continue
+        if now == ran:
+            continue
         try:
             # [LAW:one-source-of-truth] weighed on the run's --model, as the run's own settings were, so an edit to the
             # file's model alone is no edit while one outranks it.
             if _settings(home, _readable(home, now), running.model) == running.config:
+                ran = now
                 continue
             # On a thread a stop does not wait for: a pinned claude whose file has changed since this process hashed it
             # is read whole to be hashed again, about 230 MB.
@@ -168,7 +173,7 @@ class OwnModel:
         """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
         a start would be refused on its home's files: weighed here as `edited` weighs an edit by hand, so a choice by
         voice is refused while the user is there to hear why. The brain's login is not weighed, so a brain logged out
-        since its start is refused at the restart (promptctl-brain-uoz0.gi7)."""
+        since its start is refused at the restart (promptctl-phone-app-9d9y.h4s)."""
         if self._running.model is not None:
             # [LAW:one-source-of-truth] the file's model is not the run's while --model outranks it, so an edit to it would
             # change nothing until hands is started without the flag.

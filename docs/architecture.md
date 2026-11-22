@@ -2479,10 +2479,10 @@ rather than held open as a unit over the run: held open, every server and task t
 makes would be inside it, and every unit they ran part of the start's trace. A start told
 to stop first is cancelled. A start that cannot be made is failed, with the reason, and
 says why on its terminal too; one that anything else ends first is failed with what raised. Refused at
-the door (the talk key's grant, `config.toml`), a run holds no heartbeat yet and writes
+the door (the talk key's grant, the home's fritter and shim, `config.toml`), a run holds no heartbeat yet and writes
 none, so the one there, a running hands' or a crash's, stands; a restart's run holds the
 heartbeat from the outset, its predecessor having beat starting under the same pid.
-Refused once it holds the heartbeat (the brain's login, the voice, the brain's start), its last
+Refused once it holds the heartbeat (the brain's config directory, its login, the voice, the brain's start), its last
 heartbeat says `refused` with the reason, which `hands status` and the indicator show,
 and which the next start reads as no crash.
 
@@ -2568,9 +2568,10 @@ its first heartbeat, and parsed into a frozen `Config` (`hands.daemon.config`). 
 everything else on disk is, by the run starting again on it: the watch weighs the
 file against the bytes the start read, and an edit that parses ends the run as the
 restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before the
-next `hands.start`, which says it was `restarted`. One that does not parse, or one the
-start's own `backend` check refuses for the brain's login, is said as a `SettingsEdited` that was refused,
-and the run keeps what it has. It is in the home, beside
+next `hands.start`, which says it was `restarted`. One that does not parse, or one a start would refuse on
+the home's files (`hands.daemon.backend.weigh`: fritter's copy, the shim, the brain's config directory), is said as a
+`SettingsEdited` that was refused, and the run keeps what it has. The weigh starts no Claude Code, so the brain's login
+is not weighed: a brain logged out since its start is refused at the restart (promptctl-phone-app-9d9y.h4s). It is in the home, beside
 everything else one hands keeps, so a second home is a second hands with settings of
 its own. A file left out, or a key, is the default; a key misspelled, or one its
 variant has no use for, stops the start naming it. hands holds no secret: the brain's
@@ -2599,7 +2600,7 @@ kept in the home's `voice` file. The model is a setting the user may also choose
 voice. hands has no session id, so a choice aimed at hands itself is a tool of its own
 (`use_model`), never `send_command` aimed at a session. The choice is an edit to
 `config.toml` (`OwnModel`): `[llm] model` is set and every other line stays as written.
-It is weighed by the same `backend` check before it is written, so a refusal is said
+It is weighed by the same `weigh` before it is written, so a refusal is said
 while the user is there, and it is written only once the user has heard hands say it is
 switching (`Player.heard`). The run then starts again on it as on any edit. `hands run
 --model` names a model that outranks the file's for that run and every restart of it (each

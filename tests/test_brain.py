@@ -1526,7 +1526,7 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     assert main(["--home", str(tmp_path), "login"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     account_kept_out(configdir.settings(brain))
-    assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": "its onboarding unfinished", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
+    assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": f"its onboarding unfinished; {(brain / 'cwd').resolve()} untrusted", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
 
 
 @pytest.mark.outside
@@ -1609,6 +1609,14 @@ def test_hands_login_that_leaves_the_brain_on_another_login_than_asked_exits_1_n
     assert [(outcome, facts["asked"]) for outcome, facts in logins(tmp_path)] == [("failed", "claudeai")]
 
 
+def test_a_brain_home_starts_with_settings_written_whole_and_keeps_its_own(tmp_path: Path) -> None:
+    brain = tmp_path / "brain"
+    assert configdir.starting_settings(brain)
+    assert not configdir.starting_settings(brain)
+    assert sorted(path.name for path in brain.iterdir()) == ["settings.json"]
+    assert configdir.settings(brain) == configdir.BrainSettings(brain, "default", (), None)
+
+
 @pytest.mark.outside
 def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked_about_runs_its_first_run(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
@@ -1616,10 +1624,10 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
     brain = tmp_path / "brain"
     onboard(brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-0123456789abcdefghijklmn"}}')
     # The brain would start on Claude Code's screen asking whether to use the key, with nobody at its keyboard.
-    assert unanswered(configdir.settings(brain)) == f"the API key {brain / 'settings.json'} sets unanswered"
+    assert unanswered(brain, configdir.settings(brain).key_suffix) == (f"the API key {brain / 'settings.json'} sets unanswered",)
     assert main(["--home", str(tmp_path), "login", "--console"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
-    assert unanswered(configdir.settings(brain)) is None
+    assert unanswered(brain, configdir.settings(brain).key_suffix) == ()
 
 
 @pytest.mark.outside

@@ -573,7 +573,7 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
     held = configdir.settings(config_dir)
     account_kept_out(held)
-    first_run = unanswered(held)
+    first_run = "; ".join(unanswered(config_dir, held.key_suffix)) or None
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
@@ -586,7 +586,7 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
-    answered(configdir.settings(config_dir))
+    answered(config_dir, configdir.settings(config_dir).key_suffix)
     account = logged_in(children, config_dir, base_url, inherited)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
     # brain on another login than the one asked for.

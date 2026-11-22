@@ -7,10 +7,9 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import get_args
-
 from hands.brain import pinned
-from hands.core.session import PermissionMode
+from hands.core.session import PERMISSION_MODES, PermissionMode
+from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
 
 
@@ -32,9 +31,9 @@ def run_directory(config_dir: Path) -> Path:
     return config_dir / "cwd"
 
 
-# [LAW:one-source-of-truth] the permission modes Claude Code takes as a setting's defaultMode, the ones a session's hooks
-# report, and the other name it reads as one of them.
-MODES: dict[str, PermissionMode] = {**{mode: mode for mode in get_args(PermissionMode)}, "manual": "default"}
+# The permission modes Claude Code takes as a setting's defaultMode: the ones a session's hooks report, and the other
+# name it reads as one of them.
+MODES: dict[str, PermissionMode] = {**PERMISSION_MODES, "manual": "default"}
 
 # Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.
 KEPT_OUT = ("syncClaudeAiSkills", "syncClaudeAiPlugins")
@@ -69,12 +68,12 @@ def settings(config_dir: Path) -> BrainSettings:
     except FileNotFoundError:
         return BrainSettings(config_dir, None, KEPT_OUT, None)
     except (OSError, Rejected) as error:
-        raise Unstartable(f"the brain's settings could not be read ({error}): correct {path}, setting \"syncClaudeAiSkills\": false and \"syncClaudeAiPlugins\": false in it") from None
+        raise Unstartable(f"the brain's settings could not be read ({error}): correct {path}") from None
     # [LAW:parse-dont-validate] said again in the brain's --settings, beside its hooks: a mode Claude Code does not take
     # would put the settings holding them in doubt, so the brain does not start on one.
     if named is not None and named not in MODES:
         raise Unstartable(f'the brain\'s settings name a defaultMode Claude Code does not take, "{named}": name one of {", ".join(MODES)} in {path}')
-    return BrainSettings(config_dir, None if named is None else MODES[named], tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), None if api_key is None else api_key[-20:])
+    return BrainSettings(config_dir, None if named is None else MODES[named], tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), api_key[-20:] if api_key else None)
 
 
 def starting_settings(config_dir: Path) -> bool:
@@ -83,12 +82,16 @@ def starting_settings(config_dir: Path) -> bool:
     # [LAW:one-source-of-truth] what account_kept_out requires, and the mode the README says the brain runs in.
     mode: PermissionMode = "default"
     starting = {**dict.fromkeys(KEPT_OUT, False), "permissions": {"defaultMode": mode}}
-    config_dir.mkdir(parents=True, exist_ok=True)
+    staged = config_dir / ".settings.json.starting"
+    # [LAW:no-ambient-temporal-coupling] written whole beside it, then linked in only where there is none, so a login
+    # stopped part way leaves either no settings.json or this one, never half of it.
+    replace_whole(staged, json.dumps(starting, indent=2), 0o644)
     try:
-        with (config_dir / "settings.json").open("x") as made:
-            json.dump(starting, made, indent=2)
+        (config_dir / "settings.json").hardlink_to(staged)
     except FileExistsError:
         return False
+    finally:
+        staged.unlink()
     return True
 
 
@@ -101,60 +104,54 @@ def account_kept_out(held: BrainSettings) -> None:
         raise Unstartable(f'the brain would load its account\'s {" and ".join(held.synced)}: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {held.path}')
 
 
-def unanswered(held: BrainSettings) -> str | None:
-    """Why the brain would start on one of Claude Code's first screens, or None when it would not: Claude Code records
-    in its own .claude.json that its onboarding finished, that the directory the brain runs in, or one above it, is
-    trusted, and its answer on an API key its settings.json sets, by the key's last 20 characters. A config
-    directory made by anything else, `claude auth status` among them, has none of them. Raises Unstartable where the
-    file is there and cannot be read: a fault of the file's own, which no first run mends."""
-    state = held.config_dir / ".claude.json"
-    cwd = run_directory(held.config_dir).resolve()
+def unanswered(config_dir: Path, key_suffix: str | None) -> tuple[str, ...]:
+    """Why the brain would start on one of Claude Code's first screens, every one of them: Claude Code records in its own
+    .claude.json that its onboarding finished, that the directory the brain runs in, or one above it, is trusted, and its
+    answer on the API key its settings.json sets, by the key's last 20 characters, `key_suffix`. A config directory made
+    by anything else, `claude auth status` among them, has none of them. Raises Unstartable where the file is there and
+    cannot be read: a fault of the file's own, which no first run mends."""
+    state = config_dir / ".claude.json"
+    cwd = run_directory(config_dir).resolve()
     try:
         said = Payload.parse(state.read_bytes())
         projects = Payload.of(said.fields.get("projects", {}), "its projects").fields
         trusted = any(Payload.of(projects[place], place).optional_flag("hasTrustDialogAccepted") for place in map(str, (cwd, *cwd.parents)) if place in projects)
         onboarding = said.optional_flag("hasCompletedOnboarding")
         responses = Payload.of(said.fields.get("customApiKeyResponses", {}), "its API key answers")
-        keys_answered = {*_suffixes(responses, "approved"), *_suffixes(responses, "rejected")}
+        keys_answered = {*responses.optional_texts("approved"), *responses.optional_texts("rejected")}
     except FileNotFoundError:
-        return f"no {state}"
+        return (f"no {state}",)
     except OSError as error:
         raise Unstartable(f"{state} cannot be read ({error}): make it readable") from None
     except Rejected as error:
         # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot parse.
-        return f"{state} unreadable: {error}"
-    if not onboarding:
-        return "its onboarding unfinished"
-    if not trusted:
-        return f"{cwd} untrusted"
-    if held.key_suffix is not None and held.key_suffix not in keys_answered:
-        return f"the API key {held.path} sets unanswered"
-    return None
+        return (f"{state} unreadable: {error}",)
+    return (
+        *(() if onboarding else ("its onboarding unfinished",)),
+        *(() if trusted else (f"{cwd} untrusted",)),
+        *(() if key_suffix is None or key_suffix in keys_answered else (f"the API key {config_dir / 'settings.json'} sets unanswered",)),
+    )
 
 
-def _suffixes(responses: Payload, key: str) -> list[str]:
-    """The keys' last 20 characters that `responses` lists under `key`; Rejected where one is not text."""
-    items = responses.optional_items(key)
-    if not all(isinstance(item, str) for item in items):
-        raise Rejected(f"its API key answers {key} holds an entry that is not text")
-    return [item for item in items if isinstance(item, str)]
-
-
-def answered(held: BrainSettings) -> None:
+def answered(config_dir: Path, key_suffix: str | None) -> None:
     """Raises Unstartable, naming the command that answers them, while the brain would start on Claude Code's first screens."""
-    if (why := unanswered(held)) is not None:
-        raise Unstartable(f"the brain has not been through Claude Code's first screens ({why}): `hands login` answers them")
+    if why := unanswered(config_dir, key_suffix):
+        raise Unstartable(f"the brain has not been through Claude Code's first screens ({'; '.join(why)}): `hands login` answers them")
 
 
 def startable(config_dir: Path) -> tuple[str, ...]:
     """What in `config_dir` a Claude Code of hands' own would not start on, every one of them: its pinned claude, its
-    settings, its first screens, and the syncs they keep out. None where it would start."""
+    settings, its first screens, and the syncs they keep out; empty where it would start. Settings that cannot be read
+    are said, and the first screens are weighed without the API key they would name."""
     pin = _refused(lambda: brain_claude(config_dir))
     try:
-        held = settings(config_dir)
+        held: BrainSettings | None = settings(config_dir)
+        unread: tuple[str, ...] = ()
     except Unstartable as error:
-        return (*pin, str(error))
-    return (*pin, *_refused(lambda: answered(held)), *_refused(lambda: account_kept_out(held)))
+        held, unread = None, (str(error),)
+    screens = _refused(lambda: answered(config_dir, None if held is None else held.key_suffix))
+    kept_out = () if held is None else _refused(lambda: account_kept_out(held))
+    return (*pin, *unread, *screens, *kept_out)
 
 
 def _refused(check: Callable[[], object]) -> tuple[str, ...]:
