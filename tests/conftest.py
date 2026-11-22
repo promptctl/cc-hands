@@ -2,7 +2,6 @@
 
 import asyncio
 import gc
-import hashlib
 import json
 import os
 import platform
@@ -58,6 +57,7 @@ from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
+from fixtures.pins import checksums
 import offline
 import clockwatch
 import timeouts
@@ -786,11 +786,6 @@ def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "sync
     (brain / "settings.json").write_bytes(settings)
 
 
-def sha256(path: Path) -> str:
-    with path.open("rb") as held:
-        return hashlib.file_digest(held, "sha256").hexdigest()
-
-
 def located(script: Path) -> Callable[[Path], Path]:
     """A stand-in for pinned.claude that puts the brain's pinned claude at `script`, whatever directory the brain is on."""
     return lambda _config_dir: script
@@ -800,30 +795,31 @@ def pin(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
     """`script`, as its bytes are now, is the brain's pinned claude, whatever directory the brain is on: nothing on PATH
     is ever the brain's."""
     monkeypatch.setattr(pinned, "claude", located(script))
-    monkeypatch.setattr(pinned, "CHECKSUMS", dict.fromkeys(pinned.CHECKSUMS, sha256(script)))
+    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(script))
 
 
 def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Makes `home` a hands home the start's preflight passes: its brain onboarded on settings that keep the syncs out,
-    and its pinned claude a script that only leaves a mark. The mark's path, which exists once anything has run it."""
+    """Makes `home` a hands home the start's preflight passes, in this process and in any hands run on it: its brain
+    onboarded on settings that keep the syncs out, and in its pinned claude's place a script that only leaves a mark. The
+    mark's path, which exists once anything has run it."""
     onboard(home / "brain")
     mark = home / "claude-ran"
-    script = home / "pinned" / "claude"
+    script = pinned.claude(home / "brain")
     script.parent.mkdir(parents=True)
     script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(mark))}\n")
     script.chmod(0o755)
-    pin(monkeypatch, script)
+    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(script))
     return mark
 
 
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 
 
-def standin(home: Home, monkeypatch: pytest.MonkeyPatch) -> subprocess.Popen[bytes]:
-    """The stand-in daemon, running on `home` made startable: its brain's pinned claude the script pinned in this process
-    too, so the start's preflight passes it there as here, before and after a restart."""
-    startable(home.root, monkeypatch)
-    return subprocess.Popen([sys.executable, STANDIN, str(home.root), str(pinned.claude(home.brain))], stdin=subprocess.DEVNULL)
+def standin(home: Home) -> subprocess.Popen[bytes]:
+    """The stand-in daemon, running on `home` made startable, whose pin the stand-in fakes for itself."""
+    with pytest.MonkeyPatch.context() as patch:
+        startable(home.root, patch)
+    return subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
 
 
 def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:
@@ -834,7 +830,7 @@ def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:
 def pinned_to(script: Path) -> str:
     """The lines a hands run in a process of its own starts with, so its brain's pinned claude is `script`, as fake_claude
     pins it in this one."""
-    return f"from hands.brain import pinned\npinned.claude = lambda _config_dir: __import__('pathlib').Path({str(script)!r})\npinned.CHECKSUMS = dict.fromkeys(pinned.CHECKSUMS, {sha256(script)!r})\n"
+    return f"from hands.brain import pinned\npinned.claude = lambda _config_dir: __import__('pathlib').Path({str(script)!r})\npinned.CHECKSUMS = {checksums(script)!r}\n"
 
 
 @pytest.fixture

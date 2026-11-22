@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from conftest import children_on, located, new_sessions, startable
+from conftest import children_on, new_sessions, startable
 from hands.brain import pinned, process
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
@@ -48,8 +48,8 @@ def _stale_shim(home: Home) -> None:
     home.shim.write_text(wrapper.shim_script(home.fritter, home.wire).replace("export DISABLE_AUTOUPDATER=1\n", ""))
 
 
-def _unpinned(home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pinned, "claude", located(home.brain / "pinned-claude" / pinned.VERSION / "claude"))
+def _unpinned(home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    pinned.claude(home.brain).unlink()
 
 
 def _untrusted(home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,7 +76,7 @@ def _unreadable_shim(home: Home) -> None:
 # One row a refusal: what breaks the home, and what the refusal says.
 FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("pin missing", _unpinned, f"Claude Code {pinned.VERSION}, the brain's, is not installed at "),
-    ("pin wrong", lambda home, _: (home.root / "pinned" / "claude").write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {pinned.VERSION}, the brain's: run `hands install-brain` to fetch it again"),
+    ("pin wrong", lambda home, _: pinned.claude(home.brain).write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {pinned.VERSION}, the brain's: run `hands install-brain` to fetch it again"),
     ("hands built without its fritter", lambda home, monkeypatch: monkeypatch.setattr(wrapper, "PACKAGED", home.root / "package" / "bin" / "fritter"), "/package/bin/fritter: install hands again"),
     ("stale fritter copy", lambda home, _: (home.bin.mkdir(), home.fritter.write_bytes(b"#!/bin/sh\n")), "is not the fritter this hands carries"),
     ("fritter copy unreadable", lambda home, _: _dangling_fritter(home), "/fritter'): run `hands install-fritter` to copy it again"),

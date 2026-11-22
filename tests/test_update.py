@@ -310,11 +310,11 @@ sys.exit(cli.main(["--home", home, "update"]))
 
 @pytest.mark.outside
 @pytest.mark.parametrize("killed", [True, False], ids=["brain", "terminal"])
-def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not_its_caller_is_killed(killed: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not_its_caller_is_killed(killed: bool, tmp_path: Path) -> None:
     home, log, said = Home(tmp_path / "home"), tmp_path / "commands", tmp_path / "said"
     # The finally reads it however early this test fails.
     said.touch()
-    daemon = standin(home, monkeypatch)
+    daemon = standin(home)
     # The brain: a process group of its own, as hands starts it, which the update is run from.
     brain = subprocess.Popen(["sleep", "60"], process_group=0)
     try:
