@@ -891,13 +891,13 @@ def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: P
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
+def unspawnable(*_: object) -> object:
+    raise PermissionError("claude is not executable")
+
+
 def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     startable(home.root, monkeypatch)
-
-    def unspawnable(*_: object) -> object:
-        raise PermissionError("claude is not executable")
-
     monkeypatch.setattr(readiness, "resolve", unspawnable)
     found = readiness.configured(children_on(SYSTEM), home, {}, heartbeat.NeverRan(home.status))
     assert isinstance(found, Unknown) and "claude is not executable" in found.said
@@ -912,7 +912,7 @@ def test_a_running_brain_whose_login_expired_is_missing_naming_the_renewal_and_a
     home = Home(root / "home")
     startable(home.root, monkeypatch)
     monkeypatch.setattr(readiness, "resolve", never_asked)
-    found = readiness.configured(children_on(SYSTEM), home, {}, beating(home, (heartbeat.LOGIN_EXPIRED,)))
+    found = readiness.configured(children_on(SYSTEM), home, {}, beating(home, "expired"))
     assert found == Missing("brain's login expired", "the running brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
 
 
@@ -920,19 +920,41 @@ def test_an_expired_login_is_said_beside_the_start_s_other_refusals(root: Path, 
     home = Home(root / "home")
     startable(home.root, monkeypatch)
     monkeypatch.setattr(readiness, "resolve", never_asked)
-    found = readiness.configured(children_on(SYSTEM), home, {"HANDS_DEBUG": "1"}, beating(home, (heartbeat.LOGIN_EXPIRED,)))
+    found = readiness.configured(children_on(SYSTEM), home, {"HANDS_DEBUG": "1"}, beating(home, "expired"))
     assert isinstance(found, Missing) and "HANDS_DEBUG set" in found.said and "`hands login`, then `hands restart`" in found.said
 
 
-def test_a_running_brain_whose_login_works_is_asked_as_ever(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("login", "found"),
+    [
+        ("works", Ready("brain's login works", "the running brain's latest turn to end passed its login")),
+        # Just restarted, as after `hands login`: the start checked the login was held, and nothing yet says more.
+        ("untried", Ready("brain logged in at its start", "the running brain was logged in when it started, and no turn has tried its login since")),
+    ],
+)
+def test_a_running_brain_s_login_is_said_as_its_turns_found_it_and_asks_no_claude(root: Path, monkeypatch: pytest.MonkeyPatch, login: heartbeat.Login, found: Ready) -> None:
     home = Home(root / "home")
     startable(home.root, monkeypatch)
+    monkeypatch.setattr(readiness, "resolve", never_asked)
+    assert readiness.configured(children_on(SYSTEM), home, {}, beating(home, login)) == found
 
-    def unspawnable(*_: object) -> object:
-        raise PermissionError("claude is not executable")
 
+def test_a_brain_that_stopped_responding_is_said_as_its_last_heartbeat_found_its_login(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    startable(home.root, monkeypatch)
+    monkeypatch.setattr(readiness, "resolve", never_asked)
+    beating(home, "expired")
+    stuck = heartbeat.look(home.status, datetime.now(UTC) + heartbeat.HEARTBEAT * (heartbeat.MISSED_BEATS + 1))
+    assert isinstance(stuck, heartbeat.Unresponsive)
+    found = readiness.configured(children_on(SYSTEM), home, {}, stuck)
+    assert isinstance(found, Missing) and found.step == "brain's login expired"
+
+
+def test_a_brain_that_is_not_running_is_asked(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    startable(home.root, monkeypatch)
     monkeypatch.setattr(readiness, "resolve", unspawnable)
-    found = readiness.configured(children_on(SYSTEM), home, {}, beating(home, (heartbeat.NO_MICROPHONE,)))
+    found = readiness.configured(children_on(SYSTEM), home, {}, heartbeat.Stopped(heartbeat.Status(os.getpid(), datetime.now(UTC), datetime.now(UTC), heartbeat.HEARTBEAT, "stopped", None, 0, False, (), None, "expired")))
     assert isinstance(found, Unknown) and "claude is not executable" in found.said
 
 
@@ -944,10 +966,10 @@ def test_the_brain_says_its_account_and_never_a_key() -> None:
 # hands running
 
 
-def beating(home: Home, degraded: tuple[heartbeat.Degradation, ...] = ()) -> heartbeat.Verdict:
+def beating(home: Home, login: heartbeat.Login = "untried") -> heartbeat.Verdict:
     home.root.mkdir(parents=True, exist_ok=True)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
-    heart.beat("running", None, 0, listening=True, degraded=degraded)
+    heart.beat("running", None, 0, listening=True, degraded=(), login=login)
     return heartbeat.look(home.status, datetime.now(UTC))
 
 
@@ -1039,11 +1061,9 @@ def no_plugin(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None
     claude_listing(root, [])
 
 
-def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
-    def refused(*_: object) -> object:
-        raise Rejected("the brain has no login: `hands login` gives it one")
-
-    monkeypatch.setattr(readiness, "resolve", refused)
+def logged_out(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    # hands is up, so its brain's turns are what say the login is gone.
+    beating(home, "expired")
 
 
 def unpinned(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:

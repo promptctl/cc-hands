@@ -87,7 +87,7 @@ STAND_INS = Devices(input=Instead("MacBook Pro Microphone", "AirPods"), output=I
         (AudioMoved(Devices(input="MacBook Pro Microphone", output=Off())), "Audio moved: listening on MacBook Pro Microphone, the speaker is off in config.toml."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
-        (LoginExpired(), "The brain's login has expired: run hands login, then hands restart."),
+        (LoginExpired(StopFailed("invalid_request", "Login expired · Please run /login")), "The brain's login has expired: run hands login, then hands restart."),
         (StopFailed("invalid_request", "Prompt is too long"), "The brain failed: Prompt is too long."),
         (StopFailed("server_error", "API Error: Request timed out."), "The brain failed: API Error: Request timed out."),
         (StopFailed("authentication_failed", None), "The brain failed: authentication failed."),
@@ -447,7 +447,7 @@ def test_a_run_crashed_when_its_last_heartbeat_was_not_a_stop_and_it_is_not_beat
     home = Home(tmp_path)
     now = datetime.now(UTC)
     if pipeline is not None:
-        heartbeat.write(home.status, heartbeat.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0, False, (), None))
+        heartbeat.write(home.status, heartbeat.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0, False, (), None, None))
     assert crashed_before(SYSTEM, home) is crashed
 
 
@@ -455,7 +455,7 @@ def test_a_heartbeat_whose_pid_a_later_process_took_is_a_crash(tmp_path: Path) -
     home = Home(tmp_path)
     day_ago = datetime.now(UTC) - timedelta(days=1)
     # This process holds the pid, but it started long after the run that wrote the heartbeat.
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0, False, (), None, None))
     assert crashed_before(SYSTEM, home) is True
 
 

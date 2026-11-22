@@ -42,6 +42,7 @@ def beat(**changes: object) -> heartbeat.Status:
         "listening": False,
         "degraded": (),
         "runs_from": Path("/hands/tools/hands"),
+        "login": "works",
         **changes,
     }
     return heartbeat.Status(**fields)  # pyright: ignore[reportArgumentType]
@@ -87,6 +88,20 @@ def test_a_heartbeat_from_before_runs_said_where_they_run_from_reads_as_not_sayi
     assert heartbeat.read(tmp_path / "status.json") == beat(runs_from=None)
 
 
+def test_a_heartbeat_from_before_runs_said_their_brain_s_login_reads_as_not_saying(tmp_path: Path) -> None:
+    old = {key: value for key, value in json.loads(heartbeat.encode(beat())).items() if key != "login"}
+    (tmp_path / "status.json").write_text(json.dumps(old))
+    assert heartbeat.read(tmp_path / "status.json") == beat(login=None)
+
+
+@pytest.mark.parametrize(("login", "degraded"), [("untried", (DEAF[0],)), ("works", (DEAF[0],)), ("expired", (DEAF[0], heartbeat.LOGIN_EXPIRED))])
+def test_a_beat_says_an_expired_login_among_its_degradations_and_carries_the_login_as_it_is(tmp_path: Path, login: heartbeat.Login, degraded: tuple[heartbeat.Degradation, ...]) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT, kick_watchdog=lambda: None, clock=SYSTEM)
+    heart.beat("running", None, 0, listening=False, degraded=DEAF, login=login)
+    read = heartbeat.read(heart.path)
+    assert read is not None and (read.login, read.degraded) == (login, degraded)
+
+
 def test_degradations_read_back_in_the_order_they_were_written(tmp_path: Path) -> None:
     written = beat(degraded=(SLOW, heartbeat.NO_MICROPHONE))
     heartbeat.write(tmp_path / "status.json", written)
@@ -109,9 +124,9 @@ def test_a_heartbeat_that_says_a_degradation_twice_or_also_in_the_old_way_is_ref
 
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT, kick_watchdog=lambda: None, clock=SYSTEM)
-    heart.beat("starting", None, 0, listening=False, degraded=DEAF)
+    heart.beat("starting", None, 0, listening=False, degraded=DEAF, login="untried")
     first = heartbeat.read(heart.path)
-    heart.beat("running", NOW, 2, listening=True, degraded=())
+    heart.beat("running", NOW, 2, listening=True, degraded=(), login="untried")
     second = heartbeat.read(heart.path)
     assert first is not None and second is not None
     assert (first.pid, first.started_at, first.heartbeat, first.pipeline, first.live_sessions) == (4242, NOW, BEAT, "starting", 0)
@@ -180,6 +195,7 @@ def test_no_file_is_a_daemon_that_never_ran(tmp_path: Path) -> None:
         (b'{"pid": 1}', "started_at"),
         (heartbeat.encode(beat()).replace("running", "dancing").encode(), "pipeline should be"),
         (heartbeat.encode(beat()).replace("+00:00", "").encode(), "carries its zone"),
+        (heartbeat.encode(beat()).replace('"login": "works"', '"login": "fine"').encode(), "login should be"),
         (heartbeat.encode(beat(pid=2**63)).encode(), "not a process id"),
         (heartbeat.encode(beat(pid=2**31)).encode(), "not a process id"),
         (heartbeat.encode(beat(pid=100_000)).encode(), "not a process id"),  # past macOS's PID_MAX, which ps refuses

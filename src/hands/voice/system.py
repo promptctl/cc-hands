@@ -17,6 +17,7 @@ from pipecat.utils.errors import ErrorCategory
 
 from hands.clock import Clock
 from hands.core.playback import hands_says
+from hands.sessions import heartbeat
 from hands.sessions.audit import Announced, Record
 from hands.voice.devicechoice import HeardOn, Instead, Missing, Off, PlayedOn
 from hands.voice.microphone import Devices
@@ -65,7 +66,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | UsageLimitReached | LoginExpired | StopFailed | TranscriptionFailed | NoMicrophone | MicrophoneOff | TurnTimedOut | AudioMoved
+SystemFact = Started | ModelFact | TranscriptionFailed | NoMicrophone | MicrophoneOff | TurnTimedOut | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -78,7 +79,7 @@ def system_text(fact: SystemFact) -> str:
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
         case LoginExpired():
-            return "The brain's login has expired: run hands login, then hands restart."
+            return f"The brain's login has expired: run {heartbeat.LOGIN_RENEWAL.replace('`', '')}."
         case StopFailed(message=str() as message):
             return f"The brain failed: {message.removesuffix('.')}."
         case StopFailed(kind=str() as kind):

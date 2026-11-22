@@ -565,7 +565,7 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
     exporter = Exporter(refusing.url, exports.record, linger=0.01, clock=SYSTEM)
 
     def look(before: indicator.Shown | None) -> indicator.Shown:
-        heart.beat("running", None, 0, listening=False, degraded=exports.degraded())
+        heart.beat("running", None, 0, listening=False, degraded=exports.degraded(), login="untried")
         return indicator.show(before, heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC))
 
     def batch(span_id: str) -> None:

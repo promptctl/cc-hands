@@ -49,6 +49,7 @@ from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
+from hands.sessions.home import Home
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions.registry import Sessions
@@ -813,6 +814,19 @@ def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.chmod(0o755)
     pin(monkeypatch, script)
     return mark
+
+
+STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
+
+
+def standin(home: Home, monkeypatch: pytest.MonkeyPatch) -> "subprocess.Popen[bytes]":
+    """The stand-in daemon on `home` (tests/fixtures/standin_daemon.py), started in a process of its own: a home the
+    start's preflight passes, its brain's pinned claude a script that only leaves a mark, so an edit to its settings is
+    weighed and taken as hands takes one."""
+    startable(home.root, monkeypatch)
+    prelude = home.root / "prelude.py"
+    prelude.write_text(pinned_to(home.root / "pinned" / "claude"))
+    return subprocess.Popen([sys.executable, STANDIN, str(home.root), str(prelude)], stdin=subprocess.DEVNULL)
 
 
 def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:

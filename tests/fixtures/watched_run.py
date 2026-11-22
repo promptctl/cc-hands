@@ -38,7 +38,7 @@ def stuck() -> None:
 def hung(*arguments: object) -> None:
     heart = arguments[5]
     assert isinstance(heart, cli.heartbeat.Heart)
-    heart.beat("starting", None, 0, listening=False, degraded=())
+    heart.beat("starting", None, 0, listening=False, degraded=(), login="untried")
     stuck()
 
 

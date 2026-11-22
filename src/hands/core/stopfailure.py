@@ -17,9 +17,10 @@ class StopFailed:
 
     @property
     def login_expired(self) -> bool:
-        """Whether the brain's login has expired: [LAW:single-enforcer] the one reading of Claude Code's words for it. The
-        pinned Claude Code says it two ways, both starting so: kind `invalid_request` for a token that expired with no
-        refresh, and `authentication_failed` for a refresh token that is no longer valid, so the kind is not read."""
+        """Whether the brain's login has expired: [LAW:single-enforcer] the one reading of Claude Code's words for it. It
+        matches the two messages the pinned Claude Code is seen to end such a turn with, one per kind, as
+        docs/claude-code-behavior.md records them; the shared start is theirs, not a grouping of Claude Code's, so a
+        new pin that words either otherwise is re-read there."""
         return self.message is not None and self.message.startswith("Login expired")
 
     def __str__(self) -> str:

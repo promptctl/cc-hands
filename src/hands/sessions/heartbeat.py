@@ -40,15 +40,22 @@ PERIODS_MS = range(1, 3_600_001)
 class Degradation:
     """One way an up daemon is running degraded, carrying the words it is said in."""
 
-    # [LAW:one-type-per-behavior] every degradation is said, so each is a value of this type, and the heartbeat carries
-    # its words: a new one is a new value, and no reader of the file learns of it. A reader that acts on one, as `hands
-    # check` does on LOGIN_EXPIRED, knows it by its value, which is its one source.
+    # [LAW:one-type-per-behavior] every degradation is only ever said, so each is a value of this type, and the heartbeat
+    # carries its words: a new one is a new value, and no reader of the file learns of it. A fact a reader acts on is a
+    # field of its own, as `login` is.
     brief: str  # a few words for the menu bar, after "hands"
     said: str  # the whole of it, after "hands is up but"
 
 
 NO_MICROPHONE = Degradation("can't hear", "cannot hear, as there is no microphone")
-LOGIN_EXPIRED = Degradation("brain logged out", "its brain's login has expired, so every turn fails: `hands login`, then `hands restart`")
+# [LAW:one-source-of-truth] the one wording of what renews an expired login: the heartbeat, `hands check`, and the
+# spoken line all say it.
+LOGIN_RENEWAL = "`hands login`, then `hands restart`"
+LOGIN_EXPIRED = Degradation("brain's login expired", f"its brain's login has expired, so every turn fails: {LOGIN_RENEWAL}")
+
+# The brain's login as its turns found it: none has tried it since the start, which checked it was held; the latest
+# turn that said passed it; or that turn found it expired.
+type Login = Literal["untried", "works", "expired"]
 
 
 @dataclass(frozen=True)
@@ -65,6 +72,9 @@ class Status:
     # The Python environment the run runs from, its sys.prefix, and starts again on when restarted; None from a hands
     # from before it said.
     runs_from: Path | None
+    # [LAW:one-source-of-truth] the brain's login, the one fact of a running brain's that `hands check` acts on, read
+    # here rather than from the words of a degradation; None from a hands from before it said.
+    login: Login | None
 
 
 def encode(status: Status) -> str:
@@ -80,6 +90,7 @@ def encode(status: Status) -> str:
             "listening": status.listening,
             "degraded": [{"brief": each.brief, "said": each.said} for each in status.degraded],
             "runs_from": None if status.runs_from is None else str(status.runs_from),
+            "login": status.login,
         },
         indent=2,
     )
@@ -91,6 +102,7 @@ def parse(raw: bytes) -> Status:
     fields = Payload.parse(raw)
     last_audio_out = fields.optional_text("last_audio_out")
     runs_from = fields.optional_text("runs_from")
+    login = fields.optional_text("login")
     return Status(
         pid=parse_pid(fields.integer("pid")),
         started_at=_instant(fields.text("started_at")),
@@ -102,6 +114,7 @@ def parse(raw: bytes) -> Status:
         listening=fields.optional_flag("listening"),
         degraded=_degradations(fields),
         runs_from=None if runs_from is None else Path(runs_from),
+        login=None if login is None else _login(login),
     )
 
 
@@ -125,8 +138,10 @@ class Heart:
     # The wall clock each beat is stamped on.
     clock: Clock
 
-    def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, degraded: tuple[Degradation, ...]) -> None:
-        write(self.path, Status(self.pid, self.started_at, self.clock.wall(), self.period, pipeline, last_audio_out, live_sessions, listening, degraded, Path(sys.prefix)))
+    def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, degraded: tuple[Degradation, ...], login: Login) -> None:
+        # [LAW:one-source-of-truth] an expired login is said among the degradations as derived from `login`, here alone.
+        said = (*degraded, *((LOGIN_EXPIRED,) if login == "expired" else ()))
+        write(self.path, Status(self.pid, self.started_at, self.clock.wall(), self.period, pipeline, last_audio_out, live_sessions, listening, said, Path(sys.prefix), login))
         # [LAW:single-enforcer] every beat, from every path that writes one, kicks the watchdog.
         self.kick_watchdog()
 
@@ -299,6 +314,14 @@ def _degradation(item: object) -> Degradation:
     if not (degradation.brief and degradation.said):
         raise Rejected(f"a degradation says what is wrong, in brief and in full: {degradation}")
     return degradation
+
+
+def _login(text: str) -> Login:
+    match text:
+        case "untried" | "works" | "expired":
+            return text
+        case other:
+            raise Rejected(f"login should be untried, works, or expired, got {other!r}")
 
 
 def _pipeline_fields(pipeline: PipelineState | Refusal) -> dict[str, str]:

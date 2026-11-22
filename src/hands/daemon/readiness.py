@@ -26,7 +26,7 @@ from hands.core.effects import Fritter
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership, Runnable
-from hands.daemon.backend import backend as resolve, strays
+from hands.daemon.backend import backend as resolve
 from hands.daemon.config import Claude, load
 from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions import child, heartbeat, liveness, wrapper
@@ -161,33 +161,35 @@ def installed(children: Children, path: str) -> Finding:
 
 
 def configured(children: Children, home: Home, environment: Mapping[str, str], running: heartbeat.Verdict) -> Finding:
-    """Whether hands would start on its settings and its home's files, and the brain has the login it reaches its model
-    with: `running`, the heartbeat's verdict, says whether a running brain found its login expired."""
+    """Whether hands would start on its settings, its home's files, and `environment`, and the brain has the login it
+    reaches its model with: `running`, the heartbeat's verdict, says how a running brain's turns found it."""
     try:
         config = load(home).config
     except Rejected as error:
         # The refusal names the file and what is wrong with it, so it is the detail, beside every other refusal of the
         # home's files, each naming its own fix, and the line names the file to mend.
-        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(home, error))}", f"correct {home.config}")
+        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(home, environment, error))}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse on the home's files is said here in
     # its words, every refusal at once, and the login beside them wherever the brain's own config directory runs one.
-    match preflight(home).verdict:
+    match preflight(home, environment).verdict:
         case Startable(brain=brain):
             refusals: tuple[str, ...] = ()
         case Refused(refusals=refusals, brain=brain):
             pass
-    match running:
-        # [LAW:one-source-of-truth] a running brain's turns say whether its login works, which `claude auth status` cannot:
-        # it says only that Claude Code holds a token. So no claude is asked.
-        case heartbeat.Up(status=heartbeat.Status(degraded=degraded)) if heartbeat.LOGIN_EXPIRED in degraded:
-            # The brain's login is not asked, so neither is the environment beside it: its refusal is said with the rest.
-            refusals = (*refusals, *strays(home, environment))
-            reached: Finding = Missing("brain's login expired", "the running brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
-        case _ if brain is None:
+    # [LAW:one-source-of-truth] a running brain's turns say whether its login works, which `claude auth status` cannot:
+    # it says only that Claude Code holds a token. So while one runs, no claude is asked.
+    match _running_login(running), brain:
+        case "expired", _:
+            reached: Finding = Missing("brain's login expired", "the running brain's login has expired, so every turn fails", heartbeat.LOGIN_RENEWAL)
+        case "works", _:
+            reached = Ready("brain's login works", "the running brain's latest turn to end passed its login")
+        case "untried", _:
+            reached = Ready("brain logged in at its start", "the running brain was logged in when it started, and no turn has tried its login since")
+        case None, None:
             # The run that asks would load what the brain's own settings keep out.
             return unstartable("; ".join(refusals))
-        case _:
-            reached = _reached(children, config.llm, home, environment, brain)
+        case None, Runnable() as runnable:
+            reached = _reached(children, config.llm, home, environment, runnable)
     match reached:
         case reached if not refusals:
             return reached
@@ -195,6 +197,16 @@ def configured(children: Children, home: Home, environment: Mapping[str, str], r
             return unstartable("; ".join((*refusals, fix)))
         case Ready():
             return unstartable("; ".join(refusals))
+
+
+def _running_login(running: heartbeat.Verdict) -> heartbeat.Login | None:
+    """The login of a brain that is running, as its last heartbeat said, one that has stopped responding included; None
+    where no brain runs, or it runs on a hands from before it said."""
+    match running:
+        case heartbeat.Up(status=status) | heartbeat.Unresponsive(status=status):
+            return status.login
+        case _:
+            return None
 
 
 def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Finding:

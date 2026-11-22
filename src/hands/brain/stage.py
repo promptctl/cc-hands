@@ -23,7 +23,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -80,6 +80,7 @@ from hands.core.wire import (
 )
 from hands.core.stopfailure import StopFailed
 from hands.sessions.model_facts import LoginExpired, ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
+from hands.sessions import heartbeat
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, child, continuing, count, fail, here, root, unit, within
 from hands.voice.conversation import UserWords
@@ -487,8 +488,8 @@ class BrainStage(FrameProcessor):
         # whoever asked the turn; and what the last turn left (`_leave`): what the API broke off, which Claude Code keeps
         # out of the brain's history, or that the turn the user spoke over then failed.
         self._untold: list[_Cut | str] = []
-        # [LAW:one-source-of-truth] whether the brain's login has expired, as the latest turn that told of it said (`_login`).
-        self._login_expired = False
+        # [LAW:one-source-of-truth] the brain's login, as the latest turn to end that said anything of it found it (`_learn`).
+        self._login: heartbeat.Login = "untried"
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -694,6 +695,9 @@ class BrainStage(FrameProcessor):
         taken: Seconds,
     ) -> str | None:
         asker, spoken = turn.asker, turn.spoken
+        # [LAW:no-ambient-temporal-coupling] learned as the brain ends the turn, so the login follows the order Claude Code
+        # ends its turns in, never the order hands finishes saying them.
+        asked.add_done_callback(self._learn)
         # When the brain ended the turn, or it was stopped: set before anything reads it, however the turn ends.
         ended = taken
         try:
@@ -722,12 +726,12 @@ class BrainStage(FrameProcessor):
         finally:
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
-        # A brain that failed the turn itself has no answer to read.
-        failure = None if asked.exception() is not None else _failed(turn, asked.result(), self._tools)
-        self._login_expired = self._login_expired if asked.exception() is not None else _login(self._login_expired, asked.result())
-        stopped = asked.exception() is None and isinstance(asked.result(), BrainStopped)
-        annotate(failed=None if failure is None else failure.fact, stopped=stopped, held_reply=turn.held_reply)
-        if (error := asked.exception()) is not None:
+        outcome = _outcome(asked)
+        failure = _failed(turn, outcome, self._tools)
+        stopped = isinstance(outcome, BrainStopped)
+        annotate(failed=None if failure is None else failure.fact, stopped=stopped, held_reply=turn.held_reply, login=_login(outcome))
+        if isinstance(outcome, BaseException):
+            error = outcome
             failed = f"the brain failed a turn: {error}"
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
@@ -1059,10 +1063,14 @@ class BrainStage(FrameProcessor):
             turn.aside(_Aside(next(self._acknowledgements), turn.since))
 
     @property
-    def login_expired(self) -> bool:
-        """Whether the brain's login has expired, so every turn fails until it is renewed: read from what the stage holds,
-        as `work` is, so nothing is asked of a Claude Code."""
-        return self._login_expired
+    def login(self) -> heartbeat.Login:
+        """The brain's login as its turns found it: read from what the stage holds, as `work` is, so nothing is asked of a
+        Claude Code."""
+        return self._login
+
+    def _learn(self, asked: "asyncio.Future[BrainEnded] | asyncio.Future[BrainAnswered]") -> None:
+        # A turn cancelled before the brain ended it says nothing of the login.
+        self._login = self._login if asked.cancelled() else _login(_outcome(asked)) or self._login
 
     def work(self) -> BrainWork:
         """What the brain is doing now: the turn in flight, if any, and each call its replies made that is still running,
@@ -1146,7 +1154,7 @@ class BrainStage(FrameProcessor):
             # [LAW:one-source-of-truth] why a turn failed is the wire's wherever the wire names it: the head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
             # told before its 502. Its own requests are held final, so Claude Code asks once; a 401 it asks again after
             # refreshing its login: the latest request's is the turn's. One that failed in Claude Code before any answer came is the
-            # StopFailure's to name (`_failed`).
+            # StopFailure's to name, as is an expired login, whatever the wire heard of it (`_failed`).
             case Answering(exchange=exchange, status=status, limit=limit) if exchange in turn.exchanges:
                 turn.failure = limit or _cause(status)
             case Exchanged(exchange=exchange, reply=Unreached()) if exchange in turn.exchanges:
@@ -1183,26 +1191,32 @@ class _Failure:
     note: str
 
 
-def _login(was: bool, ended: BrainEnded) -> bool:
-    """Whether the brain's login has expired after a turn that ended so: a StopFailure saying so sets it, an answer Claude
-    Code took from the API clears it, and a turn stopped, or failed of anything else, says nothing of the login."""
-    match ended:
+def _outcome(asked: "asyncio.Future[BrainEnded] | asyncio.Future[BrainAnswered]") -> BrainEnded | BaseException:
+    """How a turn the brain is done with ended, or what failed it in the brain itself: read once, for all that judges it."""
+    return error if (error := asked.exception()) is not None else asked.result()
+
+
+def _login(outcome: BrainEnded | BaseException) -> Literal["works", "expired"] | None:
+    """What a turn that ended so found of the brain's login: Claude Code checks it before it sends any request, so a turn
+    it ended in any other way passed it. A turn stopped, or failed in the brain itself, says nothing of it."""
+    match outcome:
         case BrainAnswered(error=StopFailed() as stop) if stop.login_expired:
-            return True
-        case BrainAnswered(error=None):
-            return False
-        case BrainAnswered() | BrainStopped():
-            return was
+            return "expired"
+        case BrainAnswered():
+            return "works"
+        case BrainStopped() | BaseException():
+            return None
 
 
-def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failure | None:
-    """What a turn the brain finished failed of; None for one that did not, or one the user stopped, which ends as they asked."""
-    match ended:
-        case BrainStopped():
+def _failed(turn: _Turn, outcome: BrainEnded | BaseException, tools: Mapping[str, Tool]) -> _Failure | None:
+    """What a turn the brain finished failed of; None for one that did not, one the user stopped, which ends as they asked,
+    or one the brain failed itself, which has no answer to read."""
+    match outcome:
+        case BrainStopped() | BaseException():
             return None
         case BrainAnswered(error=StopFailed() as stop):
-            # An expired login is said as one whatever the wire heard before Claude Code gave up on it.
-            fact = LoginExpired() if stop.login_expired else turn.failure or stop
+            # An expired login is said as one, carrying Claude Code's words for it, whatever the wire heard first.
+            fact = LoginExpired(stop) if stop.login_expired else turn.failure or stop
             return _Failure(f"the brain's turn ended in error: {stop}", fact, _broken_off("".join(turn.spoken)))
         case BrainAnswered():
             pass

@@ -203,7 +203,7 @@ def refuse(cannot: CannotStart, held: heartbeat.Heart | None) -> None:
     print(f"hands: {reason}", file=sys.stderr)
     match held:
         case heartbeat.Heart():
-            held.beat(heartbeat.Refusal(reason), None, 0, listening=False, degraded=())
+            held.beat(heartbeat.Refusal(reason), None, 0, listening=False, degraded=(), login="untried")
         case None:
             pass
 
@@ -246,7 +246,7 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     a stuck loop as not responding.
     """
     preparing = asyncio.create_task(prepare())
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, degraded=degraded()), heart.period.total_seconds(), clock))
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, degraded=degraded(), login="untried"), heart.period.total_seconds(), clock))
     quitting = asyncio.create_task(stop.wait())
     try:
         await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)

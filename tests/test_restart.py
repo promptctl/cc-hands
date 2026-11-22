@@ -6,7 +6,6 @@ import ctypes
 import os
 import select
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -16,7 +15,7 @@ from typing import Any
 import pytest
 from loguru import logger
 
-from conftest import PLUGIN_PATH, skill_command, unedited
+from conftest import PLUGIN_PATH, skill_command, standin, unedited
 from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership, SessionId
 from hands.daemon import cli
@@ -28,7 +27,6 @@ from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.wide import WideEvent
 
-STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
 EDITED = audit.SettingsEdited(path="/home/config.toml", refused=None)
 
@@ -76,10 +74,10 @@ def session(tmp_path: Path) -> Iterator[Membership]:
 
 
 @pytest.mark.outside
-def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, session: Membership) -> None:
+def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, session: Membership, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
-    daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
+    daemon = standin(home, monkeypatch)
     try:
         before = running(home)
         assert before.live_sessions == 1
@@ -113,10 +111,10 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
 
 
 @pytest.mark.outside
-def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_sessions(tmp_path: Path, session: Membership) -> None:
+def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_sessions(tmp_path: Path, session: Membership, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
-    daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
+    daemon = standin(home, monkeypatch)
     try:
         before = running(home)
         home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
@@ -214,7 +212,7 @@ def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_pa
 def test_a_daemon_still_starting_is_not_asked(tmp_path: Path) -> None:
     # Its pid is this test's, which a restart signal would end: being refused, it is never sent.
     home = Home(tmp_path / "home")
-    heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM).beat("starting", None, 0, listening=False, degraded=())
+    heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM).beat("starting", None, 0, listening=False, degraded=(), login="untried")
     done = restart(home, tmp_path)
     assert done.returncode == 1
     assert done.stderr.startswith(f"hands was not restarted: hands is up: pid {os.getpid()}, ")

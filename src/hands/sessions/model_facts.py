@@ -38,8 +38,10 @@ class ModelActedUntold:
 
 @dataclass(frozen=True)
 class LoginExpired:
-    """The brain's login has expired, so every turn fails until `hands login` gives it a new one and hands restarts on it.
-    Claude Code fails the turn itself, before any request, so its StopFailure is the one account of it."""
+    """The brain's login has expired, so every turn fails until it is renewed: told by the StopFailure Claude Code ended
+    the turn with, `stop`, whose words say which of its ways of finding it expired this was."""
+
+    stop: StopFailed
 
 
 ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | LoginExpired | StopFailed

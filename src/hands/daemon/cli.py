@@ -435,7 +435,7 @@ def door(home: Home, model: str | None) -> Settings:
     try:
         return load(home, model)
     except Rejected as error:
-        raise CannotStart("; ".join(preflight.beside(home, error))) from error
+        raise CannotStart("; ".join(preflight.beside(home, os.environ, error))) from error
 
 
 @dataclass(frozen=True)
@@ -514,7 +514,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
-    heart.beat("starting", None, 0, listening=False, degraded=())
+    heart.beat("starting", None, 0, listening=False, degraded=(), login="untried")
     # [LAW:dataflow-not-control-flow] every run shows itself through an indicator it started, on the code it runs: one
     # kept across a restart would judge this run's heartbeat by the code the run before had.
     run_start.heard(previous_indicator=None if restarted is None else retire(restarted, clock))
@@ -524,7 +524,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, settings, os.environ, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -587,7 +587,8 @@ async def launch(
                         # [LAW:no-ambient-temporal-coupling] it goes out while the handlers are in, so a restart is never
                         # asked once they are out: the heartbeat no longer says running, and one asked before it reads
                         # that is told after the first cause, which already decided.
-                        heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, degraded=())
+                        # The brain's login is untried by the run a restart starts, as by any start.
+                        heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, degraded=(), login="untried")
             except BaseException as error:
                 stop.tell(Failing("escaped", error))
             match stop.end:
@@ -628,7 +629,7 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings), clock)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, os.environ), clock)
 
 
 def start_indicator(home: Home) -> int:

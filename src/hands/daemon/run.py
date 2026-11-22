@@ -310,8 +310,9 @@ async def run(
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
-        # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        read = await start(lambda: configured(partial(configure, environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        # [LAW:one-source-of-truth] the one environment the run was handed: the preflight's, the settings' secrets, git's,
+        # and the brain's alike.
+        read = await start(lambda: configured(configure, survey, home, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if read is not None:
             config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
@@ -339,7 +340,7 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> Configured:
+async def configured(configure: Callable[[Mapping[str, str], preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
@@ -347,9 +348,9 @@ async def configured(configure: Callable[[preflight.Preflight], Configured], sur
     # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
     # refusal only a Claude Code can say. [LAW:no-ambient-temporal-coupling] its facts reach the start's event here, on
     # the loop that owns it, never from the thread it ran on.
-    checked = await off_loop(partial(preflight.preflight, home), "the start's preflight")
+    checked = await off_loop(partial(preflight.preflight, home, environment), "the start's preflight")
     run_start.heard(**checked.facts())
-    read = await off_loop(lambda: _attempted(partial(configure, checked)), "the configuration read")
+    read = await off_loop(lambda: _attempted(partial(configure, environment, checked)), "the configuration read")
     # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and
     # [LAW:dataflow-not-control-flow] every step is said whether or not hands can start, so a start refused on its
     # settings still names each other step it is missing.
@@ -410,7 +411,7 @@ async def converse(
         # A turn opened with no microphone hears nothing, so it is not listening.
         deaf = voice.audio.deaf
         # [LAW:no-silent-failure] a microphone config.toml turned off is the user's choice, not a degradation.
-        heart.beat(pipeline.state, _wall(clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if voice.audio.microphone_lost else ()), *((heartbeat.LOGIN_EXPIRED,) if minded.llm.login_expired else ()), *degraded()))
+        heart.beat(pipeline.state, _wall(clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if voice.audio.microphone_lost else ()), *degraded()), login=minded.llm.login)
 
     # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
     # session stays listed, without the reader no record becomes a step and no status Claude Code sets is heard, without the relay

@@ -59,6 +59,6 @@ def test_a_run_that_keeps_beating_is_never_ended_by_its_watchdog(tmp_path: Path)
 def test_every_beat_kicks_the_watchdog(tmp_path: Path) -> None:
     kicks: list[None] = []
     heart = heartbeat.Heart(tmp_path / "status.json", 4242, datetime.now(UTC), timedelta(seconds=2), lambda: kicks.append(None), clock=SYSTEM)
-    heart.beat("starting", None, 0, listening=False, degraded=())
-    heart.beat(heartbeat.Refusal("no key"), None, 0, listening=False, degraded=())
+    heart.beat("starting", None, 0, listening=False, degraded=(), login="untried")
+    heart.beat(heartbeat.Refusal("no key"), None, 0, listening=False, degraded=(), login="untried")
     assert len(kicks) == 2

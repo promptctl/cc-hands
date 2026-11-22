@@ -206,7 +206,7 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
     home.root.mkdir()
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None, None))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert main(["--home", str(home.root), "smoke"]) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"
@@ -228,7 +228,7 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
     home.memberships.mkdir(parents=True)
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None, None))
     record = {"pid": os.getpid(), "cwd": str(cwd), "transcript_path": f"/t/{OTHER}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
     home.membership(OTHER).write_text(json.dumps(record))
     os.utime(home.membership(OTHER), (written_at, written_at))

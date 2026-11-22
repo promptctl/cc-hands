@@ -1,9 +1,11 @@
 """A daemon with no voice: hands' own launch, restart, session sweep, and heartbeat, around a run that only lists sessions.
 
-    python standin_daemon.py <home> [--restarted]
+    python standin_daemon.py <home> <prelude> [--restarted]
 
 It stands in for `hands run`, which needs a microphone, the talk key's grant, and the speech models, so that a test
 can restart a running daemon through the plugin, or by editing its settings, and see what the run after it knows.
+`prelude` is Python it runs first, and again after each restart: conftest's `pinned_to`, so the brain's pinned claude
+is the test's, and an edit's weigh by the start's preflight passes the home.
 """
 
 import asyncio
@@ -24,10 +26,11 @@ from hands.sessions.registry import Sessions
 
 
 def main() -> None:
+    exec(Path(sys.argv[2]).read_text())
     home = Home(Path(sys.argv[1]))
     run_start = Start(restarted="--restarted" in sys.argv[2:], clock=SYSTEM)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
-    heart.beat("starting", None, 0, listening=False, degraded=())
+    heart.beat("starting", None, 0, listening=False, degraded=(), login="untried")
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     settings = load(home)
 
@@ -35,18 +38,18 @@ def main() -> None:
         sessions = Sessions(clock=SYSTEM, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
-        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heart.period.total_seconds(), SYSTEM))
+        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=(), login="untried"), heart.period.total_seconds(), SYSTEM))
         # As hands' run is once its pipeline has started.
         run_start.ended(audit.record, None)
         await stop.wait()
         beating.cancel()
         return Ended(None, sessions.live_count())
 
-    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
+    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, settings, {}, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
         case "quit":
             return
         case "restart":
-            execv([sys.executable, __file__, sys.argv[1], "--restarted"])
+            execv([sys.executable, __file__, sys.argv[1], sys.argv[2], "--restarted"])
 
 
 if __name__ == "__main__":
