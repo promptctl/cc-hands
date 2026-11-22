@@ -51,6 +51,7 @@ from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions import child
 from hands.sessions.child import Children
+from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
@@ -813,6 +814,16 @@ def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.chmod(0o755)
     pin(monkeypatch, script)
     return mark
+
+
+STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
+
+
+def standin(home: Home, monkeypatch: pytest.MonkeyPatch) -> subprocess.Popen[bytes]:
+    """The stand-in daemon, running on `home` made startable: its brain's pinned claude the script pinned in this process
+    too, so the start's preflight passes it there as here, before and after a restart."""
+    startable(home.root, monkeypatch)
+    return subprocess.Popen([sys.executable, STANDIN, str(home.root), str(pinned.claude(home.brain))], stdin=subprocess.DEVNULL)
 
 
 def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:

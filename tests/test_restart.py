@@ -6,7 +6,6 @@ import ctypes
 import os
 import select
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -16,7 +15,7 @@ from typing import Any
 import pytest
 from loguru import logger
 
-from conftest import PLUGIN_PATH, skill_command, unedited
+from conftest import PLUGIN_PATH, skill_command, standin, unedited
 from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership, SessionId
 from hands.daemon import cli
@@ -28,7 +27,6 @@ from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.wide import WideEvent
 
-STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
 EDITED = audit.SettingsEdited(path="/home/config.toml", refused=None)
 
@@ -76,10 +74,10 @@ def session(tmp_path: Path) -> Iterator[Membership]:
 
 
 @pytest.mark.outside
-def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, session: Membership) -> None:
+def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, session: Membership, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
-    daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
+    daemon = standin(home, monkeypatch)
     try:
         before = running(home)
         assert before.live_sessions == 1
@@ -113,23 +111,26 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
 
 
 @pytest.mark.outside
-def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_sessions(tmp_path: Path, session: Membership) -> None:
+def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_sessions(tmp_path: Path, session: Membership, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
-    daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
+    daemon = standin(home, monkeypatch)
     try:
         before = running(home)
-        home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
-        after = running(home)
-        until = time.monotonic() + 10
-        while after.started_at == before.started_at and time.monotonic() < until:
-            time.sleep(0.02)
+        # The second edit is weighed by the run the first restarted onto.
+        for model in ("claude-opus-5-5", "claude-fable-5-1"):
+            home.config.write_text(f'[llm]\nmodel = "{model}"\n')
             after = running(home)
-        # Started again, in the same process, with nothing asked of it but the edit.
-        assert daemon.poll() is None
-        assert (after.pid, after.live_sessions) == (daemon.pid, 1) and after.started_at > before.started_at
+            until = time.monotonic() + 10
+            while after.started_at == before.started_at and time.monotonic() < until:
+                time.sleep(0.02)
+                after = running(home)
+            # Started again, in the same process, with nothing asked of it but the edit.
+            assert daemon.poll() is None
+            assert (after.pid, after.live_sessions) == (daemon.pid, 1) and after.started_at > before.started_at
+            before = after
         said = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line["type"] == "SettingsEdited" or line.get("event") == "hands.start"]
-        assert [(line["type"], line.get("refused"), line.get("facts", {}).get("restarted")) for line in said] == [("WideEvent", None, False), ("SettingsEdited", None, None), ("WideEvent", None, True)]
+        assert [(line["type"], line.get("refused"), line.get("facts", {}).get("restarted")) for line in said] == [("WideEvent", None, False), *[("SettingsEdited", None, None), ("WideEvent", None, True)] * 2]
     finally:
         daemon.terminate()
         daemon.wait(timeout=10)
