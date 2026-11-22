@@ -1,8 +1,9 @@
 """Where a setting meets its login: the backend config.toml names, with the login it reaches its model on, in an
 environment that names no setting.
 
-Read by `hands run` before the voice loads, by an edit to the settings before it is restarted on, and by `hands check`,
-which loads the voice's pipeline for none of them.
+Read by `hands run` before the voice loads and by `hands check`, which loads the voice's pipeline for neither. An edit to
+the settings is weighed on `startable` alone, before it is restarted on: no edit changes the brain's login, which the
+start it restarts into checks again.
 """
 
 from collections.abc import Mapping
@@ -25,16 +26,27 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
     if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
         raise Rejected(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     # Imported here, so that only a check loads the brain's process, its MCP server, and Pipecat's tools.
-    from hands.brain.process import NotLoggedIn, Unstartable, account_kept_out, answered, logged_in, settings_mode
+    from hands.brain.process import NotLoggedIn, Unstartable, logged_in
 
     try:
         account = logged_in(children, home.brain, UPSTREAM, environment)
+    except (NotLoggedIn, Unstartable) as error:
+        raise Rejected(str(error)) from error
+    startable(home)
+    return ClaudeCodeBackend(model=llm.model, config_dir=home.brain, account=account)
+
+
+def startable(home: Home) -> None:
+    """Raises Rejected naming what in the brain's home a start would be refused on, its login aside: read from its files,
+    so it starts no Claude Code, and weighs a settings edit or a model chosen by voice while the person waits."""
+    from hands.brain.process import Unstartable, account_kept_out, answered, settings_mode
+
+    try:
         answered(home.brain)
         account_kept_out(home.brain)
         # A mode Claude Code does not take is refused here too, before the voice loads, not as the brain starts.
         settings_mode(home.brain)
         # The brain runs under the fritter hands' package carries: a hands built without it is refused here, not at its start.
         packaged()
-    except (NotLoggedIn, Unstartable, Unpackaged) as error:
+    except (Unstartable, Unpackaged) as error:
         raise Rejected(str(error)) from error
-    return ClaudeCodeBackend(model=llm.model, config_dir=home.brain, account=account)

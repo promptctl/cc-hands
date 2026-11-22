@@ -20,7 +20,7 @@ from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
-from hands.daemon.backend import backend
+from hands.daemon.backend import backend, startable
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.hookconfig import DISPLAY_PATH
@@ -284,7 +284,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     home.config.write_text('[llm]\nbackend = "claude"\n')
     recorded: list[Entry] = []
     running = config.load(home, "claude-opus-5-5")
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, SYSTEM, period=0.01), 0.3))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _startable, running, SYSTEM, period=0.01), 0.3))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n')
     await asyncio.sleep(0.05)
@@ -292,7 +292,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "opus"\n')
     with pytest.raises(TimeoutError):
         await watching
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, SYSTEM, period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _startable, running, SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[talk]\npersonality = "Dry."\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
@@ -452,7 +452,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable), SYSTEM)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _startable), SYSTEM)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -709,13 +709,13 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
 _NO_FILE = config.Settings(None, Config())
 
 
-def _reachable(_settings: Config) -> None:
+def _startable() -> None:
     pass
 
 
 async def _edited_within(home: Home, recorded: list[Entry], seconds: float = 0.5) -> SettingsEdited | None:
     try:
-        return await asyncio.wait_for(config.edited(home, recorded.append, _reachable, config.load(home), SYSTEM, period=0.01), seconds)
+        return await asyncio.wait_for(config.edited(home, recorded.append, _startable, config.load(home), SYSTEM, period=0.01), seconds)
     except TimeoutError:
         return None
 
@@ -809,27 +809,49 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, recorded.append, _startable, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
 
-@pytest.mark.outside
-async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
-    home = Home(tmp_path / ".hands")
-    onboard(home.brain)
-    monkeypatch.setenv("LOGGED_IN", "0")
+async def test_an_edit_a_start_would_be_refused_on_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = _startable_home(tmp_path, monkeypatch, trusted=False)
     recorded: list[Entry] = []
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, children_on(SYSTEM), home), config.load(home), SYSTEM, period=0.01), 2.0))
-    await asyncio.sleep(0.05)
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(startable, home), config.load(home), SYSTEM, period=0.01), 2.0))
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
-    while not recorded:
-        await asyncio.sleep(0.01)
+    await patiently(lambda: bool(recorded) or watching.done(), lambda: len(recorded))
     assert not watching.done()
     [refused] = recorded
-    assert isinstance(refused, SettingsEdited) and refused.refused is not None and "`hands login` gives it one" in refused.refused
-    monkeypatch.setenv("LOGGED_IN", "1")
+    assert isinstance(refused, SettingsEdited) and refused.refused is not None and "`hands login` answers them" in refused.refused
+    # Its trust screen answered, as `hands login` answers it.
+    shutil.rmtree(home.brain)
+    onboard(home.brain)
     home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
+
+
+async def test_a_settings_edit_and_a_model_chosen_by_voice_are_weighed_without_starting_a_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The brain's home holds no pinned claude, and the unit layer refuses every process: a weigh that asked Claude Code
+    # for its login would refuse both, and both are taken.
+    home = _startable_home(tmp_path, monkeypatch)
+    recorded: list[Entry] = []
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(startable, home), config.load(home), SYSTEM, period=0.01), 2.0))
+    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
+    assert await watching == SettingsEdited(path=str(home.config), refused=None)
+    assert recorded == []
+    keep = config.OwnModel(home, config.load(home), partial(startable, home)).weigh("claude-haiku-4-5-20251001")
+    keep()
+    assert config.load(home).config.llm == Claude(model="claude-haiku-4-5-20251001")
+
+
+def _startable_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted: bool = True) -> Home:
+    """A home whose brain a start would take but for its login, which nothing here asks of it."""
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain, trusted=trusted)
+    fritter = tmp_path / "package" / "bin" / "fritter"
+    fritter.parent.mkdir(parents=True)
+    fritter.touch()
+    monkeypatch.setattr(wrapper, "PACKAGED", fritter)
+    return home
 
 
 async def test_a_comment_added_is_no_edit(tmp_path: Path) -> None:
@@ -892,12 +914,12 @@ def test_a_sample_line_is_never_kept_in_a_file_a_start_would_refuse(tmp_path: Pa
 async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Path) -> None:
     home = Home(tmp_path)
     recorded: list[Entry] = []
-    checked: list[Config] = []
+    checked: list[bytes] = []
 
-    def overwritten(settings: Config) -> None:
-        checked.append(settings)
-        # The first edit is saved over with a typo while its backend is checked.
-        if settings.llm == Claude(model="claude-opus-5-5"):
+    def overwritten() -> None:
+        checked.append(home.config.read_bytes())
+        # The first edit is saved over with a typo while it is weighed.
+        if len(checked) == 1:
             home.config.write_text('[llm]\nbackend = "claud"\n')
 
     # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
@@ -928,5 +950,5 @@ async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, recorded.append, _startable, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []

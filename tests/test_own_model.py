@@ -36,8 +36,8 @@ collector = "http://otel.example:4318"
 """
 
 
-def _own(home: Home, reachable: Callable[[Config], object] = lambda _config: None) -> config.OwnModel:
-    return config.OwnModel(home, config.load(home), reachable)
+def _own(home: Home, startable: Callable[[], object] = lambda: None) -> config.OwnModel:
+    return config.OwnModel(home, config.load(home), startable)
 
 
 def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
@@ -91,15 +91,15 @@ def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_way
         own.weigh(" claude-opus-5-5 ")
 
 
-def test_a_model_a_start_could_not_reach_is_refused_before_it_is_written(tmp_path: Path) -> None:
+def test_a_model_a_start_would_be_refused_on_is_refused_before_it_is_written(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
 
-    def unreachable(_settings: Config) -> None:
-        raise Rejected("the brain is not logged in")
+    def unstartable() -> None:
+        raise Rejected("the brain has not been through Claude Code's first screens")
 
-    with pytest.raises(Rejected, match="not logged in"):
-        _own(home, unreachable).weigh("claude-opus-5-5")
+    with pytest.raises(Rejected, match="first screens"):
+        _own(home, unstartable).weigh("claude-opus-5-5")
     assert home.config.read_text() == SPOKEN_FILE
 
 
@@ -128,7 +128,7 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
 def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    flagged = config.OwnModel(home, config.load(home, "claude-haiku-4-5-20251001"), lambda _config: None)
+    flagged = config.OwnModel(home, config.load(home, "claude-haiku-4-5-20251001"), lambda: None)
     assert flagged.running() == "claude-haiku-4-5-20251001"
     with pytest.raises(Rejected, match=f"^hands was started with --model claude-haiku-4-5-20251001, which it keeps over {home.config} until it is started without it$"):
         flagged.weigh("claude-opus-5-5")
@@ -139,8 +139,8 @@ async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     running_on = config.load(home)
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, lambda _config: None, running_on, SYSTEM, period=0.01), 2.0))
-    config.OwnModel(home, running_on, lambda _config: None).weigh("claude-opus-5-5")()
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, lambda: None, running_on, SYSTEM, period=0.01), 2.0))
+    config.OwnModel(home, running_on, lambda: None).weigh("claude-opus-5-5")()
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 

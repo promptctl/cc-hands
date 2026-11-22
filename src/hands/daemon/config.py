@@ -102,15 +102,15 @@ def load(home: Home, model: str | None = None) -> Settings:
     return Settings(held, _settings(home, held, model), model)
 
 
-async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
+async def edited(home: Home, record: Record, startable: Callable[[], object], running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
     """The edit, once the file holds settings other than `running`, the ones the run was started on: written, rewritten,
     or removed.
 
     [LAW:no-ambient-temporal-coupling] weighed against the bytes the run read, not a read of its own, so an edit is never
     missed, however late after the run's read the watch begins. An edit is weighed once its
     bytes read the same on two polls, so a save an editor writes in two steps is weighed whole, and it is taken only
-    while the file still holds it once weighed. One that does not parse, or names a model `reachable` refuses, is
-    said and outlived, and the run keeps the settings it has; the next edit is weighed as any other. One whose
+    while the file still holds it once weighed. One that does not parse, or that `startable` says a start would be
+    refused on, is said and outlived, and the run keeps the settings it has; the next edit is weighed as any other. One whose
     settings are the run's, a comment or a revert, is no edit.
     """
     seen: bytes | _Unreadable | None = running.held
@@ -127,8 +127,9 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
             if settings != running.config:
-                # reachable blocks, on the brain's login check, on a thread a stop does not wait for.
-                await off_loop(partial(reachable, settings), "weighing a settings edit")
+                # On a thread a stop does not wait for: its first weigh imports the brain's process, which can wait
+                # behind the run's Pipecat import.
+                await off_loop(startable, "weighing a settings edit")
                 if _held(home) == now:
                     return SettingsEdited(path=str(home.config), refused=None)
                 # Saved over while weighed: no verdict, so these bytes are weighed again should they come back.
@@ -147,10 +148,10 @@ class OwnModel:
     starting again on it once `edited` has weighed it.
     """
 
-    def __init__(self, home: Home, running: Settings, reachable: Callable[[Config], object]) -> None:
+    def __init__(self, home: Home, running: Settings, startable: Callable[[], object]) -> None:
         self._home = home
         self._running = running
-        self._reachable = reachable
+        self._startable = startable
         # [LAW:single-enforcer] the one lock over a switch of the model, taken by `hands.voice.modelswitch.switch_model`.
         self.changing = asyncio.Lock()
 
@@ -176,7 +177,7 @@ class OwnModel:
             # The file names it, and the run is not on it: an edit `edited` has yet to take, or one it refused, which the
             # same bytes written again would not change. Which of the two is not known here, so the reason names both.
             raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
-        self._reachable(chosen)
+        self._startable()
         return partial(_keep, self._home, held, edited)
 
 

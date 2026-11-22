@@ -720,9 +720,8 @@ def logged_in(children: Children, config_dir: Path, base_url: str, inherited: Ma
     """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
     none, or one whose requests do not reach hands' proxy, and Unstartable when Claude Code could not be asked.
 
-    This breaks CLAUDE.md's hard rule that hands never starts a Claude Code for what the running brain already gives it:
-    it reads a login the running brain also holds, on every settings edit, every voice model switch and every `hands
-    check`. promptctl-phone-app-9d9y.mpy, this lane's next ticket, takes it off those paths."""
+    A Claude Code of its own, so it is asked once as a start or `hands check` begins and after `hands login`, never while
+    the brain runs: what the running brain is logged in as is the account its start read."""
     claude = brain_claude(config_dir)
     asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, base_url, inherited), limit=AUTH_STATUS_SECONDS)
     match asked:

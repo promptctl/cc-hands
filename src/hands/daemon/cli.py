@@ -23,8 +23,8 @@ from loguru import logger
 
 from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, readiness, update, watchdog
-from hands.daemon.backend import backend
-from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
+from hands.daemon.backend import startable
+from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start
 from hands.tasks import cancel_and_wait
@@ -551,7 +551,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, Children(clock, record), home), settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(startable, home), settings, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -632,13 +632,6 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def reachable(children: Children, home: Home, settings: Config) -> None:
-    """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
-    restart an edit asks for, so an edit hands could not start on, its brain logged out among them, is refused and
-    outlived, not restarted on."""
-    backend(children, settings.llm, home, os.environ)
-
-
 def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
@@ -662,7 +655,7 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, children, home)), clock)
+    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(startable, home)), clock)
 
 
 def start_indicator(home: Home) -> int:
