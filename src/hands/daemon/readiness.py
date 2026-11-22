@@ -253,7 +253,7 @@ def _text(asked: child.Outcome) -> str | Unasked:
                 return out.data.decode()
             except UnicodeDecodeError as error:
                 return Unasked(f"printed what is not text: {error}")
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             return Unasked(child.said(asked))
 
 

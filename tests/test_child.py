@@ -26,19 +26,21 @@ from hands.sessions.child import (
     Cancelled,
     Captured,
     Children,
+    Command,
     Exited,
-    Interrupted,
     Kill,
     Killed,
     Limit,
+    Lost,
     NeverStarted,
     Null,
     Ran,
     Signalled,
     Stop,
+    Stopped,
+    Terminal,
     Unreaped,
     WaitFailed,
-    command,
     ending,
     facts,
     said,
@@ -50,7 +52,7 @@ TERM = signal.SIGTERM
 
 
 def stepped(policy: child._Policy, answers: list[bool]) -> tuple[list[child._Step], bool]:  # pyright: ignore[reportPrivateUsage]
-    """Every step `policy` takes, each answered in turn from `answers`, and whether it says the child was reaped."""
+    """Every step `policy` takes, each answered in turn from `answers`, and whether it says the child was over."""
     steps = [next(policy)]
     try:
         for answer in answers:
@@ -65,34 +67,34 @@ def wait(seconds: float) -> child._Wait:  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_child_reaped_inside_its_limit_is_only_waited_on() -> None:
-    assert stepped(child._bounded(5, Limit(5)), [True]) == ([wait(5)], True)  # pyright: ignore[reportPrivateUsage]
+    assert stepped(child._bounded(Limit(5)), [True]) == ([wait(5)], True)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_child_past_its_limit_is_killed_with_its_group_and_its_reap_waited_a_grace() -> None:
-    steps, reaped = stepped(child._bounded(5, Limit(5)), [False, False, True])  # pyright: ignore[reportPrivateUsage]
-    assert steps == [wait(5), Kill(KILL, Limit(5)), wait(KILL_GRACE_SECONDS)]
+    steps, reaped = stepped(child._bounded(Limit(5)), [False, False, True])  # pyright: ignore[reportPrivateUsage]
+    assert steps == [wait(5), Kill(Limit(5)), wait(KILL_GRACE_SECONDS)]
     assert reaped
 
 
 def test_a_killed_child_not_reaped_within_the_grace_is_left_to_its_thread() -> None:
-    assert stepped(child._bounded(5, Limit(5)), [False, False, False])[1] is False  # pyright: ignore[reportPrivateUsage]
+    assert stepped(child._bounded(Limit(5)), [False, False, False])[1] is False  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize(
-    ("stopped", "cause"),
+    ("stopped", "why"),
     [(asyncio.CancelledError(), Cancelled()), (KeyboardInterrupt(), Cancelled()), (RuntimeError("no timer"), WaitFailed("RuntimeError('no timer')"))],
 )
-def test_a_wait_that_ends_early_kills_its_child_waits_the_grace_and_goes_on(stopped: BaseException, cause: Cancelled | WaitFailed) -> None:
-    policy = child._bounded(5, Limit(5))  # pyright: ignore[reportPrivateUsage]
+def test_a_wait_that_ends_early_kills_its_child_waits_the_grace_and_goes_on(stopped: BaseException, why: Cancelled | WaitFailed) -> None:
+    policy = child._bounded(Limit(5))  # pyright: ignore[reportPrivateUsage]
     assert next(policy) == wait(5)
-    assert policy.throw(stopped) == Kill(KILL, Interrupted(cause))
+    assert policy.throw(stopped) == Kill(why)
     assert policy.send(False) == wait(KILL_GRACE_SECONDS)
     with pytest.raises(type(stopped)):
         policy.send(True)
 
 
 def test_a_wait_stopped_twice_goes_on_without_its_grace() -> None:
-    policy = child._bounded(5, Limit(5))  # pyright: ignore[reportPrivateUsage]
+    policy = child._bounded(Limit(5))  # pyright: ignore[reportPrivateUsage]
     next(policy)
     policy.throw(asyncio.CancelledError())
     policy.send(False)
@@ -100,30 +102,37 @@ def test_a_wait_stopped_twice_goes_on_without_its_grace() -> None:
         policy.throw(asyncio.CancelledError())
 
 
+def test_a_policy_closed_unfinished_takes_no_step() -> None:
+    policy = child._bounded(Limit(5))  # pyright: ignore[reportPrivateUsage]
+    next(policy)
+    policy.close()
+
+
 def test_a_stop_asks_the_child_alone_then_kills_its_group_once_the_grace_is_up() -> None:
-    steps, reaped = stepped(child._stopping(5), [False, False, False, True])  # pyright: ignore[reportPrivateUsage]
-    assert steps == [Kill(TERM, Stop(5)), wait(5), Kill(KILL, Stop(5)), wait(KILL_GRACE_SECONDS)]
+    steps, reaped = stepped(child._stopping(Stop(5)), [False, False, False, True])  # pyright: ignore[reportPrivateUsage]
+    assert steps == [Stop(5), wait(5), Kill(Stop(5)), wait(KILL_GRACE_SECONDS)]
     assert reaped
 
 
 @pytest.mark.parametrize(
-    ("returncode", "kills", "ended"),
+    ("returncode", "sent", "ended"),
     [
         (0, (), Exited(0)),
         (3, (), Exited(3)),
         # Its kill was on its way as it exited: it exited.
-        (0, (Kill(KILL, Limit(5)),), Exited(0)),
-        (-9, (Kill(KILL, Limit(5)),), Killed(Kill(KILL, Limit(5)))),
+        (0, (Kill(Limit(5)),), Exited(0)),
+        (-9, (Kill(Limit(5)),), Killed(Kill(Limit(5)))),
         # A SIGKILL from outside hands, an OOM or a `kill -9`, is not hands' kill.
         (-9, (), Signalled(KILL)),
-        (-15, (Kill(KILL, Limit(5)),), Signalled(TERM)),
+        (-15, (Kill(Limit(5)),), Signalled(TERM)),
         # Killed for its limit, then its caller cancelled before the reap: the limit is why.
-        (-9, (Kill(KILL, Limit(5)), Kill(KILL, Interrupted(Cancelled()))), Killed(Kill(KILL, Limit(5)))),
-        (-15, (Kill(TERM, Stop(5)), Kill(KILL, Stop(5))), Killed(Kill(TERM, Stop(5)))),
+        (-9, (Kill(Limit(5)), Kill(Cancelled())), Killed(Kill(Limit(5)))),
+        (-15, (Stop(5), Kill(Stop(5))), Stopped(Stop(5))),
+        (-9, (Stop(5), Kill(Stop(5))), Killed(Kill(Stop(5)))),
     ],
 )
-def test_how_a_child_ended_is_read_from_its_code_and_the_kills_hands_sent(returncode: int, kills: tuple[Kill, ...], ended: child.Ending) -> None:
-    assert ending(returncode, kills) == ended
+def test_how_a_child_ended_is_read_from_its_code_and_what_hands_sent_it(returncode: int, sent: tuple[child.Sent, ...], ended: child.Ending) -> None:
+    assert ending(returncode, sent) == ended
 
 
 @pytest.mark.parametrize(
@@ -131,9 +140,10 @@ def test_how_a_child_ended_is_read_from_its_code_and_the_kills_hands_sent(return
     [
         (Exited(3), {"ending": "exited", "exit_code": 3}, "exited 3"),
         (Signalled(KILL), {"ending": "signalled", "signal": "SIGKILL"}, "was ended by SIGKILL"),
-        (Killed(Kill(KILL, Limit(2))), {"ending": "killed", "signal": "SIGKILL", "why": "it ran past 2.0s"}, "was killed with SIGKILL, because it ran past 2.0s"),
-        (Killed(Kill(KILL, Interrupted(Cancelled()))), {"ending": "killed", "signal": "SIGKILL", "why": "its caller stopped waiting"}, "was killed with SIGKILL, because its caller stopped waiting"),
-        (Killed(Kill(KILL, Interrupted(WaitFailed("E()")))), {"ending": "killed", "signal": "SIGKILL", "why": "its wait failed: E()"}, "was killed with SIGKILL, because its wait failed: E()"),
+        (Killed(Kill(Limit(2))), {"ending": "killed", "signal": "SIGKILL", "why": "it ran past 2.0s"}, "was killed with SIGKILL, because it ran past 2.0s"),
+        (Killed(Kill(Cancelled())), {"ending": "killed", "signal": "SIGKILL", "why": "its caller stopped waiting"}, "was killed with SIGKILL, because its caller stopped waiting"),
+        (Killed(Kill(WaitFailed("E()"))), {"ending": "killed", "signal": "SIGKILL", "why": "its wait failed: E()"}, "was killed with SIGKILL, because its wait failed: E()"),
+        (Stopped(Stop(5)), {"ending": "stopped", "signal": "SIGTERM"}, "stopped as it was told to, within 5.0s"),
     ],
 )
 def test_each_ending_has_its_own_facts_and_words(ended: child.Ending, told: dict[str, wide.Fact], worded: str) -> None:
@@ -142,98 +152,49 @@ def test_each_ending_has_its_own_facts_and_words(ended: child.Ending, told: dict
 
 
 def test_a_child_that_exited_nonzero_is_said_with_what_it_wrote_to_stderr() -> None:
-    assert said(Ran(Exited(128), Captured(b"", False), Captured(b"fatal: not a git repository\n", False))) == wide.exited(128, "fatal: not a git repository")
+    assert said(Ran(Exited(128), Captured(b""), Captured(b"fatal: not a git repository\n"))) == wide.exited(128, "fatal: not a git repository")
 
 
-def test_a_child_that_never_started_or_was_never_reaped_is_said_so() -> None:
+def test_a_child_that_never_started_was_never_reaped_or_was_lost_is_said_so() -> None:
     assert said(NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory", "lit"))) == "could not be started: No such file or directory"
-    assert said(Unreaped((Kill(KILL, Limit(1)),), 41)) == f"was killed, and still not reaped {KILL_GRACE_SECONDS:.1f}s later, as 41"
+    assert said(Unreaped((Kill(Limit(1)),), 41)) == f"was killed, and still not reaped {KILL_GRACE_SECONDS:.1f}s later, as 41"
+    assert said(Lost("OSError(5)")) == "ran, and hands lost its answer: OSError(5)"
 
 
 @pytest.mark.parametrize(
-    ("argv", "env", "refused"),
-    [(("git", "log\0"), None, "NUL"), (("git",), {"A": "b\0"}, "NUL"), (("git",), {"A=B": "c"}, "named 'A=B'"), (("git",), {"": "c"}, "named ''"), ((), None, "a program")],
+    ("argv", "cwd", "env", "refused"),
+    [
+        (("git", "log\0"), None, None, "NUL"),
+        (("git",), Path("/tmp/a\0b"), None, "NUL"),
+        (("git",), None, {"A": "b\0"}, "NUL"),
+        (("git",), None, {"A=B": "c"}, "named 'A=B'"),
+        (("git",), None, {"": "c"}, "named ''"),
+        ((), None, None, "a program"),
+    ],
 )
-def test_a_command_no_os_can_be_handed_is_refused_before_anything_starts(argv: tuple[str, ...], env: dict[str, str] | None, refused: str) -> None:
+def test_a_command_no_os_can_be_handed_cannot_be_made(argv: tuple[str, ...], cwd: Path | None, env: dict[str, str] | None, refused: str) -> None:
     with pytest.raises(ValueError, match=refused):
-        command(argv, None, env)
+        Command(argv, cwd, env)
+
+
+async def test_a_directory_with_a_nul_is_refused_in_the_caller_before_anything_starts() -> None:
+    recorded: list[WideEvent] = []
+    with pytest.raises(ValueError, match="NUL"):
+        await Children(VirtualClock(), recorded.append).run("true", limit=5, cwd=Path("/tmp/a\0b"))
+    assert recorded == []
 
 
 def test_what_a_child_wrote_past_the_capture_is_cut_and_said_to_be(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(child, "CAPTURE_BYTES", 4)
     with (tmp_path / "out").open("w+b") as output:
         output.write(b"12345")
-        assert child._read(output) == Captured(b"1234", True)  # pyright: ignore[reportPrivateUsage]
+        assert child._read(output) == (b"1234", True)  # pyright: ignore[reportPrivateUsage]
         output.truncate(4)
-        assert child._read(output) == Captured(b"1234", False)  # pyright: ignore[reportPrivateUsage]
-
-
-async def test_a_child_past_its_limit_on_its_caller_s_clock_is_killed_and_its_reap_awaited() -> None:
-    clock = VirtualClock()
-    sent: list[Kill] = []
-    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    waiting = asyncio.ensure_future(child._awaited(child._bounded(5, Limit(5)), sent.append, ended, clock))  # pyright: ignore[reportPrivateUsage]
-    await clock.sleeping(5)
-    assert sent == []
-    clock.advance(5)
-    await clock.sleeping(5 + KILL_GRACE_SECONDS)
-    assert sent == [Kill(KILL, Limit(5))]
-    ended.set_result("reaped")
-    assert await waiting == "reaped"
-
-
-async def test_a_killed_child_whose_reap_does_not_come_ends_its_caller_s_wait_without_it() -> None:
-    clock = VirtualClock()
-    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    waiting = asyncio.ensure_future(child._awaited(child._bounded(5, Limit(5)), lambda _: None, ended, clock))  # pyright: ignore[reportPrivateUsage]
-    await clock.sleeping(5)
-    clock.advance(5)
-    await clock.sleeping(5 + KILL_GRACE_SECONDS)
-    clock.advance(KILL_GRACE_SECONDS)
-    assert await waiting is None
-
-
-async def test_a_caller_cancelled_while_it_waits_kills_its_child_and_is_cancelled_once_it_is_reaped() -> None:
-    clock = VirtualClock()
-    sent: list[Kill] = []
-    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    waiting = asyncio.ensure_future(child._awaited(child._bounded(5, Limit(5)), sent.append, ended, clock))  # pyright: ignore[reportPrivateUsage]
-    await clock.sleeping(5)
-    waiting.cancel()
-    await clock.sleeping(KILL_GRACE_SECONDS)
-    assert sent == [Kill(KILL, Interrupted(Cancelled()))]
-    assert not waiting.done(), "the cancelled caller left before its child was reaped"
-    ended.set_result("reaped")
-    with pytest.raises(asyncio.CancelledError):
-        await waiting
-
-
-async def test_a_caller_whose_clock_fails_kills_its_child_before_the_failure_goes_on() -> None:
-    sent: list[Kill] = []
-    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    ended.get_loop().call_soon(ended.set_result, "reaped")
-    with pytest.raises(RuntimeError, match="no timer"):
-        await child._awaited(child._bounded(5, Limit(5)), sent.append, ended, BrokenClock())  # pyright: ignore[reportPrivateUsage]
-    assert sent == [Kill(KILL, Interrupted(WaitFailed("RuntimeError('no timer')")))]
-
-
-def test_a_blocking_caller_interrupted_while_it_waits_kills_its_child_and_goes_on() -> None:
-    class Interrupting(VirtualClock):
-        def take[T](self, source: "child.queue.SimpleQueue[T] | child.queue.Queue[T]", seconds: float) -> T:
-            if seconds == 5:
-                raise KeyboardInterrupt
-            return super().take(source, seconds)
-
-    sent: list[Kill] = []
-    ended: child.queue.SimpleQueue[str] = child.queue.SimpleQueue()
-    ended.put("reaped")
-    with pytest.raises(KeyboardInterrupt):
-        child._waited(child._bounded(5, Limit(5)), sent.append, ended, Interrupting())  # pyright: ignore[reportPrivateUsage]
-    assert sent == [Kill(KILL, Interrupted(Cancelled()))]
+        assert child._read(output) == (b"1234", False)  # pyright: ignore[reportPrivateUsage]
 
 
 class Leader:
-    """A leader whose reap is held at a gate, so a test can send a kill while the supervisor holds its lock."""
+    """A leader whose reap is held at a gate, so a test can send a kill while the supervisor reaps it."""
 
     pid = 4242
 
@@ -260,50 +221,236 @@ def kernel(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, signal.Signa
     return sent
 
 
-def test_a_kill_sent_while_the_leader_is_being_reaped_waits_for_the_reap_and_sends_nothing(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+def supervised() -> tuple[child._Supervised, Leader]:  # pyright: ignore[reportPrivateUsage]
     leader = Leader()
-    supervised = child._Supervised(leader)  # pyright: ignore[reportPrivateUsage]
-    reaping = threading.Thread(target=supervised.reaped)
+    return child._Supervised(leader), leader  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_child_past_its_limit_on_its_caller_s_clock_is_killed_and_its_reap_awaited(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    clock = VirtualClock()
+    held, _ = supervised()
+    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    waiting = asyncio.ensure_future(child._awaited(child._bounded(Limit(5)), held, ended, clock))  # pyright: ignore[reportPrivateUsage]
+    await clock.sleeping(5)
+    assert held.sent() == ()
+    clock.advance(5)
+    await clock.sleeping(5 + KILL_GRACE_SECONDS)
+    assert held.sent() == (Kill(Limit(5)),)
+    ended.set_result("reaped")
+    assert await waiting == "reaped"
+
+
+async def test_a_killed_child_whose_reap_does_not_come_ends_its_caller_s_wait_without_it(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    clock = VirtualClock()
+    held, _ = supervised()
+    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    waiting = asyncio.ensure_future(child._awaited(child._bounded(Limit(5)), held, ended, clock))  # pyright: ignore[reportPrivateUsage]
+    await clock.sleeping(5)
+    clock.advance(5)
+    await clock.sleeping(5 + KILL_GRACE_SECONDS)
+    clock.advance(KILL_GRACE_SECONDS)
+    assert child._told(await waiting, held) == Unreaped((Kill(Limit(5)),), 4242)  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_child_reaped_whose_answer_its_thread_is_still_reading_is_waited_for_past_the_grace(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    clock = VirtualClock()
+    held, leader = supervised()
+    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    waiting = asyncio.ensure_future(child._awaited(child._bounded(Limit(5)), held, ended, clock))  # pyright: ignore[reportPrivateUsage]
+    await clock.sleeping(5)
+    clock.advance(5)
+    await clock.sleeping(5 + KILL_GRACE_SECONDS)
+    leader.gate.set()
+    held.reap()
+    clock.advance(KILL_GRACE_SECONDS)
+    await asyncio.sleep(0)
+    assert not waiting.done(), "a reaped child was told as unreaped while its thread read what it wrote"
+    ended.set_result("drained")
+    assert await waiting == "drained"
+
+
+async def test_a_caller_cancelled_while_it_waits_kills_its_child_and_is_cancelled_once_it_is_reaped(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    clock = VirtualClock()
+    held, _ = supervised()
+    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    waiting = asyncio.ensure_future(child._awaited(child._bounded(Limit(5)), held, ended, clock))  # pyright: ignore[reportPrivateUsage]
+    await clock.sleeping(5)
+    waiting.cancel()
+    await clock.sleeping(KILL_GRACE_SECONDS)
+    assert held.sent() == (Kill(Cancelled()),)
+    assert not waiting.done(), "the cancelled caller left before its child was reaped"
+    ended.set_result("reaped")
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+
+
+async def test_a_caller_whose_clock_fails_kills_its_child_before_the_failure_goes_on(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    held, _ = supervised()
+    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    ended.get_loop().call_soon(ended.set_result, "reaped")
+    with pytest.raises(RuntimeError, match="no timer"):
+        await child._awaited(child._bounded(Limit(5)), held, ended, BrokenClock())  # pyright: ignore[reportPrivateUsage]
+    assert held.sent() == (Kill(WaitFailed("RuntimeError('no timer')")),)
+
+
+async def test_a_caller_closed_while_it_waits_kills_its_child_as_it_closes(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    clock = VirtualClock()
+    held, _ = supervised()
+    ended: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    waiting = child._awaited(child._bounded(Limit(5)), held, ended, clock)  # pyright: ignore[reportPrivateUsage]
+    waiting.send(None)
+    waiting.close()
+    assert held.sent() == (Kill(Cancelled()),)
+
+
+def test_a_blocking_caller_interrupted_while_it_waits_kills_its_child_and_goes_on(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    class Interrupting(VirtualClock):
+        def take[T](self, source: "child.queue.SimpleQueue[T] | child.queue.Queue[T]", seconds: float) -> T:
+            if seconds == 5:
+                raise KeyboardInterrupt
+            return super().take(source, seconds)
+
+    held, _ = supervised()
+    ended: child.queue.SimpleQueue[str] = child.queue.SimpleQueue()
+    ended.put("reaped")
+    with pytest.raises(KeyboardInterrupt):
+        child._waited(child._bounded(Limit(5)), held, ended, Interrupting())  # pyright: ignore[reportPrivateUsage]
+    assert held.sent() == (Kill(Cancelled()),)
+
+
+async def test_a_stop_not_reaped_within_its_grace_and_the_kill_s_is_told_unreaped(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    clock = VirtualClock()
+    held, _ = supervised()
+    running = child.Running(4242, asyncio.get_running_loop().create_future(), held, clock)
+    stopping = asyncio.ensure_future(running.stopped(5))
+    await clock.sleeping(5)
+    clock.advance(5)
+    await clock.sleeping(5 + KILL_GRACE_SECONDS)
+    clock.advance(KILL_GRACE_SECONDS)
+    assert await stopping == Unreaped((Stop(5), Kill(Stop(5))), 4242)
+    assert kernel == [("kill", 4242, TERM), ("killpg", 4242, KILL)]
+
+
+async def test_a_stop_whose_clock_fails_kills_its_child_before_the_failure_goes_on(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    held, _ = supervised()
+    ended: asyncio.Future[child.Ending | Lost] = asyncio.get_running_loop().create_future()
+    ended.get_loop().call_soon(ended.set_result, Exited(0))
+    with pytest.raises(RuntimeError, match="no timer"):
+        await child.Running(4242, ended, held, BrokenClock()).stopped(5)
+    assert held.sent() == (Stop(5), Kill(WaitFailed("RuntimeError('no timer')")))
+
+
+def test_a_kill_sent_while_the_leader_is_being_reaped_sends_nothing(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    held, leader = supervised()
+    reaping = threading.Thread(target=held.reap)
     reaping.start()
     assert leader.waiting.wait(5)
-    killing = threading.Thread(target=supervised.signal, args=(Kill(KILL, Limit(5)),))
-    killing.start()
-    killing.join(0.05)
-    assert killing.is_alive(), "a kill was sent while the leader's reap held the lock"
+    held.signal(Kill(Limit(5)))
     leader.gate.set()
     reaping.join(5)
-    killing.join(5)
-    # The supervisor's own sweep of the group, and nothing after the reap.
+    # The reap's own sweep of the group, and nothing after it.
     assert kernel == [("killpg", 4242, KILL)]
-    assert supervised.kills() == ()
+    assert held.sent() == ()
+    assert held.reaped
 
 
 def test_a_kill_after_the_reap_sends_nothing(kernel: list[tuple[str, int, signal.Signals]]) -> None:
-    leader = Leader()
+    held, leader = supervised()
     leader.gate.set()
-    supervised = child._Supervised(leader)  # pyright: ignore[reportPrivateUsage]
-    supervised.reaped()
-    supervised.signal(Kill(KILL, Limit(5)))
-    supervised.signal(Kill(TERM, Stop(5)))
+    held.reap()
+    held.signal(Kill(Limit(5)))
+    held.signal(Stop(5))
     assert kernel == [("killpg", 4242, KILL)]
 
 
 def test_a_stop_asks_the_leader_alone_and_a_kill_goes_to_its_group(kernel: list[tuple[str, int, signal.Signals]]) -> None:
-    supervised = child._Supervised(Leader())  # pyright: ignore[reportPrivateUsage]
-    supervised.signal(Kill(TERM, Stop(5)))
-    supervised.signal(Kill(KILL, Stop(5)))
+    held, _ = supervised()
+    held.signal(Stop(5))
+    held.signal(Kill(Stop(5)))
     assert kernel == [("kill", 4242, TERM), ("killpg", 4242, KILL)]
-    assert supervised.kills() == (Kill(TERM, Stop(5)), Kill(KILL, Stop(5)))
+    assert held.sent() == (Stop(5), Kill(Stop(5)))
 
 
-def test_a_kill_of_a_group_every_process_of_which_has_exited_sends_nothing_and_is_not_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_kill_of_a_group_every_process_of_which_has_exited_sends_nothing_and_leaves_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     def exited(_pgid: int, _signum: int) -> None:
         raise PermissionError(errno.EPERM, "Operation not permitted")
 
     monkeypatch.setattr(child.os, "killpg", exited)
-    supervised = child._Supervised(Leader())  # pyright: ignore[reportPrivateUsage]
-    supervised.signal(Kill(KILL, Limit(5)))
-    assert supervised.kills() == ()
+    held, leader = supervised()
+    held.signal(Kill(Limit(5)))
+    assert held.sent() == ()
+    leader.gate.set()
+    assert held.reap() == (0, (), False)
+
+
+type Written = tuple[BaseException | None, str | None, dict[str, wide.Fact]]
+
+
+def followed(finish: "child._Finish[str]", monkeypatch: pytest.MonkeyPatch, exited: Callable[[int], None] = lambda _pid: None) -> tuple[list[str | Lost], list[Written]]:  # pyright: ignore[reportPrivateUsage]
+    """What a child's thread tells its caller, and the event it writes, for a leader whose exit `exited` watches."""
+    monkeypatch.setattr(child, "_exited", exited)
+    settled: list[str | Lost] = []
+    written: list[Written] = []
+    handed: child.queue.SimpleQueue[child._Supervised | None] = child.queue.SimpleQueue()  # pyright: ignore[reportPrivateUsage]
+    held, leader = supervised()
+    leader.gate.set()
+    handed.put(held)
+
+    def event(raised: BaseException | None, failure: str | None, /, **said_of: wide.Fact) -> None:
+        written.append((raised, failure, said_of))
+
+    child._supervise(handed, finish, event, settled.append)  # pyright: ignore[reportPrivateUsage]
+    return settled, written
+
+
+def test_a_child_whose_answer_cannot_be_read_is_lost_and_its_event_says_so(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
+    def unreadable(_ended: child.Ending) -> tuple[str, dict[str, wide.Fact]]:
+        raise OSError(errno.EIO, "Input/output error")
+
+    settled, written = followed(unreadable, monkeypatch)
+    assert settled == [Lost("OSError(5, 'Input/output error')")]
+    assert written == [(None, "ran, and hands lost its answer: OSError(5, 'Input/output error')", {"pid": 4242})]
+
+
+def test_a_child_hands_cannot_watch_is_killed_with_its_group_and_reaped(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
+    def unwatchable(_pid: int) -> None:
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    settled, [(_raised, _failure, said_of)] = followed(lambda ended: ("answered", {}), monkeypatch, unwatchable)
+    assert settled == ["answered"]
+    assert kernel == [("killpg", 4242, KILL), ("killpg", 4242, KILL)]
+    assert said_of["kills"] == ("SIGKILL, because its wait failed: OSError(24, 'Too many open files')",)
+
+
+def test_a_child_s_event_is_written_and_its_caller_told_where_it_exited(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
+    settled, written = followed(lambda ended: ("answered", {"drained": True}), monkeypatch)
+    assert settled == ["answered"]
+    assert written == [(None, None, {"pid": 4242, "kills": (), "leftovers": True, "ending": "exited", "exit_code": 0, "drained": True})]
+
+
+def test_a_child_s_terminal_read_to_its_end_or_not_is_on_its_event() -> None:
+    children = Children(VirtualClock(), lambda _: None)
+    closed: child.queue.SimpleQueue[None] = child.queue.SimpleQueue()
+    assert children._after(Terminal(0, closed)) == {"drained": False}  # pyright: ignore[reportPrivateUsage]
+    closed.put(None)
+    assert children._after(Terminal(0, closed)) == {"drained": True}  # pyright: ignore[reportPrivateUsage]
+    assert children._after(Null()) == {}  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_no_thread_to_follow_a_child_is_a_child_never_started_and_none_is_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused(_thread: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    def started(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a child was started with no thread to follow it")
+
+    monkeypatch.setattr(child.threading.Thread, "start", refused)
+    monkeypatch.setattr(child.subprocess, "Popen", started)
+    recorded: list[WideEvent] = []
+    outcome = await Children(VirtualClock(), recorded.append).run("true", limit=5)
+    assert isinstance(outcome, NeverStarted) and outcome.error.errno == errno.EAGAIN
+    [event] = events(recorded, "child.run")
+    assert event.facts["ending"] == "never_started"
 
 
 async def test_output_files_that_cannot_be_made_are_a_child_that_never_started_and_none_is_left_open(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -349,11 +496,21 @@ async def test_a_child_s_output_and_exit_are_what_it_ran_to_and_its_event_is_in_
     children = Children(SYSTEM, recorded.append)
     with wide.unit("test.caller", recorded.append, wide.begun(SYSTEM)):
         ran = await children.run("sh", "-c", "echo out; echo err >&2; exit 3", limit=5)
-    assert ran == Ran(Exited(3), Captured(b"out\n", False), Captured(b"err\n", False))
+    assert ran == Ran(Exited(3), Captured(b"out\n"), Captured(b"err\n"))
     [run] = events(recorded, "child.run")
     [caller] = events(recorded, "test.caller")
     assert (run.trace_id, run.parent_id) == (caller.trace_id, caller.span_id)
     assert (run.outcome, run.facts["exit_code"], run.facts["program"], run.facts["kills"]) == ("ok", 3, "sh", ())
+
+
+@pytest.mark.outside
+async def test_a_child_that_wrote_more_than_hands_reads_of_its_output_is_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(child, "CAPTURE_BYTES", 4)
+    recorded: list[WideEvent] = []
+    outcome = await Children(SYSTEM, recorded.append).run("sh", "-c", "echo 12345", limit=5)
+    assert outcome == Lost("it wrote more than the 4 bytes hands reads of its output")
+    [event] = events(recorded, "child.run")
+    assert (event.outcome, event.facts["exit_code"], event.facts["out_cut"]) == ("failed", 0, True)
 
 
 @pytest.mark.outside
@@ -363,7 +520,7 @@ async def test_a_child_past_its_limit_is_killed_with_what_it_started(tmp_path: P
     started = time.monotonic()
     ran = await Children(SYSTEM, recorded.append).run("sh", "-c", f"sleep 30 & echo $! > {pid}; wait", limit=0.3)
     assert time.monotonic() - started < 0.3 + KILL_GRACE_SECONDS
-    assert isinstance(ran, Ran) and ran.ending == Killed(Kill(KILL, Limit(0.3)))
+    assert isinstance(ran, Ran) and ran.ending == Killed(Kill(Limit(0.3)))
     await until_gone(int(pid.read_text()))
     [event] = events(recorded, "child.run")
     assert (event.outcome, event.error) == ("failed", "was killed with SIGKILL, because it ran past 0.3s")
@@ -387,7 +544,7 @@ async def test_a_process_that_moved_to_a_session_of_its_own_is_left_alone() -> N
     socket = Path(sockets.name) / "tmux"
     children = Children(SYSTEM, lambda _: None)
     try:
-        assert (await children.run("tmux", "-S", str(socket), "new-session", "-d", "-s", "kept", "sleep 600", limit=10)) == Ran(Exited(0), Captured(b"", False), Captured(b"", False))
+        assert (await children.run("tmux", "-S", str(socket), "new-session", "-d", "-s", "kept", "sleep 600", limit=10)) == Ran(Exited(0), Captured(b""), Captured(b""))
         listed = await children.run("tmux", "-S", str(socket), "list-sessions", "-F", "#{session_name}", limit=10)
         assert isinstance(listed, Ran) and (listed.ending, listed.out.data) == (Exited(0), b"kept\n")
     finally:
@@ -435,8 +592,8 @@ def test_a_child_run_from_a_thread_is_held_to_its_limit_there(tmp_path: Path) ->
     thread.start()
     thread.join(5)
     [ran] = outcomes
-    assert isinstance(ran, Ran) and ran.ending == Killed(Kill(KILL, Limit(0.3)))
-    assert children.run_blocking("sh", "-c", "exit 4", limit=5) == Ran(Exited(4), Captured(b"", False), Captured(b"", False))
+    assert isinstance(ran, Ran) and ran.ending == Killed(Kill(Limit(0.3)))
+    assert children.run_blocking("sh", "-c", "exit 4", limit=5) == Ran(Exited(4), Captured(b""), Captured(b""))
 
 
 @pytest.mark.outside
@@ -447,10 +604,10 @@ async def test_a_started_child_that_ignores_its_stop_is_killed_once_the_grace_is
     assert isinstance(started, child.Running)
     while not ready.exists():
         await asyncio.sleep(0.01)
-    assert await started.stopped(0.2) == Killed(Kill(KILL, Stop(0.2)))
+    assert await started.stopped(0.2) == Killed(Kill(Stop(0.2)))
     [event] = events(recorded, "child.run")
     assert event.outcome == "failed"
-    assert event.facts["kills"] == ("SIGTERM, because it was told to stop, with 0.2s to end", "SIGKILL, because it was told to stop, with 0.2s to end")
+    assert event.facts["kills"] == ("SIGTERM, to stop within 0.2s", "SIGKILL, because it was told to stop, with 0.2s to end")
 
 
 @pytest.mark.outside
@@ -460,8 +617,7 @@ async def test_a_started_child_that_ends_as_its_stop_asks_ended_by_the_stop(tmp_
     assert isinstance(started, child.Running)
     while not ready.exists():
         await asyncio.sleep(0.01)
-    assert await started.stopped(5) == Killed(Kill(TERM, Stop(5)))
-
+    assert await started.stopped(5) == Stopped(Stop(5))
 
 
 # --- the one place hands starts a child: every other start is marked with its owner and reason ------------------------

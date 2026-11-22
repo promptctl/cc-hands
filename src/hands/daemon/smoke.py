@@ -371,7 +371,9 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
                 task.cancel()
             await peer.close()
     finally:
-        await session.stop()
+        stopped = await session.stop()
+        if isinstance(stopped, child.Unreaped | child.Lost):
+            raise RuntimeError(f"the smoke test's Claude Code {child.said(stopped)}")
 
 
 async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -> Membership:
@@ -502,7 +504,7 @@ async def _synthesized(children: Children, text: str) -> bytes:
         match ran:
             case child.Ran(ending=child.Exited(code=0)):
                 pass
-            case child.Ran() | child.NeverStarted() | child.Unreaped():
+            case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
                 raise RuntimeError(f"`say` could not synthesize what the test says: `say` {child.said(ran)}")
         with wave.open(str(spoken), "rb") as read:
             return read.readframes(read.getnframes())

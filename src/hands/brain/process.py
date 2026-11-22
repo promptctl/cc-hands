@@ -55,7 +55,7 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_hook
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.child import Children, Exited, NeverStarted, Ran, Unreaped, said
+from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
@@ -444,7 +444,10 @@ class InTmux:
 
         [LAW:no-ambient-temporal-coupling] the client first: a client stopped while it is still making the session
         would otherwise make it after the session was ended, and leave the brain running in it."""
-        await self._client.stop()
+        stopped = await self._client.stop()
+        if isinstance(stopped, Unreaped | Lost):
+            # [LAW:no-silent-failure] the session is ended all the same, and the client's own end is said.
+            logger.error(f"hands' client of the brain's session {said(stopped)}")
         await self.end_session()
         try:
             async with self._children.clock.timeout(STOP_SECONDS):
@@ -717,14 +720,15 @@ def logged_in(children: Children, config_dir: Path, base_url: str, inherited: Ma
     """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
     none, or one whose requests do not reach hands' proxy, and Unstartable when Claude Code could not be asked.
 
-    [LAW:single-enforcer] exception: a Claude Code started to read a login the running brain also holds, on every
-    settings edit and every `hands check`; promptctl-phone-app-9d9y.mpy takes it off those paths."""
+    CLAUDE.md's hard rule exception: hands never starts a Claude Code for what the running brain already gives it, and
+    this one reads a login the running brain also holds, on every settings edit, every voice model switch and every
+    `hands check`; promptctl-phone-app-9d9y.mpy takes it off those paths."""
     claude = brain_claude(config_dir)
     asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, base_url, inherited), limit=AUTH_STATUS_SECONDS)
     match asked:
         case Ran(ending=Exited(), out=out):
             return _account(config_dir, asked, out.data)
-        case Ran() | NeverStarted() | Unreaped():
+        case Ran() | NeverStarted() | Unreaped() | Lost():
             # No answer says nothing of the login: it is the brain's Claude Code that could not be asked, not a login to make.
             raise Unstartable(f"`{claude} auth status` {said(asked)}")
 

@@ -7,7 +7,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import signal
 
 import pytest
 from loguru import logger
@@ -416,7 +415,7 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
 
 
 async def test_a_notification_osascript_never_posts_is_refused_and_said() -> None:
-    stuck = child.Ran(child.Killed(child.Kill(signal.SIGKILL, child.Limit(notify.POST_TIMEOUT_SECONDS))), child.Captured(b"", False), child.Captured(b"", False))
+    stuck = child.Ran(child.Killed(child.Kill(child.Limit(notify.POST_TIMEOUT_SECONDS))), child.Captured(b""), child.Captured(b""))
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:

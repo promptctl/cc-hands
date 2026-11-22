@@ -29,7 +29,8 @@ from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pu
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, said
 from hands.sessions import child
-from hands.sessions.child import Children, settled
+from hands.sessions.child import Children
+from hands.tasks import settled
 from hands.clock import Clock, wait
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, begun, count, unit
@@ -644,7 +645,7 @@ class Deltas:
         match ran:
             case child.Ran(ending=child.Exited(code=0), out=out):
                 pass
-            case child.Ran(ending=child.Killed(kill=child.Kill(why=child.Limit()))) | child.Unreaped():
+            case child.Ran(ending=child.Killed(kill=child.Kill(why=child.Limit()))) | child.Unreaped() | child.Lost():
                 return (), Asked("unanswered", took)
             case child.Ran() | child.NeverStarted():
                 # Not a GitHub remote, not signed in, no default repository: gh says which.
@@ -709,21 +710,16 @@ class Deltas:
             count(git_unanswered=1)
             logger.warning(f"there was no time left to run git {args[0]} in {cwd}, so the turn is told without it")
             return None
-        try:
-            ran = await self._children.run(
-                "git", "--no-optional-locks", "-C", str(cwd), *args, limit=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
-            )
-        except OSError as error:
-            count(git_unanswered=1)
-            logger.error(f"git {args[0]} in {cwd} ran, and then failed: {error}")
-            return None
+        ran = await self._children.run(
+            "git", "--no-optional-locks", "-C", str(cwd), *args, limit=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
+        )
         match ran:
             case child.Ran(ending=child.Exited(code=0), out=out):
                 return out.text().strip()
             case child.Ran(ending=child.Exited()):
                 logger.debug(f"git {args[0]} in {cwd} {child.said(ran)}")
                 return None
-            case child.Ran() | child.NeverStarted() | child.Unreaped():
+            case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
                 count(git_unanswered=1)
                 logger.error(f"git {args[0]} in {cwd} {child.said(ran)}, so the turn is told without it")
                 return None

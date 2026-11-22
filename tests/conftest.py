@@ -233,9 +233,23 @@ def children_on(clock: Clock) -> Children:
 
 
 @dataclass(frozen=True)
-class Answering(Children):
-    """Children none of which is started: every run ends in `outcome`, as a test of what its caller makes of one names,
-    and its argv is kept in `asked`."""
+class Unstarting(Children):
+    """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real
+    process through a fake that forgot one."""
+
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+        raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
+
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+        raise AssertionError(f"{type(self).__name__} does not answer a blocking run of {argv[0]}")
+
+    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: child.Stdio) -> child.Running | child.NeverStarted:
+        raise AssertionError(f"{type(self).__name__} does not answer a start of {argv[0]}")
+
+
+@dataclass(frozen=True)
+class Answering(Unstarting):
+    """Every run ends in `outcome`, as a test of what its caller makes of one names, and its argv is kept in `asked`."""
 
     outcome: child.Outcome
     asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
@@ -249,8 +263,8 @@ class Answering(Children):
 
 
 @dataclass(frozen=True)
-class Faked(Children):
-    """Children none of which is started: each run is answered by `answer`, the fake of the program a test stands in for."""
+class Faked(Unstarting):
+    """Each run is answered by `answer`, the fake of the program a test stands in for."""
 
     answer: Callable[..., Awaitable[child.Outcome]]
 
@@ -259,8 +273,8 @@ class Faked(Children):
 
 
 def exited(code: int, out: bytes = b"", err: bytes = b"") -> child.Ran:
-    """A child that ran and exited `code`, having written `out` and `err`, none of either cut."""
-    return child.Ran(child.Exited(code), child.Captured(out, False), child.Captured(err, False))
+    """A child that ran and exited `code`, having written `out` and `err`."""
+    return child.Ran(child.Exited(code), child.Captured(out), child.Captured(err))
 
 
 def answering(outcome: child.Outcome) -> Answering:

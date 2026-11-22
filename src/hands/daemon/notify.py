@@ -25,6 +25,6 @@ async def post_notification(text: str, children: Children) -> bool:
         case child.Ran(ending=child.Exited(code=0)):
             logger.info(f"posted a notification: {text}")
             return True
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             logger.error(f"osascript did not post {text!r}: osascript {child.said(ran)}")
             return False

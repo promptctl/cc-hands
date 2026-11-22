@@ -110,7 +110,8 @@ def detach(clock: Clock) -> Callable[[int], bool]:
     sys.stdout.flush()
     sys.stderr.flush()
     read, write = os.pipe()
-    # [LAW:single-enforcer] exception: this process itself, forked twice to leave its caller's tree, never a child it waits on.
+    # [LAW:single-enforcer] exception: this process itself, forked twice to leave its caller's tree; the middle process it
+    # waits on exits at once, and the command it leaves is launchd's.
     middle = os.fork()
     if middle != 0:
         os.close(write)

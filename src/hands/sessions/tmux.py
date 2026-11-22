@@ -115,7 +115,7 @@ def socket_directory(environment: Mapping[str, str]) -> Path:
 async def _answer(children: Children, tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
     match await ran_at(children, tmux, socket, arguments):
         case TmuxExit(code=0, out=out):
-            return Answered(socket, out.decode().splitlines())
+            return Answered(socket, out.decode(errors="replace").splitlines())
         case TmuxExit(err=err) if _NO_SERVER.match(err):
             return Answered(socket, ())
         case TmuxExit(err=err):
@@ -259,7 +259,7 @@ async def ran_at(children: Children, tmux: str, socket: Path, arguments: Sequenc
     match ran:
         case child.Ran(ending=child.Exited(code=code), out=out, err=err):
             return TmuxExit(code, out.data, err.data)
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: tmux {child.said(ran)}")
 
 

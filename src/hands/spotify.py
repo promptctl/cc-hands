@@ -147,7 +147,7 @@ class Player:
                 raise Refused(f"Spotify refused: {err.text().strip()}")
             case child.Ran(ending=child.Killed(kill=child.Kill(why=child.Limit()))):
                 raise Refused(f"Spotify did not answer in {TELL_SECONDS:.0f}s")
-            case child.Ran() | child.NeverStarted() | child.Unreaped():
+            case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
                 raise Refused(f"osascript {child.said(ran)}")
 
 

@@ -216,7 +216,7 @@ async def _tmux(children: Children, tmux: str, terminal: Mapping[str, str], *arg
     match ran:
         case child.Ran(ending=child.Exited(code=code), out=out, err=err):
             return TmuxExit(code, out.data, err.data)
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             raise NotStarted(f"tmux {arguments[0]} {child.said(ran)}")
 
 

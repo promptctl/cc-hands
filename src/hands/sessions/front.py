@@ -93,7 +93,7 @@ async def _ran(children: Children, *argv: str) -> str:
     match ran:
         case child.Ran(ending=child.Exited(code=0), out=out):
             return out.text()
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             raise _Unread(f"{' '.join(argv)} {child.said(ran)}")
 
 

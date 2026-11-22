@@ -106,47 +106,40 @@ def parse_target(prefix: Path, tool: Path) -> Target | Unsupported:
 
 
 class Step(StrEnum):
-    WHERE = "where"
-    FETCH = "fetch"
-    PULL = "pull"
-    COMMIT = "commit"
-    CONSTRAINTS = "constraints"
-    INSTALL = "install"
-    SYNC = "sync"
-    INSTALL_FRITTER = "install-fritter"
-    INSTALL_BRAIN = "install-brain"
-    PLUGIN_LIST = "plugin-list"
-    MARKETPLACE = "marketplace"
-    PLUGIN = "plugin"
-    RENDERED_PLUGINS = "rendered-plugins"
+    """A step of the update, and how long its command has to finish before it is killed and the update stops: a clone,
+    a build of hands with its fritter, and a download of the brain's Claude Code are minutes on a slow line; asking
+    where uv keeps its tools, or git which commit it holds, is not."""
 
+    limit: float
 
-# How long each step's command has to finish before it is killed and the update stops: a clone, a build of hands with
-# its fritter, and a download of the brain's Claude Code are minutes on a slow line; asking where uv keeps its tools, or
-# git which commit it holds, is not.
-LIMITS: dict[Step, float] = {
-    Step.WHERE: 60,
-    Step.FETCH: 900,
-    Step.PULL: 900,
-    Step.COMMIT: 60,
-    Step.CONSTRAINTS: 300,
-    Step.INSTALL: 1800,
-    Step.SYNC: 1800,
-    Step.INSTALL_FRITTER: 900,
-    Step.INSTALL_BRAIN: 1800,
-    Step.PLUGIN_LIST: 120,
-    Step.MARKETPLACE: 600,
-    Step.PLUGIN: 600,
-    Step.RENDERED_PLUGINS: 120,
-}
+    def __new__(cls, value: str, limit: float) -> "Step":
+        step = str.__new__(cls, value)
+        step._value_ = value
+        step.limit = limit
+        return step
+
+    WHERE = "where", 60
+    FETCH = "fetch", 900
+    PULL = "pull", 900
+    COMMIT = "commit", 60
+    CONSTRAINTS = "constraints", 300
+    INSTALL = "install", 1800
+    SYNC = "sync", 1800
+    INSTALL_FRITTER = "install-fritter", 900
+    INSTALL_BRAIN = "install-brain", 1800
+    PLUGIN_LIST = "plugin-list", 120
+    MARKETPLACE = "marketplace", 600
+    PLUGIN = "plugin", 600
+    RENDERED_PLUGINS = "rendered-plugins", 120
+
 
 # What runs one step's command, in a directory and an environment, within the step's limit.
 type Run = Callable[[Sequence[str], Path, Mapping[str, str], float], child.Outcome]
 
 
 @dataclass(frozen=True)
-class Ran:
-    """One step as the update's event records it: the step, the command it ran, and how it ended."""
+class Taken:
+    """One step taken, as the update's event records it: the step, the command it ran, and how it ended."""
 
     step: Step
     argv: tuple[str, ...]
@@ -169,7 +162,7 @@ class Installed:
 
     target: Target
     sha: str
-    ran: tuple[Ran, ...]
+    ran: tuple[Taken, ...]
     advised: tuple[Advised, ...]
 
 
@@ -180,7 +173,7 @@ class Failed:
 
     step: Step
     said: str
-    ran: tuple[Ran, ...]
+    ran: tuple[Taken, ...]
 
 
 @dataclass(frozen=True)
@@ -192,7 +185,7 @@ class Unfinished:
     sha: str
     step: Step
     said: str
-    ran: tuple[Ran, ...]
+    ran: tuple[Taken, ...]
 
 
 class _Stopped(Exception):
@@ -206,7 +199,7 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
     for the uv tool environment; or the step that failed. `runs_from` is the environment the running hands runs from,
     and its restart starts it again on, by its own word: None with none running, or one from before its heartbeat said. `caller` is the caller's
     environment, whose Claude Code config the plugin steps run under."""
-    ran: list[Ran] = []
+    ran: list[Taken] = []
     advised: list[Advised] = []
     # The target and commit installed, once the install step has put it in hands' environment, or the pull has put the
     # checkout's commit where hands runs from: a failure from then on is Unfinished.
@@ -217,8 +210,8 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
 
     def ran_step(name: Step, argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> child.Outcome:
         """What the step's command did, recorded as it ran."""
-        done = run(argv, cwd, env, LIMITS[name])
-        ran.append(Ran(name, tuple(argv), child.said(done.ending if isinstance(done, child.Ran) else done)))
+        done = run(argv, cwd, env, name.limit)
+        ran.append(Taken(name, tuple(argv), child.said(done.ending if isinstance(done, child.Ran) else done)))
         return done
 
     def judged(name: Step, argv: Sequence[str], done: child.Outcome, past: frozenset[int] = frozenset()) -> child.Ran:
@@ -232,7 +225,7 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
                 return done
             case child.Ran(ending=ended, out=out, err=err):
                 raise ending(name, f"`{' '.join(argv)}` {child.said(ended)}:\n{err.text()}{out.text()}")
-            case child.NeverStarted() | child.Unreaped():
+            case child.NeverStarted() | child.Unreaped() | child.Lost():
                 raise ending(name, f"`{' '.join(argv)}` {child.said(done)}")
 
     def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> child.Ran:

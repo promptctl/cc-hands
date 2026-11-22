@@ -1,7 +1,6 @@
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 
-import signal
 
 import pytest
 from aiohttp import web
@@ -81,7 +80,7 @@ async def test_an_osascript_that_cannot_start_is_said() -> None:
 
 
 async def test_a_spotify_that_does_not_answer_in_time_is_said() -> None:
-    late = Ran(Killed(Kill(signal.SIGKILL, Limit(TELL_SECONDS))), Captured(b"", False), Captured(b"", False))
+    late = Ran(Killed(Kill(Limit(TELL_SECONDS))), Captured(b""), Captured(b""))
     assert await tools(Osascript(late))["spotify_pause"]() == {"error": f"Spotify did not answer in {TELL_SECONDS:.0f}s"}
 
 

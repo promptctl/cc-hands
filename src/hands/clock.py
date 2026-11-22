@@ -156,9 +156,16 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
     timer = asyncio.ensure_future(clock.sleep(timeout))
     try:
         await asyncio.wait((every, timer), return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        # Both over before this returns, so nothing of the wait outlives it.
+    except GeneratorExit:
+        # A coroutine being closed cannot await: both are cancelled, and end without it.
+        every.cancel()
+        timer.cancel()
+        raise
+    except BaseException:
         await cancel_and_wait(every, timer)
+        raise
+    # Both over before this returns, so nothing of the wait outlives it.
+    await cancel_and_wait(every, timer)
     # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait that raised
     # (on no futures at all, as `asyncio.wait` does) is never everything done.
     for side in (every, timer):

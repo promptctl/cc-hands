@@ -131,7 +131,7 @@ async def _tailscale(children: Children, subcommand: str, *arguments: str) -> by
     match ran:
         case child.Ran(ending=child.Exited(code=0), out=out):
             return out.data
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             return Untailed(f"{asked} {child.said(ran)}")
 
 

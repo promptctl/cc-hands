@@ -9,6 +9,7 @@ import signal
 import struct
 import sys
 import tempfile
+import queue
 import threading
 from collections.abc import Callable, Coroutine, Generator, Sequence
 from contextlib import contextmanager
@@ -29,7 +30,7 @@ from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, E
 from hands.tasks import cancel_and_wait
 from hands.core.tmux import Keyboard
 from hands.sessions.child import Children
-from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
+from hands.sessions import audit, backlog, child, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
@@ -543,7 +544,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     heart.beat("starting", None, 0, listening=False, degraded=())
     # [LAW:dataflow-not-control-flow] every run shows itself through an indicator it started, on the code it runs: one
     # kept across a restart would judge this run's heartbeat by the code the run before had.
-    run_start.heard(previous_indicator=None if restarted is None else retire(restarted))
+    run_start.heard(previous_indicator=None if restarted is None else retire(restarted, clock))
     shown = start_indicator(home)
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
@@ -677,13 +678,13 @@ def start_indicator(home: Home) -> int:
 
 # What became of the indicator the run before a restart showed: ended as this run asked, killed by it once it had not
 # within the grace, found exited on its own and said, or reaped already by the run before, which said so as it did.
-type Retired = Literal["ended", "killed", "exited", "reaped"]
+type Retired = Literal["ended", "killed", "exited", "reaped", "unreaped"]
 
 # How long the indicator has to end once asked before its process group is killed.
 RETIRE_GRACE_SECONDS = 1.0
 
 
-def retire(indicator: int, grace: float = RETIRE_GRACE_SECONDS) -> Retired:
+def retire(indicator: int, clock: Clock, grace: float = RETIRE_GRACE_SECONDS) -> Retired:
     """End the indicator the run before a restart showed, so the one this run starts is the only one in the menu bar."""
     try:
         exited, status = os.waitpid(indicator, os.WNOHANG)
@@ -693,23 +694,28 @@ def retire(indicator: int, grace: float = RETIRE_GRACE_SECONDS) -> Retired:
         said_exited(status)
         return "exited"
     # Still this process's child and unreaped, so the pid is the indicator's and no other process's. Its group goes
-    # with it, the notices it was posting included, as Child.killed ends a child hands started.
+    # with it, the notices it was posting included, as hands.sessions.child kills the group of a child it started.
     signalled(indicator, signal.SIGTERM)
-    statuses: list[int] = []
-    waiter = threading.Thread(target=lambda: statuses.append(os.waitpid(indicator, 0)[1]), name="retire", daemon=True)
-    waiter.start()
-    waiter.join(grace)
-    if waiter.is_alive():
+    statuses: queue.SimpleQueue[int] = queue.SimpleQueue()
+    threading.Thread(target=lambda: statuses.put(os.waitpid(indicator, 0)[1]), name="retire", daemon=True).start()
+    try:
+        ended = clock.take(statuses, grace)
+    except queue.Empty:
         signalled(indicator, signal.SIGKILL)
-        waiter.join()
+        try:
+            ended = clock.take(statuses, child.KILL_GRACE_SECONDS)
+        except queue.Empty:
+            # [LAW:no-silent-failure] killed, and not dead: the start goes on without it, and its event says so.
+            logger.error(f"killed the menu-bar indicator ({indicator}), and it was still not reaped {child.KILL_GRACE_SECONDS:.1f}s later")
+            return "unreaped"
     # [LAW:no-silent-failure] the status says how it ended, not the asking: one that crashed as it was asked is said.
-    code = os.waitstatus_to_exitcode(statuses[0])
+    code = os.waitstatus_to_exitcode(ended)
     if code in (0, -signal.SIGTERM):
         return "ended"
     if code == -signal.SIGKILL:
         logger.info(f"killed the menu-bar indicator ({indicator}) and everything it started, because it had not ended {grace:.1f}s after it was asked to")
         return "killed"
-    said_exited(statuses[0])
+    said_exited(ended)
     return "exited"
 
 

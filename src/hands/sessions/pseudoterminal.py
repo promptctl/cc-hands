@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from hands.core.session import ESCAPES
-from hands.sessions.child import Children, Ending, NeverStarted, Running, Terminal, Unreaped
+from hands.sessions.child import Children, Ending, Lost, NeverStarted, Running, Terminal, Unreaped
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -75,7 +75,7 @@ class ClaudeCode:
         return self._running.pid
 
     @property
-    def exit(self) -> asyncio.Future[Ending]:
+    def exit(self) -> asyncio.Future[Ending | Lost]:
         """How it ended, once it has and what it showed last is read to its end."""
         return self._running.ended
 
@@ -83,7 +83,7 @@ class ClaudeCode:
         """The last lines it showed on its terminal."""
         return self._terminal.last()
 
-    async def stop(self) -> Ending | Unreaped:
+    async def stop(self) -> Ending | Lost | Unreaped:
         return await self._running.stopped(STOP_SECONDS)
 
 

@@ -19,7 +19,8 @@ from mlx_whisper.tokenizer import get_encoding
 
 from hands.sessions.audit import Primed, Record
 from hands.sessions import child
-from hands.sessions.child import Children, settled
+from hands.sessions.child import Children
+from hands.tasks import settled
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.home import Home
 from hands.sessions.registry import Listing, Sessions
@@ -159,11 +160,8 @@ async def _git(children: Children, cwd: Path, environment: Mapping[str, str], de
     left = deadline - children.clock.now()
     if left <= 0:
         raise GitFailed(f"reading the sessions' names spent the vocabulary's {READING:.1f}s before git {args[0]} in {cwd} could run")
-    try:
-        # git says why it failed in the C locale's words, which are the ones read below.
-        ran = await children.run("git", "--no-optional-locks", "-C", str(cwd), *args, limit=left, env={**environment, "LC_ALL": "C"})
-    except OSError as error:
-        raise GitFailed(f"git {args[0]} in {cwd} ran, and then failed: {error}") from None
+    # git says why it failed in the C locale's words, which are the ones read below.
+    ran = await children.run("git", "--no-optional-locks", "-C", str(cwd), *args, limit=left, env={**environment, "LC_ALL": "C"})
     match ran:
         case child.Ran(ending=child.Exited(code=0), out=out):
             return out.text()
@@ -172,7 +170,7 @@ async def _git(children: Children, cwd: Path, environment: Mapping[str, str], de
             raise NotARepository(err.text().strip())
         case child.Ran(ending=child.Killed(kill=child.Kill(why=child.Limit()))):
             raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s")
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             raise GitFailed(f"git {args[0]} in {cwd} {child.said(ran)}")
 
 

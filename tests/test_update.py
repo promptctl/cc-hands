@@ -28,7 +28,7 @@ from hands.daemon.restart import Outcome, Restarted, reply
 from hands.daemon.starting import invocation
 from hands.sessions import child
 from hands.sessions.child import Children
-from hands.daemon.update import Failed, Installed, Ran, Step, Unfinished
+from hands.daemon.update import Failed, Installed, Step, Taken, Unfinished
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -117,7 +117,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     # Cloned fresh from master, installed on uv.lock's versions into this hands' own environment, and its fritter and
     # the brain's Claude Code installed by the hands just installed.
     assert commands.ran == expected(home, work)
-    assert installed == Installed(update.Tool(), SHA, tuple(Ran(step, argv, "exited 0") for step, (argv, _cwd) in zip(TOOL_STEPS, expected(home, work), strict=True)), ())
+    assert installed == Installed(update.Tool(), SHA, tuple(Taken(step, argv, "exited 0") for step, (argv, _cwd) in zip(TOOL_STEPS, expected(home, work), strict=True)), ())
 
 
 @pytest.mark.parametrize("failing", [step for step in TOOL_STEPS if step is not Step.RENDERED_PLUGINS])
@@ -291,7 +291,7 @@ from hands.sessions import child
 home, tools, sha, log = sys.argv[1:]
 
 def exited(out):
-    return child.Ran(child.Exited(0), child.Captured(out.encode(), False), child.Captured(b"", False))
+    return child.Ran(child.Exited(0), child.Captured(out.encode()), child.Captured(b""))
 
 def run(children, argv, cwd, env, limit):
     with open(log, "a") as file:

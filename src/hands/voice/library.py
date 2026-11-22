@@ -152,5 +152,5 @@ def _keychain_token(children: Children) -> str | Absent | Unreadable:
                 return Unreadable(f"the keychain's {KEYCHAIN_ITEM} is no token: {error}")
         case child.Ran(ending=child.Exited(code=code)) if code == NOT_IN_KEYCHAIN:
             return Absent()
-        case child.Ran() | child.NeverStarted() | child.Unreaped():
+        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
             return Unreadable(f"`security find-generic-password` {child.said(asked)}")

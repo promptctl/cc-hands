@@ -423,20 +423,15 @@ async def _lit(children: Children, project: Path, *arguments: str, environment: 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
     command = f"lit {arguments[0]}"
-    try:
-        ran = await children.run("lit", *arguments, limit=LIT_TIMEOUT_SECONDS, cwd=project, env=environment)
-    except OSError as error:
-        raise LitFailed(f"{command} in {project} ran, and then failed: {error}", None) from error
+    ran = await children.run("lit", *arguments, limit=LIT_TIMEOUT_SECONDS, cwd=project, env=environment)
     match ran:
-        case child.Ran(ending=child.Exited(code=0), out=child.Captured(cut=True)):
-            raise LitFailed(f"{command} in {project} wrote more than the {child.CAPTURE_BYTES} bytes hands reads of it", None)
         case child.Ran(ending=child.Exited(code=0), out=out):
             return out.data
         case child.Ran(ending=child.Exited(), err=err):
             line = ERROR_LINE.match(err.text())
             # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
             raise LitFailed(f"{command} in {project} {child.said(ran)}", None if line is None else line["reason"])
-        case child.Ran() | child.Unreaped():
+        case child.Ran() | child.Unreaped() | child.Lost():
             raise LitFailed(f"{command} in {project} {child.said(ran)}", None)
         case child.NeverStarted(error=error):
             # The start names the path it could not use: the project directory as given, where the chdir failed, not lit.

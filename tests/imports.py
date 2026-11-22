@@ -1,5 +1,5 @@
 """[LAW:one-source-of-truth] the names a module's code reads, with the imports that bound them written out: the one reading
-the source scans share, so an alias or a relative import is resolved the same way by each."""
+the clock's and the child runner's source scans share, so an alias or a relative import is resolved the same way by each."""
 
 import ast
 
