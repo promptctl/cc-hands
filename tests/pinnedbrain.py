@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-from conftest import RUN, located, new_sessions, running, unread
+from conftest import children_on, located, new_sessions, RUN, running, unread
 from spoken import Received, Spoken
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
@@ -34,8 +34,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.home import Home
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.summaries import Summaries
-from hands.sessions.tmux import ran_at
-from hands.sessions.child import Ran
+from hands.sessions.tmux import TmuxExit, ran_at
 from hands.brain.stage import BrainStage
 from hands.voice import voices
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -204,8 +203,8 @@ class Hands:
         """A tmux command run against the brain's pane, as a terminal attached to it types: tmux writes the keys to the
         pane, and the pane's fritter forwards them to Claude Code byte for byte."""
         claude = self._claude()
-        ran = await ran_at(SYSTEM, claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
-        assert isinstance(ran, Ran) and ran.returncode == 0, ran
+        ran = await ran_at(children_on(SYSTEM), claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
+        assert isinstance(ran, TmuxExit) and ran.code == 0, ran
 
     async def keyed(self, *keys: str) -> None:
         """`keys`, as tmux's send-keys names them, typed into the brain's pane."""

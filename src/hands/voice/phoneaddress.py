@@ -25,7 +25,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from hands.clock import Clock
-from hands.sessions.child import run
+from hands.sessions import child
+from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -55,9 +56,9 @@ class Untailed:
     reason: str
 
 
-async def tailnet_name(clock: Clock) -> str | Untailed:
+async def tailnet_name(children: Children) -> str | Untailed:
     """This machine's name on the tailnet, as Tailscale's own command says it."""
-    status = await _tailscale(clock, "status", "--json")
+    status = await _tailscale(children, "status", "--json")
     match status:
         case Untailed():
             return status
@@ -80,9 +81,9 @@ async def tailnet_name(clock: Clock) -> str | Untailed:
             return Untailed(f"tailscale status said no state of its own: {status[:200].decode(errors='replace')}")
 
 
-async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
+async def tailnet(children: Children, home: Home) -> Tailnet | Untailed:
     """This machine's tailnet name and a current certificate for it, from Tailscale's own command."""
-    name = await tailnet_name(clock)
+    name = await tailnet_name(children)
     match name:
         case Untailed():
             return name
@@ -91,7 +92,7 @@ async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
     cert, key = home.phone / "tailnet.crt", home.phone / "tailnet.key"
     home.phone.mkdir(parents=True, exist_ok=True)
     # Tailscale keeps the certificate and renews it when it is due, so asking again is cheap.
-    issued = await _tailscale(clock, "cert", "--cert-file", str(cert), "--key-file", str(key), name)
+    issued = await _tailscale(children, "cert", "--cert-file", str(cert), "--key-file", str(key), name)
     match issued:
         case Untailed():
             return issued
@@ -119,23 +120,19 @@ def not_after(cert: bytes) -> datetime.datetime:
     return x509.load_pem_x509_certificate(cert).not_valid_after_utc
 
 
-async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> bytes | Untailed:
+async def _tailscale(children: Children, subcommand: str, *arguments: str) -> bytes | Untailed:
     """What `tailscale subcommand` said, or why it said nothing."""
     # [LAW:one-source-of-truth] the one place the command is found: every asking runs the same tailscale.
     command = shutil.which("tailscale")
     if command is None:
         return Untailed("the tailscale command is not on the PATH")
     asked = f"tailscale {subcommand}"
-    try:
-        # [LAW:single-enforcer] ended as `run` ends each child it runs: killed and reaped on a timeout, and on a shutdown.
-        ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS, clock=clock)
-    except TimeoutError:
-        return Untailed(f"{asked} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
-    except OSError as error:
-        return Untailed(f"cannot run {asked}: {error}")
-    if ran.returncode != 0:
-        return Untailed(f"{asked} failed ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
-    return ran.out
+    ran = await children.run(command, subcommand, *arguments, limit=TAILSCALE_TIMEOUT_SECONDS)
+    match ran:
+        case child.Ran(ending=child.Exited(code=0), out=out):
+            return out.data
+        case child.Ran() | child.NeverStarted() | child.Unreaped():
+            return Untailed(f"{asked} {child.said(ran)}")
 
 
 def _private(clock: Clock, path: Path, data: bytes) -> Path:

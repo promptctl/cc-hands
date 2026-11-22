@@ -15,9 +15,9 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal, get_args
 
-from hands.clock import Clock
 from hands.core.summaries import Thing
-from hands.sessions.child import SpawnFailed, run
+from hands.sessions import child
+from hands.sessions.child import Children
 from hands.sessions.payload import Payload, Rejected
 
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s to export; past this lit is stuck, not slow.
@@ -362,11 +362,11 @@ class Backlog:
         return Thing(BACKLOG, "", tuple(of(id) for id in self.roots()))
 
 
-async def read_backlog(clock: Clock, project: Path) -> Backlog | Untracked:
+async def read_backlog(children: Children, project: Path) -> Backlog | Untracked:
     """The backlog lit holds for `project`, or that it has none (no lit workspace, or the directory is gone); raises LitFailed when lit cannot say, and
     Rejected when what it said does not parse."""
     try:
-        out = await _lit(clock, project, "export", environment=None)
+        out = await _lit(children, project, "export", environment=None)
     except ProjectGone:
         return Untracked(project, gone=True)
     except LitFailed as failed:
@@ -377,46 +377,46 @@ async def read_backlog(clock: Clock, project: Path) -> Backlog | Untracked:
     return await asyncio.to_thread(parse_export, out)
 
 
-async def rank(clock: Clock, project: Path, move: Move, by: Signer) -> str:
+async def rank(children: Children, project: Path, move: Move, by: Signer) -> str:
     """Have lit in `project` make `move` for `by`, in the environment it runs in for them, and what lit said of what it
     ranked; raises LitFailed when it fails. lit records no one for a rank and takes no `--by` for it.
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    return await _said(clock, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)
+    return await _said(children, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)
 
 
-async def make_epic(clock: Clock, project: Path, new: NewEpic, by: Signer) -> str:
+async def make_epic(children: Children, project: Path, new: NewEpic, by: Signer) -> str:
     """Have lit in `project` make `new`, at the bottom of its frame, signed `by`, and what lit said; raises LitFailed when it fails. It is found after by its frame, title, and topic, as every level's epic is (`Backlog.level_epics`)."""
-    return await _said(clock, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, environment=by.runs_in)
+    return await _said(children, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, environment=by.runs_in)
 
 
-async def adopt(clock: Clock, project: Path, ticket: str, epic: str, by: Signer) -> str:
+async def adopt(children: Children, project: Path, ticket: str, epic: str, by: Signer) -> str:
     """Have lit in `project` move `ticket` inside `epic`, keeping its id, signed `by`, and what lit said; raises LitFailed when it fails."""
-    return await _said(clock, project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, environment=by.runs_in)
+    return await _said(children, project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, environment=by.runs_in)
 
 
-async def file_ticket(clock: Clock, project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
+async def file_ticket(children: Children, project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
     """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
     the first word lit says. Raises LitFailed when it fails, or says no id."""
-    filed = await _said(clock, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
+    filed = await _said(children, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
     said = filed.split()
     if not said:
         raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
     return said[0]
 
 
-async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signer) -> str:
+async def comment(children: Children, project: Path, ticket: str, body: str, by: Signer) -> str:
     """Have lit in `project` add a comment to `ticket`, signed `by`, and what lit said; raises LitFailed when it fails."""
-    return await _said(clock, project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
+    return await _said(children, project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
 
 
-async def _said(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> str:
+async def _said(children: Children, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> str:
     """What lit run as `_lit` runs it said, as text: a write's own account of what it wrote."""
-    return (await _lit(clock, project, *arguments, environment=environment)).decode(errors="replace").strip()
+    return (await _lit(children, project, *arguments, environment=environment)).decode(errors="replace").strip()
 
 
-async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
+async def _lit(children: Children, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
     """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitNotStarted
     when it never ran, and LitFailed when it did not answer, exited non-zero, or failed once it was running.
 
@@ -424,22 +424,25 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
     """
     command = f"lit {arguments[0]}"
     try:
-        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment, clock=clock)
-    except TimeoutError:
-        raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
-    except SpawnFailed as error:
-        # The spawn names the path it could not use: the project directory as given, where the chdir failed, not lit.
-        if error.errno == errno.ENOENT and str(error.filename) == str(project):
-            raise ProjectGone(project) from error
-        raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
+        ran = await children.run("lit", *arguments, limit=LIT_TIMEOUT_SECONDS, cwd=project, env=environment)
     except OSError as error:
         raise LitFailed(f"{command} in {project} ran, and then failed: {error}", None) from error
-    if ran.returncode != 0:
-        err = ran.err.decode(errors="replace")
-        line = ERROR_LINE.match(err)
-        # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
-        raise LitFailed(f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}", None if line is None else line["reason"])
-    return ran.out
+    match ran:
+        case child.Ran(ending=child.Exited(code=0), out=child.Captured(cut=True)):
+            raise LitFailed(f"{command} in {project} wrote more than the {child.CAPTURE_BYTES} bytes hands reads of it", None)
+        case child.Ran(ending=child.Exited(code=0), out=out):
+            return out.data
+        case child.Ran(ending=child.Exited(), err=err):
+            line = ERROR_LINE.match(err.text())
+            # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
+            raise LitFailed(f"{command} in {project} {child.said(ran)}", None if line is None else line["reason"])
+        case child.Ran() | child.Unreaped():
+            raise LitFailed(f"{command} in {project} {child.said(ran)}", None)
+        case child.NeverStarted(error=error):
+            # The start names the path it could not use: the project directory as given, where the chdir failed, not lit.
+            if error.errno == errno.ENOENT and str(error.filename) == str(project):
+                raise ProjectGone(project) from error
+            raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
 
 
 def parse_export(raw: bytes) -> Backlog:

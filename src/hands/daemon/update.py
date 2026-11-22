@@ -36,7 +36,6 @@ not restarted, so the running hands goes on as it was and never restarts onto a 
 """
 
 import re
-import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
@@ -47,6 +46,8 @@ from typing import cast
 
 from hands.daemon import readiness
 from hands.daemon.starting import invocation
+from hands.sessions import child
+from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.payload import Rejected
@@ -57,8 +58,6 @@ BRANCH = "master"
 # The name `uv tool install` gives hands' environment in its tool directory: the package's.
 TOOL = "hands"
 COMMIT = re.compile(r"[0-9a-f]{40}")
-# The exit `run` gives a command that could not start.
-UNSTARTABLE = 127
 # Every exit but success, for a step that is said and gone past whichever way it fails.
 ANY_FAILURE = frozenset(range(1, 256))
 # The marketplace hands' plugin comes from, named by the plugin's own id.
@@ -122,25 +121,36 @@ class Step(StrEnum):
     RENDERED_PLUGINS = "rendered-plugins"
 
 
-@dataclass(frozen=True)
-class Done:
-    """What one command did: its exit code, what it printed to its output, and what to its errors."""
+# How long each step's command has to finish before it is killed and the update stops: a clone, a build of hands with
+# its fritter, and a download of the brain's Claude Code are minutes on a slow line; asking where uv keeps its tools, or
+# git which commit it holds, is not.
+LIMITS: dict[Step, float] = {
+    Step.WHERE: 60,
+    Step.FETCH: 900,
+    Step.PULL: 900,
+    Step.COMMIT: 60,
+    Step.CONSTRAINTS: 300,
+    Step.INSTALL: 1800,
+    Step.SYNC: 1800,
+    Step.INSTALL_FRITTER: 900,
+    Step.INSTALL_BRAIN: 1800,
+    Step.PLUGIN_LIST: 120,
+    Step.MARKETPLACE: 600,
+    Step.PLUGIN: 600,
+    Step.RENDERED_PLUGINS: 120,
+}
 
-    code: int
-    output: str
-    errors: str
-
-
-type Run = Callable[[Sequence[str], Path, Mapping[str, str]], Done]
+# What runs one step's command, in a directory and an environment, within the step's limit.
+type Run = Callable[[Sequence[str], Path, Mapping[str, str], float], child.Outcome]
 
 
 @dataclass(frozen=True)
 class Ran:
-    """One step as the update's event records it: the step, the command it ran, and its exit code."""
+    """One step as the update's event records it: the step, the command it ran, and how it ended."""
 
     step: Step
     argv: tuple[str, ...]
-    code: int
+    ended: str
 
 
 @dataclass(frozen=True)
@@ -205,26 +215,39 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
     def ending(name: Step, said: str) -> _Stopped:
         return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(*installed, name, said, tuple(ran)))
 
-    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
-        """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
-        done = run(argv, cwd, env)
-        ran.append(Ran(name, tuple(argv), done.code))
-        if done.code in past:
-            advised.append(Advised(name, done.errors.strip()))
-        elif done.code != 0:
-            raise ending(name, f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}")
+    def ran_step(name: Step, argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> child.Outcome:
+        """What the step's command did, recorded as it ran."""
+        done = run(argv, cwd, env, LIMITS[name])
+        ran.append(Ran(name, tuple(argv), child.said(done.ending if isinstance(done, child.Ran) else done)))
         return done
+
+    def judged(name: Step, argv: Sequence[str], done: child.Outcome, past: frozenset[int] = frozenset()) -> child.Ran:
+        """What the step's command did, where it did what the step is for; it stops the update on any exit but 0 and those
+        in `past`, which it says and goes on past, and on a command that never started or was killed."""
+        match done:
+            case child.Ran(ending=child.Exited(code=0)):
+                return done
+            case child.Ran(ending=child.Exited(code=code), err=err) if code in past:
+                advised.append(Advised(name, err.text().strip()))
+                return done
+            case child.Ran(ending=ended, out=out, err=err):
+                raise ending(name, f"`{' '.join(argv)}` {child.said(ended)}:\n{err.text()}{out.text()}")
+            case child.NeverStarted() | child.Unreaped():
+                raise ending(name, f"`{' '.join(argv)}` {child.said(done)}")
+
+    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> child.Ran:
+        return judged(name, argv, ran_step(name, argv, cwd, env), past)
 
     def commit(cwd: Path, of: str) -> str:
         # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
-        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).output.strip()
+        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).out.text().strip()
         if not COMMIT.fullmatch(sha):
             raise ending(Step.COMMIT, f"git named the commit {of} is at as {sha!r}, not a commit's 40 hex digits")
         return sha
 
     clone, constraints = work / "cc-hands", work / "constraints.txt"
     try:
-        tool = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
+        tool = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).out.text().strip()) / TOOL
         target = parse_target(prefix, tool)
         if isinstance(target, Unsupported):
             raise ending(Step.WHERE, f"this hands runs from {prefix}, which is neither {tool}, the uv tool environment the update installs master into, nor the .venv of a checkout of hands, so a restart would not run what it updated: run `hands update` with the hands `uv tool install` put on PATH, or from a checkout's own .venv")
@@ -252,11 +275,16 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
         # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
         # installed for the user or it is not; no claude at all is no plugin.
         under = readiness.plugin_environment(home, caller)
-        listing = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
-        try:
-            held = listing.code != UNSTARTABLE and bool(readiness.installed_everywhere(listing.output))
-        except Rejected as error:
-            raise ending(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
+        match ran_step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, under):
+            case child.NeverStarted(error=FileNotFoundError()) as absent:
+                # No claude at all is no plugin to bring current.
+                advised.append(Advised(Step.PLUGIN_LIST, f"`claude` {child.said(absent)}"))
+                held = False
+            case listing:
+                try:
+                    held = bool(readiness.installed_everywhere(judged(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, listing).out.text()))
+                except Rejected as error:
+                    raise ending(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
         if held:
             step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
             step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
@@ -271,22 +299,9 @@ def made_from() -> str:
     return cast(str, getattr(sys, "_base_executable"))
 
 
-def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
-    """Run `argv` in `cwd`, with nothing to read and no terminal to ask on, and what it did."""
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
-            env={**env, "GIT_TERMINAL_PROMPT": "0"},
-            stdin=subprocess.DEVNULL,
-            # Apart: what a command prints to its output is what the update reads, a path or a commit, and a warning
-            # on its errors is no part of that.
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
-    except OSError as error:
-        # [LAW:no-silent-failure] a command that could not start, uv or git missing, is the step failing with why.
-        return Done(UNSTARTABLE, "", str(error))
-    return Done(completed.returncode, completed.stdout, completed.stderr)
+def run(children: Children, argv: Sequence[str], cwd: Path, env: Mapping[str, str], limit: float) -> child.Outcome:
+    """Run `argv` in `cwd` within `limit`, with nothing to read and no terminal to ask on, and what it did. Apart: what a
+    command prints to its output is what the update reads, a path or a commit, and a warning on its errors is no part of
+    that."""
+    # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
+    return children.run_blocking(*argv, limit=limit, cwd=cwd, env={**env, "GIT_TERMINAL_PROMPT": "0"})

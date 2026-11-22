@@ -1,5 +1,4 @@
-"""A Claude Code run on a pseudo-terminal hands holds: read as fast as it draws, the last of what it showed kept, and
-ended by hands' end however that comes.
+"""A Claude Code run on a pseudo-terminal hands holds: read as fast as it draws, and the last of what it showed kept.
 
 The brain and the smoke test's working session both run so; what each runs, and in what environment,
 is theirs to say.
@@ -9,17 +8,16 @@ import asyncio
 import fcntl
 import os
 import pty
+import queue
 import re
 import struct
-import subprocess
 import termios
 import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from hands.clock import Clock
 from hands.core.session import ESCAPES
-from hands.sessions.child import Child, reaped
+from hands.sessions.child import Children, Ending, NeverStarted, Running, Terminal, Unreaped
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -28,23 +26,18 @@ SHOWN_BYTES = 16 * 1024
 SHOWN_LINES = 20
 # How long a Claude Code told to stop has before it is killed.
 STOP_SECONDS = 5.0
-# How long what a Claude Code showed last is read for, once it has ended, before a terminal some child of it still holds
-# is given up on.
-DRAIN_SECONDS = 1.0
 
 # What a terminal is told rather than shown, and the keys it is sent.
 _CONTROL = re.compile(rf"{ESCAPES.pattern}|[\x00-\x09\x0b-\x1f\x7f]")
 
 
 class _Terminal:
-    """The pseudo-terminal's master side, held by hands: read as fast as it is written, and the last of it kept."""
+    """The pseudo-terminal's master side, held by hands: read as fast as it is written, and the last of it kept. Once
+    no process holds the slave open its read ends, and `closed` is put to."""
 
-    def __init__(self, master: int) -> None:
-        self._master = master
+    def __init__(self, master: int, closed: queue.SimpleQueue[None]) -> None:
         self._shown = b""
         self._lock = threading.Lock()
-        loop = asyncio.get_running_loop()
-        self.closed: asyncio.Future[None] = loop.create_future()
 
         def read() -> None:
             # A thread of its own: nothing is drawn when nothing reads, and a terminal's reads block.
@@ -58,7 +51,7 @@ class _Terminal:
                 with self._lock:
                     self._shown = (self._shown + data)[-SHOWN_BYTES:]
             os.close(master)
-            loop.call_soon_threadsafe(lambda: None if self.closed.done() else self.closed.set_result(None))
+            closed.put(None)
 
         threading.Thread(target=read, name="a Claude Code's terminal", daemon=True).start()
 
@@ -73,79 +66,51 @@ class _Terminal:
 class ClaudeCode:
     """A Claude Code running on a terminal hands holds, until it ends or is stopped."""
 
-    def __init__(self, clock: Clock, child: Child[int], terminal: _Terminal) -> None:
-        self._clock = clock
-        self._child = child
+    def __init__(self, running: Running, terminal: _Terminal) -> None:
+        self._running = running
         self._terminal = terminal
-        # Its exit code, once it has ended and what it showed last is read.
-        self.exit = asyncio.ensure_future(self._run_out())
 
     @property
     def pid(self) -> int:
-        return self._child.process.pid
+        return self._running.pid
+
+    @property
+    def exit(self) -> asyncio.Future[Ending]:
+        """How it ended, once it has and what it showed last is read to its end."""
+        return self._running.ended
 
     def shown(self) -> str:
         """The last lines it showed on its terminal."""
         return self._terminal.last()
 
-    async def stop(self) -> None:
-        await self._child.stopped(self._clock, STOP_SECONDS)
-        await asyncio.shield(self.exit)
-
-    async def _run_out(self) -> int:
-        code = await asyncio.shield(self._child.ended)
-        try:
-            # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
-            async with self._clock.timeout(DRAIN_SECONDS):
-                await asyncio.shield(self._terminal.closed)
-        except TimeoutError:
-            pass
-        return code
+    async def stop(self) -> Ending | Unreaped:
+        return await self._running.stopped(STOP_SECONDS)
 
 
-async def on_terminal(clock: Clock, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode:
+async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
     """Run `argv` in `cwd` and `environment` on a pseudo-terminal of hands' own, as a terminal emulator runs a program."""
     master, slave = pty.openpty()
+    closed: queue.SimpleQueue[None] = queue.SimpleQueue()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        # Not asyncio's subprocesses, for the reason `hands.sessions.child.Child` gives.
-        process = subprocess.Popen(
-            _holding_terminal(os.ttyname(slave), argv),
-            cwd=cwd,
-            env={**environment, "TERM": "xterm-256color"},
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
+        started = children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": "xterm-256color"}, Terminal(slave, closed))
     except BaseException:
         os.close(master)
         raise
     finally:
+        # The child holds its own: the master's read ends once it, and whatever it started, have let go of theirs.
         os.close(slave)
-    child = reaped("a Claude Code", process, process.wait)
-    try:
-        await _held(clock, master, child)
-    except BaseException:
-        os.close(master)
-        await child.killed("its start failed or was cut short")
-        raise
-    return ClaudeCode(clock, child, _Terminal(master))
-
-
-async def _held(clock: Clock, terminal: int, child: Child[int]) -> None:
-    """Until `child` holds `terminal` as its session's, or has ended without taking it.
-
-    [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
-    that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
-    while not child.ended.done() and os.tcgetpgrp(terminal) != child.process.pid:
-        await clock.sleep(0.002)
+    match started:
+        case NeverStarted():
+            os.close(master)
+            return started
+        case Running():
+            return ClaudeCode(started, _Terminal(master, closed))
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:
-    """argv, run so that its terminal is its session's controlling terminal: hands' end, however it comes, hangs the
-    terminal up and ends what runs on it, as closing a window does. Without it, a hands that dies without stopping it
-    leaves it running for good.
+    """argv, run so that its terminal is its session's controlling terminal, as a terminal emulator's program's is: a
+    Claude Code opens /dev/tty, which a process with no controlling terminal cannot.
 
     A session leader with no controlling terminal takes the first terminal it opens, so the shell opens it and execs
     argv in its place, keeping its pid. [LAW:no-ambient-temporal-coupling] no Python runs between fork and exec, where

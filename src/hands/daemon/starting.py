@@ -232,6 +232,7 @@ def execv(argv: list[str]) -> NoReturn:
     # exec replaces the process without running Python's exit: what is buffered for the terminal is written first.
     sys.stdout.flush()
     sys.stderr.flush()
+    # [LAW:single-enforcer] exception: no child, but this process run again in its own place, its children with it.
     os.execv(argv[0], argv)
 
 

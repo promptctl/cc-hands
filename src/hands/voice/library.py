@@ -6,13 +6,15 @@ hands.
 """
 
 import asyncio
-import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from huggingface_hub import list_repo_files
+from loguru import logger
 
 from hands.clock import Clock
+from hands.sessions import child
+from hands.sessions.child import Children
 
 LIBRARY_REPO = "kyutai/tts-voices"
 LIBRARY_URL_PREFIX = f"hf://{LIBRARY_REPO}/"
@@ -98,7 +100,25 @@ class Library:
             return Found(matches, listing.listed_at, from_cache)
 
 
-def hub_token(environment: Mapping[str, str]) -> str | None:
+# How long `security` has to answer from the keychain; one locked behind a prompt nobody answers does not.
+KEYCHAIN_SECONDS = 10.0
+# What `security find-generic-password` exits with when the keychain holds no such item.
+NOT_IN_KEYCHAIN = 44
+
+
+@dataclass(frozen=True)
+class Absent:
+    """The keychain holds no Hugging Face token."""
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """The keychain could not be asked for the token, or did not answer: whether it holds one is unknown."""
+
+    why: str
+
+
+def hub_token(children: Children, environment: Mapping[str, str]) -> str | None:
     """The Hugging Face token the cloning weights are fetched with: the environment's where it has one, else the keychain's,
     else None. A voice whose weights need a token and get none fails at its choice, naming the cloning model.
 
@@ -106,13 +126,31 @@ def hub_token(environment: Mapping[str, str]) -> str | None:
     environment is the only channel it reads; cli.main writes the token there, once, where a process starts. The token is
     never logged or written to a file.
     """
-    return environment.get("HF_TOKEN") or _keychain_token()
+    if token := environment.get("HF_TOKEN"):
+        return token
+    match _keychain_token(children):
+        case str() as token:
+            return token
+        case Absent():
+            return None
+        case Unreadable(why=why):
+            # [LAW:no-silent-failure] said, and every command goes on without it: a voice that needs the token then
+            # fails saying it has none, and this line says why.
+            logger.error(f"the Hugging Face token could not be read from the keychain: {why}")
+            return None
 
 
-def _keychain_token() -> str | None:
-    try:
-        # `security` prints the password on stdout alone; neither stream is logged.
-        found = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w"], capture_output=True, text=True, check=False, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return found.stdout.strip() or None
+def _keychain_token(children: Children) -> str | Absent | Unreadable:
+    # `security` prints the password on stdout alone; neither stream is logged, and the event of its run carries only
+    # how many bytes each held.
+    asked = children.run_blocking("security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w", limit=KEYCHAIN_SECONDS)
+    match asked:
+        case child.Ran(ending=child.Exited(code=0), out=out):
+            try:
+                return out.data.decode().strip() or Absent()
+            except UnicodeDecodeError as error:
+                return Unreadable(f"the keychain's {KEYCHAIN_ITEM} is no token: {error}")
+        case child.Ran(ending=child.Exited(code=code)) if code == NOT_IN_KEYCHAIN:
+            return Absent()
+        case child.Ran() | child.NeverStarted() | child.Unreaped():
+            return Unreadable(f"`security find-generic-password` {child.said(asked)}")

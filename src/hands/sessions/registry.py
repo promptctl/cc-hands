@@ -19,6 +19,7 @@ from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, PromptId, Registry, RequestId, Session, SessionId, followed, status_stamp
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
+from hands.sessions.child import Children
 from hands.sessions.audit import Record, Typing, TypingFailed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
@@ -90,7 +91,7 @@ class Sessions:
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
         # What types a Type into its session, or raises Untyped. A daemon given none finds no tmux to type into.
-        self._typist = typist or partial(type_into, clock, {})
+        self._typist = typist or partial(type_into, self.children, {})
         # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by. A daemon
         # given none reads none, so nothing it is not told to type into is typed into.
         self._keyboards = keyboards
@@ -125,6 +126,11 @@ class Sessions:
     @property
     def clock(self) -> Clock:
         return self._clock
+
+    @property
+    def children(self) -> Children:
+        """What starts the children the sessions are read and typed through: on the one clock, its events recorded here."""
+        return Children(self._clock, self._record)
 
     def now(self) -> Instant:
         return self._clock.now()

@@ -13,12 +13,14 @@ from unittest.mock import Mock
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 
-from conftest import KEYCHAIN_READER, PATIENCE_SECS
+from conftest import KEYCHAIN_READER, PATIENCE_SECS, answering, exited, taken
 from datetime import UTC, datetime
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.daemon import run
 from hands.daemon.config import SampleLines
+from hands.sessions import child
+from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import library, voices
@@ -236,47 +238,77 @@ async def test_the_find_voices_tool_returns_matches_and_when_they_were_listed(tm
 
 # --- the token: the environment's, else the keychain's, once, and never logged ------------------------------------------
 
-def test_the_environments_token_is_used_and_the_keychain_is_not_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(library, "_keychain_token", lambda: pytest.fail("the keychain was read though the environment has a token"))
-    assert library.hub_token({"HF_TOKEN": "from-the-environment"}) == "from-the-environment"
+@pytest.fixture
+def keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keychain asked as hands asks it, through whatever children a test gives: conftest's stand-in put back."""
+    monkeypatch.setattr(library, "_keychain_token", KEYCHAIN_READER)
 
 
-def test_with_no_environment_token_the_keychain_supplies_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(library, "_keychain_token", lambda: "from-the-keychain")
-    assert library.hub_token({}) == "from-the-keychain"
+@pytest.mark.usefixtures("keychain")
+def test_the_environments_token_is_used_and_the_keychain_is_not_read() -> None:
+    asking = answering(exited(0, b"from-the-keychain\n"))
+    assert library.hub_token(asking, {"HF_TOKEN": "from-the-environment"}) == "from-the-environment"
+    assert asking.asked == []
 
 
+@pytest.mark.usefixtures("keychain")
+def test_with_no_environment_token_the_keychain_is_asked_for_the_item_on_stdout() -> None:
+    asking = answering(exited(0, b"from-the-keychain\n"))
+    assert library.hub_token(asking, {}) == "from-the-keychain"
+    assert asking.asked == [("security", "find-generic-password", "-s", "HF_TOKEN", "-w")]
+
+
+@pytest.mark.usefixtures("keychain")
 def test_with_neither_token_there_is_none_and_the_environment_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    monkeypatch.setattr(library, "_keychain_token", lambda: None)
-    assert library.hub_token({}) is None
+    assert library.hub_token(answering(exited(library.NOT_IN_KEYCHAIN, err=b"The specified item could not be found in the keychain.\n")), {}) is None
     assert "HF_TOKEN" not in os.environ
 
 
-def test_a_command_puts_the_keychains_token_in_the_environment_the_fetch_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("keychain")
+@pytest.mark.parametrize(
+    ("asked", "why"),
+    [
+        (exited(51, err=b"User interaction is not allowed.\n"), "`security find-generic-password` exited 51: User interaction is not allowed."),
+        (exited(0, b"\xff\xfe"), "the keychain's HF_TOKEN is no token"),
+        (child.NeverStarted(FileNotFoundError(2, "No such file or directory", "security")), "`security find-generic-password` could not be started: No such file or directory"),
+    ],
+)
+def test_a_keychain_that_cannot_be_read_is_said_and_gives_no_token(asked: child.Outcome, why: str, errors: list[str]) -> None:
+    assert library.hub_token(answering(asked), {}) is None
+    [said] = taken(errors)
+    assert said.startswith(f"the Hugging Face token could not be read from the keychain: {why}"), said
+
+
+def test_the_daemons_run_starts_with_the_keychains_token_in_the_environment_the_fetch_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from hands.daemon import cli
 
     # An empty token is no token: the keychain is asked, and the environment is restored by monkeypatch at the end.
     monkeypatch.setenv("HF_TOKEN", "")
-    monkeypatch.setattr(library, "_keychain_token", lambda: "from-the-keychain")
-    cli.main(["--home", str(tmp_path / "home"), "status"])
-    assert os.environ["HF_TOKEN"] == "from-the-keychain"
+
+    def held(_children: Children) -> str:
+        return "from-the-keychain"
+
+    ran: list[str] = []
+
+    def run_daemon(*_: object) -> int:
+        ran.append(os.environ["HF_TOKEN"])
+        return 0
+
+    monkeypatch.setattr(library, "_keychain_token", held)
+    monkeypatch.setattr(cli, "run_daemon", run_daemon)
+    assert cli.main(["--home", str(tmp_path / "home"), "run"]) == 0
+    assert ran == ["from-the-keychain"]
 
 
-def test_the_keychain_is_asked_for_the_item_on_stdout_and_its_token_is_never_logged(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands: list[list[str]] = []
+def test_a_command_but_the_run_reads_no_keychain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hands.daemon import cli
 
-    class Completed:
-        stdout = "secret-token\n"
+    def unread(_children: Children) -> library.Absent:
+        raise AssertionError("a command that fetches no voice read the keychain")
 
-    def run_security(command: list[str], **_: object) -> Any:
-        commands.append(command)
-        return Completed()
-
-    monkeypatch.setattr(library.subprocess, "run", run_security)
-    # conftest answers the keychain None in every test; the reader it replaced is what this one checks.
-    assert KEYCHAIN_READER() == "secret-token"
-    assert commands == [["security", "find-generic-password", "-s", "HF_TOKEN", "-w"]]
+    monkeypatch.setattr(library, "_keychain_token", unread)
+    assert cli.main(["--home", str(tmp_path / "home"), "status"]) == 1
 
 
 def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,9 +316,9 @@ def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
 
     reads: list[int] = []
 
-    def record() -> str | None:
+    def record(_children: Children) -> library.Absent:
         reads.append(1)
-        return None
+        return library.Absent()
 
     monkeypatch.setattr(library, "_keychain_token", record)
     with pytest.raises(SystemExit):

@@ -17,7 +17,7 @@ from hands.sessions.registry import Listing
 from hands.voice import vocabulary as lexicon
 from hands.virtualclock import VirtualClock
 from hands.voice.vocabulary import READING, TOKENS, WORDS, Lexicon, prompt, vocabulary
-from conftest import new_sessions
+from conftest import children_on, new_sessions
 
 
 def git(repository: Path, *args: str) -> None:
@@ -61,7 +61,7 @@ async def test_the_focused_sessions_newest_files_and_branch_come_before_the_sess
     focus = session(repository / "src")
     other = session(tmp_path / "cc-hands", "s2")
 
-    primed = await vocabulary(clock, [Listing(focus, None), Listing(other, "dictation bias")], focus, os.environ, clock.now())
+    primed = await vocabulary(children_on(clock), [Listing(focus, None), Listing(other, "dictation bias")], focus, os.environ, clock.now())
 
     assert primed.words.index("old_billing") < primed.words.index("authMiddleware") < primed.words.index("sessionStore")
     assert "GUIDE" in primed.words and primed.words.count("README") == 1
@@ -77,7 +77,7 @@ async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path, 
     git(repository, "add", "-N", "ledger.ts")
     focus = session(repository)
 
-    primed = await vocabulary(clock, [], focus, os.environ, clock.now())
+    primed = await vocabulary(children_on(clock), [], focus, os.environ, clock.now())
 
     assert primed.words == ("billing", "ledger", "auth-rework")
 
@@ -87,7 +87,7 @@ async def test_a_word_whisper_refuses_in_a_prompt_is_left_out(repository: Path, 
     commit(repository, "<|endoftext|>.ts", "ledger.ts")
     focus = session(repository)
 
-    primed = await vocabulary(clock, [], focus, os.environ, clock.now())
+    primed = await vocabulary(children_on(clock), [], focus, os.environ, clock.now())
 
     assert primed.words == ("ledger", "auth-rework")
     # As MLX Whisper encodes an initial prompt, which raises on a special token's text.
@@ -102,7 +102,7 @@ async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pyt
     commit(repository, "authMiddleware.ts")
     focus = session(repository)
 
-    primed = await vocabulary(clock, [], focus, os.environ, clock.now())
+    primed = await vocabulary(children_on(clock), [], focus, os.environ, clock.now())
 
     assert len(primed.words) == WORDS
     assert primed.words[-2:] == ("authMiddleware", "auth-rework")
@@ -114,7 +114,7 @@ async def test_the_oldest_words_are_dropped_until_the_rest_fit_the_prompt_tokens
     commit(repository, *named)
     focus = session(repository)
 
-    primed = await vocabulary(clock, [], focus, os.environ, clock.now())
+    primed = await vocabulary(children_on(clock), [], focus, os.environ, clock.now())
 
     # The newest words, as many as fit: one more of the older ones would not.
     assert primed.words[-1] == "auth-rework" and 0 < len(primed.words) < WORDS
@@ -134,7 +134,7 @@ async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alon
     focus = session(tmp_path / "notes")
     (tmp_path / "notes").mkdir()
 
-    primed = await vocabulary(clock, [Listing(focus, "planning")], focus, {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}, clock.now())
+    primed = await vocabulary(children_on(clock), [Listing(focus, "planning")], focus, {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}, clock.now())
 
     assert (primed.words, primed.failed) == (("notes, planning",), None)
 
@@ -144,7 +144,7 @@ async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_t
     (repository / "authMiddleware.ts").write_text("new")
     focus = session(repository)
 
-    primed = await vocabulary(clock, [Listing(focus, None)], focus, os.environ, clock.now())
+    primed = await vocabulary(children_on(clock), [Listing(focus, None)], focus, os.environ, clock.now())
 
     assert (primed.words, primed.failed) == (("authMiddleware", "auth-rework", "shop"), None)
 
@@ -153,10 +153,10 @@ async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_t
 async def test_a_repository_git_cannot_read_primes_nothing_of_its_own_and_says_why(repository: Path, clock: VirtualClock) -> None:
     focus = session(repository)
 
-    primed = await vocabulary(clock, [Listing(focus, None)], focus, {"PATH": "/nonexistent"}, clock.now())
+    primed = await vocabulary(children_on(clock), [Listing(focus, None)], focus, {"PATH": "/nonexistent"}, clock.now())
 
     assert primed.words == ("shop",)
-    assert primed.failed is not None and "cannot run git" in primed.failed
+    assert primed.failed is not None and "could not be started" in primed.failed
     assert level(primed) == "error"
 
 
@@ -165,7 +165,7 @@ async def test_a_budget_spent_before_git_runs_primes_the_sessions_alone_and_says
     commit(repository, "ledger.ts")
     focus = session(repository)
 
-    primed = await vocabulary(clock, [Listing(focus, None)], focus, os.environ, clock.now() - READING)
+    primed = await vocabulary(children_on(clock), [Listing(focus, None)], focus, os.environ, clock.now() - READING)
 
     assert primed.words == ("shop",)
     assert primed.failed is not None and f"spent the vocabulary's {READING:.1f}s" in primed.failed
@@ -181,7 +181,7 @@ async def test_a_git_still_running_when_the_budget_is_spent_primes_the_sessions_
     (stuck / "git").chmod(0o755)
     focus = session(repository)
 
-    reading = asyncio.create_task(vocabulary(clock, [Listing(focus, None)], focus, {**os.environ, "PATH": str(stuck)}, clock.now()))
+    reading = asyncio.create_task(vocabulary(children_on(clock), [Listing(focus, None)], focus, {**os.environ, "PATH": str(stuck)}, clock.now()))
     await clock.sleeping(READING, count=3)
     clock.advance(READING)
     primed = await reading
@@ -200,7 +200,7 @@ async def test_a_git_that_fails_ends_the_gits_still_running_before_the_vocabular
     (failing / "git").chmod(0o755)
     focus = session(repository)
 
-    reading = asyncio.create_task(vocabulary(clock, [Listing(focus, None)], focus, {**os.environ, "PATH": str(failing)}, clock.now()))
+    reading = asyncio.create_task(vocabulary(children_on(clock), [Listing(focus, None)], focus, {**os.environ, "PATH": str(failing)}, clock.now()))
     # git status fails at once, ending its wait; git log and git branch run on to the budget's end, and the vocabulary is
     # not read before they are ended.
     await clock.down_to(READING, count=2, of=3)
@@ -214,7 +214,7 @@ async def test_a_git_that_fails_ends_the_gits_still_running_before_the_vocabular
 
 
 async def test_a_focus_that_cannot_be_read_says_so(tmp_path: Path, clock: VirtualClock) -> None:
-    primed = await vocabulary(clock, [], Unreadable("garbled"), os.environ, clock.now())
+    primed = await vocabulary(children_on(clock), [], Unreadable("garbled"), os.environ, clock.now())
 
     assert (primed.focus, primed.words, primed.failed) == (None, (), "the focus: garbled")
     assert level(primed) == "error"

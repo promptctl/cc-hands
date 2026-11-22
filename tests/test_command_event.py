@@ -113,7 +113,8 @@ def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.C
     code = main(["--home", str(home.root), "check", "-v"])
     # A finding's indented lines continue the one above them: its mark and step, then what is said of it in full.
     printed = [block.split("\n") for block in re.split(r"\n(?! )", capsys.readouterr().out.rstrip("\n"))]
-    [command] = events(home)
+    # Beside the event of each child the check asked.
+    [command] = [event for event in events(home) if event["event"] == "hands.command"]
     assert command["facts"]["exit_code"] == code != 0
     # One finding a printed block, each on the event as the block says it: its step, the fix of a missing one, and the rest in full.
     findings = command["facts"]["findings"]

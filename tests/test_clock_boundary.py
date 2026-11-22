@@ -6,6 +6,8 @@ import textwrap
 from functools import cache
 from pathlib import Path
 
+from imports import imported, qualified
+
 import hands
 
 # The real clock and the virtual one: a seeded `random.Random`, and a `uuid.UUID` built from its bits, are no reach.
@@ -51,7 +53,7 @@ def reached(source: str, package: str = "hands") -> set[str]:
     """What `source` reaches of the machine's time and randomness, by the name it reaches it with, in code it runs
     and in code it writes out for another interpreter to run."""
     tree = ast.parse(source)
-    named = _imported(tree, package)
+    named = imported(tree, package)
     found: set[str] = set()
     for node in ast.walk(tree):
         match node:
@@ -65,14 +67,14 @@ def reached(source: str, package: str = "hands") -> set[str]:
             # Every name a star brings in is the module's, so each of its waits is reached unnamed.
             case ast.ImportFrom(module=str(module), names=[ast.alias(name="*")], level=0) if module in STARRED:
                 found.add(f"{module}.*")
-            case ast.Name() | ast.Attribute() if _qualified(node, named) in SYSTEM:
-                found.add(_qualified(node, named))
-            case ast.Call(func=func) if _qualified(func, named) == "asyncio.sleep" and _yields(node):
+            case ast.Name() | ast.Attribute() if qualified(node, named) in SYSTEM:
+                found.add(qualified(node, named))
+            case ast.Call(func=func) if qualified(func, named) == "asyncio.sleep" and _yields(node):
                 pass
-            case ast.Call(func=func) if _qualified(func, named) in CALLS:
-                found.add(f"{_qualified(func, named)}()")
+            case ast.Call(func=func) if qualified(func, named) in CALLS:
+                found.add(f"{qualified(func, named)}()")
             # `asyncio.wait`'s timeout is its second argument, and nothing else that function takes.
-            case ast.Call(func=func, args=[_, _, *_]) if _qualified(func, named) == "asyncio.wait":
+            case ast.Call(func=func, args=[_, _, *_]) if qualified(func, named) == "asyncio.wait":
                 found.add("asyncio.wait(timeout)")
             # A timeout of none is a poll, as it is handed second.
             case ast.Call(func=ast.Attribute(attr=attr), keywords=keywords) if attr in TIMED and any(
@@ -82,7 +84,7 @@ def reached(source: str, package: str = "hands") -> set[str]:
             # A thread's join, an event's wait, and a future's result take their seconds first, as a number no
             # `str.join` or `asyncio.wait` is handed.
             case ast.Call(func=ast.Attribute(attr="join" | "wait" | "result" as attr) as func, args=[first, *_]) if (
-                _seconds(first) and _qualified(func, named) != "asyncio.wait"
+                _seconds(first) and qualified(func, named) != "asyncio.wait"
             ):
                 found.add(f".{attr}(seconds)")
             # A lock's acquire takes its seconds second, after whether to block at all; none is a poll.
@@ -139,36 +141,6 @@ def _yields(call: ast.Call) -> bool:
             return isinstance(delay, ast.Constant) and _seconds(delay) and delay.value == 0
         case _:
             return False
-
-
-def _imported(tree: ast.Module, package: str) -> dict[str, str]:
-    """Each name the module binds by an import, to the dotted name it was imported as."""
-    named: dict[str, str] = {}
-    for node in ast.walk(tree):
-        match node:
-            case ast.Import(names=aliases):
-                named.update({alias.asname: alias.name for alias in aliases if alias.asname})
-                named.update({alias.name.split(".")[0]: alias.name.split(".")[0] for alias in aliases if not alias.asname})
-            case ast.ImportFrom(module=str(module), names=aliases, level=0):
-                named.update({alias.asname or alias.name: f"{module}.{alias.name}" for alias in aliases})
-            # A relative import climbs from the package the module is in, one package per dot after the first.
-            case ast.ImportFrom(module=module, names=aliases, level=int(level)) if level > 0:
-                base = ".".join([*package.split(".")[: len(package.split(".")) - (level - 1)], *([module] if module else [])])
-                named.update({alias.asname or alias.name: f"{base}.{alias.name}" for alias in aliases})
-            case _:
-                pass
-    return named
-
-
-def _qualified(node: ast.expr, named: dict[str, str]) -> str:
-    """The dotted name `node` reads, with the import its first part was bound by written out."""
-    match node:
-        case ast.Name(id=name):
-            return named.get(name, name)
-        case ast.Attribute(value=value, attr=attr):
-            return f"{_qualified(value, named)}.{attr}"
-        case _:
-            return ""
 
 
 def _last(node: ast.expr) -> str:

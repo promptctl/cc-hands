@@ -24,7 +24,6 @@ import re
 import shlex
 import shutil
 import signal
-import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
@@ -48,6 +47,7 @@ from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
+from hands.darwin import child_pids
 from hands.sessions.audit import Record
 from hands.sessions.registry import Sessions, StopHeld
 from hands.sessions.reader import READ_SECONDS, Reader
@@ -55,10 +55,10 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_hook
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.child import Ran
+from hands.sessions.child import Children, Exited, NeverStarted, Ran, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
-from hands.sessions.tmux import Unanswered, ran_at, socket_directory, styled
+from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
 from hands.tasks import cancel_and_wait
 from hands.sessions.untap import untapped
@@ -379,8 +379,8 @@ class InTmux:
     it. hands' client only shows it, re-attaching while it runs, and its hangup at hands' end destroys the session
     unless a person is attached."""
 
-    def __init__(self, clock: Clock, client: ClaudeCode, tmux: str, socket: Path, session: str, workspace: Path) -> None:
-        self._clock = clock
+    def __init__(self, children: Children, client: ClaudeCode, tmux: str, socket: Path, session: str, workspace: Path) -> None:
+        self._children = children
         self._client = client
         self._tmux = tmux
         self._socket = socket
@@ -414,7 +414,7 @@ class InTmux:
             if not pane.startswith("%"):
                 raise BrainGone("the brain's screen cannot be read: its pane has not said which it is")
             self._pane = pane
-        match await styled(self._clock, self._tmux, self._socket, self._pane):
+        match await styled(self._children, self._tmux, self._socket, self._pane):
             case Unanswered(reason=reason):
                 raise BrainGone(f"the brain's screen cannot be read: {reason}")
             case str() as shown:
@@ -432,7 +432,7 @@ class InTmux:
         await asyncio.shield(self._client.exit)
         # The client lets go as the session ends, which may be before the pane's shell has written fritter's status.
         while not (self._workspace / "status").exists() and (shell := self.shell) is not None and _alive(shell):
-            await self._clock.sleep(0.02)
+            await self._children.clock.sleep(0.02)
         try:
             return int((self._workspace / "status").read_text())
         except (FileNotFoundError, ValueError):
@@ -447,7 +447,7 @@ class InTmux:
         await self._client.stop()
         await self.end_session()
         try:
-            async with self._clock.timeout(STOP_SECONDS):
+            async with self._children.clock.timeout(STOP_SECONDS):
                 await asyncio.shield(self.exit)
         except TimeoutError:
             if (shell := self.shell) is not None:
@@ -457,16 +457,16 @@ class InTmux:
             await asyncio.shield(self.exit)
 
     async def end_session(self) -> None:
-        match await ran_at(self._clock, self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
+        match await ran_at(self._children, self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
             case Unanswered() as unanswered:
                 logger.warning(f"the brain's tmux server did not end its session: {unanswered.reason}")
-            case Ran(returncode=code, err=err) if code != 0 and not _UNHELD.search(err):
+            case TmuxExit(code=code, err=err) if code != 0 and not _UNHELD.search(err):
                 logger.warning(f"the brain's tmux server did not end its session: {err.decode(errors='replace').strip()}")
-            case Ran():
+            case TmuxExit():
                 pass
 
 
-async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
+async def in_tmux(children: Children, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
     """Run a slim Claude Code's command in the brain's tmux session on the user's default tmux server, the one `tmux
     attach` reaches, so a person can watch it and type into it.
 
@@ -481,14 +481,14 @@ async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace
     session = brain_session(station.config_dir)
     # Two brains on one config directory would share one conversation: one left by a hands that ended while a person
     # was attached is ended first.
-    match await ran_at(clock, tmux, socket, ("kill-session", "-t", f"={session}")):
-        case Ran(returncode=0):
+    match await ran_at(children, tmux, socket, ("kill-session", "-t", f"={session}")):
+        case TmuxExit(code=0):
             logger.info(f"ended tmux session {session}, a brain left by an earlier hands")
         case Unanswered() as unanswered:
             raise Unstartable(f"the brain's tmux server did not answer: {unanswered.reason}")
-        case Ran(err=err) if not _UNHELD.search(err):
+        case TmuxExit(err=err) if not _UNHELD.search(err):
             raise Unstartable(f"the brain's tmux server did not end a session left by an earlier hands: {err.decode(errors='replace').strip()}")
-        case Ran():
+        case TmuxExit():
             pass
     status, pid = workspace / "status", workspace / "pane"
     # env -i: a pane is otherwise given the tmux server's own environment, which would carry what environment() keeps
@@ -499,6 +499,7 @@ async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace
     (workspace / "env").touch(mode=0o600)
     (workspace / "env").write_text(json.dumps(env))
     # A command that cannot be run is said and exits as a shell's exec does: 127 for one not there, 126 for any other.
+    # [LAW:single-enforcer] exception: the pane's own process, replaced with the brain's command, inside tmux's pane.
     launch = (
         "import json, os, sys\n"
         "try:\n    os.execve(sys.argv[2], sys.argv[2:], {**json.load(open(sys.argv[1])), **os.environ})\n"
@@ -543,8 +544,11 @@ async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace
         # is the size of whoever watches it.
         + f"\nwhile [ ! -e {shlex.quote(str(status))} ] && {tmuxed} has-session -t ={session} 2>/dev/null; do {tmuxed} attach-session -f ignore-size -t ={session} || sleep 0.2; done\n"
     )
-    client = await on_terminal(clock, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited)
-    return InTmux(clock, client, tmux, socket, session, workspace)
+    match await on_terminal(children, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited):
+        case ClaudeCode() as client:
+            return InTmux(children, client, tmux, socket, session, workspace)
+        case NeverStarted(error=error):
+            raise Unstartable(f"the tmux client the brain is shown in could not be started: {error}")
 
 
 class BrainGone(Exception):
@@ -643,7 +647,7 @@ type Method = Literal["claudeai", "console"]
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
-def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
+def login(children: Children, config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
     account it holds after.
 
@@ -658,12 +662,16 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
+    # [LAW:single-enforcer] exception: run in hands' own process group, the terminal's foreground job, so it reads the
+    # keyboard the person logging in types at; a session of its own, as the runner starts each child in, has no terminal.
+    import subprocess
+
     signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
     answered(config_dir)
-    held = logged_in(config_dir, base_url, inherited)
+    held = logged_in(children, config_dir, base_url, inherited)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
     # brain on another login than the one asked for.
     if held.method != AUTH_METHODS[method]:
@@ -705,22 +713,26 @@ def account_kept_out(config_dir: Path) -> None:
         raise Unstartable(f"the brain would load its account's {' and '.join(synced)}: {fix}")
 
 
-def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
+def logged_in(children: Children, config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
     """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
-    none, or one whose requests do not reach hands' proxy."""
+    none, or one whose requests do not reach hands' proxy, and Unstartable when Claude Code could not be asked.
+
+    [LAW:single-enforcer] exception: a Claude Code started to read a login the running brain also holds, on every
+    settings edit and every `hands check`; promptctl-phone-app-9d9y.mpy takes it off those paths."""
+    claude = brain_claude(config_dir)
+    asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, base_url, inherited), limit=AUTH_STATUS_SECONDS)
+    match asked:
+        case Ran(ending=Exited(), out=out):
+            return _account(config_dir, asked, out.data)
+        case Ran() | NeverStarted() | Unreaped():
+            # No answer says nothing of the login: it is the brain's Claude Code that could not be asked, not a login to make.
+            raise Unstartable(f"`{claude} auth status` {said(asked)}")
+
+
+def _account(config_dir: Path, asked: Ran, out: bytes) -> Account:
+    """The account `claude auth status` printed `out` for, as `logged_in` says it."""
     try:
-        # A timed-out child is killed and reaped by run itself.
-        asked = subprocess.run(
-            [brain_claude(config_dir), "auth", "status"],
-            env=environment(config_dir, base_url, inherited),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=AUTH_STATUS_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        raise NotLoggedIn(f"`claude auth status` for the brain did not answer in {AUTH_STATUS_SECONDS:.0f}s") from None
-    try:
-        status = Payload.parse(asked.stdout)
+        status = Payload.parse(out)
         if not status.flag("loggedIn"):
             raise NotLoggedIn("the brain has no login: `hands login` gives it one")
         # [LAW:no-silent-failure] hands' proxy, which hears what the brain says, forwards to Anthropic's API alone, so a
@@ -729,7 +741,7 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
             raise NotLoggedIn(f"the brain reaches Claude through {provider}, not the Anthropic API hands' proxy forwards to: {config_dir / 'settings.json'} or the machine's managed settings choose {provider}")
         return Account(status.text("authMethod"), status.optional_text("email") or status.optional_text("apiKeySource"))
     except Rejected as error:
-        raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
+        raise NotLoggedIn(f"`claude auth status` for the brain {said(asked)}, answering {out[:200]!r}, not its status: {error}") from None
 
 
 @dataclass(frozen=True)
@@ -1989,7 +2001,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
         by = clock.now() + START_SECONDS
         try:
-            running = await in_tmux(clock, station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
+            running = await in_tmux(Children(clock, record), station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)
@@ -2066,7 +2078,7 @@ async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int]:
     fritter's pid."""
     found = [path for path in sockets.rglob("*") if path.is_socket()]
     wrapper = running.fritter
-    child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
+    child = None if wrapper is None else _child_of(wrapper)
     if found and wrapper is not None and child is not None:
         return Typist(found[0], child), wrapper
     raise _NotYet("fritter had not started the brain and opened its socket")
@@ -2108,6 +2120,14 @@ def exited(code: int) -> str:
 
 
 def _child_of(pid: int) -> int | None:
-    """The process `pid` started: fritter starts one, the claude it wraps."""
-    found = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
-    return int(found[0]) if found else None
+    """The one process `pid` started, as fritter starts the claude it wraps, or None while it has started none.
+
+    [LAW:no-silent-failure] one that has started several cannot say which is the brain: typed into the wrong one, the
+    brain's turns would go nowhere, so it is refused, naming each."""
+    match child_pids(pid):
+        case ():
+            return None
+        case (child,):
+            return child
+        case several:
+            raise Unstartable(f"{pid} started {len(several)} processes, {', '.join(map(str, several))}, where the brain is one")
