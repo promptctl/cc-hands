@@ -84,7 +84,7 @@ FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("shim unreadable", lambda home, _: _unreadable_shim(home), "/claude'): run `hands install-fritter` to write it again"),
     ("first screens unanswered", lambda home, _: (home.brain / ".claude.json").write_text("{}"), "first screens (its onboarding unfinished; "),
     ("its working directory untrusted", _untrusted, "/cwd untrusted): `hands login` answers them"),
-    ("first screens unreadable", lambda home, _: _unreadable(home.brain / ".claude.json"), ".claude.json'): correct it, or remove it and run `hands login` to make it again"),
+    ("first screens unreadable", lambda home, _: _unreadable(home.brain / ".claude.json"), ".claude.json unreadable: [Errno 13] Permission denied"),
     ("a sync not kept out", lambda home, _: (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}'), "the brain would load its account's syncClaudeAiSkills: "),
     # Left out, each switch is on.
     ("no settings.json", lambda home, _: (home.brain / "settings.json").unlink(), 'its account\'s syncClaudeAiSkills and syncClaudeAiPlugins: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'),
@@ -306,6 +306,10 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
             assert [said for said in each if said not in detail] == []
         case found:
             raise AssertionError(f"the survey found {found}")
+    # A model chosen by voice on them.
+    with pytest.raises(Rejected) as chosen:
+        config.OwnModel(home, running).weigh("claude-opus-5-5")
+    assert [said for said in each if said not in str(chosen.value)] == []
     # An edit to them, said once, the watch outliving it.
     monkeypatch.setattr(config, "_held", _reads([b"[llm\n"] * 3))
     recorded: list[Entry] = []

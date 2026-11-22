@@ -183,10 +183,13 @@ class OwnModel:
             # change nothing until hands is started without the flag.
             raise Rejected(f"hands was started with --model {self._running.model}, which it keeps over {self._home.config} until it is started without it")
         model = model.strip()
-        held = _readable(self._home, _held(self._home))
         # The file is taken whole first, so the edit is only ever made to settings a start would take: on the run's own
-        # --model, as the start weighs it.
-        on_file = _settings(self._home, held, self._running.model)
+        # --model, as the start weighs it, and one that does not parse is refused beside the home's other refusals.
+        try:
+            held = _readable(self._home, _held(self._home))
+            on_file = _settings(self._home, held, self._running.model)
+        except Rejected as error:
+            raise Rejected("; ".join(beside(self._home, error))) from error
         edited = _with_model(held, model)
         chosen = _settings(self._home, edited, self._running.model)
         if chosen == self._running.config:

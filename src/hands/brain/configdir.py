@@ -154,7 +154,7 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     """What a Claude Code of hands' own is run with on `config`, or every reason none may run on it, each naming its fix:
     no pinned claude, or settings it must not start on, which a run of one, `hands login`'s among them, would load."""
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
-    refused = (*_pinned(config.claude), *_kept_out(config), *_state_unread(config))
+    refused = (*_pinned(config.claude), *_kept_out(config))
     match config.claude, config.settings:
         case Path() as claude, Settings(mode=str() | None as mode) if not refused:
             return Runnable(claude, mode)
@@ -187,15 +187,6 @@ def _kept_out(config: ConfigDir) -> tuple[str, ...]:
     )
 
 
-def _state_unread(config: ConfigDir) -> tuple[str, ...]:
-    """A .claude.json that cannot be read: no run of Claude Code on it, `hands login`'s first run among them, can either."""
-    match config.state:
-        case Unread(reason=reason):
-            return (f"{config.path / STATE} could not be read ({reason}): correct it, or remove it and run `hands login` to make it again",)
-        case State() | Absent():
-            return ()
-
-
 def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:
     named = f"name one of {', '.join(SETTINGS_MODES)} in {path}"
     match mode:
@@ -214,9 +205,9 @@ def unanswered(config: ConfigDir) -> tuple[str, ...]:
     match config.state:
         case Absent():
             return (f"no {state}",)
-        case Unread():
-            # Not a screen: the file's own refusal, which runnable says.
-            return ()
+        case Unread() as unread:
+            # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot read.
+            return (_unreadable(state, unread),)
         case State(onboarded=onboarded, trusted=trusted, answered=answered):
             pass
     key = config.settings.key if isinstance(config.settings, Settings) else config.settings
