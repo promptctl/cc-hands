@@ -36,7 +36,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain import configdir
-from hands.brain.configdir import Mode, Unstartable, account_kept_out, answered, brain_claude, run_directory, unanswered
+from hands.brain.configdir import Unstartable, account_kept_out, answered, brain_claude, run_directory, unanswered
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
 from hands.clock import Clock, wait
@@ -44,7 +44,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
-from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PermissionMode, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -273,7 +273,7 @@ def _conversing(conversation: Conversation) -> tuple[str, str]:
             return ("--resume", session)
 
 
-def command(launch: Launch, claude: Path, hooks: str, mode: Mode | None) -> list[str]:
+def command(launch: Launch, claude: Path, hooks: str, mode: PermissionMode | None) -> list[str]:
     """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`;
     `mode` is the permission mode the brain's own settings name, if they name one."""
     return [
@@ -573,7 +573,7 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
     held = configdir.settings(config_dir)
     account_kept_out(held)
-    first_run = unanswered(config_dir, held)
+    first_run = unanswered(held)
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
@@ -586,13 +586,13 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
-    answered(config_dir, configdir.settings(config_dir))
-    held = logged_in(children, config_dir, base_url, inherited)
+    answered(configdir.settings(config_dir))
+    account = logged_in(children, config_dir, base_url, inherited)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
     # brain on another login than the one asked for.
-    if held.method != AUTH_METHODS[method]:
-        raise LoginFailed(f"the brain holds {held}, not the {AUTH_METHODS[method]} login asked for")
-    return Login(held, first_run)
+    if account.method != AUTH_METHODS[method]:
+        raise LoginFailed(f"the brain holds {account}, not the {AUTH_METHODS[method]} login asked for")
+    return Login(account, first_run)
 
 
 def logged_in(children: Children, config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:

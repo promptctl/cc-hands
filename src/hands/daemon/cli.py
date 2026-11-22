@@ -23,7 +23,7 @@ from loguru import logger
 
 from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, readiness, update, watchdog
-from hands.daemon.backend import preflight, weigh
+from hands.daemon.backend import copies, weigh
 from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, SampleLines, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start
@@ -418,8 +418,8 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
 
 
 def door(home: Home, run_start: Start, model: str | None) -> Settings:
-    """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, its
-    home's files as `preflight` reads them, and the settings it starts on. CannotStart where any is missing or stale."""
+    """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, the
+    home's copy of fritter and its shim, and the settings it starts on. CannotStart where any is missing or stale."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -429,10 +429,10 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
     if not granted:
         talkkey.ask()
         raise CannotStart(f"{readiness.grant(granted).said}, then run hands again.")
-    read = preflight(home)
-    run_start.heard(fritter=read.fritter, shim=read.shim)
-    if read.refused is not None:
-        raise CannotStart(f"{read.refused}, then run hands again.")
+    held = copies(home)
+    run_start.heard(fritter=held.fritter, shim=held.shim)
+    if held.refusals:
+        raise CannotStart(f"{'; '.join(held.refusals)}, then run hands again.")
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
     # an edit to them all take these.
     try:
@@ -631,7 +631,7 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(weigh, home)), SampleLines(home, settings.model), clock)
+    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(weigh, home)), SampleLines(home, settings), clock)
 
 
 def start_indicator(home: Home) -> int:

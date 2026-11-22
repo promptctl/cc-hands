@@ -89,10 +89,14 @@ def packaged() -> Path:
     [LAW:single-enforcer] the one check that this hands carries its fritter, for everything that runs or copies it: the
     brain and `hands install-fritter` refuse a hands built without it in the same words."""
     if not PACKAGED.is_file():
-        raise Unpackaged(
-            f"hands' package carries no fritter at {PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
-        )
+        raise Unpackaged(rebuild())
     return PACKAGED
+
+
+def rebuild() -> str:
+    """The rebuild a hands built without its fritter needs, as a fix says it: Unpackaged's, and the one a fix that runs
+    `hands install-fritter` names ahead of it in such a hands, which cannot run it until rebuilt."""
+    return f"hands' package carries no fritter at {PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
 
 
 def carried(fritter: Path) -> bool:

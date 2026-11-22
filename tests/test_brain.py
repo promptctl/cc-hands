@@ -26,14 +26,14 @@ from loguru import logger
 
 from hands.core.playback import Bookmark
 from hands.brain import configdir, pinned, process
-from hands.brain.configdir import Mode, Unstartable, account_kept_out, unanswered
+from hands.brain.configdir import Unstartable, account_kept_out, unanswered
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
-from hands.core.session import DenyAndInterrupt, Permission
+from hands.core.session import DenyAndInterrupt, Permission, PermissionMode
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed
@@ -443,9 +443,9 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
 async def test_the_brain_starts_with_the_mode_its_settings_name_on_its_command_line_and_its_launch_says_which(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir(tmp_path / "brain")
     (tmp_path / "brain" / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "manual"}}))
-    told: list[Mode | None] = []
+    told: list[PermissionMode | None] = []
 
-    def told_of(launched: Launch, claude: Path, hooks: str, mode: Mode | None) -> list[str]:
+    def told_of(launched: Launch, claude: Path, hooks: str, mode: PermissionMode | None) -> list[str]:
         told.append(mode)
         return command(launched, claude, hooks, mode)
 
@@ -1616,10 +1616,10 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
     brain = tmp_path / "brain"
     onboard(brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-0123456789abcdefghijklmn"}}')
     # The brain would start on Claude Code's screen asking whether to use the key, with nobody at its keyboard.
-    assert unanswered(brain, configdir.settings(brain)) == f"the API key {brain / 'settings.json'} sets unanswered"
+    assert unanswered(configdir.settings(brain)) == f"the API key {brain / 'settings.json'} sets unanswered"
     assert main(["--home", str(tmp_path), "login", "--console"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
-    assert unanswered(brain, configdir.settings(brain)) is None
+    assert unanswered(configdir.settings(brain)) is None
 
 
 @pytest.mark.outside

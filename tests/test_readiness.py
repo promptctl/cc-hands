@@ -882,16 +882,13 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
 
 
-def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = Home(root / "home")
-    startable_home(home, monkeypatch)
-    found = readiness.configured(children_on(SYSTEM), home, {"HANDS_DEBUG": "1"})
+def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
+    found = readiness.configured(children_on(SYSTEM), Home(root / "home"), {"HANDS_DEBUG": "1"})
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
 def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
-    startable_home(home, monkeypatch)
 
     def unspawnable(*_: object) -> object:
         raise PermissionError("claude is not executable")
@@ -907,6 +904,8 @@ def test_a_home_a_start_would_refuse_is_missing_as_the_start_refuses_it(root: Pa
     (home.brain / "settings.json").write_text("{}")
     found = readiness.configured(children_on(SYSTEM), home, {})
     assert isinstance(found, Missing) and "would load its account's syncClaudeAiSkills" in found.fix
+
+
 def test_the_brain_says_its_account_and_never_a_key() -> None:
     found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com")))
     assert found == Ready("brain logged in as brain@example.com (claude.ai)", "the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5")
@@ -1030,24 +1029,23 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.outside
 @pytest.mark.parametrize(
-    ("undo", "steps"),
-    # A start is refused on a brain with no claude to run, so the backend's step says so beside the claude's own.
-    [(no_hands, ("hands",)), (unshimmed, ("shim",)), (no_plugin, ("plugin",)), (unpinned, ("brain_claude", "backend")), (logged_out, ("backend",)), (ungranted, ("grant",)), (not_running, ("running",))],
+    ("undo", "step"),
+    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (unpinned, "brain_claude"), (logged_out, "backend"), (ungranted, "grant"), (not_running, "running")],
     ids=["hands", "shim", "plugin", "brain_claude", "backend", "grant", "running"],
 )
 def test_a_home_missing_one_step_names_that_step_and_exits_1(
-    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, steps: tuple[str, ...]
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, step: str
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), **dict.fromkeys(steps, "✗")}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), step: "✗"}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
-    assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each in steps else "Ready" for each in STEPS]
-    # It fails saying why: each missing step, the first line of what was found of it, and its fix.
-    missing = [finding for finding in event["facts"]["findings"] if finding["type"] == "Missing"]
-    assert event["error"] == "exited 1: " + "; ".join(f"{each['step']}: {each['detail'].partition('\n')[0]}: {each['fix'].partition('\n')[0]}" for each in missing)
+    assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each == step else "Ready" for each in STEPS]
+    # It fails saying why: the missing step, the first line of what was found of it, and its fix.
+    [missing] = [finding for finding in event["facts"]["findings"] if finding["type"] == "Missing"]
+    assert event["error"] == f"exited 1: {missing['step']}: {missing['detail'].partition('\n')[0]}: {missing['fix'].partition('\n')[0]}"
 
 
 @pytest.mark.outside

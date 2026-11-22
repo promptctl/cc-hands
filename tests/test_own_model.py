@@ -1,6 +1,7 @@
 """hands' own model: chosen by voice as an edit to config.toml, made only once the user has heard hands say it is switching."""
 
 import asyncio
+import re
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -53,6 +54,15 @@ def test_a_model_chosen_with_no_file_is_the_default_backend_on_that_model(tmp_pa
     _own(home).weigh(" claude-opus-5-5 ")()
     assert home.config.read_text() == '[llm]\nmodel = "claude-opus-5-5"\n'
     assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"))
+
+
+@pytest.mark.parametrize("text", ["[llm", "llm = 3\n"])
+def test_a_model_chosen_over_a_file_a_start_would_refuse_is_refused_saying_what_is_wrong(tmp_path: Path, text: str) -> None:
+    home = Home(tmp_path)
+    home.config.write_text(text)
+    with pytest.raises(Rejected, match=re.escape(str(home.config))):
+        _own(home).weigh("claude-opus-5-5")
+    assert home.config.read_text() == text
 
 
 def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_path: Path) -> None:

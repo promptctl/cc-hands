@@ -160,6 +160,7 @@ def test_a_file_naming_a_transcription_server_or_a_whisper_model_is_refused() ->
 def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(tmp_path / ".hands")
+    onboard(home.brain)
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
         run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ)
 
@@ -302,22 +303,24 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
 
 def test_a_brain_that_would_load_its_accounts_skills_stops_the_start_naming_the_switches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
     home = Home(tmp_path / ".hands")
-    startable_home(home, monkeypatch)
+    mark = startable_home(home, monkeypatch)
     # Left out, as Claude Code reads a settings.json that is not there, each switch is on.
     (home.brain / "settings.json").unlink()
     with pytest.raises(Rejected, match='its account\'s syncClaudeAiSkills and syncClaudeAiPlugins: set'):
-        weigh(home)
+        backend(children_on(SYSTEM), Claude(), home, {})
     (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
     with pytest.raises(Rejected, match='its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'):
-        weigh(home)
+        backend(children_on(SYSTEM), Claude(), home, {})
+    # Refused before the login is asked, which would run the brain's claude.
+    assert not mark.exists()
 
 
 def test_a_brain_whose_settings_name_a_mode_claude_code_does_not_take_stops_the_start_naming_the_modes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
     home = Home(tmp_path / ".hands")
     startable_home(home, monkeypatch)
     (home.brain / "settings.json").write_text('{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "permissions": {"defaultMode": "acceptedits"}}')
-    with pytest.raises(Rejected, match='a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in'):
-        weigh(home)
+    with pytest.raises(Rejected, match='a defaultMode Claude Code does not take, "acceptedits": name one of default, acceptEdits, plan, auto, dontAsk, bypassPermissions, manual in'):
+        backend(children_on(SYSTEM), Claude(), home, {})
 
 
 def test_a_hands_built_without_its_fritter_stops_the_start_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,22 +328,37 @@ def test_a_hands_built_without_its_fritter_stops_the_start_naming_the_rebuild(tm
     startable_home(home, monkeypatch)
     monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
     with pytest.raises(Rejected, match=r"hands' package carries no fritter at .*/package/bin/fritter: install hands again"):
-        weigh(home)
+        backend(children_on(SYSTEM), Claude(), home, {})
 
 
 def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_start_naming_hands_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
     home = Home(tmp_path / ".hands")
-    startable_home(home, monkeypatch)
+    mark = startable_home(home, monkeypatch)
     onboard_again(home.brain, trusted=False)
     with pytest.raises(Rejected, match=r"first screens \(.*/cwd untrusted\): `hands login` answers them"):
+        backend(children_on(SYSTEM), Claude(), home, {})
+    assert not mark.exists()
+
+
+def test_every_refusal_of_a_home_is_said_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
+    # One restart says every fix the home needs, never one fault a start.
+    home = Home(tmp_path / ".hands")
+    startable_home(home, monkeypatch)
+    _stale_shim(home)
+    _unpinned(home)
+    onboard_again(home.brain, trusted=False)
+    (home.brain / "settings.json").write_text("{}")
+    with pytest.raises(Rejected, match=r"is not the shim this hands writes.*; .*is not installed at.*; .*untrusted.*; the brain would load its account's"):
         weigh(home)
 
 
 @pytest.mark.outside
-def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
+def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path, tmp_path: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain)
     with pytest.raises(Rejected, match="`hands login` gives it one"):
-        backend(children_on(SYSTEM), Claude(), HOME, os.environ)
+        backend(children_on(SYSTEM), Claude(), home, os.environ)
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
@@ -452,7 +470,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, lambda: None), config.SampleLines(home, None), SYSTEM)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, lambda: None), config.SampleLines(home, _NO_FILE), SYSTEM)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -579,6 +597,41 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
+def _unpinned(home: Home) -> None:
+    (home.root / "pinned-claude").unlink()
+
+
+def _stale_fritter(home: Home) -> None:
+    home.fritter.parent.mkdir(parents=True, exist_ok=True)
+    home.fritter.write_bytes(b"an older hands' fritter")
+
+
+def _stale_shim(home: Home) -> None:
+    home.shim.parent.mkdir(parents=True, exist_ok=True)
+    home.shim.write_text(f"#!/bin/sh\n{wrapper.MARK}\n")
+
+
+def _untrusted(home: Home) -> None:
+    onboard_again(home.brain, trusted=False)
+
+
+def _synced(home: Home) -> None:
+    (home.brain / "settings.json").write_text("{}")
+
+
+def _unknown_mode(home: Home) -> None:
+    (home.brain / "settings.json").write_text('{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "permissions": {"defaultMode": "yolo"}}')
+
+
+def _unreadable_state(home: Home) -> None:
+    (home.brain / ".claude.json").chmod(0)
+
+
+def _unparsable_answers(home: Home) -> None:
+    state = home.brain / ".claude.json"
+    state.write_text(json.dumps({**json.loads(state.read_text()), "customApiKeyResponses": {"approved": [{}]}}))
+
+
 def test_a_home_whose_fritter_is_not_the_one_hands_carries_refuses_the_start_at_the_door_naming_install_fritter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # As after updating hands: the home's copy is the fritter an older hands carried, which may not know what this one asks.
     from hands.voice import talkkey
@@ -618,19 +671,16 @@ def test_a_home_whose_fritter_is_the_one_hands_carries_or_none_passes_the_door(c
     assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [(copy, "not-a-shim")]
 
 
-def test_a_hands_built_without_its_fritter_is_refused_at_the_door_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("broken", [_untrusted, _unpinned, _synced])
+def test_a_home_whose_brain_a_start_would_refuse_passes_the_door_so_the_survey_says_it_beside_every_other_step(broken: Callable[[Home], None], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Refused as the start is configured (backend), where the readiness survey is said whether or not hands can start.
     from hands.voice import talkkey
 
     home = Home(tmp_path / ".hands")
     startable_home(home, monkeypatch)
-    monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
+    broken(home)
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    run_start = Start(restarted=False, clock=SYSTEM)
-    with pytest.raises(CannotStart, match=re.escape(f"hands' package carries no fritter at {wrapper.PACKAGED}")):
-        cli.door(home, run_start, None)
-    events: list[WideEvent] = []
-    run_start.ended(events.append, None)
-    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("unpackaged", "not-a-shim")]
+    assert cli.door(home, Start(restarted=False, clock=SYSTEM), None) == config.load(home)
 
 
 def test_a_home_whose_shim_is_not_the_one_hands_writes_refuses_the_start_at_the_door_naming_install_fritter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -841,36 +891,6 @@ async def test_a_settings_edit_and_a_model_chosen_by_voice_are_weighed_without_s
     assert not mark.exists()
 
 
-def _unpinned(home: Home) -> None:
-    (home.root / "pinned-claude").unlink()
-
-
-def _stale_fritter(home: Home) -> None:
-    home.fritter.parent.mkdir(parents=True, exist_ok=True)
-    home.fritter.write_bytes(b"an older hands' fritter")
-
-
-def _stale_shim(home: Home) -> None:
-    home.shim.parent.mkdir(parents=True, exist_ok=True)
-    home.shim.write_text(f"#!/bin/sh\n{wrapper.MARK}\n")
-
-
-def _untrusted(home: Home) -> None:
-    onboard_again(home.brain, trusted=False)
-
-
-def _synced(home: Home) -> None:
-    (home.brain / "settings.json").write_text("{}")
-
-
-def _unknown_mode(home: Home) -> None:
-    (home.brain / "settings.json").write_text('{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "permissions": {"defaultMode": "yolo"}}')
-
-
-def _unreadable_state(home: Home) -> None:
-    (home.brain / ".claude.json").chmod(0)
-
-
 @pytest.mark.parametrize(
     ("broken", "said"),
     [
@@ -880,7 +900,8 @@ def _unreadable_state(home: Home) -> None:
         (_untrusted, "untrusted"),
         (_synced, "would load its account's syncClaudeAiSkills and syncClaudeAiPlugins"),
         (_unknown_mode, 'defaultMode Claude Code does not take, "yolo"'),
-        (_unreadable_state, ".claude.json unreadable"),
+        (_unreadable_state, ".claude.json cannot be read"),
+        (_unparsable_answers, ".claude.json unreadable"),
     ],
 )
 async def test_an_edit_a_start_would_refuse_on_its_homes_files_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path, broken: Callable[[Home], None], said: str) -> None:
@@ -930,6 +951,27 @@ async def test_an_edit_refused_on_the_brains_home_is_said_once_and_taken_once_th
         watching.cancel()
 
 
+async def test_a_refused_edit_saved_again_after_a_revert_is_said_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    opus, haiku = b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-haiku-4-5-20251001"\n'
+    # What each poll reads: the edit, a revert to the run's settings (none), the edit again, then another edit taken.
+    reads = iter([opus, opus, None, None, opus, opus, haiku, haiku, haiku])
+
+    def held(_home: Home) -> bytes | None:
+        return next(reads)
+
+    monkeypatch.setattr(config, "_held", held)
+    verdicts = iter([Rejected("refused"), Rejected("refused"), None])
+
+    def weighed() -> None:
+        if (verdict := next(verdicts)) is not None:
+            raise verdict
+
+    recorded: list[Entry] = []
+    assert await config.edited(home, recorded.append, weighed, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert recorded == [SettingsEdited(path=str(home.config), refused="refused")] * 2
+
+
 async def test_a_comment_added_is_no_edit(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
@@ -947,17 +989,17 @@ async def test_a_sample_line_edited_is_no_edit_since_it_is_read_where_it_is_said
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.2))
     await asyncio.sleep(0.05)
-    config.SampleLines(home, None).keep("mary", "Mary here.")
+    config.SampleLines(home, _NO_FILE).keep("mary", "Mary here.")
     assert await watching is None
     assert recorded == []
-    assert config.SampleLines(home, None).read() == {"mary": "Mary here."}
+    assert config.SampleLines(home, _NO_FILE).read() == {"mary": "Mary here."}
 
 
 def test_a_sample_line_kept_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
     home = Home(tmp_path)
     written = '# hands, by hand\n[llm]\nmodel = "claude-opus-5-5"  # for now\n\n[sample_lines]\nalba = "Alba here."  # hers\n'
     home.config.write_text(written)
-    lines = config.SampleLines(home, None)
+    lines = config.SampleLines(home, _NO_FILE)
     lines.keep("vctk/p225_023_enhanced", "  From the library.  ")
     assert home.config.read_text() == written + '"vctk/p225_023_enhanced" = "From the library."\n'
     lines.keep("alba", "Alba, again.")
@@ -982,17 +1024,17 @@ def test_a_sample_line_is_never_kept_in_a_file_a_start_would_refuse(tmp_path: Pa
     home = Home(tmp_path)
     home.config.write_text('[llm]\nmodel = "gpt-9"\n')
     with pytest.raises(Rejected, match="not gpt-9"):
-        config.SampleLines(home, None).keep("mary", "Mary here.")
+        config.SampleLines(home, _NO_FILE).keep("mary", "Mary here.")
     assert home.config.read_text() == '[llm]\nmodel = "gpt-9"\n'
-    assert config.SampleLines(Home(tmp_path / "none"), None).read() == {}
+    assert config.SampleLines(Home(tmp_path / "none"), _NO_FILE).read() == {}
 
 
 def test_a_sample_line_is_kept_on_the_runs_model_flag_as_the_run_reads_its_settings(tmp_path: Path) -> None:
     home = Home(tmp_path)
     # Outranked by --model, the file's model is never read, so a start takes the file, and so does the keep.
     home.config.write_text('[llm]\nmodel = "gpt-9"\n')
-    config.SampleLines(home, "claude-opus-5-5").keep("mary", "Mary here.")
-    assert config.SampleLines(home, "claude-opus-5-5").read() == {"mary": "Mary here."}
+    config.SampleLines(home, config.load(home, "claude-opus-5-5")).keep("mary", "Mary here.")
+    assert config.SampleLines(home, config.load(home, "claude-opus-5-5")).read() == {"mary": "Mary here."}
 
 
 async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Path) -> None:

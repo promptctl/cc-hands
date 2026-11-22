@@ -26,7 +26,7 @@ from hands.core.effects import Fritter
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
-from hands.daemon.backend import backend as resolve, preflight
+from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
 from hands.sessions import child, heartbeat, liveness, wrapper
 from hands.sessions.child import Children
@@ -169,15 +169,12 @@ def brain_claude(home: Home) -> Finding:
 
 
 def configured(children: Children, home: Home, environment: Mapping[str, str]) -> Finding:
-    """Whether the brain has the login it reaches its model with."""
+    """Whether the brain would start on its home, with the login it reaches its model with."""
     try:
         config = load(home).config
     except Rejected as error:
         # The refusal names the file and what is wrong with it, so it is the detail, and the line names the file to mend.
         return Missing("settings unreadable", f"hands cannot read its settings: {error}", f"correct {home.config}")
-    # [LAW:single-enforcer] what a start refuses on in its home's files, as the start reads it at its door.
-    if (refused := preflight(home).refused) is not None:
-        return Missing("hands cannot start on its home", "hands would refuse to start", refused)
     try:
         reached: Finding = reaching(resolve(children, config.llm, home, environment))
     except Rejected as error:

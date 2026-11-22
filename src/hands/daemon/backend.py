@@ -1,10 +1,13 @@
-"""What a start of hands refuses on: its home's files, read by `preflight` with no process started, and the login the
-backend config.toml names reaches its model on, in an environment that names no setting.
+"""What a start of hands refuses on, each read with no process started but the last: the home's copies of fritter and
+its shim (`copies`), which the start's door refuses on; the brain's home (`brain`), which the start refuses on as it is
+configured, with every other step of `hands check` said beside it; and the login the backend config.toml names reaches
+its model on, in an environment that names no setting (`backend`).
 
-`preflight` is read by every start at its door, by `hands check`, and by a settings edit or a model chosen by voice before
-the run starts again on it, so an edit the start would refuse is said and outlived. The login is a Claude Code of its own
-(`hands.brain.process.logged_in`), so it is read by `backend` alone, as a start builds its brain and by `hands check`,
-never to weigh an edit: the running brain's login is the account its start read.
+[LAW:single-enforcer] `weigh` is both reads of the home together, so a settings edit or a model chosen by voice is
+weighed on every refusal of the home's files a start would meet, and none of them can refuse what a start takes. The
+login is a Claude Code of its own (`hands.brain.process.logged_in`), so it is read by `backend` alone, as a start builds
+its brain and by `hands check`, never to weigh an edit: a brain logged out since its start still passes the weigh and is
+refused at the restart, until the live login is read from the brain's own proxy answers (promptctl-brain-uoz0.gi7).
 """
 
 from collections.abc import Mapping
@@ -22,73 +25,67 @@ from hands.voice.backends import ClaudeCodeBackend
 
 
 @dataclass(frozen=True)
-class Preflight:
-    """What a start reads of its home before anything runs: the home's copy of fritter and its shim, as the start's event
-    records them, and why the start would be refused, where it would."""
+class Copies:
+    """The home's copy of fritter and its shim, as this hands finds them and the start's event records them, and every
+    refusal of a start they make."""
 
     fritter: wrapper.Copy | Literal["unreadable"]
     shim: Literal["current", "stale", "not-a-shim"]
-    refused: str | None
+    refusals: tuple[str, ...]
 
 
-def preflight(home: Home) -> Preflight:
-    """[LAW:single-enforcer] the one list of what a start refuses on in its home's files, read by the start, `hands
-    check`, and the weigh of an edit alike, so none of them can refuse what another takes."""
+def copies(home: Home) -> Copies:
+    """The home's copy of fritter and its shim, as this hands finds them."""
     # [LAW:no-silent-failure] every session this home's shim starts runs the home's copy of fritter, which updating hands
     # leaves as the older hands copied it, so this hands may ask it what it cannot do: a stale copy is refused, naming its
-    # fix, before any brain types through it. No copy yet, a hands that carries none, or a PATH whose claude is not this
-    # home's shim, is the survey's to say.
+    # fix. No copy yet, or a PATH whose claude is not this home's shim, is the survey's to say; a hands that carries no
+    # fritter is the brain's refusal (`brain`), since the brain runs under it.
     try:
         fritter: wrapper.Copy | Literal["unreadable"] = wrapper.copy_of(home)
-        copied = f"{home.fritter} is not the fritter this hands carries, {wrapper.PACKAGED}, so sessions started under it may not do what this hands asks of them: run `hands install-fritter`" if fritter == "stale" else None
+        copied: tuple[str, ...] = (f"{home.fritter} is not the fritter this hands carries, {wrapper.PACKAGED}, so sessions started under it may not do what this hands asks of them: run `hands install-fritter`",) if fritter == "stale" else ()
     except OSError as error:
-        fritter, copied = "unreadable", f"cannot tell whether {home.fritter} is the fritter this hands carries: {error}"
+        fritter, copied = "unreadable", (f"cannot tell whether {home.fritter} is the fritter this hands carries: {error}",)
     # The home's shim is the claude every session hands starts runs, and updating hands leaves it as the older hands wrote
     # it, without what this hands writes into it, its auto-updater switched off among the rest: refused the same way.
+    # `hands install-fritter` is the fix, which a hands that carries no fritter, as copy_of found it, cannot run until rebuilt.
+    rebuilt = f"{wrapper.rebuild()}, then " if fritter == "unpackaged" else ""
     shim: Literal["current", "stale", "not-a-shim"]
     match wrapper.shim_of(home.shim):
         case wrapper.Stale():
-            shim, shimmed = "stale", f"{home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: {_rebuilt()}run `hands install-fritter`"
+            shim, shimmed = "stale", (f"{home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: {rebuilt}run `hands install-fritter`",)
         case None:
-            shim, shimmed = "not-a-shim", None
+            shim, shimmed = "not-a-shim", ()
         case wrapper.Shim():
-            shim, shimmed = "current", None
-    refusals = (copied, shimmed, _brain(home))
-    return Preflight(fritter, shim, next((refusal for refusal in refusals if refusal is not None), None))
+            shim, shimmed = "current", ()
+    return Copies(fritter, shim, (*copied, *shimmed))
+
+
+def brain(home: Home) -> tuple[str, ...]:
+    """Every refusal of a start of the brain on its home: its config directory as `startable` reads it, and the fritter
+    hands' package carries, which the brain runs under."""
+    try:
+        wrapper.packaged()
+        unpackaged: tuple[str, ...] = ()
+    except wrapper.Unpackaged as error:
+        unpackaged = (str(error),)
+    return (*startable(home.brain), *unpackaged)
 
 
 def weigh(home: Home) -> None:
-    """Raises Rejected naming what in its home's files a start of hands would be refused on: an edit's weigh."""
-    if (refused := preflight(home).refused) is not None:
-        raise Rejected(refused)
-
-
-def _brain(home: Home) -> str | None:
-    """Why the brain could not start on its home, or None when it could."""
-    try:
-        startable(home.brain)
-        # The brain runs under the fritter hands' package carries: a hands built without it is refused here, not at its start.
-        wrapper.packaged()
-    except (Unstartable, wrapper.Unpackaged) as error:
-        return str(error)
-    return None
-
-
-def _rebuilt() -> str:
-    """The rebuild `hands install-fritter` needs first, ahead of it in a fix, where this hands carries no fritter."""
-    try:
-        wrapper.packaged()
-    except wrapper.Unpackaged as error:
-        return f"{error}, then "
-    return ""
+    """Raises Rejected naming every refusal of a start in its home's files: an edit's weigh."""
+    if refusals := (*copies(home).refusals, *brain(home)):
+        raise Rejected("; ".join(refusals))
 
 
 def backend(children: Children, llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCodeBackend:
-    """The brain on the model the settings name, given the login it reaches its model with; raises Rejected naming what it cannot have."""
+    """The brain on the model the settings name, given a home it would start on and the login it reaches its model with;
+    raises Rejected naming what it cannot have."""
     # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
     # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
     if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
         raise Rejected(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
+    if refusals := brain(home):
+        raise Rejected("; ".join(refusals))
     # Imported here, so that only a check loads the brain's process, its MCP server, and Pipecat's tools.
     from hands.brain.process import NotLoggedIn, logged_in
 
