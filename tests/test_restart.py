@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from loguru import logger
 
-from conftest import PLUGIN_PATH, skill_command, unedited
+from conftest import PLUGIN_PATH, skill_command, startable_home, unedited
 from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership, SessionId
 from hands.daemon import cli
@@ -336,11 +336,12 @@ def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> Non
 
 
 @pytest.mark.outside
-def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fritter: Path) -> None:
     # The run before's indicator judged the heartbeat by the code that run had; this run's is started on the code it runs.
     from hands.voice import talkkey
 
     home = Home(tmp_path)
+    startable_home(home, monkeypatch)
     previous = spawned("sleep", "60")
     # [LAW:behavior-not-structure] the order is the contract: the one before is gone before this run's is shown.
     steps: list[str] = []

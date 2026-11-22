@@ -104,7 +104,8 @@ from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
-from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
+from hands.brain.configdir import Unstartable
+from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -235,6 +236,7 @@ async def run(
     environment: Mapping[str, str],
     run_start: Start,
     own: OwnModel,
+    lines: SampleLines,
     clock: Clock,
 ) -> Ended:
     """[LAW:effects-at-boundaries] `clock` is the one clock every part of the run reads time, ids, and randomness from."""
@@ -293,7 +295,7 @@ async def run(
         if config is not None:
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
-            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home))
+            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, lines)
             tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)

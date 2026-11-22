@@ -102,40 +102,43 @@ def load(home: Home, model: str | None = None) -> Settings:
     return Settings(held, _settings(home, held, model), model)
 
 
-async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
+async def edited(home: Home, record: Record, weigh: Callable[[], None], running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
     """The edit, once the file holds settings other than `running`, the ones the run was started on: written, rewritten,
     or removed.
 
     [LAW:no-ambient-temporal-coupling] weighed against the bytes the run read, not a read of its own, so an edit is never
-    missed, however late after the run's read the watch begins. An edit is weighed once its
-    bytes read the same on two polls, so a save an editor writes in two steps is weighed whole, and it is taken only
-    while the file still holds it once weighed. One that does not parse, or names a model `reachable` refuses, is
-    said and outlived, and the run keeps the settings it has; the next edit is weighed as any other. One whose
-    settings are the run's, a comment or a revert, is no edit.
+    missed, however late after the run's read the watch begins. An edit is weighed once its bytes read the same on two
+    polls, so a save an editor writes in two steps is weighed whole, and it is taken only while the file still holds it
+    once weighed. One that does not parse, or that `weigh` says a start would be refused on, is said and outlived, and
+    the run keeps the settings it has. It is weighed again at every poll while the file holds it, since a refusal can be
+    a fact of the brain's home, which `hands login` can mend with the file left as it is; each refusal is said once. One
+    whose settings are the run's, a comment or a revert, is no edit.
+
+    [LAW:one-way-deps] `weigh` is handed in, the start's own (`hands.daemon.backend.weigh`): the backend imports this
+    module for the setting it reaches its model with, so this one cannot import it.
     """
     seen: bytes | _Unreadable | None = running.held
-    weighed = seen
+    said: tuple[bytes | _Unreadable | None, str] | None = None
     while True:
         await clock.sleep(period)
         if (now := _held(home)) != seen:
             seen = now
             continue
-        if now == weighed:
-            continue
         try:
             # [LAW:one-source-of-truth] weighed on the run's --model, as the run's own settings were, so an edit to the
             # file's model alone is no edit while one outranks it.
-            settings = _settings(home, _readable(home, now), running.model)
-            if settings != running.config:
-                # reachable blocks, on the brain's login check, on a thread a stop does not wait for.
-                await off_loop(partial(reachable, settings), "weighing a settings edit")
-                if _held(home) == now:
-                    return SettingsEdited(path=str(home.config), refused=None)
-                # Saved over while weighed: no verdict, so these bytes are weighed again should they come back.
+            if _settings(home, _readable(home, now), running.model) == running.config:
                 continue
+            # On a thread a stop does not wait for: a pinned claude whose file has changed since this process hashed it
+            # is read whole to be hashed again, about 230 MB.
+            await off_loop(weigh, "weighing a settings edit")
+            if _held(home) == now:
+                return SettingsEdited(path=str(home.config), refused=None)
+            # Saved over while weighed: weighed again, as the file holds it now, once it reads the same on two polls.
         except Rejected as error:
-            record(SettingsEdited(path=str(home.config), refused=str(error)))
-        weighed = now
+            if said != (now, str(error)):
+                said = (now, str(error))
+                record(SettingsEdited(path=str(home.config), refused=str(error)))
 
 
 class OwnModel:
@@ -147,10 +150,11 @@ class OwnModel:
     starting again on it once `edited` has weighed it.
     """
 
-    def __init__(self, home: Home, running: Settings, reachable: Callable[[Config], object]) -> None:
+    def __init__(self, home: Home, running: Settings, weigh: Callable[[], None]) -> None:
         self._home = home
         self._running = running
-        self._reachable = reachable
+        # The start's own weigh, handed in as `edited` is handed it.
+        self._weigh = weigh
         # [LAW:single-enforcer] the one lock over a switch of the model, taken by `hands.voice.modelswitch.switch_model`.
         self.changing = asyncio.Lock()
 
@@ -160,8 +164,9 @@ class OwnModel:
 
     def weigh(self, model: str) -> Callable[[], None]:
         """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
-        a start on it could not reach its model: weighed here as `edited` weighs an edit by hand, so a choice by voice is
-        refused while the user is there to hear why, never written to be refused after."""
+        a start would be refused on its home's files: weighed here as `edited` weighs an edit by hand, so a choice by
+        voice is refused while the user is there to hear why, never written to be refused after. The brain's login is
+        not weighed: the running brain's is the account its start read."""
         if self._running.model is not None:
             # [LAW:one-source-of-truth] the file's model is not the run's while --model outranks it, so an edit to it would
             # change nothing until hands is started without the flag.
@@ -176,7 +181,7 @@ class OwnModel:
             # The file names it, and the run is not on it: an edit `edited` has yet to take, or one it refused, which the
             # same bytes written again would not change. Which of the two is not known here, so the reason names both.
             raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
-        self._reachable(chosen)
+        self._weigh()
         return partial(_keep, self._home, held, edited)
 
 
@@ -274,8 +279,10 @@ class SampleLines:
     none). An edit from the page is an edit to the file, its every other line kept as written, as OwnModel's is.
     """
 
-    def __init__(self, home: Home) -> None:
+    def __init__(self, home: Home, model: str | None) -> None:
         self._home = home
+        # The run's --model, which an edit is weighed on as the run's own settings were.
+        self._model = model
 
     def read(self) -> dict[str, str]:
         held = _readable(self._home, _held(self._home))
@@ -289,8 +296,8 @@ class SampleLines:
     def keep(self, voice: str, line: str) -> None:
         """`voice` says `line` from its next hearing on; a blank line takes its line out, so it says hands' own again."""
         held = _readable(self._home, _held(self._home))
-        # The file is taken whole first, so an edit is only ever made to settings a start would take.
-        _settings(self._home, held)
+        # The file is taken whole first, on the run's --model, so an edit is only ever made to settings a start would take.
+        _settings(self._home, held, self._model)
         _keep(self._home, held, _with_line(held, voice, line.strip()))
 
 

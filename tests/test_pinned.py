@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 
 from hands.brain import pinned
-from hands.brain.process import Unstartable, brain_claude
+from hands.brain.configdir import Unstartable, brain_claude
 from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.home import Home

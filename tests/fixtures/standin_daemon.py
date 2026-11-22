@@ -42,7 +42,7 @@ def main() -> None:
         beating.cancel()
         return Ended(None, sessions.live_count())
 
-    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, lambda _settings: None, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
+    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, lambda: None, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
         case "quit":
             return
         case "restart":

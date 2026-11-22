@@ -23,8 +23,8 @@ from loguru import logger
 
 from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, readiness, update, watchdog
-from hands.daemon.backend import backend
-from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
+from hands.daemon.backend import preflight, weigh
+from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, SampleLines, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start
 from hands.tasks import cancel_and_wait
@@ -418,8 +418,8 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
 
 
 def door(home: Home, run_start: Start, model: str | None) -> Settings:
-    """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, the
-    home's copy of fritter and its shim, and the settings it starts on. CannotStart where any is missing or stale."""
+    """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, its
+    home's files as `preflight` reads them, and the settings it starts on. CannotStart where any is missing or stale."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -429,34 +429,10 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
     if not granted:
         talkkey.ask()
         raise CannotStart(f"{readiness.grant(granted).said}, then run hands again.")
-    # [LAW:no-silent-failure] every session this home's shim starts runs the home's copy of fritter, which updating hands
-    # leaves as the older hands copied it, so this hands may ask it what it cannot do: a stale copy is refused here,
-    # naming its fix, before any brain types through it. No copy yet, a hands that carries none, or a PATH whose claude
-    # is not this home's shim, is the survey's to say.
-    try:
-        copy = wrapper.copy_of(home)
-    except OSError as error:
-        run_start.heard(fritter="unreadable")
-        raise CannotStart(f"cannot tell whether {home.fritter} is the fritter this hands carries: {error}") from error
-    run_start.heard(fritter=copy)
-    if copy == "stale":
-        raise CannotStart(f"{home.fritter} is not the fritter this hands carries, {wrapper.PACKAGED}, so sessions started under it may not do what this hands asks of them: run `hands install-fritter`, then run hands again.")
-    # The home's shim is the claude every session hands starts runs, and updating hands leaves it as the older hands wrote
-    # it, without what this hands writes into it, its auto-updater switched off among the rest: refused the same way.
-    # `hands install-fritter` is the fix, and a hands built without its fritter cannot run it until it is rebuilt.
-    match wrapper.shim_of(home.shim):
-        case wrapper.Stale():
-            run_start.heard(shim="stale")
-            try:
-                wrapper.packaged()
-                rebuilt = ""
-            except wrapper.Unpackaged as error:
-                rebuilt = f"{error}, then "
-            raise CannotStart(f"{home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: {rebuilt}run `hands install-fritter`, then run hands again.")
-        case None:
-            run_start.heard(shim="not-a-shim")
-        case wrapper.Shim():
-            run_start.heard(shim="current")
+    read = preflight(home)
+    run_start.heard(fritter=read.fritter, shim=read.shim)
+    if read.refused is not None:
+        raise CannotStart(f"{read.refused}, then run hands again.")
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
     # an edit to them all take these.
     try:
@@ -551,7 +527,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, Children(clock, record), home), settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(weigh, home), settings, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -632,13 +608,6 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def reachable(children: Children, home: Home, settings: Config) -> None:
-    """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
-    restart an edit asks for, so an edit hands could not start on, its brain logged out among them, is refused and
-    outlived, not restarted on."""
-    backend(children, settings.llm, home, os.environ)
-
-
 def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
@@ -662,7 +631,7 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, children, home)), clock)
+    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(weigh, home)), SampleLines(home, settings.model), clock)
 
 
 def start_indicator(home: Home) -> int:
@@ -947,7 +916,8 @@ def audit_log_of(clock: Clock, home: Home) -> audit.AuditLog:
 
 def login(children: Children, home: Home, method: "Method", record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
-    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
+    from hands.brain.configdir import Unstartable, starting_settings
+    from hands.brain.process import LoginFailed, NotLoggedIn
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 

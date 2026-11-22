@@ -49,6 +49,7 @@ from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions import child
 from hands.sessions.child import Children
+from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
@@ -798,6 +799,18 @@ def pin(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
     is ever the brain's."""
     monkeypatch.setattr(pinned, "claude", located(script))
     monkeypatch.setattr(pinned, "CHECKSUMS", dict.fromkeys(pinned.CHECKSUMS, sha256(script)))
+
+
+def startable_home(home: Home, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`home` as a start takes it at its door: its brain onboarded and its claude pinned to a script that leaves a mark
+    if it is ever run. The mark's path, which nothing that only reads the home ever makes."""
+    onboard(home.brain)
+    mark = home.root / "claude-ran"
+    claude = home.root / "pinned-claude"
+    claude.write_text(f"#!/bin/sh\ntouch {mark}\n")
+    claude.chmod(0o755)
+    pin(monkeypatch, claude)
+    return mark
 
 
 def pinned_to(script: Path) -> str:

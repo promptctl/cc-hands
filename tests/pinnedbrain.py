@@ -25,7 +25,8 @@ from conftest import children_on, located, new_sessions, RUN, running, unread
 from spoken import Received, Spoken
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
-from hands.brain.process import starting_settings, workdir
+from hands.brain.configdir import starting_settings
+from hands.brain.process import workdir
 from hands.clock import SYSTEM
 from hands.core.attention import Attention
 from hands.core.wire import SIDE_QUESTION_OPENING, Sent

@@ -25,11 +25,12 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from loguru import logger
 
 from hands.core.playback import Bookmark
-from hands.brain import pinned, process
+from hands.brain import configdir, pinned, process
+from hands.brain.configdir import Mode, Unstartable, account_kept_out, unanswered
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
-from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
@@ -418,24 +419,24 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
     brain = tmp_path / "brain"
     brain.mkdir()
     settings = brain / "settings.json"
-    assert settings_mode(brain) is None
+    assert configdir.settings(brain).mode is None
     settings.write_text(json.dumps({"syncClaudeAiSkills": False}))
-    assert settings_mode(brain) is None
+    assert configdir.settings(brain).mode is None
     settings.write_text(json.dumps({"permissions": {"defaultMode": "plan", "allow": ["Bash(ls:*)"]}}))
-    assert settings_mode(brain) == "plan"
+    assert configdir.settings(brain).mode == "plan"
     # Claude Code's other name for its default mode.
     settings.write_text(json.dumps({"permissions": {"defaultMode": "manual"}}))
-    assert settings_mode(brain) == "default"
+    assert configdir.settings(brain).mode == "default"
     settings.write_text(json.dumps({"permissions": {"defaultMode": "acceptedits"}}))
     with pytest.raises(Unstartable, match='name a defaultMode Claude Code does not take, "acceptedits"'):
-        settings_mode(brain)
+        configdir.settings(brain).mode
     settings.write_text(json.dumps({"permissions": {"defaultMode": 3}}))
     with pytest.raises(Unstartable, match="the brain's settings could not be read"):
-        settings_mode(brain)
+        configdir.settings(brain).mode
     settings.unlink()
     settings.mkdir()
     with pytest.raises(Unstartable, match="the brain's settings could not be read"):
-        settings_mode(brain)
+        configdir.settings(brain).mode
 
 
 @pytest.mark.outside
@@ -1312,7 +1313,7 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
             return False
         return True
 
-    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.session import BrainSession\nfrom hands.brain.process import _child_of, brain_claude, start\nfrom hands.clock import SYSTEM\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
+    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.session import BrainSession\nfrom hands.brain.configdir import brain_claude\nfrom hands.brain.process import _child_of, start\nfrom hands.clock import SYSTEM\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
     script += "".join(f"    {line}\n" for line in started.strip().splitlines()) + "    os._exit(0)\nasyncio.run(main())\n"
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
@@ -1493,7 +1494,7 @@ def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_code
     assert main(["--home", str(home), "login"]) == 0
     brain = home / "brain"
     assert json.loads((brain / "settings.json").read_text()) == {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False, "permissions": {"defaultMode": "default"}}
-    account_kept_out(brain)
+    account_kept_out(configdir.settings(brain))
     # Claude Code's own first run, on the brain's settings sources, in the directory the brain runs in, where its screens,
     # the trust of that directory among them, are answered once at this terminal; its settings there before it started,
     # so that it never syncs the account's skills or plugins; with no credential of this shell's beside it.
@@ -1524,7 +1525,7 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     (brain / ".claude.json").write_text("{}")
     assert main(["--home", str(tmp_path), "login"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
-    account_kept_out(brain)
+    account_kept_out(configdir.settings(brain))
     assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": "its onboarding unfinished", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
 
 
@@ -1615,10 +1616,10 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
     brain = tmp_path / "brain"
     onboard(brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-0123456789abcdefghijklmn"}}')
     # The brain would start on Claude Code's screen asking whether to use the key, with nobody at its keyboard.
-    assert unanswered(brain) == f"the API key {brain / 'settings.json'} sets unanswered"
+    assert unanswered(brain, configdir.settings(brain)) == f"the API key {brain / 'settings.json'} sets unanswered"
     assert main(["--home", str(tmp_path), "login", "--console"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
-    assert unanswered(brain) is None
+    assert unanswered(brain, configdir.settings(brain)) is None
 
 
 @pytest.mark.outside
