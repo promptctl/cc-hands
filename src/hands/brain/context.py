@@ -10,7 +10,6 @@ brain's and its compaction too, so each of them shares the main turn's cached pr
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from enum import Enum
 from typing import Protocol
 
 from loguru import logger
@@ -175,39 +174,27 @@ class Asking(Hearing, Protocol):
     def own(self, sent: Sent) -> Send | None: ...
 
 
-class Staged(Enum):
-    """An exchange of the brain's own, routed by the stage."""
-
-    STAGED = "staged"
-
-
-STAGED = Staged.STAGED
-
-
 class Kept:
     """The brain's listener on the wire: the stage's route, or a side question's for its own request, with the keeper's
     changes made before the route's own, and each exchange heard too by whatever else reads it: the brain, and what
     answers hands' side questions.
 
-    [LAW:single-enforcer] the proxy is the brain's alone, so every exchange on it is the brain's, whatever session it
-    names: a /clear, a /resume, or a `claude` the brain's Bash tool runs is heard and answered, never left silent. The
-    working sessions' tapped traffic never reaches the wire's listener (`hands.daemon.run`)."""
+    Every exchange on the proxy is the brain's, whatever session it names, as a /clear or a /resume moves it: the proxy's
+    url is given to the brain's Claude Code and to hands' side questions of it, and to nothing else. The working
+    sessions' tapped traffic is never told to the wire (`hands.daemon.run`)."""
 
     def __init__(self, stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
         self._stage = stage
         self._keeper = keeper
         self._asides = asides
         self._readers = (stage, keeper, *others, asides)
-        # Each request's route, decided as it is told and taken as it is routed (`Listener`): a side question's own
-        # Send, or the stage's to route (STAGED).
-        self._routes: dict[str, Send | Staged] = {}
 
     def route(self, sent: Sent) -> Route:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
         kept = self._keeper.changes(sent)
-        decided = self._routes.pop(sent.exchange)
-        routed = self._stage.route(sent) if decided is STAGED else decided
-        match routed:
+        # [LAW:single-enforcer] a side question's own request is routed by the question alone: the stage's routes are for
+        # what Claude Code sends, and never made for it.
+        match self._asides.own(sent) or self._stage.route(sent):
             # [LAW:one-source-of-truth] the Send as it was routed, every field carried, with the keeper's changes first.
             case Send() as send:
                 return replace(send, changes=(*kept, *send.changes))
@@ -215,12 +202,5 @@ class Kept:
                 return synthetic
 
     def hear(self, observed: Observed) -> None:
-        match observed:
-            case Sent() as sent:
-                # [LAW:single-enforcer] a side question's own request is routed by the question alone: the stage's
-                # routes are for what Claude Code sends, and never made for it. Asked once, as its request is told.
-                self._routes[sent.exchange] = self._asides.own(sent) or STAGED
-            case _:
-                pass
         for reader in self._readers:
             reader.hear(observed)

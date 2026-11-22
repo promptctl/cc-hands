@@ -5,7 +5,7 @@
 A copy is one connection of JSON lines, in the order the exchange happened: the request, then the reply's head and each
 chunk of its bytes as they came, then its end, or instead that the upstream was never reached (fritter/tap.go). Each is
 read into the Sent, Heard, and Exchanged the proxy makes of the brain's exchanges, through the same reading, and told to
-the same observer. Nothing goes back: the session never waited on its copy, and hands has no say in its exchanges.
+the wire's log and the session registry, never to the wire, whose listener is the brain's. Nothing goes back: the session never waited on its copy, and hands has no say in its exchanges.
 """
 
 import asyncio
@@ -129,9 +129,7 @@ def moves(observed: Observed) -> tuple[Closed, ...]:
 
 def tap_observer(logged: Callable[[Observed], None], hear: Callable[[Closed], None]) -> Callable[[Observed], None]:
     """What a working session's tapped exchange reaches: the log of the wire, as the brain's does, and the registry by what
-    it says of a turn, as a hook does.
-
-    [LAW:single-enforcer] never the wire's listener: the proxy is the brain's alone, so its listener hears only the proxy."""
+    it says of a turn, as a hook does: never the wire, whose listener takes every exchange it hears as the brain's."""
 
     def observe(observed: Observed) -> None:
         logged(observed)
