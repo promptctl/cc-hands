@@ -1509,7 +1509,7 @@ class Brain:
                 await self._stopping(turn)
 
     def hear(self, observed: Observed) -> None:
-        """The brain's own requests, as Kept admits them off the wire: the tools its turn offered the model, and whether they reached hands'."""
+        """The brain's own requests, as Kept passes them on off the wire: the tools its turn offered the model, and whether they reached hands'."""
         match observed:
             case Sent(kind=MainTurn(), body=body):
                 tools = tool_names(body)

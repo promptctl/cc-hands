@@ -132,9 +132,13 @@ def tap_observer(logged: Callable[[Observed], None], hear: Callable[[Closed], No
     it says of a turn, as a hook does: never the wire, whose listener takes every exchange it hears as the brain's."""
 
     def observe(observed: Observed) -> None:
-        logged(observed)
-        for move in moves(observed):
-            hear(move)
+        # [LAW:no-ambient-temporal-coupling] told the registry whether or not the log took it, as the wire's listener is
+        # (`Wire.observe`): a turn's end is never the log's to lose. A log that fails still raises, once it is told.
+        try:
+            logged(observed)
+        finally:
+            for move in moves(observed):
+                hear(move)
 
     return observe
 

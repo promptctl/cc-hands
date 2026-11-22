@@ -179,9 +179,8 @@ class Kept:
     changes made before the route's own, and each exchange heard too by whatever else reads it: the brain, and what
     answers hands' side questions.
 
-    Every exchange on the proxy is the brain's, whatever session it names, as a /clear or a /resume moves it: the proxy's
-    url is given to the brain's Claude Code and to hands' side questions of it, and to nothing else. The working
-    sessions' tapped traffic is never told to the wire (`hands.daemon.run`)."""
+    Every exchange on the proxy is taken as the brain's, whatever session it names, as a /clear or a /resume moves it.
+    The working sessions' tapped traffic is never told to the wire (`hands.daemon.run`)."""
 
     def __init__(self, stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
         self._stage = stage

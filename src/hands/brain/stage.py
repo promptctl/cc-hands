@@ -3,7 +3,7 @@
 What reaches this stage is the words of each turn the user aggregator ends (`hands.voice.conversation`), and what leaves
 it are the frames an LLM service pushes, which TTS already consumes. What the brain says is read from its requests on the
 wire as the proxy hears them, never from its stdout [the design's rule: primary facts from the wire]: text deltas of a
-main turn under the brain's own session, and of no other request.
+main turn, whatever session it names, and of no other request.
 
 Claude Code sends every tool result back for another response, so a turn that called stay_silent has its next request
 answered by hands with a line that records why: nothing more is said, and the model is not asked to go on. Not so for
@@ -974,7 +974,7 @@ class BrainStage(FrameProcessor):
         return turn
 
     def route(self, sent: Sent) -> Route:
-        """Where a request of the brain's goes, as Kept admits it: each of a turn's own requests with hands' tail on it, and
+        """Where a request of the brain's goes, as Kept passes it on: each of a turn's own requests with hands' tail on it, and
         the next one after stay_silent held."""
         # [LAW:single-enforcer] every request Claude Code sends for the brain is final, whatever its kind and whether a turn
         # asked it: asked again, Claude Code would keep the user waiting minutes on its retries, and a spent limit it

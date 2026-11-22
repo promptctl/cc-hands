@@ -420,3 +420,13 @@ def test_a_tapped_exchange_is_logged_and_tells_the_registry_its_turn_closed() ->
         observe(observed)
     assert logged == [request, reply]
     assert heard == [Closed(SessionId("s1"), TURN, "Pushed.")]
+
+
+def test_a_tapped_turn_s_end_reaches_the_registry_though_the_log_failed_and_the_failure_still_raises() -> None:
+    def failing(_: Observed) -> None:
+        raise OSError("the log is full")
+
+    heard: list[Closed] = []
+    with pytest.raises(OSError, match="the log is full"):
+        tap_observer(failing, heard.append)(replied(MainTurn(TURN), "end_turn", Text("Pushed.")))
+    assert heard == [Closed(SessionId("s1"), TURN, "Pushed.")]
