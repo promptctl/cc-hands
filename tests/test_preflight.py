@@ -15,7 +15,7 @@ from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
 from hands.daemon.starting import CannotStart, Start
-from hands.sessions import wrapper
+from hands.sessions import heartbeat, wrapper
 from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -301,7 +301,7 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
         cli.door(home, None)
     assert [said for said in each if said not in str(refused.value)] == []
     # The survey.
-    match readiness.configured(children_on(VirtualClock()), home, os.environ):
+    match readiness.configured(children_on(VirtualClock()), home, os.environ, heartbeat.NeverRan(home.status)):
         case readiness.Missing(detail=detail):
             assert [said for said in each if said not in detail] == []
         case found:
@@ -343,7 +343,7 @@ def test_a_start_refused_on_the_homes_other_files_names_the_brains_lost_login_be
         run.configured_from(children_on(VirtualClock()), home, config.load(home), {}, preflight(home))
     assert [said for said in each if said not in str(refused.value)] == []
     assert str(refused.value).endswith("; then run hands again")
-    match readiness.configured(children_on(VirtualClock()), home, {}):
+    match readiness.configured(children_on(VirtualClock()), home, {}, heartbeat.NeverRan(home.status)):
         case readiness.Missing(fix=fix):
             assert [said for said in each if said not in fix] == []
         case found:
@@ -359,7 +359,7 @@ def test_a_brain_whose_own_config_directory_is_refused_is_asked_no_login(tmp_pat
     asked = _logged_out(monkeypatch)
     with pytest.raises(CannotStart):
         run.configured_from(children_on(VirtualClock()), home, config.load(home), {}, preflight(home))
-    assert isinstance(readiness.configured(children_on(VirtualClock()), home, {}), readiness.Missing)
+    assert isinstance(readiness.configured(children_on(VirtualClock()), home, {}, heartbeat.NeverRan(home.status)), readiness.Missing)
     assert asked == []
 
 

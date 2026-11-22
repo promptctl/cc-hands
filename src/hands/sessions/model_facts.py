@@ -36,7 +36,13 @@ class ModelActedUntold:
     went. Whether what it did worked is the model's to know, never this fact's."""
 
 
-ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | StopFailed
+@dataclass(frozen=True)
+class LoginExpired:
+    """The brain's login has expired, so every turn fails until `hands login` gives it a new one and hands restarts on it.
+    Claude Code fails the turn itself, before any request, so its StopFailure is the one account of it."""
+
+
+ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | LoginExpired | StopFailed
 
 
 class ModelFault(Exception):

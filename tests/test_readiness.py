@@ -870,7 +870,7 @@ def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monk
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(root / "home")
     onboard(home.brain)
-    found = readiness.configured(children_on(SYSTEM), home, os.environ)
+    found = readiness.configured(children_on(SYSTEM), home, os.environ, heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -878,7 +878,7 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
-    reached = readiness.configured(children_on(SYSTEM), home, {})
+    reached = readiness.configured(children_on(SYSTEM), home, {}, heartbeat.NeverRan(home.status))
     # The refusal, which names the file, is the detail, and the fix names the file without the refusal again.
     assert isinstance(reached, Missing) and reached.fix == f"correct {home.config}"
     assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
@@ -886,7 +886,8 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     startable(root / "home", monkeypatch)
-    found = readiness.configured(children_on(SYSTEM), Home(root / "home"), {"HANDS_DEBUG": "1"})
+    home = Home(root / "home")
+    found = readiness.configured(children_on(SYSTEM), home, {"HANDS_DEBUG": "1"}, heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
@@ -898,7 +899,40 @@ def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest
         raise PermissionError("claude is not executable")
 
     monkeypatch.setattr(readiness, "resolve", unspawnable)
-    found = readiness.configured(children_on(SYSTEM), home, {})
+    found = readiness.configured(children_on(SYSTEM), home, {}, heartbeat.NeverRan(home.status))
+    assert isinstance(found, Unknown) and "claude is not executable" in found.said
+
+
+def never_asked(*_: object) -> object:
+    raise AssertionError("a claude was started to learn the brain's login")
+
+
+def test_a_running_brain_whose_login_expired_is_missing_naming_the_renewal_and_asks_no_claude(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # As from 2026-10-24: every turn failed of "Login expired", while `claude auth status` said the brain was logged in.
+    home = Home(root / "home")
+    startable(home.root, monkeypatch)
+    monkeypatch.setattr(readiness, "resolve", never_asked)
+    found = readiness.configured(children_on(SYSTEM), home, {}, beating(home, (heartbeat.LOGIN_EXPIRED,)))
+    assert found == Missing("brain's login expired", "the running brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
+
+
+def test_an_expired_login_is_said_beside_the_start_s_other_refusals(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    startable(home.root, monkeypatch)
+    monkeypatch.setattr(readiness, "resolve", never_asked)
+    found = readiness.configured(children_on(SYSTEM), home, {"HANDS_DEBUG": "1"}, beating(home, (heartbeat.LOGIN_EXPIRED,)))
+    assert isinstance(found, Missing) and "HANDS_DEBUG set" in found.said and "`hands login`, then `hands restart`" in found.said
+
+
+def test_a_running_brain_whose_login_works_is_asked_as_ever(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    startable(home.root, monkeypatch)
+
+    def unspawnable(*_: object) -> object:
+        raise PermissionError("claude is not executable")
+
+    monkeypatch.setattr(readiness, "resolve", unspawnable)
+    found = readiness.configured(children_on(SYSTEM), home, {}, beating(home, (heartbeat.NO_MICROPHONE,)))
     assert isinstance(found, Unknown) and "claude is not executable" in found.said
 
 
@@ -910,21 +944,23 @@ def test_the_brain_says_its_account_and_never_a_key() -> None:
 # hands running
 
 
-def beating(home: Home) -> None:
+def beating(home: Home, degraded: tuple[heartbeat.Degradation, ...] = ()) -> heartbeat.Verdict:
     home.root.mkdir(parents=True, exist_ok=True)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
-    heart.beat("running", None, 0, listening=True, degraded=())
+    heart.beat("running", None, 0, listening=True, degraded=degraded)
+    return heartbeat.look(home.status, datetime.now(UTC))
 
 
 def test_hands_up_is_ready(root: Path) -> None:
     home = Home(root / "home")
     beating(home)
-    found = readiness.daemon(home, datetime.now(UTC))
+    found = readiness.daemon(heartbeat.look(home.status, now := datetime.now(UTC)), now)
     assert isinstance(found, Ready) and found.said.startswith("hands is up")
 
 
 def test_hands_that_never_ran_is_missing_and_says_to_run_it(root: Path) -> None:
-    found = readiness.daemon(Home(root / "home"), datetime.now(UTC))
+    home = Home(root / "home")
+    found = readiness.daemon(heartbeat.look(home.status, now := datetime.now(UTC)), now)
     assert isinstance(found, Missing) and "hands has not run" in found.said and "`hands run`" in found.said
 
 
@@ -932,7 +968,7 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.status.write_text("not json")
-    assert isinstance(readiness.daemon(home, datetime.now(UTC)), Unknown)
+    assert isinstance(readiness.daemon(heartbeat.look(home.status, now := datetime.now(UTC)), now), Unknown)
 
 
 # hands check

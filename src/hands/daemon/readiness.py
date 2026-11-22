@@ -26,7 +26,7 @@ from hands.core.effects import Fritter
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership, Runnable
-from hands.daemon.backend import backend as resolve
+from hands.daemon.backend import backend as resolve, strays
 from hands.daemon.config import Claude, load
 from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions import child, heartbeat, liveness, wrapper
@@ -160,8 +160,9 @@ def installed(children: Children, path: str) -> Finding:
     return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs its `hands-shim` for the plugin in every session")
 
 
-def configured(children: Children, home: Home, environment: Mapping[str, str]) -> Finding:
-    """Whether hands would start on its settings and its home's files, and the brain has the login it reaches its model with."""
+def configured(children: Children, home: Home, environment: Mapping[str, str], running: heartbeat.Verdict) -> Finding:
+    """Whether hands would start on its settings and its home's files, and the brain has the login it reaches its model
+    with: `running`, the heartbeat's verdict, says whether a running brain found its login expired."""
     try:
         config = load(home).config
     except Rejected as error:
@@ -175,10 +176,19 @@ def configured(children: Children, home: Home, environment: Mapping[str, str]) -
             refusals: tuple[str, ...] = ()
         case Refused(refusals=refusals, brain=brain):
             pass
-    if brain is None:
-        # The run that asks would load what the brain's own settings keep out.
-        return unstartable("; ".join(refusals))
-    match _reached(children, config.llm, home, environment, brain):
+    match running:
+        # [LAW:one-source-of-truth] a running brain's turns say whether its login works, which `claude auth status` cannot:
+        # it says only that Claude Code holds a token. So no claude is asked.
+        case heartbeat.Up(status=heartbeat.Status(degraded=degraded)) if heartbeat.LOGIN_EXPIRED in degraded:
+            # The brain's login is not asked, so neither is the environment beside it: its refusal is said with the rest.
+            refusals = (*refusals, *strays(home, environment))
+            reached: Finding = Missing("brain's login expired", "the running brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
+        case _ if brain is None:
+            # The run that asks would load what the brain's own settings keep out.
+            return unstartable("; ".join(refusals))
+        case _:
+            reached = _reached(children, config.llm, home, environment, brain)
+    match reached:
         case reached if not refusals:
             return reached
         case Missing(fix=fix) | Unknown(detail=fix):
@@ -211,9 +221,8 @@ def unstartable(reason: str) -> Missing:
     return Missing("hands cannot start here", "hands cannot start here", reason)
 
 
-def daemon(home: Home, now: datetime) -> Finding:
-    """Whether hands is running, from its heartbeat."""
-    verdict = heartbeat.look(home.status, now)
+def daemon(verdict: heartbeat.Verdict, now: datetime) -> Finding:
+    """Whether hands is running, from its heartbeat's verdict."""
     said = heartbeat.describe(verdict, now)
     start = "`hands run`, in a terminal that has the Input Monitoring grant"
     match verdict:

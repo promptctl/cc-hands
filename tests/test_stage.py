@@ -74,7 +74,7 @@ from hands.core.wire import (
     unstreamed,
 )
 from hands.core.stopfailure import StopFailed
-from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
+from hands.sessions.model_facts import LoginExpired, ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
@@ -1506,7 +1506,9 @@ def unreached(exchange: str, clock: VirtualClock) -> Exchanged:
         # A request whose answer never came, its handler cancelled before the head: an earlier answer is not its reason.
         ([None, "unanswered"], TIMED_OUT := StopFailed("server_error", "API Error: Request timed out."), TIMED_OUT),
         # Failed in Claude Code before any request, as the audit log saw an expired login on 2026-10-24: only the StopFailure says why.
-        ([], EXPIRED := StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile"), EXPIRED),
+        ([], StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile"), LoginExpired()),
+        # A refresh token no longer valid is said the same way, whatever the wire heard before Claude Code gave up on it.
+        ([401], StopFailed("authentication_failed", "Login expired · Please run /login"), LoginExpired()),
     ],
 )
 async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None | Literal["unanswered"]], failure: StopFailed, fact: ModelFact) -> None:
@@ -1528,6 +1530,25 @@ async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answer
     # [LAW:nothing-unseen] which failure the turn was said as is on its line in the audit log.
     [turn] = turns(rig.recorded)
     assert turn.facts["failed"] == fact
+
+
+async def test_the_stage_holds_an_expired_login_until_a_turn_is_answered(rig: Rig) -> None:
+    """What `hands check` and a weighed edit read of the brain's login, with no claude asked: a turn failed of it sets
+    it, one failed of anything else says nothing of the login, and one Claude Code answered clears it."""
+    ended = [
+        (BrainAnswered("p1", StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile")), True),
+        (BrainAnswered("p2", StopFailed("server_error", "API Error: Request timed out.")), True),
+        (ANSWERED, False),
+    ]
+    assert not rig.stage.login_expired
+    for done, (end, expired) in enumerate(ended, start=1):
+        await rig.say("hello")
+        if end is ANSWERED:
+            exchange, _ = rig.request()
+            rig.stream(exchange, "Hi.")
+        rig.brain.end(end)
+        await rig.until(lambda: len(turns(rig.recorded)) == done)
+        assert rig.stage.login_expired is expired
 
 
 async def test_a_stop_failure_that_shows_no_text_is_told_by_its_kind_of_error(rig: Rig) -> None:

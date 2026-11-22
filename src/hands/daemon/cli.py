@@ -737,8 +737,11 @@ def show_segment(clock: Clock, home: Home) -> int:
 
 
 def check(children: Children, home: Home, granted: bool, verbose: bool) -> exits.Exit:
-    reached = readiness.configured(children, home, os.environ)
-    findings = readiness.check(children, home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, children.clock.wall()), partial(keyboards, children))
+    now = children.clock.wall()
+    # [LAW:one-source-of-truth] one look at the heartbeat, for whether hands runs and what its brain found of its login.
+    running = heartbeat.look(home.status, now)
+    reached = readiness.configured(children, home, os.environ, running)
+    findings = readiness.check(children, home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(running, now), partial(keyboards, children))
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
     missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]

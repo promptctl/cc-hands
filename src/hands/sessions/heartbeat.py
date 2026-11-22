@@ -40,13 +40,15 @@ PERIODS_MS = range(1, 3_600_001)
 class Degradation:
     """One way an up daemon is running degraded, carrying the words it is said in."""
 
-    # [LAW:one-type-per-behavior] every degradation is only ever said, so each is a value of this type, and the heartbeat
-    # carries its words: a new one is a new value, and no reader of the file learns of it.
+    # [LAW:one-type-per-behavior] every degradation is said, so each is a value of this type, and the heartbeat carries
+    # its words: a new one is a new value, and no reader of the file learns of it. A reader that acts on one, as `hands
+    # check` does on LOGIN_EXPIRED, knows it by its value, which is its one source.
     brief: str  # a few words for the menu bar, after "hands"
     said: str  # the whole of it, after "hands is up but"
 
 
 NO_MICROPHONE = Degradation("can't hear", "cannot hear, as there is no microphone")
+LOGIN_EXPIRED = Degradation("brain logged out", "its brain's login has expired, so every turn fails: `hands login`, then `hands restart`")
 
 
 @dataclass(frozen=True)

@@ -79,7 +79,7 @@ from hands.core.wire import (
     tool_input,
 )
 from hands.core.stopfailure import StopFailed
-from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
+from hands.sessions.model_facts import LoginExpired, ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, child, continuing, count, fail, here, root, unit, within
 from hands.voice.conversation import UserWords
@@ -487,6 +487,8 @@ class BrainStage(FrameProcessor):
         # whoever asked the turn; and what the last turn left (`_leave`): what the API broke off, which Claude Code keeps
         # out of the brain's history, or that the turn the user spoke over then failed.
         self._untold: list[_Cut | str] = []
+        # [LAW:one-source-of-truth] whether the brain's login has expired, as the latest turn that told of it said (`_login`).
+        self._login_expired = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -722,6 +724,7 @@ class BrainStage(FrameProcessor):
             self._account(turn, asker, arrived, released, taken, ended)
         # A brain that failed the turn itself has no answer to read.
         failure = None if asked.exception() is not None else _failed(turn, asked.result(), self._tools)
+        self._login_expired = self._login_expired if asked.exception() is not None else _login(self._login_expired, asked.result())
         stopped = asked.exception() is None and isinstance(asked.result(), BrainStopped)
         annotate(failed=None if failure is None else failure.fact, stopped=stopped, held_reply=turn.held_reply)
         if (error := asked.exception()) is not None:
@@ -1055,6 +1058,12 @@ class BrainStage(FrameProcessor):
         if turn.unheard():
             turn.aside(_Aside(next(self._acknowledgements), turn.since))
 
+    @property
+    def login_expired(self) -> bool:
+        """Whether the brain's login has expired, so every turn fails until it is renewed: read from what the stage holds,
+        as `work` is, so nothing is asked of a Claude Code."""
+        return self._login_expired
+
     def work(self) -> BrainWork:
         """What the brain is doing now: the turn in flight, if any, and each call its replies made that is still running,
         as heard on the wire. [LAW:effects-at-boundaries] read from what the stage holds; nothing is asked of the brain."""
@@ -1174,13 +1183,27 @@ class _Failure:
     note: str
 
 
+def _login(was: bool, ended: BrainEnded) -> bool:
+    """Whether the brain's login has expired after a turn that ended so: a StopFailure saying so sets it, an answer Claude
+    Code took from the API clears it, and a turn stopped, or failed of anything else, says nothing of the login."""
+    match ended:
+        case BrainAnswered(error=StopFailed() as stop) if stop.login_expired:
+            return True
+        case BrainAnswered(error=None):
+            return False
+        case BrainAnswered() | BrainStopped():
+            return was
+
+
 def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failure | None:
     """What a turn the brain finished failed of; None for one that did not, or one the user stopped, which ends as they asked."""
     match ended:
         case BrainStopped():
             return None
         case BrainAnswered(error=StopFailed() as stop):
-            return _Failure(f"the brain's turn ended in error: {stop}", turn.failure or stop, _broken_off("".join(turn.spoken)))
+            # An expired login is said as one whatever the wire heard before Claude Code gave up on it.
+            fact = LoginExpired() if stop.login_expired else turn.failure or stop
+            return _Failure(f"the brain's turn ended in error: {stop}", fact, _broken_off("".join(turn.spoken)))
         case BrainAnswered():
             pass
     if turn.empty():

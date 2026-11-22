@@ -38,6 +38,7 @@ from hands.voice.system import (
     ModelReplyEmpty,
     ModelUnanswered,
     ModelActedUntold,
+    LoginExpired,
     ModelUnreachable,
     Post,
     Say,
@@ -86,7 +87,8 @@ STAND_INS = Devices(input=Instead("MacBook Pro Microphone", "AirPods"), output=I
         (AudioMoved(Devices(input="MacBook Pro Microphone", output=Off())), "Audio moved: listening on MacBook Pro Microphone, the speaker is off in config.toml."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
-        (StopFailed("invalid_request", "Login expired · Run /login to sign in again"), "The brain failed: Login expired · Run /login to sign in again."),
+        (LoginExpired(), "The brain's login has expired: run hands login, then hands restart."),
+        (StopFailed("invalid_request", "Prompt is too long"), "The brain failed: Prompt is too long."),
         (StopFailed("server_error", "API Error: Request timed out."), "The brain failed: API Error: Request timed out."),
         (StopFailed("authentication_failed", None), "The brain failed: authentication failed."),
         (StopFailed(None, None), "The brain failed, and Claude Code did not say why."),
@@ -251,10 +253,10 @@ async def test_a_brain_failing_one_way_through_one_burst_is_said_once_however_it
     tts, _, channel = speaking(clock)
     await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_1"))
     await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_2"))
-    await channel.say(StopFailed("invalid_request", "Login expired · Run /login to sign in again"))
+    await channel.say(StopFailed("invalid_request", "Prompt is too long"))
     assert said(tts) == [
         "The brain failed: API Error: Connection lost mid-response. req_1.",
-        "The brain failed: Login expired · Run /login to sign in again.",
+        "The brain failed: Prompt is too long.",
     ]
 
 

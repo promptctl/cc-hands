@@ -22,10 +22,8 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
     its model with; raises Rejected naming what it cannot have."""
     # [LAW:single-enforcer] where a setting meets its login: the brain's login is checked here, once, before the voice
     # loads, rather than once every turn has failed.
-    # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
-    # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
-    if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
-        raise Rejected(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
+    if stray := strays(home, environment):
+        raise Rejected(*stray)
     # Imported here, so that only a check loads the brain's process, its MCP server, and Pipecat's tools.
     from hands.brain.process import NotLoggedIn, logged_in
 
@@ -34,3 +32,12 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
     except (NotLoggedIn, Unstartable) as error:
         raise Rejected(str(error)) from error
     return ClaudeCodeBackend(model=llm.model, config_dir=home.brain, account=account, brain=brain)
+
+
+def strays(home: Home, environment: Mapping[str, str]) -> tuple[str, ...]:
+    """The refusal of an environment that names a setting of hands' own, or none: [LAW:single-enforcer] the one reading
+    of it, for a start that asks the brain's login and for a check that learns the login from a running brain instead."""
+    # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
+    # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
+    stray = sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME")
+    return (f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}",) if stray else ()

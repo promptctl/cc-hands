@@ -15,6 +15,13 @@ class StopFailed:
     kind: str | None
     message: str | None
 
+    @property
+    def login_expired(self) -> bool:
+        """Whether the brain's login has expired: [LAW:single-enforcer] the one reading of Claude Code's words for it. The
+        pinned Claude Code says it two ways, both starting so: kind `invalid_request` for a token that expired with no
+        refresh, and `authentication_failed` for a refresh token that is no longer valid, so the kind is not read."""
+        return self.message is not None and self.message.startswith("Login expired")
+
     def __str__(self) -> str:
         match (self.kind, self.message):
             case (str() as kind, str() as message):
