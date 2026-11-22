@@ -70,8 +70,8 @@ def _count(value: object) -> int:
 
 
 class Usage:
-    """Hears the brain's replies off the wire, as Kept admits them: `reading` says what the conversation it is in now
-    holds, and what the brain has spent."""
+    """Hears the brain's replies off the wire, of every conversation it is in or was (Kept): `reading` says what the
+    conversation it is in now holds, and what the brain has spent."""
 
     def __init__(self, session: Callable[[], SessionId]) -> None:
         # Which conversation the brain is in now.

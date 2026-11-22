@@ -799,16 +799,6 @@ def _unanswered(event: str) -> Mapping[str, object]:
             return {}
 
 
-def _the_brains(hook: Hook | PermissionHook, held: SessionId) -> bool:
-    """[LAW:single-enforcer] whether a hook posted to the brain's listener is the brain's: a start, which names the session
-    Claude Code enters, or any hook of the session it is in, `held`."""
-    match hook:
-        case Hook(happened=Joined()):
-            return True
-        case _:
-            return hook.session == held
-
-
 def refused(reply: HookReply) -> Allow | AllowWith | Approve | Deny | DenyAndInterrupt:
     """What a brain dialog's hook is sent for the model's reply. The model lets a brain dialog go only when Claude Code
     went on past it unanswered (at its prompt, a prompt typed, the session's end): never once its tool ran, since the
@@ -1519,7 +1509,7 @@ class Brain:
                 await self._stopping(turn)
 
     def hear(self, observed: Observed) -> None:
-        """The brain's own requests, as Kept admits them off the wire: the tools its turn offered the model, and whether they reached hands'."""
+        """The brain's own requests, as Kept passes them on off the wire: the tools its turn offered the model, and whether they reached hands'."""
         match observed:
             case Sent(kind=MainTurn(), body=body):
                 tools = tool_names(body)
@@ -1632,8 +1622,6 @@ class Brain:
             hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(self._clock.uuid()))
         except Rejected as error:
             return self._unread(event, error)
-        if not _the_brains(hook, self._session.id()):
-            return self._foreign(hook)
         match hook:
             case PermissionHook():
                 return hook_output(await self._permit(hook))
@@ -1736,20 +1724,6 @@ class Brain:
             annotate(hook=event)
             fail(f"the brain's {event} hook does not parse: {error}")
 
-    def _foreign(self, hook: Hook | PermissionHook) -> Mapping[str, object]:
-        match hook:
-            case PermissionHook():
-                reply = Deny(NOBODY)
-                # [LAW:nothing-unseen] one event, as every permission the brain posts is, though no turn of the brain's asked it.
-                with unit("brain.permission", self._record, begun(self._clock)):
-                    annotate(session=hook.session, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
-                return hook_output(reply)
-            case Hook():
-                # [LAW:nothing-unseen] one event: a hook of a session the brain is no longer in, or never was.
-                with unit("brain.foreign", self._record, begun(self._clock)):
-                    annotate(hook=hook.name, session=hook.session, held=self._session.id())
-                return {}
-
     async def _permit(self, hook: PermissionHook) -> Allow | AllowWith | Approve | Deny | DenyAndInterrupt:
         """Answers a permission request: held in the model as it arrives, and put to the user while a turn of theirs is
         in flight to ask in.
@@ -1787,7 +1761,7 @@ class Brain:
                 self._sessions.answer(hook.asked.request, Deny(BROKEN))
             reply = refused(await asyncio.shield(replying))
         # Timed from its hold, and a part of the turn it was held for, which is known only once Claude Code is read through.
-        ended("brain.permission", self._record, replace(began, span=within(self._clock, self._part_of(turn))), raised, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
+        ended("brain.permission", self._record, replace(began, span=within(self._clock, self._part_of(turn))), raised, session=hook.session, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
         return reply
 
     async def _decide(self, hook: PermissionHook, turn: _Turn | None, replying: "asyncio.Future[HookReply]", by: float) -> None:

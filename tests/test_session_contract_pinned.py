@@ -2,7 +2,7 @@
 hands' brain is built on: on a /clear or a /resume at its keyboard, Claude Code runs the start of the session it enters
 only once the end of the one it left is answered, so the brain hears every end under the session it ends
 (hands.brain.process.Brain._moved_by); and it sends the entered session's first request only once that start is
-answered, so the brain admits it as its own (hands.brain.context.Kept)."""
+answered, so the brain is in that session by the time it hears the request (hands.brain.process.Brain._entered)."""
 
 import asyncio
 import json

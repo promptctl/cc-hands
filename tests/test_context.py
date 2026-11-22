@@ -8,9 +8,7 @@ from typing import cast
 
 import pytest
 
-from conftest import events
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
-from hands.brain.session import BrainSession
 from hands.brain.asides import AsideFailed, Unanswered
 from hands.virtualclock import VirtualClock
 from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question
@@ -180,7 +178,7 @@ def ended(kind: Kind = MainTurn(None)) -> Exchanged:
 
 def kept(stage: Stage, keeper: Keeper, asides: NoAsides) -> Kept:
     """The brain's listener, the brain in BRAIN."""
-    return Kept(VirtualClock(), lambda _entry: None, lambda: BRAIN, stage, keeper, asides)
+    return Kept(stage, keeper, asides)
 
 
 def proxied(kept: Kept, request: Sent) -> Route:
@@ -195,7 +193,7 @@ class Rig:
         self.store = Store()
         self.recorded: list[Entry] = []
         self.keeper = Keeper(VirtualClock(), self.asked.ask, self.store, every, self.recorded.append)
-        self.kept = Kept(VirtualClock(), self.recorded.append, lambda: BRAIN, Stage(), self.keeper, NoAsides())
+        self.kept = Kept(Stage(), self.keeper, NoAsides())
 
     async def turn(self, finished: int) -> Route:
         """The brain's main turn after `finished` turns: routed, heard, and ended, and its results asked about."""
@@ -280,21 +278,6 @@ async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the
     assert cast(list[dict[str, list[dict[str, str]]]], steered["messages"])[-1]["content"][0]["text"] == VOICE_COMPACTION + kept
 
 
-async def test_a_request_of_a_session_the_brain_is_not_in_goes_unchanged_as_one_event_and_count_tokens_go_unchanged(rig: Rig) -> None:
-    rig.store.said.update({key(result): "said" for result in aged(history(6), 3)})
-    # A `claude` the brain's Bash tool runs reaches hands' proxy under a session of its own.
-    other = sent(history(6), session=SessionId("work"))
-    rig.kept.hear(other)
-    routed = rig.kept.route(other)
-    assert isinstance(routed, Send) and routed.changes == () and routed.refusal == "retried"
-    [unadmitted] = events(rig.recorded, "brain.unadmitted")
-    assert unadmitted.facts == {"exchange": "x", "session": "work", "held": BRAIN}
-    # The root of a trace of its own, with the event that says it was not the brain's inside it.
-    assert routed.span is not None and routed.span.parent_id is None
-    assert (unadmitted.trace_id, unadmitted.parent_id) == (routed.span.trace_id, routed.span.span_id)
-    assert rig.keeper.changes(sent(history(6), kind=CountTokens())) == ()
-
-
 class Listening(NoAsides):
     def __init__(self) -> None:
         self.heard: list[Observed] = []
@@ -303,31 +286,18 @@ class Listening(NoAsides):
         self.heard.append(observed)
 
 
-def test_a_working_sessions_tapped_traffic_reaches_no_reader_and_makes_no_event() -> None:
-    recorded: list[Entry] = []
+async def test_a_request_of_any_session_is_the_brains_heard_by_every_reader_and_routed_as_the_brains(rig: Rig) -> None:
+    rig.store.said.update({key(result): "said" for result in aged(history(6), 3)})
     listening = Listening()
-    kept = Kept(VirtualClock(), recorded.append, lambda: BRAIN, Stage(), Keeper(VirtualClock(), Asked().ask, Store(), 3, recorded.append), NoAsides(), listening)
-    work = SessionId("work")
-    for observed in (sent(history(6), session=work), replace(ended(), session=work)):
-        kept.hear(observed)
-    assert listening.heard == [] and recorded == []
-
-
-def test_an_exchange_begun_before_the_brain_moved_is_heard_to_its_end_and_the_next_is_of_the_conversation_moved_to() -> None:
-    recorded: list[Entry] = []
-    listening = Listening()
-    held = BrainSession(BRAIN)
-    kept = Kept(VirtualClock(), recorded.append, held.id, Stage(), Keeper(VirtualClock(), Asked().ask, Store(), 3, recorded.append), NoAsides(), listening)
-    begun = sent(history(6))
-    kept.hear(begun)
-    cleared = SessionId("cleared")
-    held.enter(cleared)
-    kept.hear(ended())
-    # The conversation left, its request heard after the move, is no longer the brain's; the one moved to is.
-    late, entered = replace(sent(history(1)), exchange="y"), replace(sent(history(1), session=cleared), exchange="z")
-    for observed in (late, entered):
-        kept.hear(observed)
-    assert listening.heard == [begun, ended(), entered]
+    kept = Kept(Stage(), rig.keeper, NoAsides(), listening)
+    # After a /clear or a /resume, or from a `claude` the brain's Bash tool runs: a session hands was never told of.
+    other = sent(history(6), session=SessionId("elsewhere"))
+    routed = proxied(kept, other)
+    stubs = tuple(Stub(f"call{n}", "Read: said") for n in range(3))
+    assert routed == Send((*stubs, Tail("[hands] tail")), span=SPAN)
+    kept.hear(replace(ended(), session=SessionId("elsewhere")))
+    assert listening.heard == [other, replace(ended(), session=SessionId("elsewhere"))]
+    assert rig.keeper.changes(sent(history(6), kind=CountTokens())) == ()
 
 
 async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> None:
