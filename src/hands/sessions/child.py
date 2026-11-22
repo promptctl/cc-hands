@@ -210,7 +210,7 @@ class Unreaped:
 @dataclass(frozen=True)
 class Lost:
     """A child hands started and reaped, whose answer hands could not give its caller: hands' own following of it
-    failed, or it wrote more to its stdout than CAPTURE_BYTES. Its event says how it ended."""
+    failed, or it wrote more to its stdout than CAPTURE_BYTES. Its event says how it ended, and why it was lost."""
 
     why: str
 
@@ -652,8 +652,10 @@ def _supervise[T](watch: select.kqueue, handed: queue.SimpleQueue[_Supervised | 
     except Exception as error:
         # [LAW:no-silent-failure] hands' own reading of its answer failed: its caller is told so, as its event is.
         told, more = Lost(repr(error)), {}
+    lost = told if isinstance(told, Lost) else None
     try:
-        event(*_how(ended, told if isinstance(told, Lost) else None), pid=child.pid, kills=tuple(_token(each) for each in sent), leftovers=left, **facts(ended), **more)
+        # [LAW:nothing-unseen] the loss is on the event however the child ended, beside what decides its outcome.
+        event(*_how(ended, lost), pid=child.pid, kills=tuple(_token(each) for each in sent), leftovers=left, lost=None if lost is None else lost.why, **facts(ended), **more)
     finally:
         settle(told)
 

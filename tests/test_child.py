@@ -430,7 +430,7 @@ def test_a_child_whose_answer_cannot_be_read_is_lost_and_its_event_says_so(kerne
     settled, written = followed(unreadable, monkeypatch)
     assert settled == [Lost("OSError(5, 'Input/output error')")]
     # What the reap learned is kept beside what was lost.
-    assert written == [(None, "ran, and hands lost its answer: OSError(5, 'Input/output error')", {"pid": 4242, "kills": (), "leftovers": True, "ending": "exited", "exit_code": 0})]
+    assert written == [(None, "ran, and hands lost its answer: OSError(5, 'Input/output error')", {"pid": 4242, "kills": (), "leftovers": True, "lost": "OSError(5, 'Input/output error')", "ending": "exited", "exit_code": 0})]
 
 
 def test_a_cancelled_caller_s_child_whose_answer_is_lost_is_still_said_cancelled(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -452,8 +452,10 @@ def test_a_cancelled_caller_s_child_whose_answer_is_lost_is_still_said_cancelled
         written.append((raised, failure, said_of))
 
     child._supervise(select.kqueue(), handed, lambda ended: (Lost("cut"), {}), event, lambda _told: None)  # pyright: ignore[reportPrivateUsage]
-    [(raised, failure, _)] = written
+    [(raised, failure, said_of)] = written
     assert isinstance(raised, asyncio.CancelledError) and failure is None
+    # What was lost is on its event all the same.
+    assert (said_of["ending"], said_of["lost"]) == ("killed", "cut")
 
 
 def test_a_child_hands_cannot_watch_is_killed_with_its_group_and_reaped(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -469,7 +471,7 @@ def test_a_child_hands_cannot_watch_is_killed_with_its_group_and_reaped(kernel: 
 def test_a_child_s_event_is_written_and_its_caller_told_where_it_exited(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
     settled, written = followed(lambda ended: ("answered", {"drained": True}), monkeypatch)
     assert settled == ["answered"]
-    assert written == [(None, None, {"pid": 4242, "kills": (), "leftovers": True, "ending": "exited", "exit_code": 0, "drained": True})]
+    assert written == [(None, None, {"pid": 4242, "kills": (), "leftovers": True, "lost": None, "ending": "exited", "exit_code": 0, "drained": True})]
 
 
 def test_a_child_s_terminal_read_to_its_end_or_not_is_on_its_event() -> None:

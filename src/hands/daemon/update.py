@@ -58,8 +58,6 @@ BRANCH = "master"
 # The name `uv tool install` gives hands' environment in its tool directory: the package's.
 TOOL = "hands"
 COMMIT = re.compile(r"[0-9a-f]{40}")
-# Every exit but success, for a step that is said and gone past whichever way it fails.
-ANY_FAILURE = frozenset(range(1, 256))
 # The marketplace hands' plugin comes from, named by the plugin's own id.
 MARKETPLACE = PLUGIN_ID.partition("@")[2]
 # What `hands plugin` rendered its digest directories under, in the home: nothing writes or reads it any more, so its
@@ -194,6 +192,26 @@ class _Stopped(Exception):
         self.stopped = stopped
 
 
+def failure(argv: Sequence[str], done: child.Outcome) -> str:
+    """[LAW:one-source-of-truth] what a step's command did that was not what the step is for, as the update says it."""
+    command = f"`{' '.join(argv)}`"
+    match done:
+        case child.Ran(ending=ended, out=out, err=err):
+            return f"{command} {child.said(ended)}:\n{err.text()}{out.text()}"
+        case child.NeverStarted() | child.Unreaped() | child.Lost():
+            return f"{command} {child.said(done)}"
+
+
+def exited(code: int) -> Callable[[child.Outcome], bool]:
+    """A step's command that ran and exited `code`."""
+    return lambda done: isinstance(done, child.Ran) and done.ending == child.Exited(code)
+
+
+def failed_any_way(_done: child.Outcome) -> bool:
+    """A step's command that failed, however it did: never started, ran and failed, or was never reaped."""
+    return True
+
+
 def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[str, str], work: Path, run: Run) -> Installed | Failed | Unfinished:
     """Bring the code hands runs from, at `prefix`, up to date, as `parse_target` judges it, cloning master into `work`
     for the uv tool environment; or the step that failed. `runs_from` is the environment the running hands runs from,
@@ -214,22 +232,29 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
         ran.append(Taken(name, tuple(argv), child.said(done.ending if isinstance(done, child.Ran) else done)))
         return done
 
-    def judged(name: Step, argv: Sequence[str], done: child.Outcome, past: frozenset[int] = frozenset()) -> child.Ran:
-        """What the step's command did, where it did what the step is for; it stops the update on any exit but 0 and those
-        in `past`, which it says and goes on past, and on a command that never started or was killed."""
+    def judged(name: Step, argv: Sequence[str], done: child.Outcome) -> child.Ran:
+        """What the step's command did, where it did what the step is for; it stops the update on anything else."""
         match done:
             case child.Ran(ending=child.Exited(code=0)):
                 return done
-            case child.Ran(ending=child.Exited(code=code), err=err) if code in past:
-                advised.append(Advised(name, err.text().strip()))
-                return done
-            case child.Ran(ending=ended, out=out, err=err):
-                raise ending(name, f"`{' '.join(argv)}` {child.said(ended)}:\n{err.text()}{out.text()}")
-            case child.NeverStarted() | child.Unreaped() | child.Lost():
-                raise ending(name, f"`{' '.join(argv)}` {child.said(done)}")
+            case _:
+                raise ending(name, failure(argv, done))
 
-    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> child.Ran:
-        return judged(name, argv, ran_step(name, argv, cwd, env), past)
+    def step(name: Step, argv: Sequence[str], cwd: Path, env: Mapping[str, str] = caller) -> child.Ran:
+        return judged(name, argv, ran_step(name, argv, cwd, env))
+
+    def tried(name: Step, argv: Sequence[str], cwd: Path, past: Callable[[child.Outcome], bool]) -> None:
+        """Run a step whose answer nothing after it reads: [LAW:types-are-the-program] a failure `past` takes, however it
+        failed, is said and gone past; any other stops the update as a step's does."""
+        match ran_step(name, argv, cwd, caller):
+            case child.Ran(ending=child.Exited(code=0)):
+                pass
+            case child.Ran(ending=child.Exited(), err=err) as failed if past(failed):
+                advised.append(Advised(name, err.text().strip()))
+            case failed if past(failed):
+                advised.append(Advised(name, failure(argv, failed)))
+            case failed:
+                raise ending(name, failure(argv, failed))
 
     def commit(cwd: Path, of: str) -> str:
         # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
@@ -263,7 +288,7 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
                 installed = (target, sha)
                 step(Step.SYNC, ("uv", "sync", "--locked", "--reinstall-package", TOOL), root)
         # Run by the interpreter the install just filled, so each is the target's own command.
-        step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
+        tried(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, exited(Installing.UNFOUND))
         step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
         # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
         # installed for the user or it is not; no claude at all is no plugin.
@@ -282,7 +307,7 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
         if held:
             step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
             step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
-        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
+        tried(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, failed_any_way)
     except _Stopped as stopped:
         return stopped.stopped
     return Installed(target, sha, tuple(ran), tuple(advised))

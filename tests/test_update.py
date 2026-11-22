@@ -633,16 +633,27 @@ def test_a_list_hands_cannot_read_leaves_master_installed_and_the_plugin_untouch
     assert commands.ran == expected(home, work)[: TOOL_STEPS.index(Step.PLUGIN_LIST) + 1]
 
 
-def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("failed", "said"),
+    [
+        (exited(1, err=b"rm: permission denied\n"), "rm: permission denied"),
+        (child.NeverStarted(PermissionError(13, "Permission denied", "rm")), "could not be started: Permission denied"),
+        (child.Ran(child.Killed(child.Kill(child.Limit(120))), child.Captured(b""), child.Captured(b"")), "was killed with SIGKILL, because it ran past 120.0s"),
+        (child.Unreaped((child.Kill(child.Limit(120)),), 4242), "still not reaped"),
+        (child.Lost("OSError(5)"), "hands lost its answer: OSError(5)"),
+    ],
+    ids=["refused", "never started", "killed at its limit", "never reaped", "lost"],
+)
+def test_a_failure_to_remove_the_rendered_trees_however_it_fails_is_said_and_the_update_goes_on(failed: child.Outcome, said: str, tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
-    refused = exited(1, err=b"rm: permission denied\n")
-    commands = Commands(tools_of_this_hands(tmp_path), Step.RENDERED_PLUGINS, refused)
+    commands = Commands(tools_of_this_hands(tmp_path), Step.RENDERED_PLUGINS, failed)
 
     installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     # Nothing reads those trees, so hands is still restarted onto master.
     assert isinstance(installed, Installed)
-    assert installed.advised == (update.Advised(Step.RENDERED_PLUGINS, "rm: permission denied"),)
+    [advised] = installed.advised
+    assert advised.step is Step.RENDERED_PLUGINS and said in advised.said
 
 
 @pytest.mark.parametrize("name", ["brain", "users"])
