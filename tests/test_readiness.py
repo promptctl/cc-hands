@@ -36,7 +36,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
 from hands.sessions.wrapper import shim_script
 from hands.brain import pinned
-from hands.brain.configdir import Runnable
+from hands.core.session import Runnable
 from hands.voice.backends import Account, ClaudeCodeBackend
 
 

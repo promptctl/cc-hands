@@ -30,10 +30,10 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
-from hands.brain.configdir import Runnable, Unstartable
+from hands.brain.configdir import Unstartable
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
-from hands.core.session import DenyAndInterrupt, Permission
+from hands.core.session import DenyAndInterrupt, Permission, Runnable
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed

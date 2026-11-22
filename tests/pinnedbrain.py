@@ -28,6 +28,7 @@ from hands.brain.mcp import SERVER_NAME
 from hands.brain.process import starting_settings, workdir
 from hands.clock import SYSTEM
 from hands.core.attention import Attention
+from hands.core.session import Runnable
 from hands.core.wire import SIDE_QUESTION_OPENING, Sent
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
@@ -218,10 +219,10 @@ class Hands:
         return self.stage._brain._claude  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
 
 
-def _runnable(brain: Path) -> configdir.Runnable:
+def _runnable(brain: Path) -> Runnable:
     """What the start's preflight passes the brain on `brain` with, as it reads it."""
     match configdir.runnable(configdir.read(brain)):
-        case configdir.Runnable() as ran:
+        case Runnable() as ran:
             return ran
         case refused:
             raise AssertionError(f"the start's preflight would refuse the brain: {refused}")

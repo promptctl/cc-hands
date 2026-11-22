@@ -12,7 +12,7 @@ import pytest
 from conftest import children_on, located, new_sessions, startable
 from hands.brain import pinned
 from hands.virtualclock import VirtualClock
-from hands.daemon import cli, config, run
+from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
 from hands.daemon.starting import CannotStart, Start
 from hands.sessions import wrapper
@@ -79,12 +79,12 @@ FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("pin wrong", lambda home, _: (home.root / "pinned" / "claude").write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {pinned.VERSION}, the brain's: run `hands install-brain` to fetch it again"),
     ("hands built without its fritter", lambda home, monkeypatch: monkeypatch.setattr(wrapper, "PACKAGED", home.root / "package" / "bin" / "fritter"), "/package/bin/fritter: install hands again"),
     ("stale fritter copy", lambda home, _: (home.bin.mkdir(), home.fritter.write_bytes(b"#!/bin/sh\n")), "is not the fritter this hands carries"),
-    ("fritter copy unreadable", lambda home, _: _dangling_fritter(home), "/fritter is the fritter this hands carries: [Errno 2] No such file or directory"),
+    ("fritter copy unreadable", lambda home, _: _dangling_fritter(home), "/fritter'): run `hands install-fritter` to copy it again"),
     ("stale shim", lambda home, _: _stale_shim(home), "is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`"),
-    ("shim unreadable", lambda home, _: _unreadable_shim(home), "/claude is the shim this hands writes: [Errno 13] Permission denied"),
+    ("shim unreadable", lambda home, _: _unreadable_shim(home), "/claude'): run `hands install-fritter` to write it again"),
     ("first screens unanswered", lambda home, _: (home.brain / ".claude.json").write_text("{}"), "first screens (its onboarding unfinished; "),
     ("its working directory untrusted", _untrusted, "/cwd untrusted): `hands login` answers them"),
-    ("first screens unreadable", lambda home, _: _unreadable(home.brain / ".claude.json"), ".claude.json unreadable: [Errno 13] Permission denied"),
+    ("first screens unreadable", lambda home, _: _unreadable(home.brain / ".claude.json"), ".claude.json'): correct it, or remove it and run `hands login` to make it again"),
     ("a sync not kept out", lambda home, _: (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}'), "the brain would load its account's syncClaudeAiSkills: "),
     # Left out, each switch is on.
     ("no settings.json", lambda home, _: (home.brain / "settings.json").unlink(), 'its account\'s syncClaudeAiSkills and syncClaudeAiPlugins: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'),
@@ -250,4 +250,68 @@ async def test_an_edit_and_a_voice_choice_are_weighed_without_starting_a_claude_
     monkeypatch.setattr(config, "_held", held)
     config.OwnModel(home, config.load(home)).weigh("claude-opus-5-5")()
     assert config.load(home).config.llm.model == "claude-opus-5-5"
+    assert not mark.exists()
+
+
+def test_a_home_with_the_fritter_and_shim_this_hands_installs_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    wrapper.install(home)
+    checked = preflight(home)
+    assert isinstance(checked.verdict, Startable)
+    assert checked.facts() == {"fritter": "current", "shim": "current"}
+
+
+def _api_key(home: Home, key: str, answered: list[str]) -> None:
+    (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "env": {"ANTHROPIC_API_KEY": key}}))
+    state = home.brain / ".claude.json"
+    state.write_text(json.dumps({**json.loads(state.read_text()), "customApiKeyResponses": {"approved": answered}}))
+
+
+@pytest.mark.parametrize(("key", "answered", "asked"), [
+    # Claude Code asks of no blank key, and answers a key by its last 20 characters once trimmed (docs/claude-code-behavior.md).
+    ("", [], False),
+    ("  ", [], True),
+    ("sk-ant-" + "k" * 30 + "\n", ["k" * 20], False),
+    ("sk-ant-" + "k" * 30, ["sk-ant-" + "k" * 13], True),
+], ids=["blank", "whitespace", "answered once trimmed", "unanswered"])
+def test_an_api_key_the_brain_settings_set_is_unanswered_as_claude_code_reads_it(key: str, answered: list[str], asked: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    _api_key(home, key, answered)
+    match preflight(home).verdict:
+        case Refused(refusals=refusals):
+            assert asked and any("the API key" in refusal and "unanswered" in refusal for refusal in refusals), refusals
+        case Startable():
+            assert not asked
+
+
+async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_the_start_the_survey_or_an_edit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    mark = startable(tmp_path, monkeypatch)
+    _stale_shim(home)
+    running = config.load(home)
+    home.config.write_text("[llm\n")
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    each = (str(home.config), "is not the shim this hands writes")
+    # The start, refused at its door, before the settings name where the run is recorded.
+    with pytest.raises(CannotStart) as refused:
+        cli.door(home, None)
+    assert [said for said in each if said not in str(refused.value)] == []
+    # The survey.
+    match readiness.configured(children_on(VirtualClock()), home, os.environ):
+        case readiness.Missing(detail=detail):
+            assert [said for said in each if said not in detail] == []
+        case found:
+            raise AssertionError(f"the survey found {found}")
+    # An edit to them, said once, the watch outliving it.
+    monkeypatch.setattr(config, "_held", _reads([b"[llm\n"] * 3))
+    recorded: list[Entry] = []
+    with pytest.raises(Outlived):
+        await config.edited(home, recorded.append, running, VirtualClock(), period=0)
+    [entry] = recorded
+    assert isinstance(entry, SettingsEdited) and entry.refused is not None
+    assert [said for said in each if said not in entry.refused] == [], entry.refused
     assert not mark.exists()

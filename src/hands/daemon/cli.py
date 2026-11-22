@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 from loguru import logger
 
 from hands.clock import SYSTEM, Clock
-from hands.daemon import exits, indicator, readiness, update, watchdog
+from hands.daemon import exits, indicator, preflight, readiness, update, watchdog
 from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start
@@ -419,7 +419,8 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
 def door(home: Home, model: str | None) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant and the
     settings it starts on. CannotStart where either is missing. What the home's files refuse is the start's preflight's
-    to say, a step of its own once the run has its heartbeat (hands.daemon.preflight)."""
+    to say, a step of its own once the run has its heartbeat (hands.daemon.preflight), and said here beside settings
+    that do not parse, since a run whose settings choose where it is recorded never reaches that step."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -434,7 +435,7 @@ def door(home: Home, model: str | None) -> Settings:
     try:
         return load(home, model)
     except Rejected as error:
-        raise CannotStart(str(error)) from error
+        raise CannotStart("; ".join(preflight.beside(home, error))) from error
 
 
 @dataclass(frozen=True)

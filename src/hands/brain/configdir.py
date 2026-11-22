@@ -5,11 +5,12 @@ claude, settings.json, the first screens .claude.json records, and the syncs set
 exception that discards the fields parsed beside it, so every refusal is read off the values and none hides another.
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from hands.brain import pinned
-from hands.core.session import PERMISSION_MODES, PermissionMode, UnknownMode
+from hands.core.session import PERMISSION_MODES, PermissionMode, Runnable, UnknownMode
 from hands.sessions.payload import Payload, Rejected
 
 
@@ -72,15 +73,6 @@ class ConfigDir:
     state: State | Absent | Unread
 
 
-@dataclass(frozen=True)
-class Runnable:
-    """What a Claude Code of hands' own is run with on a config directory it may run on: the pinned claude, and the
-    permission mode its settings name, None where they name none."""
-
-    claude: Path
-    mode: PermissionMode | None
-
-
 def cwd(config_dir: Path) -> Path:
     """The directory the brain on `config_dir` runs in: never a project."""
     return config_dir / "cwd"
@@ -93,7 +85,8 @@ def read(config_dir: Path) -> ConfigDir:
         claude: Path | pinned.Unpinned = pinned.verified(config_dir)
     except pinned.Unpinned as error:
         claude = error
-    here = cwd(config_dir).resolve()
+    # realpath, not resolve: a link loop is a directory Claude Code trusts none of, never a raise.
+    here = Path(os.path.realpath(cwd(config_dir)))
     return ConfigDir(config_dir, here, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here))
 
 
@@ -125,8 +118,9 @@ def _key(said: Payload) -> str | Unread | None:
         key = Payload.of(said.fields.get("env", {}), "its env").optional_text("ANTHROPIC_API_KEY")
     except Rejected as error:
         return Unread(str(error))
-    # A blank key is no key: Claude Code asks of none.
-    return key[-20:] if key else None
+    # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its last 20
+    # characters once it is trimmed.
+    return key.strip()[-20:] if key else None
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -166,7 +160,7 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     """What a Claude Code of hands' own is run with on `config`, or every reason none may run on it, each naming its fix:
     no pinned claude, or settings it must not start on, which a run of one, `hands login`'s among them, would load."""
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
-    refused = (*_pinned(config.claude), *_kept_out(config))
+    refused = (*_pinned(config.claude), *_kept_out(config), *_state_unread(config))
     match config.claude, config.settings:
         case Path() as claude, Settings(mode=str() | None as mode) if not refused:
             return Runnable(claude, mode)
@@ -199,6 +193,15 @@ def _kept_out(config: ConfigDir) -> tuple[str, ...]:
     )
 
 
+def _state_unread(config: ConfigDir) -> tuple[str, ...]:
+    """A .claude.json that cannot be read: no run of Claude Code on it, `hands login`'s first run among them, can either."""
+    match config.state:
+        case Unread(reason=reason):
+            return (f"{config.path / STATE} could not be read ({reason}): correct it, or remove it and run `hands login` to make it again",)
+        case State() | Absent():
+            return ()
+
+
 def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:
     named = f"name one of {', '.join(SETTINGS_MODES)} in {path}"
     match mode:
@@ -217,13 +220,12 @@ def unanswered(config: ConfigDir) -> tuple[str, ...]:
     match config.state:
         case Absent():
             return (f"no {state}",)
-        case Unread() as unread:
-            # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot read.
-            return (_unreadable(state, unread),)
+        case Unread():
+            # Not a screen: the file's own refusal, which runnable says.
+            return ()
         case State(onboarded=onboarded, trusted=trusted, answered=answered):
             pass
-    # An unreadable key is the settings' refusal, said apart from these.
-    key = config.settings.key if isinstance(config.settings, Settings) else None
+    key = config.settings.key if isinstance(config.settings, Settings) else config.settings
     return (
         *_screen(onboarded, state, "its onboarding unfinished"),
         *_screen(trusted, state, f"{config.cwd} untrusted"),
@@ -249,8 +251,11 @@ def _keyed(answered: frozenset[str] | Unread, key: str | Unread | None, state: P
             return (_unreadable(state, unread),)
         case frozenset(), str():
             return () if key in answered else (f"the API key {settings} sets unanswered",)
-        case frozenset(), None | Unread():
-            # No key, or one the settings' own refusal names: there is nothing it asks of.
+        case frozenset(), None:
+            return ()
+        case frozenset(), Unread():
+            # A key that cannot be read is the settings' own refusal, said by runnable: whether it was answered is told
+            # once they are mended.
             return ()
 
 

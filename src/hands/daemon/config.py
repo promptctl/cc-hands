@@ -43,7 +43,7 @@ from urllib.parse import urlsplit
 import tomlkit
 
 from hands.clock import Clock
-from hands.daemon.preflight import Refused, Startable, preflight
+from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
@@ -133,13 +133,15 @@ async def edited(home: Home, record: Record, running: Settings, clock: Clock, pe
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
         except Rejected as error:
-            refusals: tuple[str, ...] = (str(error),)
+            refusals: tuple[str, ...] = await off_loop(partial(beside, home, error), "weighing a settings edit")
             settled = now
         else:
             if settings == running.config:
                 settled = now
                 continue
             match (await off_loop(partial(preflight, home), "weighing a settings edit")).verdict:
+                # [LAW:escape-local-minima] exception: a login lost since the start passes here, until
+                # promptctl-phone-app-9d9y.h4s (blocked by promptctl-brain-uoz0.gi7) weighs it with no Claude Code started.
                 case Startable():
                     if _held(home) == now:
                         return SettingsEdited(path=str(home.config), refused=None)
@@ -195,6 +197,7 @@ class OwnModel:
             # The file names it, and the run is not on it: an edit `edited` has yet to take, or one it refused, which the
             # same bytes written again would not change. Which of the two is not known here, so the reason names both.
             raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
+        # [LAW:escape-local-minima] exception: a login lost since the start passes here, until promptctl-phone-app-9d9y.h4s.
         match preflight(self._home).verdict:
             case Refused(refusals=refusals):
                 raise Rejected("; ".join(refusals))

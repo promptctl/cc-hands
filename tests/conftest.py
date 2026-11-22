@@ -41,8 +41,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.brain.configdir import Runnable
-from hands.core.session import PermissionMode
+from hands.core.session import PermissionMode, Runnable
 from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln

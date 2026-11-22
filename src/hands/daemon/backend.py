@@ -7,7 +7,8 @@ what the start's preflight passed. The login is the one refusal the preflight le
 
 from collections.abc import Mapping
 
-from hands.brain.configdir import Runnable, Unstartable
+from hands.brain.configdir import Unstartable
+from hands.core.session import Runnable
 from hands.core.wire import UPSTREAM
 from hands.daemon.config import Claude
 from hands.sessions.child import Children

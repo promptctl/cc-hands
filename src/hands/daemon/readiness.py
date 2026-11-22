@@ -28,7 +28,7 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
-from hands.daemon.preflight import Refused, Startable, preflight
+from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions import child, heartbeat, liveness, wrapper
 from hands.sessions.child import Children
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -164,8 +164,9 @@ def configured(children: Children, home: Home, environment: Mapping[str, str]) -
     try:
         config = load(home).config
     except Rejected as error:
-        # The refusal names the file and what is wrong with it, so it is the detail, and the line names the file to mend.
-        return Missing("settings unreadable", f"hands cannot read its settings: {error}", f"correct {home.config}")
+        # The refusal names the file and what is wrong with it, so it is the detail, beside every other refusal of the
+        # home's files, each naming its own fix, and the line names the file to mend.
+        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(home, error))}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse on the home's files is said here in
     # its words, every refusal at once, before the login is asked.
     match preflight(home).verdict:

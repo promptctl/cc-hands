@@ -44,7 +44,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
-from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Runnable, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -187,7 +187,7 @@ class Launch:
     mcp_config: str
     conversation: "Conversation"
     # What the start's preflight read it is run with: its pinned claude, and the mode its settings name.
-    brain: configdir.Runnable
+    brain: Runnable
 
     @property
     def session(self) -> SessionId:
@@ -576,7 +576,7 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     # [LAW:single-enforcer] what any run of hands' own Claude Code is refused on, the start's included, checked before
     # this one, which would sync what the brain's settings do not keep out. Its first screens are this run's to answer.
     match configdir.runnable(before):
-        case configdir.Runnable(claude=claude):
+        case Runnable(claude=claude):
             pass
         case refused:
             raise Unstartable("; ".join(refused))
@@ -606,11 +606,12 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
 def starting_settings(config_dir: Path) -> bool:
     """Writes the settings.json a brain home starts with when it has none; whether it wrote one. One that is there is
     left as it is: the brain's settings are its directory's to say."""
-    # [LAW:one-source-of-truth] what configdir.runnable requires, and the mode the README says the brain runs in.
+    # [LAW:one-source-of-truth] the syncs configdir.runnable refuses on unless kept out, and the mode the README says the
+    # brain runs in.
     starting = {**dict.fromkeys(configdir.KEPT_OUT, False), "permissions": {"defaultMode": "default"}}
     config_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with (config_dir / "settings.json").open("x") as made:
+        with (config_dir / configdir.SETTINGS).open("x") as made:
             json.dump(starting, made, indent=2)
     except FileExistsError:
         return False

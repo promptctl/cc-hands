@@ -128,6 +128,15 @@ PERMISSION_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in sorted(
 
 
 @dataclass(frozen=True)
+class Runnable:
+    """What a Claude Code of hands' own is run with on a config directory it may run on: the pinned claude, and the
+    permission mode its settings name, None where they name none (hands.brain.configdir.runnable parses it)."""
+
+    claude: Path
+    mode: PermissionMode | None
+
+
+@dataclass(frozen=True)
 class UnknownMode:
     """A permission_mode this version of hands does not know, kept by its name so it is said rather than guessed at."""
 

@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.brain import configdir
-from hands.brain.configdir import Runnable, Unread
+from hands.brain.configdir import Unread
+from hands.core.session import Runnable
 from hands.sessions import wrapper
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -86,6 +87,16 @@ def preflight(home: Home) -> Preflight:
             return Preflight(fritter, shim, Refused(refusals))
 
 
+def beside(home: Home, unread: Rejected) -> tuple[str, ...]:
+    """Every refusal of a start whose settings do not parse: theirs, then every one the preflight finds beside it, so a
+    settings file that cannot be read hides none of the home's other refusals."""
+    match preflight(home).verdict:
+        case Refused(refusals=refusals):
+            return (str(unread), *refusals)
+        case Startable():
+            return (str(unread),)
+
+
 def _unpackaged() -> tuple[str, ...]:
     try:
         wrapper.packaged()
@@ -107,7 +118,7 @@ def _fritter_refusals(home: Home, state: FritterState) -> tuple[str, ...]:
     # carries none, is the survey's to say.
     match state:
         case Unread(reason=reason):
-            return (f"cannot tell whether {home.fritter} is the fritter this hands carries: {reason}",)
+            return (f"cannot tell whether {home.fritter} is the fritter this hands carries ({reason}): run `hands install-fritter` to copy it again",)
         case "stale":
             return (f"{home.fritter} is not the fritter this hands carries, {wrapper.PACKAGED}, so sessions started under it may not do what this hands asks of them: run `hands install-fritter`",)
         case "current" | "absent" | "unpackaged":
@@ -132,7 +143,7 @@ def _shim_refusals(home: Home, state: ShimState) -> tuple[str, ...]:
     # not this home's shim is the survey's to say.
     match state:
         case wrapper.Unreadable(reason=reason):
-            return (f"cannot tell whether {home.shim} is the shim this hands writes: {reason}",)
+            return (f"cannot tell whether {home.shim} is the shim this hands writes ({reason}): run `hands install-fritter` to write it again",)
         case "stale":
             return (f"{home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`",)
         case "current" | "not-a-shim":

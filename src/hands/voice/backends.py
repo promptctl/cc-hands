@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.brain.configdir import Runnable
+from hands.core.session import Runnable
 
 
 @dataclass(frozen=True)
