@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from hands.core.wire import UPSTREAM
-from hands.sessions.files import replace_whole
+from hands.sessions.files import Unread, replace_whole
 from hands.sessions.home import Home
 from hands.sessions.untap import TRUST, untap_script
 
@@ -150,14 +150,7 @@ class Stale:
     """A hands shim, by its mark, that is not the one this hands writes for any fritter and wire: an older hands wrote it."""
 
 
-@dataclass(frozen=True)
-class Unreadable:
-    """A file that is there and could not be read, so whether it is a hands shim is not known: why."""
-
-    reason: str
-
-
-def shim_of(path: Path) -> Shim | Stale | Unreadable | None:
+def shim_of(path: Path) -> Shim | Stale | Unread | None:
     """What the file at path is as a hands shim; None when it is not one, or not there."""
     text = _shim(path)
     if not isinstance(text, str):
@@ -188,7 +181,7 @@ def real_claude(search: str) -> Path | None:
     return None
 
 
-def _shim(path: Path) -> str | Unreadable | None:
+def _shim(path: Path) -> str | Unread | None:
     """The whole text of a hands shim; None when path is not there or not a file marked as a shim."""
     # [LAW:one-source-of-truth] the one reading of the mark in Python. Only a marked file is read past its mark: the real
     # claude is large.
@@ -201,7 +194,7 @@ def _shim(path: Path) -> str | Unreadable | None:
     except FileNotFoundError:
         return None
     except OSError as error:
-        return Unreadable(str(error))
+        return Unread(str(error))
 
 
 def shim_script(fritter: Path, wire: Path) -> str:

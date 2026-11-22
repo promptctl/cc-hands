@@ -11,18 +11,12 @@ from pathlib import Path
 
 from hands.brain import pinned
 from hands.core.session import PERMISSION_MODES, PermissionMode, Runnable, UnknownMode
+from hands.sessions.files import Unread
 from hands.sessions.payload import Payload, Rejected
 
 
 class Unstartable(Exception):
     """A Claude Code of hands' own could not be started: no claude to run, a config directory it would not start on, a fritter that never opened its socket, or a brain that never turned its input on."""
-
-
-@dataclass(frozen=True)
-class Unread:
-    """A file, or a field of one, that could not be read: why."""
-
-    reason: str
 
 
 # Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.

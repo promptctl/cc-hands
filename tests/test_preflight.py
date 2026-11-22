@@ -10,7 +10,7 @@ from typing import cast
 import pytest
 
 from conftest import children_on, located, new_sessions, startable
-from hands.brain import pinned
+from hands.brain import pinned, process
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
@@ -315,3 +315,57 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
     assert isinstance(entry, SettingsEdited) and entry.refused is not None
     assert [said for said in each if said not in entry.refused] == [], entry.refused
     assert not mark.exists()
+
+
+def _logged_out(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """The brain's login, asked of the claude it is run with, answered with none; each claude it was asked of."""
+    asked: list[Path] = []
+
+    def logged_in(_children: object, claude: Path, *_: object) -> object:
+        asked.append(claude)
+        raise process.NotLoggedIn("the brain holds no login: run `hands login`")
+
+    monkeypatch.setattr(process, "logged_in", logged_in)
+    return asked
+
+
+def test_a_start_refused_on_the_homes_other_files_names_the_brains_lost_login_beside_them(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    _stale_shim(home)
+    asked = _logged_out(monkeypatch)
+    each = ("is not the shim this hands writes", "the brain holds no login: run `hands login`")
+    with pytest.raises(CannotStart) as refused:
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), {}, preflight(home))
+    assert [said for said in each if said not in str(refused.value)] == []
+    assert str(refused.value).endswith("; then run hands again")
+    match readiness.configured(children_on(VirtualClock()), home, {}):
+        case readiness.Missing(fix=fix):
+            assert [said for said in each if said not in fix] == []
+        case found:
+            raise AssertionError(f"the survey found {found}")
+    assert len(asked) == 2
+
+
+def test_a_brain_whose_own_config_directory_is_refused_is_asked_no_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The run that asks would load the account's skills and plugins its settings do not keep out.
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    (home.brain / "settings.json").write_text("{}")
+    asked = _logged_out(monkeypatch)
+    with pytest.raises(CannotStart):
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), {}, preflight(home))
+    assert isinstance(readiness.configured(children_on(VirtualClock()), home, {}), readiness.Missing)
+    assert asked == []
+
+
+async def test_settings_that_do_not_parse_are_said_again_as_the_homes_refusals_beside_them_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    running = config.load(home)
+    monkeypatch.setattr(config, "_held", _reads([b"[llm\n"] * 4, at={2: lambda: _stale_shim(home)}))
+    recorded: list[Entry] = []
+    with pytest.raises(Outlived):
+        await config.edited(home, recorded.append, running, VirtualClock(), period=0)
+    said = [cast(SettingsEdited, entry).refused or "" for entry in recorded]
+    assert [("is not the shim this hands writes" in refused) for refused in said] == [False, True]

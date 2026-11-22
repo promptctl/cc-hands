@@ -45,7 +45,7 @@ import tomlkit
 from hands.clock import Clock
 from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions.audit import Record, SettingsEdited
-from hands.sessions.files import replace_whole
+from hands.sessions.files import Unread, replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
@@ -110,15 +110,14 @@ async def edited(home: Home, record: Record, running: Settings, clock: Clock, pe
     [LAW:no-ambient-temporal-coupling] weighed against the bytes the run read, not a read of its own, so an edit is never
     missed, however late after the run's read the watch begins. An edit is weighed once its bytes read the same on two
     polls, so a save an editor writes in two steps is weighed whole, and it is taken only while the file still holds it
-    once weighed. One that does not parse is said and outlived, and the run keeps the settings it has. One the start's
-    preflight refuses is said and outlived too, and weighed again at each poll while its bytes stand, so it is taken once
+    once weighed. One that does not parse, or that the start's preflight refuses, is said and outlived, the run keeping
+    the settings it has, and weighed again at each poll while its bytes stand, so one refused on the home is taken once
     the home is mended: said whenever what refuses it changes, every refusal standing then. One whose settings are the
     run's, a comment or a revert, is no edit. A login lost since the start is not weighed (promptctl-phone-app-9d9y.h4s):
     an edit made then is restarted on, and the restart refused.
     """
-    seen: bytes | _Unreadable | None = running.held
-    # The bytes whose verdict holds whatever the home holds: the run's own, settings that are the run's, or a file that
-    # does not parse.
+    seen: bytes | Unread | None = running.held
+    # The bytes whose verdict holds whatever the home holds: the run's own, or settings that are the run's.
     settled = seen
     said: tuple[str, ...] = ()
     while True:
@@ -134,7 +133,6 @@ async def edited(home: Home, record: Record, running: Settings, clock: Clock, pe
             settings = _settings(home, _readable(home, now), running.model)
         except Rejected as error:
             refusals: tuple[str, ...] = await off_loop(partial(beside, home, error), "weighing a settings edit")
-            settled = now
         else:
             if settings == running.config:
                 settled = now
@@ -223,24 +221,19 @@ def _keep(home: Home, held: bytes | None, edited: bytes) -> None:
     replace_whole(target, edited.decode(), 0o644 if held is None else target.stat().st_mode & 0o777)
 
 
-@dataclass(frozen=True)
-class _Unreadable:
-    reason: str
-
-
-def _held(home: Home) -> bytes | _Unreadable | None:
+def _held(home: Home) -> bytes | Unread | None:
     # The bytes, not the mtime: a save that changes nothing, or a touch, is no edit.
     try:
         return home.config.read_bytes()
     except FileNotFoundError:
         return None
     except OSError as error:
-        return _Unreadable(str(error))
+        return Unread(str(error))
 
 
-def _readable(home: Home, held: bytes | _Unreadable | None) -> bytes | None:
+def _readable(home: Home, held: bytes | Unread | None) -> bytes | None:
     match held:
-        case _Unreadable(reason=reason):
+        case Unread(reason=reason):
             raise Rejected(f"{home.config} could not be read: {reason}")
         case _:
             return held

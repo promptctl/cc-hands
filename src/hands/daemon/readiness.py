@@ -25,13 +25,14 @@ from hands.brain import pinned
 from hands.core.effects import Fritter
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
-from hands.core.session import Membership
+from hands.core.session import Membership, Runnable
 from hands.daemon.backend import backend as resolve
-from hands.daemon.config import load
+from hands.daemon.config import Claude, load
 from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions import child, heartbeat, liveness, wrapper
 from hands.sessions.child import Children
 from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions.files import Unread
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
@@ -168,14 +169,27 @@ def configured(children: Children, home: Home, environment: Mapping[str, str]) -
         # home's files, each naming its own fix, and the line names the file to mend.
         return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(home, error))}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse on the home's files is said here in
-    # its words, every refusal at once, before the login is asked.
+    # its words, every refusal at once, and the login beside them wherever the brain's own config directory runs one.
     match preflight(home).verdict:
-        case Refused(refusals=refusals):
-            return unstartable("; ".join(refusals))
         case Startable(brain=brain):
+            refusals: tuple[str, ...] = ()
+        case Refused(refusals=refusals, brain=brain):
             pass
+    if brain is None:
+        # The run that asks would load what the brain's own settings keep out.
+        return unstartable("; ".join(refusals))
+    match _reached(children, config.llm, home, environment, brain):
+        case reached if not refusals:
+            return reached
+        case Missing(fix=fix) | Unknown(detail=fix):
+            return unstartable("; ".join((*refusals, fix)))
+        case Ready():
+            return unstartable("; ".join(refusals))
+
+
+def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Finding:
     try:
-        reached: Finding = reaching(resolve(children, config.llm, home, environment, brain))
+        reached: Finding = reaching(resolve(children, llm, home, environment, brain))
     except Rejected as error:
         # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
         # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
@@ -303,7 +317,7 @@ def shim(home: Home, path: str) -> Finding:
     match None if claude is None else wrapper.shim_of(claude):
         case None:
             return Missing("claude shim not first on PATH", f"`claude` on this PATH is {found or 'nothing'}, not hands' shim, so no session started from it can be typed into", fix)
-        case wrapper.Unreadable(reason=reason):
+        case Unread(reason=reason):
             return Unknown("claude shim", f"cannot tell whether `claude` on this PATH, {found}, is hands' shim: {reason}")
         case wrapper.Stale():
             return Missing("claude shim out of date", f"`claude` on this PATH is hands' shim, {found}, but not the one this hands writes", refritter)

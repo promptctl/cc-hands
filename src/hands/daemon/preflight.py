@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.brain import configdir
-from hands.brain.configdir import Unread
 from hands.core.session import Runnable
 from hands.sessions import wrapper
+from hands.sessions.files import Unread
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import voicechoice
@@ -22,7 +22,7 @@ from hands.voice import voicechoice
 type FritterState = wrapper.Copy | Unread
 # What the home's shim is to this hands: the one it writes, one an older hands wrote, no shim of hands' at all, or one
 # that cannot be read.
-type ShimState = Literal["current", "stale", "not-a-shim"] | wrapper.Unreadable
+type ShimState = Literal["current", "stale", "not-a-shim"] | Unread
 
 
 @dataclass(frozen=True)
@@ -35,9 +35,11 @@ class Startable:
 
 @dataclass(frozen=True)
 class Refused:
-    """A home hands would not start on: every refusal, each naming its fix."""
+    """A home hands would not start on: every refusal, each naming its fix, and what its brain is run with where its own
+    config directory refuses no run of Claude Code on it, so its login is asked beside them; None where it does."""
 
     refusals: tuple[str, ...]
+    brain: Runnable | None
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,7 @@ class Preflight:
 
 def _fact(state: FritterState | ShimState) -> str:
     match state:
-        case Unread() | wrapper.Unreadable():
+        case Unread():
             return "unreadable"
         case str():
             return state
@@ -84,7 +86,7 @@ def preflight(home: Home) -> Preflight:
         case Runnable(), (str() | voicechoice.LibraryVoice()) as kept if not refusals:
             return Preflight(fritter, shim, Startable(brain, kept))
         case _:
-            return Preflight(fritter, shim, Refused(refusals))
+            return Preflight(fritter, shim, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
 def beside(home: Home, unread: Rejected) -> tuple[str, ...]:
@@ -127,7 +129,7 @@ def _fritter_refusals(home: Home, state: FritterState) -> tuple[str, ...]:
 
 def _shim(home: Home) -> ShimState:
     match wrapper.shim_of(home.shim):
-        case wrapper.Unreadable() as unreadable:
+        case Unread() as unreadable:
             return unreadable
         case wrapper.Stale():
             return "stale"
@@ -142,7 +144,7 @@ def _shim_refusals(home: Home, state: ShimState) -> tuple[str, ...]:
     # it, without what this hands writes into it, its auto-updater switched off among the rest. A PATH whose claude is
     # not this home's shim is the survey's to say.
     match state:
-        case wrapper.Unreadable(reason=reason):
+        case Unread(reason=reason):
             return (f"cannot tell whether {home.shim} is the shim this hands writes ({reason}): run `hands install-fritter` to write it again",)
         case "stale":
             return (f"{home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`",)

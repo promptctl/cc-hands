@@ -111,7 +111,7 @@ from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
 from hands.spotify import Catalogue, credentials
-from hands.core.session import SessionId
+from hands.core.session import Runnable, SessionId
 
 # How late a settled burst of a session's progress can be heard.
 TICK_SECONDS = 1.0
@@ -132,8 +132,9 @@ def configured_from(children: Children, home: Home, settings: Settings, environm
     the environment's secrets in, typed configuration out; CannotStart where hands cannot run on them, naming every
     refusal of the home's files at once."""
     match checked.verdict:
-        case preflight.Refused(refusals=refusals):
-            raise CannotStart(f"{'; '.join(refusals)}; then run hands again")
+        case preflight.Refused(refusals=refusals, brain=brain):
+            # Said once, after them all: the fix of each is made before hands is run again.
+            raise CannotStart("; ".join((*refusals, *_unlogged(children, settings, home, environment, brain), "then run hands again")))
         case preflight.Startable(brain=brain, voice=kept):
             pass
     try:
@@ -141,6 +142,20 @@ def configured_from(children: Children, home: Home, settings: Settings, environm
     except Rejected as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_fetched(kept), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
+
+
+def _unlogged(children: Children, settings: Settings, home: Home, environment: Mapping[str, str], brain: Runnable | None) -> tuple[str, ...]:
+    """Why the brain of a refused start has no login, asked wherever its own config directory runs one, so a start
+    refused on the home's other files names it too: none where it has one."""
+    # [LAW:dataflow-not-control-flow] a stale fritter or shim hides no login lost; a brain whose own settings refuse it
+    # is asked nothing, since the run that asks would load what they keep out.
+    if brain is None:
+        return ()
+    try:
+        backend(children, settings.config.llm, home, environment, brain)
+    except Rejected as error:
+        return (str(error),)
+    return ()
 
 
 def _fetched(kept: voicechoice.Chosen) -> voicechoice.Chosen:
