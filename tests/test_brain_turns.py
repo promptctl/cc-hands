@@ -384,13 +384,14 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
     assert (taken(errors), held.ending, current.broken, await brain.drained()) == (["the brain's own work failed: RuntimeError('late')"], None, None, 0)
 
 
-async def test_a_permission_another_session_posts_to_the_brain_is_refused_and_is_one_event_naming_that_session() -> None:
+async def test_a_permission_any_session_posts_to_the_brain_is_the_brains_refused_with_no_turn_to_ask_in_and_is_one_event_naming_that_session() -> None:
     recorded: list[Entry] = []
     brain = _bare()
     brain._session = BrainSession(SessionId("b1"))  # pyright: ignore[reportPrivateUsage]
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     _modelled(brain, VirtualClock())
+    brain._turn = None  # pyright: ignore[reportPrivateUsage]
     permission = {"hook_event_name": "PermissionRequest", "session_id": "b2", "transcript_path": "/brain/projects/-brain-cwd/b2.jsonl", "cwd": "/brain/cwd", "permission_mode": "default", "prompt_id": "p9", "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}}
     assert await brain.posted("PermissionRequest", json.dumps(permission).encode()) == hook_output(Deny(NOBODY))
     assert [(event.facts["session"], event.facts["prompt"], event.facts["tool"], event.facts["decision"]) for event in events(recorded, "brain.permission")] == [("b2", "p9", "Write", Deny(NOBODY))]
@@ -1182,10 +1183,9 @@ async def test_a_clear_or_a_resume_ends_the_turn_running_and_the_brain_answers_i
     assert process.held(tmp_path).read_text() == f"{entered}\n"
     [moved] = events(recorded, "brain.session")
     assert (moved.outcome, moved.facts) == ("ok", {"left": "b1", "entered": entered, "source": reason})
-    # What the session left still posts is not the brain's: one event, and nothing of it is heard.
+    # What the session left still posts is the brain's all the same: answered as its hooks are, and nothing is lost by it.
     assert await brain.posted("Stop", _hooked("Stop", "p1", last_assistant_message="Late.", stop_hook_active=False)) == {}
-    [foreign] = events(recorded, "brain.foreign")
-    assert foreign.facts == {"hook": "Stop", "session": "b1", "held": entered}
+    assert [entry.event for entry in recorded if isinstance(entry, WideEvent)] == ["brain.session"]
 
 
 async def test_a_start_of_the_session_the_brain_is_in_leaves_the_turn_running_there(tmp_path: Path) -> None:

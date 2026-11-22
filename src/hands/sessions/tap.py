@@ -127,6 +127,20 @@ def moves(observed: Observed) -> tuple[Closed, ...]:
             return ()
 
 
+def tap_observer(logged: Callable[[Observed], None], hear: Callable[[Closed], None]) -> Callable[[Observed], None]:
+    """What a working session's tapped exchange reaches: the log of the wire, as the brain's does, and the registry by what
+    it says of a turn, as a hook does.
+
+    [LAW:single-enforcer] never the wire's listener: the proxy is the brain's alone, so its listener hears only the proxy."""
+
+    def observe(observed: Observed) -> None:
+        logged(observed)
+        for move in moves(observed):
+            hear(move)
+
+    return observe
+
+
 @dataclass(frozen=True)
 class Tap:
     """The socket copies are taken on, and the copies being read from it."""

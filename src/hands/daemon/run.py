@@ -52,7 +52,7 @@ from hands.sessions.summaries import Summaries
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
 from hands.sessions.server import serve_display, serve_hooks
-from hands.sessions.tap import moves, serve_tap
+from hands.sessions.tap import serve_tap, tap_observer
 from hands.sessions.overlays import Overlays
 from hands.core.attention import Attention
 from hands.sessions.attention import attention
@@ -210,7 +210,7 @@ async def mind(
         try:
             stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
-            with wire.joined(Kept(clock, record, session.id, stage, keeper, asides, brain, usage)):
+            with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                 # A summary is as long as its reply makes it: only its time is the summary's own.
                 # The brain's stage notes each turn of the user's itself, as it types it.
@@ -256,19 +256,13 @@ async def run(
         hooks = await serve_hooks(home, sessions, names, record, reader)
         held.push_async_callback(hooks.cleanup)
         run_start.heard(hooks=home.socket)
-        wire = Wire(clock, wire_to(record))
+        logged = wire_to(record)
+        wire = Wire(clock, logged)
         proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=clock)
         held.push_async_callback(proxy.close)
         # The url a Claude Code process's ANTHROPIC_BASE_URL is set to.
         run_start.heard(proxy=proxy.url, upstream=UPSTREAM)
-        # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
-        # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
-        def tapped(observed: Observed) -> None:
-            wire.observe(observed)
-            for move in moves(observed):
-                sessions.hear(move)
-
-        tap = await serve_tap(home.wire, tapped, record, clock=clock)
+        tap = await serve_tap(home.wire, tap_observer(logged, sessions.hear), record, clock=clock)
         held.push_async_callback(tap.close)
         run_start.heard(tap=home.wire)
         display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, record)
