@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -40,6 +41,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
+from hands.core.session import PermissionMode, Runnable
 from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
@@ -798,6 +800,24 @@ def pin(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
     is ever the brain's."""
     monkeypatch.setattr(pinned, "claude", located(script))
     monkeypatch.setattr(pinned, "CHECKSUMS", dict.fromkeys(pinned.CHECKSUMS, sha256(script)))
+
+
+def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Makes `home` a hands home the start's preflight passes: its brain onboarded on settings that keep the syncs out,
+    and its pinned claude a script that only leaves a mark. The mark's path, which exists once anything has run it."""
+    onboard(home / "brain")
+    mark = home / "claude-ran"
+    script = home / "pinned" / "claude"
+    script.parent.mkdir(parents=True)
+    script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(mark))}\n")
+    script.chmod(0o755)
+    pin(monkeypatch, script)
+    return mark
+
+
+def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:
+    """What the start's preflight passes a brain on `config_dir` with: its pinned claude, wherever pin places it, and `mode`."""
+    return Runnable(pinned.claude(config_dir), mode)
 
 
 def pinned_to(script: Path) -> str:

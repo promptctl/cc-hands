@@ -12,7 +12,7 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.frames.frames import Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import Running, running
+from conftest import Running, running, startable
 from hands.clock import SYSTEM
 from hands.daemon import config
 from hands.daemon.config import Claude, Config
@@ -36,8 +36,14 @@ collector = "http://otel.example:4318"
 """
 
 
-def _own(home: Home, reachable: Callable[[Config], object] = lambda _config: None) -> config.OwnModel:
-    return config.OwnModel(home, config.load(home), reachable)
+@pytest.fixture(autouse=True)
+def _startable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Each test's home is tmp_path, whose brain the start's preflight passes.
+    startable(tmp_path, monkeypatch)
+
+
+def _own(home: Home) -> config.OwnModel:
+    return config.OwnModel(home, config.load(home))
 
 
 def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
@@ -91,16 +97,21 @@ def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_way
         own.weigh(" claude-opus-5-5 ")
 
 
-def test_a_model_a_start_could_not_reach_is_refused_before_it_is_written(tmp_path: Path) -> None:
+def test_a_model_on_a_home_a_start_would_refuse_is_refused_before_it_is_written(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-
-    def unreachable(_settings: Config) -> None:
-        raise Rejected("the brain is not logged in")
-
-    with pytest.raises(Rejected, match="not logged in"):
-        _own(home, unreachable).weigh("claude-opus-5-5")
+    (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}')
+    with pytest.raises(Rejected, match="^the brain would load its account's syncClaudeAiSkills: "):
+        _own(home).weigh("claude-opus-5-5")
     assert home.config.read_text() == SPOKEN_FILE
+
+
+def test_a_model_chosen_on_a_file_that_is_not_toml_is_refused_naming_the_file(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text("[llm\n")
+    with pytest.raises(Rejected, match=f"^{home.config}: not TOML"):
+        _own(home).weigh("claude-opus-5-5")
+    assert home.config.read_text() == "[llm\n"
 
 
 def test_a_save_by_hand_after_the_choice_was_weighed_is_not_written_over(tmp_path: Path) -> None:
@@ -117,8 +128,7 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
     kept = tmp_path / "dotfiles" / "hands.toml"
     kept.parent.mkdir()
     kept.write_text(SPOKEN_FILE)
-    home = Home(tmp_path / "home")
-    home.root.mkdir()
+    home = Home(tmp_path)
     home.config.symlink_to(kept)
     _own(home).weigh("claude-opus-5-5")()
     assert home.config.is_symlink()
@@ -128,7 +138,7 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
 def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    flagged = config.OwnModel(home, config.load(home, "claude-haiku-4-5-20251001"), lambda _config: None)
+    flagged = config.OwnModel(home, config.load(home, "claude-haiku-4-5-20251001"))
     assert flagged.running() == "claude-haiku-4-5-20251001"
     with pytest.raises(Rejected, match=f"^hands was started with --model claude-haiku-4-5-20251001, which it keeps over {home.config} until it is started without it$"):
         flagged.weigh("claude-opus-5-5")
@@ -139,8 +149,8 @@ async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     running_on = config.load(home)
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, lambda _config: None, running_on, SYSTEM, period=0.01), 2.0))
-    config.OwnModel(home, running_on, lambda _config: None).weigh("claude-opus-5-5")()
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, running_on, SYSTEM, period=0.01), 2.0))
+    config.OwnModel(home, running_on).weigh("claude-opus-5-5")()
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 

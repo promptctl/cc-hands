@@ -41,7 +41,8 @@ from hands.virtualclock import VirtualClock
 from hands.voice.clips import RATE, SLOT, Playhead, Synthesis
 from hands.voice.echo import EchoCanceller
 from hands.voice.recorder import track
-from hands.voice.voices import DEFAULT, parse_voice, pocket, source
+from hands.voice.voicechoice import DEFAULT, parse_voice
+from hands.voice.voices import pocket, source
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 

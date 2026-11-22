@@ -37,6 +37,7 @@ from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import TriggerTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import conversation, dtln, loads, streaming, voices
+from hands.voice import voicechoice
 from hands.voice.recorder import Recorder
 from hands.sessions.wide import annotate
 from hands.voice.clipowner import ClipOwner
@@ -48,7 +49,7 @@ class VoiceConfig:
     """Everything that varies between two runs of the pipeline."""
 
     llm: ClaudeCodeBackend
-    voice: voices.Chosen
+    voice: voicechoice.Chosen
     # How the model comes across, in the user's words; None is hands' own.
     personality: str | None = None
     # What the desk listens for at its wake word level.

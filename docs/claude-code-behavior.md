@@ -241,6 +241,7 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **brain:** a resumed conversation keeps the system prompt it first had until compacted, even when launched with a new --append-system-prompt (measured on 2.1.289)
 - **brain:** a --settings env value outranks the brain's settings.json env and the process environment (measured behind a localhost base URL, hands-brain-8gb) (measured on 2.1.288)
 - **brain:** Claude Code's answer on an API key its settings.json sets is by the key's last 20 characters (measured on 2.1.289)
+- **brain:** Claude Code answers an API key by its last 20 characters once trimmed, and asks of no blank key (search `function vse(e){return e.trim().slice(-20)}`, `if(n&&Xrr(vse(n))==="approved")`) [ref: src/hands/brain/configdir.py] (read from its source, not measured) (measured on 2.1.289)
 - **brain:** `claude auth status` reports authMethod claude.ai for a claude.ai login and api_key for a Console key (measured on 2.1.289)
 - **brain:** what is typed while a permission dialog is held goes to the dialog, whose Return says yes (spike hands-brain-d8g.aur) (measured on 2.1.288)
 - **brain:** Escape refuses a permission held at its dialog and leaves its hook unanswered for good (spike hands-brain-d8g.aur) (measured on 2.1.288)

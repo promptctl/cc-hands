@@ -4,7 +4,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal, NewType, Self
+from typing import Literal, NewType, Self, get_args
 
 from hands.core.progress import Doing, Gathering
 from hands.core.status import AtPrompt, Busy, Going, Stamp
@@ -122,6 +122,18 @@ class Plan:
 # The permission modes Claude Code has, named as every hook's permission_mode names them. Shift-tab cycles
 # them at the keyboard, and no hook fires when it does: a change is heard at the session's next hook.
 PermissionMode = Literal["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]
+# [LAW:one-source-of-truth] each mode by the name a hook spells it, read off the type; a settings.json defaultMode
+# spells each the same, and takes one more name besides (hands.brain.configdir.SETTINGS_MODES).
+PERMISSION_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in sorted(get_args(PermissionMode))}
+
+
+@dataclass(frozen=True)
+class Runnable:
+    """What a Claude Code of hands' own is run with on a config directory it may run on: the pinned claude, and the
+    permission mode its settings name, None where they name none (hands.brain.configdir.runnable parses it)."""
+
+    claude: Path
+    mode: PermissionMode | None
 
 
 @dataclass(frozen=True)

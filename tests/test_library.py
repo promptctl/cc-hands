@@ -18,16 +18,17 @@ from datetime import UTC, datetime
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.daemon import run
-from hands.daemon.config import SampleLines
+from hands.daemon.config import Config, SampleLines, Settings
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.voice import library, voices
+from hands.voice import library, voicechoice, voices
 from hands.voice.library import LIBRARY_URL_PREFIX, Found, Library
 from hands.voice.tools import audited, voice_tools
 from hands.voice.player import Player
-from hands.voice.voices import DEFAULT, LibraryVoice, Voices, chosen, parse_voice, source
+from hands.voice.voices import Voices, source
+from hands.voice.voicechoice import DEFAULT, LibraryVoice, chosen, parse_voice
 from hands.daemon.run import CannotStart
 
 LIBRARY_FILES = ["vctk/p225_023_enhanced.wav", "vctk/p226_023_enhanced.wav", "alba-mackenna/casual.wav", "alba-mackenna/casual.wav.1e68beda@240.safetensors"]
@@ -62,7 +63,7 @@ def test_the_source_hands_pipecat_is_the_name_or_the_audio_prompt_of_the_library
 
 
 def test_a_library_voice_is_kept_and_read_back_as_its_path(tmp_path: Path) -> None:
-    voices.keep(Home(tmp_path), LibraryVoice("vctk/p225_023_enhanced"))
+    voicechoice.keep(Home(tmp_path), LibraryVoice("vctk/p225_023_enhanced"))
     assert chosen(Home(tmp_path)) == LibraryVoice("vctk/p225_023_enhanced")
 
 
@@ -116,7 +117,7 @@ def test_a_library_voice_not_in_the_cache_while_offline_is_unreachable_not_missi
 
 async def test_a_bare_name_in_the_library_is_not_offered_by_search_since_no_choice_can_make_it(tmp_path: Path) -> None:
     files = ["Charles.wav", "vctk/p225_023_enhanced.wav"]
-    found = await Voices(Home(tmp_path), Player(lambda _: None).lines, voices.fetched, Library(SYSTEM, listing(files)), voices.DEFAULT, SampleLines(Home(tmp_path))).search("", 10)
+    found = await Voices(Home(tmp_path), Player(lambda _: None).lines, voices.fetched, Library(SYSTEM, listing(files)), voicechoice.DEFAULT, SampleLines(Home(tmp_path), Settings(None, Config()))).search("", 10)
     assert found.names == ("vctk/p225_023_enhanced",)
 
 
@@ -160,7 +161,7 @@ async def test_a_stalled_listing_is_waited_for_by_the_next_search_and_never_star
 async def test_a_library_voice_that_cannot_be_fetched_is_never_kept(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     download_that_fails_for(monkeypatch, lambda path: path.startswith(LIBRARY_URL_PREFIX), EntryNotFoundError("no such file"))
     home = Home(tmp_path)
-    voices_owner = Voices(home, Player(lambda _: None).lines, voices.fetched, Library(SYSTEM, listing([])), voices.DEFAULT, SampleLines(home))
+    voices_owner = Voices(home, Player(lambda _: None).lines, voices.fetched, Library(SYSTEM, listing([])), voicechoice.DEFAULT, SampleLines(home, Settings(None, Config())))
     with pytest.raises(Rejected):
         await voices_owner.use(LibraryVoice("vctk/nobody"))
     assert not home.voice.exists()
@@ -170,17 +171,17 @@ async def test_a_library_voice_that_cannot_be_fetched_is_never_kept(monkeypatch:
 
 def test_a_kept_library_voice_that_cannot_be_fetched_stops_the_start_naming_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     home = Home(tmp_path)
-    voices.keep(home, LibraryVoice("vctk/p225_023_enhanced"))
+    voicechoice.keep(home, LibraryVoice("vctk/p225_023_enhanced"))
     download_that_fails_for(monkeypatch, lambda path: "tts_" in path or "english" in path, OSError("no route to the hub"))
     with pytest.raises(CannotStart, match="cannot fetch the cloning model"):
-        run._voice(home)  # pyright: ignore[reportPrivateUsage]
+        run._fetched(voicechoice.chosen(home))  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_kept_built_in_voice_starts_without_any_fetch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     home = Home(tmp_path)
-    voices.keep(home, DEFAULT)
+    voicechoice.keep(home, DEFAULT)
     asked = download_that_fails_for(monkeypatch, lambda path: True, OSError("offline"))
-    assert run._voice(home) == DEFAULT  # pyright: ignore[reportPrivateUsage]
+    assert run._fetched(voicechoice.chosen(home)) == DEFAULT  # pyright: ignore[reportPrivateUsage]
     assert asked == []
 
 
@@ -231,7 +232,7 @@ async def test_a_failed_listing_is_not_kept_so_the_next_search_lists_again() -> 
 
 async def test_the_find_voices_tool_returns_matches_and_when_they_were_listed(tmp_path: Path) -> None:
     recorded: list[Any] = []
-    owner = Voices(Home(tmp_path), Player(lambda _: None).lines, voices.fetched, Library(VirtualClock(datetime.fromtimestamp(7.0, UTC)), listing(LIBRARY_FILES)), voices.DEFAULT, SampleLines(Home(tmp_path)))
+    owner = Voices(Home(tmp_path), Player(lambda _: None).lines, voices.fetched, Library(VirtualClock(datetime.fromtimestamp(7.0, UTC)), listing(LIBRARY_FILES)), voicechoice.DEFAULT, SampleLines(Home(tmp_path), Settings(None, Config())))
     tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in voice_tools(owner)}
     assert await tools["find_voices"].body(query="casual") == {"voices": ["alba-mackenna/casual"], "listed_at": 7.0, "from_cache": False}
 

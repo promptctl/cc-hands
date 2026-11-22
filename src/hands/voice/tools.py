@@ -58,7 +58,8 @@ from hands.voice.summaries import Sighted, SummaryStore, sighted
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
-from hands.voice.voices import VOICES, Voices, parse_voice, spoken
+from hands.voice.voices import Voices
+from hands.voice.voicechoice import VOICES, parse_voice, spoken
 from hands import spotify
 
 @dataclass(frozen=True)

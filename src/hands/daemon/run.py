@@ -74,6 +74,7 @@ from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
 from hands.voice.pipeline import Voice, VoiceConfig, build_voice
 from hands.daemon.backend import backend
+from hands.daemon import preflight
 from hands.voice.naming import NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.utterance import Utterances
@@ -92,7 +93,7 @@ from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Fail
 from hands.tasks import cancel_and_wait
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
-from hands.voice import voices
+from hands.voice import voicechoice, voices
 from hands.voice.library import Library
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
@@ -104,12 +105,13 @@ from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
-from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
+from hands.brain.configdir import Unstartable
+from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
 from hands.spotify import Catalogue, credentials
-from hands.core.session import SessionId
+from hands.core.session import Runnable, SessionId
 
 # How late a settled burst of a session's progress can be heard.
 TICK_SECONDS = 1.0
@@ -125,14 +127,47 @@ class Configured:
     settings: Settings
 
 
-def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
-    """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
-    CannotStart where hands cannot run on them."""
+def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str], checked: preflight.Preflight) -> Configured:
+    """The process boundary: the settings the run started on, what the start's preflight found in the home's files, and
+    the environment's secrets in, typed configuration out; CannotStart where hands cannot run on them, naming every
+    refusal of the home's files at once."""
+    match checked.verdict:
+        case preflight.Refused(refusals=refusals, brain=brain):
+            # Said once, after them all: the fix of each is made before hands is run again.
+            raise CannotStart("; ".join((*refusals, *_unlogged(children, settings, home, environment, brain), "then run hands again")))
+        case preflight.Startable(brain=brain, voice=kept):
+            pass
     try:
-        llm = backend(children, settings.config.llm, home, environment)
+        llm = backend(children, settings.config.llm, home, environment, brain)
     except Rejected as error:
         raise CannotStart(str(error)) from error
-    return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
+    return Configured(VoiceConfig(llm=llm, voice=_fetched(kept), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
+
+
+def _unlogged(children: Children, settings: Settings, home: Home, environment: Mapping[str, str], brain: Runnable | None) -> tuple[str, ...]:
+    """Why the brain of a refused start has no login, asked wherever its own config directory runs one, so a start
+    refused on the home's other files names it too: none where it has one."""
+    # [LAW:dataflow-not-control-flow] a stale fritter or shim hides no login lost; a brain whose own settings refuse it
+    # is asked nothing, since the run that asks would load what they keep out.
+    if brain is None:
+        return ()
+    try:
+        backend(children, settings.config.llm, home, environment, brain)
+    except Rejected as error:
+        return (str(error),)
+    return ()
+
+
+def _fetched(kept: voicechoice.Chosen) -> voicechoice.Chosen:
+    """The voice the user kept, once a kept library voice the choice of it would refuse has stopped the process naming
+    it, since it would fail at its first utterance instead."""
+    try:
+        if isinstance(kept, voicechoice.LibraryVoice):
+            # The same check the choice made: the cloning model, then the voice's own audio prompt.
+            voices.fetched(kept)
+    except (Rejected, OSError) as error:
+        raise CannotStart(str(error)) from error
+    return kept
 
 
 def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
@@ -141,19 +176,6 @@ def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
         return configure()
     except CannotStart as error:
         return error
-
-
-def _voice(home: Home) -> voices.Chosen:
-    """The voice the user kept. A kept name hands has no voice for, or a file it cannot read, stops the process naming it;
-    so does a kept library voice that the choice of it would refuse, since it would fail at its first utterance instead."""
-    try:
-        kept = voices.chosen(home)
-        if isinstance(kept, voices.LibraryVoice):
-            # The same check the choice made: the cloning model, then the voice's own audio prompt.
-            voices.fetched(kept)
-    except (Rejected, OSError) as error:
-        raise CannotStart(str(error)) from error
-    return kept
 
 
 @dataclass(frozen=True)
@@ -201,7 +223,7 @@ async def mind(
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), session, record)
+            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
@@ -230,7 +252,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
+    configure: Callable[[Mapping[str, str], preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     run_start: Start,
@@ -289,11 +311,12 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
-        if config is not None:
+        read = await start(lambda: configured(partial(configure, environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        if read is not None:
+            config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
-            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home))
+            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
             tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
@@ -316,12 +339,17 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
+async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
     await sweep(home, sessions, frozenset())
-    read = await off_loop(lambda: _attempted(configure), "the configuration read")
+    # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
+    # refusal only a Claude Code can say. [LAW:no-ambient-temporal-coupling] its facts reach the start's event here, on
+    # the loop that owns it, never from the thread it ran on.
+    checked = await off_loop(partial(preflight.preflight, home), "the start's preflight")
+    run_start.heard(**checked.facts())
+    read = await off_loop(lambda: _attempted(partial(configure, checked)), "the configuration read")
     # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and
     # [LAW:dataflow-not-control-flow] every step is said whether or not hands can start, so a start refused on its
     # settings still names each other step it is missing.
@@ -342,7 +370,7 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
         personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
         input_device=config.devices.input, output_device=config.devices.output,
     )
-    return config
+    return read
 
 
 async def converse(

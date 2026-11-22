@@ -2569,8 +2569,17 @@ everything else on disk is, by the run starting again on it: the watch weighs th
 file against the bytes the start read, and an edit that parses ends the run as the
 restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before the
 next `hands.start`, which says it was `restarted`. One that does not parse, or one the
-start's own `backend` check refuses for the brain's login, is said as a `SettingsEdited` that was refused,
-and the run keeps what it has. It is in the home, beside
+start's preflight refuses (`hands.daemon.preflight`: every refusal a start makes on the home's
+files, read from them alone, starting no Claude Code), is said as a `SettingsEdited` that was
+refused, and the run keeps what it has. Either is weighed again at each poll while its bytes
+stand, so a home-refused edit is taken once the home is mended; it is said again whenever what
+refuses it changes. A start that passes the preflight is run with what it read: the brain's pinned claude and
+the permission mode its settings name (`core.session.Runnable`), which the launch never reads again.
+The login is the one refusal the preflight leaves out: only a Claude Code can say it, so the start
+asks it and a weigh never does. A start refused on the home's other files still asks it, beside
+them, wherever the brain's own config directory runs a Claude Code. Until promptctl-phone-app-9d9y.h4s reads it from the brain's own API
+answers, an edit or a choice by voice made on a brain logged out since its start is taken, and the
+restart on it is refused. It is in the home, beside
 everything else one hands keeps, so a second home is a second hands with settings of
 its own. A file left out, or a key, is the default; a key misspelled, or one its
 variant has no use for, stops the start naming it. hands holds no secret: the brain's
@@ -2599,7 +2608,7 @@ kept in the home's `voice` file. The model is a setting the user may also choose
 voice. hands has no session id, so a choice aimed at hands itself is a tool of its own
 (`use_model`), never `send_command` aimed at a session. The choice is an edit to
 `config.toml` (`OwnModel`): `[llm] model` is set and every other line stays as written.
-It is weighed by the same `backend` check before it is written, so a refusal is said
+It is weighed by the same preflight before it is written, so a refusal is said
 while the user is there, and it is written only once the user has heard hands say it is
 switching (`Player.heard`). The run then starts again on it as on any edit. `hands run
 --model` names a model that outranks the file's for that run and every restart of it (each

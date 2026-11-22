@@ -36,12 +36,13 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import events, model_facts, patiently, running, unprimed
+from conftest import events, model_facts, patiently, run_as, running, unprimed
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, UserTurn
 from hands.voice import transcription
+from hands.voice import voicechoice
 from hands.sessions.wide import Fact, WideEvent, begun
 from hands.voice import pipeline as built
 from hands.voice.conversation import AssistantTurns, UserTurns, UserWords, cue_receipt, record_turns
@@ -297,7 +298,7 @@ async def rigged(
 
     voice = built.build_voice(
         SYSTEM,
-        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), voice=voices.DEFAULT),
+        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None), brain=run_as(tmp_path)), voice=voicechoice.DEFAULT),
         llm=llm,
         key=PushToTalk(SYSTEM, recorded.append),
         player=Player(recorded.append),
@@ -328,7 +329,7 @@ async def rigged(
 
 async def test_pocket_tts_loading_as_the_voice_is_built_is_a_load_of_its_own(rig: Rig) -> None:
     [load] = events(rig.recorded, "tts.loaded")
-    assert (load.outcome, model_facts(load)) == ("ok", {"voice": voices.DEFAULT})
+    assert (load.outcome, model_facts(load)) == ("ok", {"voice": voicechoice.DEFAULT})
 
 
 async def test_a_spoken_clip_is_sent(rig: Rig) -> None:
@@ -637,7 +638,7 @@ async def test_a_clip_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
 
 
 # The voice hands speaks in.
-SPOKEN_IN = voices.source(voices.DEFAULT)
+SPOKEN_IN = voices.source(voicechoice.DEFAULT)
 
 def turn_lines(rig: Rig) -> list[UserTurn]:
     return [entry for entry in rig.recorded if isinstance(entry, UserTurn)]

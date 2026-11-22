@@ -73,7 +73,7 @@ class Library:
 
     async def search(self, query: str, limit: int) -> Found:
         """The names containing `query`, at most MOST_FOUND of them. Only names with a folder are offered: a bare name is not a
-        voice a choice can make (see voices.LIBRARY_PATH), so offering it would be a lie."""
+        voice a choice can make (see voicechoice.LIBRARY_PATH), so offering it would be a lie."""
         async with self._lock:
             # Freshness is on the monotonic clock, which a wall-clock step cannot move; `listed_at` is the wall clock's, as it
             # is said to the model as a time.

@@ -1,8 +1,17 @@
-"""Files replaced whole: a reader sees the old contents or the new, never half, and a failed write leaves nothing behind."""
+"""Files replaced whole: a reader sees the old contents or the new, never half, and a failed write leaves nothing behind;
+and a file read that could not be."""
 
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Unread:
+    """A file, or a field of one, that is there and could not be read: why."""
+
+    reason: str
 
 
 def replace_whole(path: Path, text: str, mode: int) -> None:
