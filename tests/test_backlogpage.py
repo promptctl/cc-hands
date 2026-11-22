@@ -22,8 +22,8 @@ from aiohttp.streams import StreamReader
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from hands.clock import SYSTEM, Clock
-from hands.sessions.audit import Entry
-from hands.sessions.child import Ran, SpawnFailed
+from hands.sessions.audit import Entry, Record
+from hands.sessions.child import Children, NeverStarted, Outcome as Ended, Ran
 from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
@@ -31,7 +31,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
-from conftest import SYSTEM_PATH, events, executable
+from conftest import SYSTEM_PATH, Faked, children_on, events, executable, exited
 from litcontract import LitContract
 
 KEY = "the-phones-key"
@@ -284,7 +284,7 @@ class Outcome:
     writes: bool = True
     meanwhile: Callable[["FakeLit"], object] = lambda _: None
     reason: str | None = None
-    exports: Ran | None = None
+    exports: Ended | None = None
     # Set as lit is asked; lit answers only once `answer` is.
     asked: asyncio.Event | None = None
     answer: asyncio.Event | None = None
@@ -296,7 +296,7 @@ class FakeLit:
     writes it, each write saying what lit says, held to lit by the contract in litcontract.py; each write of a
     subcommand answers as its `Outcome` scripts it."""
 
-    def __init__(self, backlog: "Held", outcomes: Mapping[str, Outcome], exports: Ran | None = None) -> None:
+    def __init__(self, backlog: "Held", outcomes: Mapping[str, Outcome], exports: Ended | None = None) -> None:
         issues, relations = backlog
         self.issues = list(issues)
         self.relations = list(relations)
@@ -317,18 +317,22 @@ class FakeLit:
         self.comments.append({"id": id, "issue_id": ticket, "body": body, "created_at": f"2026-11-21T10:00:{len(self.comments):02d}Z", "created_by": by})
         return id
 
-    async def run(self, *argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ran:
+    def children(self, clock: Clock, record: Record = lambda _: None) -> Faked:
+        """What runs lit for hands, on `clock`, answered by this lit."""
+        return Faked(clock, record, self.run)
+
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Ended:
         _, command, *rest = argv
         self.calls.append(command)
         outcome = self.outcomes.get(command, Outcome())
         self.gone |= outcome.gone
         if self.gone:
-            raise SpawnFailed(errno.ENOENT, "No such file or directory", "lit")
+            return NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory", "lit"))
         if command == "export":
             if self.exports is not None:
                 return self.exports
             ranked = [{**each, "rank": f"{at:04d}"} for at, each in enumerate(self.issues)]
-            return Ran(0, export(ranked, self.relations, self.comments), b"")
+            return exited(0, export(ranked, self.relations, self.comments))
         if outcome.asked is not None and outcome.answer is not None:
             outcome.asked.set()
             await outcome.answer.wait()
@@ -341,7 +345,7 @@ class FakeLit:
             case reason:
                 return refused(reason, f"the fake's {command} stopped")
 
-    def written(self, command: str, rest: list[str]) -> Ran:
+    def written(self, command: str, rest: list[str]) -> Ended:
         """Make the write lit is asked for, and answer as lit answers it."""
         flags = {flag: value for flag, value in zip(rest, rest[1:]) if flag.startswith("--")}
         match command, rest:
@@ -373,12 +377,12 @@ class FakeLit:
 
 def said(words: str) -> Ran:
     """lit's answer to a write it made: its words, and the guidance line after them."""
-    return Ran(0, f"{words}\ndeeper guidance: lit quickstart update\n".encode(), b"")
+    return exited(0, f"{words}\ndeeper guidance: lit quickstart update\n".encode())
 
 
 def refused(reason: str, why: str) -> Ran:
     """lit's answer to a write it stopped short of, on the code it gives `reason`."""
-    return Ran(CODES[reason], b"", f"error (code={CODES[reason]}, reason={reason}): {why}\nremediation: retry\n".encode())
+    return exited(CODES[reason], err=f"error (code={CODES[reason]}, reason={reason}): {why}\nremediation: retry\n".encode())
 
 
 # What lit's export answers while another lit holds its store, and in a directory it has no workspace in.
@@ -417,10 +421,9 @@ class Routes:
 def routed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lit: FakeLit) -> Routes:
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.setattr("hands.sessions.backlog.run", lit.run)
     recorded: list[Entry] = []
     app = web.Application()
-    app.add_routes(backlog_routes(VirtualClock(), SummaryStore(Summaries(tmp_path / "summaries.db")), KEY, recorded.append, os.environ))
+    app.add_routes(backlog_routes(lit.children(VirtualClock()), SummaryStore(Summaries(tmp_path / "summaries.db")), KEY, recorded.append, os.environ))
     return Routes(app, recorded, lit, project)
 
 
@@ -650,6 +653,8 @@ class Page:
         (b"{", "a note is JSON"),
         (b'{"project": "/tmp", "ticket": "a"}', "a note is {project, ticket, and text"),
         (b'{"project": "/tmp", "ticket": "a", "text": "  \\n "}', "not blank"),
+        (b'{"project": "/tmp", "ticket": "a", "text": "a\\u0000b"}', "holding a NUL"),
+        (b'{"project": "/tmp", "ticket": "a\\u0000", "text": "ok"}', "holding a NUL"),
     ],
 )
 def test_a_note_the_page_sends_is_refused_naming_what_is_wrong(body: bytes, why: str) -> None:
@@ -668,7 +673,7 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     app = web.Application()
     # [LAW:no-ambient-temporal-coupling] a clock nobody moves unless a test does, so no lit the page runs is ended by the machine being slow.
     clock = VirtualClock()
-    app.add_routes(backlog_routes(clock, store, KEY, recorded.append, os.environ))
+    app.add_routes(backlog_routes(Children(clock, recorded.append), store, KEY, recorded.append, os.environ))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded, clock)
@@ -773,7 +778,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    read = await sighted(page.clock, page.store, workspace.root)
+    read = await sighted(children_on(page.clock), page.store, workspace.root)
     assert isinstance(read, Sighted)
     # The leaves are said first; the epic waits on them.
     page.store.keep({due.digest: f"Said of {due.id}." for due in page.store.reckon(read.backlog.thing()).due})
@@ -893,9 +898,9 @@ async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page
     assert not read.done(), f"the read ended before lit's bound was waited on: {read}"
     page.clock.advance(LIT_TIMEOUT_SECONDS)
     response = await read
-    assert response.status == 502 and "did not answer" in await response.text()
+    assert response.status == 502 and "was killed with SIGKILL, because it ran past" in await response.text()
     [event] = page.events("backlog.read")
-    assert event.outcome == "failed" and event.error is not None and "did not answer" in event.error
+    assert event.outcome == "failed" and event.error is not None and "was killed with SIGKILL, because it ran past" in event.error
 
 
 @pytest.mark.outside
@@ -933,7 +938,7 @@ async def test_a_rank_lit_is_killed_on_after_writing_it_is_a_drop_that_landed(pa
     status, _ = await moved(page, workspace, parser, above=mic)
     assert status == 200 and workspace.order(mic, parser) == [parser, mic]
     [event] = page.events("backlog.ranked")
-    assert event.outcome == "ok" and event.facts["ranked"] == "yes" and "exited -9" in str(event.facts["ranked_said"])
+    assert event.outcome == "ok" and event.facts["ranked"] == "yes" and "was ended by SIGKILL" in str(event.facts["ranked_said"])
 
 
 @pytest.mark.outside
@@ -962,13 +967,13 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
-    read = await sighted(page.clock, page.store, workspace.root)
+    read = await sighted(children_on(page.clock), page.store, workspace.root)
     assert isinstance(read, Sighted)
     assert await page.store.wanted()
     # Every ticket said, round by round, as the summarising task says them.
     while due := page.store.reckon(read.backlog.thing()).due:
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
-    again = await sighted(page.clock, page.store, workspace.root)
+    again = await sighted(children_on(page.clock), page.store, workspace.root)
     assert isinstance(again, Sighted) and len(again.said) == 3
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(page.store.wanted(), 0.2)
@@ -1256,7 +1261,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(VirtualClock(), workspace.root, hey, "Seen again.", Inherited())
+    await comment(children_on(VirtualClock()), workspace.root, hey, "Seen again.", Inherited())
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
@@ -1339,9 +1344,12 @@ async def test_a_note_saved_while_a_ticket_is_leveled_waits_its_turn_and_is_kept
 
 class TestTheFakeLit(LitContract):
     @pytest.fixture
-    def project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        monkeypatch.setattr("hands.sessions.backlog.run", FakeLit(([], []), {}).run)
+    def project(self, tmp_path: Path) -> Path:
         return tmp_path
+
+    @pytest.fixture
+    def children(self) -> Children:
+        return FakeLit(([], []), {}).children(VirtualClock())
 
 
 @pytest.mark.outside
@@ -1350,3 +1358,7 @@ class TestLit(LitContract):
     @pytest.fixture
     def project(self, workspace: Workspace) -> Path:
         return workspace.root
+
+    @pytest.fixture
+    def children(self) -> Children:
+        return children_on(VirtualClock())

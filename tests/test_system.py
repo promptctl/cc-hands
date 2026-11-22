@@ -7,16 +7,17 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+
 import pytest
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
-from conftest import running
+from conftest import answering, running
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
-from hands.sessions import heartbeat
+from hands.sessions import child, heartbeat
 from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry
 from hands.daemon import notify
@@ -413,18 +414,15 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
     assert all('"hi"' not in part for part in command[:-1])
 
 
-async def test_a_notification_osascript_never_posts_is_refused_and_said(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def stuck(*_argv: str, timeout: float, clock: object) -> None:
-        raise TimeoutError
-
-    monkeypatch.setattr(notify, "run", stuck)
+async def test_a_notification_osascript_never_posts_is_refused_and_said() -> None:
+    stuck = child.Ran(child.Killed(child.Kill(child.Limit(notify.POST_TIMEOUT_SECONDS))), child.Captured(b""), child.Captured(b""))
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        assert await post_notification("hello", SYSTEM) is False
+        assert await post_notification("hello", answering(stuck)) is False
     finally:
         logger.remove(sink)
-    assert errors == [f"osascript did not post 'hello' in {notify.POST_TIMEOUT_SECONDS:.0f}s"]
+    assert errors == [f"osascript did not post 'hello': osascript was killed with SIGKILL, because it ran past {notify.POST_TIMEOUT_SECONDS:.1f}s"]
 
 
 GONE = "a pid no process holds"

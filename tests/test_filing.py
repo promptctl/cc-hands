@@ -12,6 +12,7 @@ from typing import get_args
 
 import pytest
 
+from conftest import children_on
 from hands.virtualclock import VirtualClock
 from hands import clock as clocks
 from hands.daemon import cli
@@ -263,12 +264,13 @@ def test_file_tickets_files_each_group_once_however_often_it_runs_and_comments_o
     assert [comment["body"].splitlines()[0] for comment in exported["comments"]] == ["Seen again once, from 2026-10-24T12:06:00.000+00:00 to 2026-10-24T12:06:00.000+00:00."]
     printed = capsys.readouterr().out
     assert "2 groups of warnings and errors: 1 filed or commented, 1 with nothing new" in printed
-    # Each pass is one event, counting what it read and what came of it.
+    # Each pass is one event, counting what it read and what came of it: each later pass reads the lines of the ones
+    # before it, their command's, their own, and one for each lit they ran.
     passes = [line for line in map(json.loads, audit.forwards(home / "audit")) if line.get("event") == "tickets.file"]
     assert [line["counts"] for line in passes] == [
         {"lines": 5, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 4, "groups": 2, "filed": 2, "commented": 0, "unchanged": 0},
-        {"lines": 7, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 4, "groups": 2, "filed": 0, "commented": 0, "unchanged": 2},
-        {"lines": 10, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 5, "groups": 2, "filed": 0, "commented": 1, "unchanged": 1},
+        {"lines": 10, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 4, "groups": 2, "filed": 0, "commented": 0, "unchanged": 2},
+        {"lines": 14, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 5, "groups": 2, "filed": 0, "commented": 1, "unchanged": 1},
     ]
     assert passes[0]["facts"]["oldest"] == "2026-10-24T12:01:00.000+00:00" and passes[0]["facts"]["epic"] == epic
 
@@ -375,7 +377,7 @@ def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path,
 
     monkeypatch.setattr(backlog, "_lit", silent)
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
-        asyncio.run(backlog.file_ticket(VirtualClock(), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
+        asyncio.run(backlog.file_ticket(children_on(VirtualClock()), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
 
 
 def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:

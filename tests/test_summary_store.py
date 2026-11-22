@@ -21,11 +21,11 @@ from hands.sessions.wide import WideEvent
 from hands.sessions.backlog import BACKLOG, LitFailed, LitNotStarted, Untracked, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
-from hands.voice.summarising import summarise_backlog, told
+from hands.voice.summarising import BACKLOG_PASS, summarise_backlog, told
 from hands.voice.summary import SummaryFailed
 from hands.voice.summaries import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
-from conftest import VirtualClock, new_sessions
+from conftest import children_on, events, new_sessions, VirtualClock
 
 SID = SessionId("s1")
 
@@ -242,7 +242,7 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
     # Three leaves in two batches, then the epic, then the backlog over the epic and the loose ticket.
     assert [summarise.asked(page) for page in summarise.pages] == [["e1.a", "e1.b"], ["t1"], ["e1"], [BACKLOG]]
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "t1", "e1", BACKLOG}
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.event, record.outcome, record.facts["project"], record.facts["tracked"]) == ("summary.backlog", "ok", project, True)
     assert record.counts == {
         "things": 5, "known": 0, "said": 5, "unsaid": 0, "rounds": 3, "calls": 4, "failed_calls": 0, "stray": 0,
@@ -262,7 +262,7 @@ async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project:
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, store, summarise, records.append)
     assert [summarise.asked(page) for page in summarise.pages] == [["e1.a"], ["e1"], [BACKLOG]]
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.counts["known"], record.counts["said"]) == (2, 3)
 
 
@@ -287,7 +287,7 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
     await summarise_backlog(SYSTEM, project, store, forgets_t1, records.append)
     # The epic is said; the backlog, keyed by t1's summary too, cannot be.
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "e1"}
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["unsaid"]) == ("ok", 3, 2)
     # Asked in every round, left out of every reply: the event tells a model that skips an item from calls that failed.
     assert (record.counts["rounds"], record.facts["left_out"], record.counts["failed_calls"]) == (3, ("t1", "t1", "t1"), 0)
@@ -327,7 +327,7 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
 
     (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed", "closed_at": "2026-10-19T10:00:00Z"} if issue["id"] == "t1" else issue for issue in edited]))
     await summarise_backlog(SYSTEM, project, steadied, fails, records.append)
-    passes = [record for record in records if isinstance(record, WideEvent)]
+    passes = events(records, BACKLOG_PASS)
     assert [
         (record.outcome, record.facts["overview"], *(record.counts[name] for name in ("items", "items_said", "items_known", "items_unsaid"))) for record in passes
     ] == [
@@ -355,7 +355,7 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
     (project / "export.json").unlink()
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and record.outcome == "failed" and "exited 1" in (record.error or "")
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
 
@@ -364,7 +364,7 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
 async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_to_do_saying_why(tmp_path: Path) -> None:
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, tmp_path / "removed-worktree", SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["gone"]) == ("ok", True)
 
 
@@ -372,7 +372,7 @@ async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_
 async def test_a_removed_directory_reads_as_no_backlog_saying_it_is_gone(project: Path) -> None:
     # The spawn's failure names the missing directory, not lit (which the project fixture put on PATH).
     gone = project / "removed-worktree"
-    assert await read_backlog(SYSTEM, gone) == Untracked(gone, gone=True)
+    assert await read_backlog(children_on(SYSTEM), gone) == Untracked(gone, gone=True)
 
 
 @pytest.mark.outside
@@ -380,7 +380,7 @@ async def test_a_project_path_that_is_a_file_is_a_lit_that_never_started_not_a_r
     file = project / "a-file"
     file.write_text("")
     with pytest.raises(LitNotStarted, match="Not a directory"):
-        await read_backlog(SYSTEM, file)
+        await read_backlog(children_on(SYSTEM), file)
 
 
 @pytest.mark.outside
@@ -390,7 +390,7 @@ async def test_a_project_hands_cannot_enter_is_a_lit_that_never_started_not_a_re
     locked.chmod(0)
     try:
         with pytest.raises(LitNotStarted, match="Permission denied"):
-            await read_backlog(SYSTEM, locked / "inside")
+            await read_backlog(children_on(SYSTEM), locked / "inside")
     finally:
         locked.chmod(0o700)
 
@@ -413,7 +413,7 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     summarise = Summariser()
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert summarise.pages == []
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["tracked"]) == ("ok", False)
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
@@ -424,7 +424,7 @@ async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project:
     # lit's busy refusal arrives on code 1 (docs/cli-reference.md in links, "Every reason").
     fake_lit('echo "error (code=1, reason=workspace_busy): another lit process holds the store" >&2\nexit 1\n')
     with pytest.raises(LitFailed, match="workspace_busy"):
-        await read_backlog(SYSTEM, project)
+        await read_backlog(children_on(SYSTEM), project)
 
 
 @pytest.mark.outside
@@ -433,7 +433,7 @@ async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project:
 async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: Path, git: bool) -> None:
     if git:
         subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    assert await read_backlog(SYSTEM, tmp_path) == Untracked(tmp_path)
+    assert await read_backlog(children_on(SYSTEM), tmp_path) == Untracked(tmp_path)
 
 
 @pytest.mark.outside
@@ -443,7 +443,7 @@ async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_runnin
     # The deadline is on a clock the test moves, and moved only once lit has written its pid: on the machine's clock a
     # loaded machine can run out the half second before the shell has started.
     clock = VirtualClock()
-    reading = asyncio.create_task(read_backlog(clock, project))
+    reading = asyncio.create_task(read_backlog(children_on(clock), project))
     await clock.sleeping(0.5)
     # Created before written: the shell opens pid, then writes to it.
     while not (project / "pid").is_file() or not (project / "pid").read_text().strip():
@@ -451,7 +451,7 @@ async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_runnin
             await reading  # lit never ran: raise the read's own error rather than wait on a pid that will not come
         await asyncio.sleep(0.01)
     clock.advance(0.5)
-    with pytest.raises(LitFailed, match="did not answer"):
+    with pytest.raises(LitFailed, match="was killed with SIGKILL, because it ran past"):
         await reading
     with pytest.raises(ProcessLookupError):
         os.kill(int((project / "pid").read_text()), 0)
@@ -464,7 +464,7 @@ async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pa
 
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), no_claude, records.append)
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["calls"], record.counts["failed_calls"]) == ("failed", 0, 1, 1)
     said = "SummaryFailed: the side question had no answer: no Claude Code to ask: claude"
     assert record.facts["errors"] == (said,)
@@ -477,7 +477,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
     summarise = Summariser()
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
-    [record] = records
+    [record] = events(records, BACKLOG_PASS)
     assert summarise.pages == []
     # [LAW:nothing-unseen] ran and did nothing: every count written, as zero.
     assert isinstance(record, WideEvent) and record.outcome == "ok"

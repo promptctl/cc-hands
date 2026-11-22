@@ -15,7 +15,7 @@ import tempfile
 import threading
 import traceback
 import weakref
-from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -40,13 +40,15 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
+from hands.sessions import child
+from hands.sessions.child import Children
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
@@ -224,6 +226,62 @@ def taken(errors: list[str]) -> list[str]:
 new_sessions = partial(Sessions, record=lambda _: None)
 
 
+def children_on(clock: Clock) -> Children:
+    """[LAW:locality-or-seam] what starts a test's children, on the clock the test names, its events let go: a test about
+    a child's event builds its own `Children` with the emit it reads."""
+    return Children(clock, lambda _: None)
+
+
+@dataclass(frozen=True)
+class Unstarting(Children):
+    """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real
+    process through a fake that forgot one."""
+
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+        raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
+
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+        raise AssertionError(f"{type(self).__name__} does not answer a blocking run of {argv[0]}")
+
+    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: child.Stdio) -> child.Running | child.NeverStarted:
+        raise AssertionError(f"{type(self).__name__} does not answer a start of {argv[0]}")
+
+
+@dataclass(frozen=True)
+class Answering(Unstarting):
+    """Every run ends in `outcome`, as a test of what its caller makes of one names, and its argv is kept in `asked`."""
+
+    outcome: child.Outcome
+    asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
+
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+        return self.run_blocking(*argv, limit=limit, cwd=cwd, env=env)
+
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+        self.asked.append(argv)
+        return self.outcome
+
+
+@dataclass(frozen=True)
+class Faked(Unstarting):
+    """Each run is answered by `answer`, the fake of the program a test stands in for."""
+
+    answer: Callable[..., Awaitable[child.Outcome]]
+
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+        return await self.answer(*argv, limit=limit, cwd=cwd, env=env)
+
+
+def exited(code: int, out: bytes = b"", err: bytes = b"") -> child.Ran:
+    """A child that ran and exited `code`, having written `out` and `err`."""
+    return child.Ran(child.Exited(code), child.Captured(out), child.Captured(err))
+
+
+def answering(outcome: child.Outcome) -> Answering:
+    """Children every run of which ends in `outcome`."""
+    return Answering(SYSTEM, lambda _: None, outcome)
+
+
 def model_facts(load: WideEvent) -> dict[str, Fact]:
     """A model load's facts of its own: every load says how big the process was as it ended and how much it grew, which
     are taken off here once they are shown to be there (hands.voice.loads)."""
@@ -376,7 +434,10 @@ KEYCHAIN_READER = library._keychain_token  # pyright: ignore[reportPrivateUsage]
 def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
     about but the one that checks the question, on KEYCHAIN_READER."""
-    monkeypatch.setattr(library, "_keychain_token", lambda: None)
+    def absent(_children: Children) -> library.Absent:
+        return library.Absent()
+
+    monkeypatch.setattr(library, "_keychain_token", absent)
 
 
 @pytest.fixture(autouse=True)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import children_on
 from hands.clock import SYSTEM
 from hands.sessions.home import Home
 from hands.voice import phoneaddress
@@ -45,8 +46,8 @@ def issuing(cert: Path, key: Path) -> str:
 async def test_the_tailnet_is_the_name_tailscale_says_and_the_certificate_it_issues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cert, key = own_certificate(SYSTEM, Home(tmp_path / "issued"))
     monkeypatch.setenv("PATH", tailscale(tmp_path, issuing(cert, key)))
-    assert await tailnet_name(SYSTEM) == "hands.example.ts.net"
-    match await tailnet(SYSTEM, Home(tmp_path)):
+    assert await tailnet_name(children_on(SYSTEM)) == "hands.example.ts.net"
+    match await tailnet(children_on(SYSTEM), Home(tmp_path)):
         case Tailnet(name=name, not_after=ends):
             assert name == "hands.example.ts.net" and ends == not_after(cert.read_bytes())
         case untailed:
@@ -56,7 +57,7 @@ async def test_the_tailnet_is_the_name_tailscale_says_and_the_certificate_it_iss
 async def test_a_certificate_and_key_out_of_step_are_untailed_rather_than_served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (cert, _), (_, key) = own_certificate(SYSTEM, Home(tmp_path / "one")), own_certificate(SYSTEM, Home(tmp_path / "other"))
     monkeypatch.setenv("PATH", tailscale(tmp_path, issuing(cert, key)))
-    match await tailnet(SYSTEM, Home(tmp_path)):
+    match await tailnet(children_on(SYSTEM), Home(tmp_path)):
         case Untailed(reason=reason):
             assert reason.startswith("the certificate tailscale cert wrote does not load: [X509: KEY_VALUES_MISMATCH]")
         case served:
@@ -65,17 +66,17 @@ async def test_a_certificate_and_key_out_of_step_are_untailed_rather_than_served
 
 async def test_a_tailscale_not_connected_says_its_state_whatever_names_it_still_lists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", command(tmp_path, "#!/bin/sh\necho '{\"BackendState\": \"NeedsLogin\", \"CertDomains\": [\"hands.example.ts.net\"]}'\n"))
-    assert await tailnet_name(SYSTEM) == Untailed("Tailscale is not connected to the tailnet: its state is NeedsLogin")
+    assert await tailnet_name(children_on(SYSTEM)) == Untailed("Tailscale is not connected to the tailnet: its state is NeedsLogin")
 
 
 async def test_a_certificate_tailscale_refuses_is_untailed_in_its_words(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", tailscale(tmp_path, "echo 'not logged in' >&2; exit 3"))
-    assert await tailnet(SYSTEM, Home(tmp_path)) == Untailed("tailscale cert failed (3): not logged in")
+    assert await tailnet(children_on(SYSTEM), Home(tmp_path)) == Untailed("tailscale cert exited 3: not logged in")
 
 
 async def test_a_tailscale_not_on_the_path_is_untailed_saying_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
-    assert await tailnet(SYSTEM, Home(tmp_path)) == Untailed("the tailscale command is not on the PATH")
+    assert await tailnet(children_on(SYSTEM), Home(tmp_path)) == Untailed("the tailscale command is not on the PATH")
 
 
 async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,7 +84,7 @@ async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: P
     monkeypatch.setenv("PATH", command(tmp_path, f"#!/bin/sh\necho $$ > {pid}\nexec sleep 30\n"))
     # Long enough that the command has said its pid before it is killed, however loaded the machine.
     monkeypatch.setattr(phoneaddress, "TAILSCALE_TIMEOUT_SECONDS", 1.0)
-    assert await tailnet_name(SYSTEM) == Untailed("tailscale status took over 1s")
+    assert await tailnet_name(children_on(SYSTEM)) == Untailed("tailscale status was killed with SIGKILL, because it ran past 1.0s")
     # Gone, not merely dead: a killed child nobody reaped would still take the signal.
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid.read_text()), 0)
@@ -92,9 +93,9 @@ async def test_a_tailscale_that_never_answers_is_untailed_and_killed(tmp_path: P
 async def test_a_tailscale_that_cannot_be_started_is_untailed_in_the_systems_words(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # No interpreter line: found on the PATH, and refused by the system when run.
     monkeypatch.setenv("PATH", command(tmp_path, "not a program\n"))
-    match await tailnet_name(SYSTEM):
+    match await tailnet_name(children_on(SYSTEM)):
         case Untailed(reason=reason):
-            assert reason.startswith("cannot run tailscale status: [Errno 8]")
+            assert reason == "tailscale status could not be started: Exec format error"
         case name:
             raise AssertionError(f"named {name}")
 
@@ -106,13 +107,14 @@ SHUT_DOWN = """
 import asyncio, os, sys, time
 from pathlib import Path
 from hands.clock import SYSTEM
+from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.voice.phoneaddress import tailnet
 
 home = Home(Path(sys.argv[1]))
 
 async def ends(after: float) -> None:
-    asking = asyncio.ensure_future(tailnet(SYSTEM, home))
+    asking = asyncio.ensure_future(tailnet(Children(SYSTEM, lambda _: None), home))
     await asyncio.sleep(after)
     raise RuntimeError(time.monotonic())
 

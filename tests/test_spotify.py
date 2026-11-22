@@ -1,13 +1,15 @@
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 
+
 import pytest
 from aiohttp import web
 
 from hands.virtualclock import VirtualClock
-from hands.sessions.child import Ran
+from conftest import exited
+from hands.sessions.child import Captured, Kill, Killed, Limit, NeverStarted, Outcome, Ran
 from hands.sessions.wide import WideEvent
-from hands.spotify import Catalogue, Credentials, Missing, Player, Refused, credentials, link
+from hands.spotify import TELL_SECONDS, Catalogue, Credentials, Missing, Player, Refused, credentials, link
 from hands.voice.tool import Body
 from hands.virtualclock import VirtualClock
 from hands.voice.tools import audited, spotify_tools
@@ -43,17 +45,17 @@ def test_a_link_is_a_playable_spotify_uri_or_a_web_link_to_one_and_nothing_else(
 class Osascript:
     """osascript, answering each script with the next of `answers`, and keeping what it was given."""
 
-    def __init__(self, *answers: Ran) -> None:
+    def __init__(self, *answers: Outcome) -> None:
         self.answers = list(answers)
         self.told: list[tuple[Sequence[str], Sequence[str]]] = []
 
-    async def __call__(self, script: Sequence[str], argv: Sequence[str]) -> Ran:
+    async def __call__(self, script: Sequence[str], argv: Sequence[str]) -> Outcome:
         self.told.append((script, argv))
         return self.answers.pop(0)
 
 
-def printed(text: str) -> Ran:
-    return Ran(0, f"{text}\n".encode(), b"")
+def printed(text: str) -> Outcome:
+    return exited(0, f"{text}\n".encode())
 
 
 def tools(tell: Osascript, catalogue: Catalogue | None = None) -> dict[str, Body]:
@@ -73,11 +75,13 @@ async def test_now_playing_leaves_out_what_an_episode_or_an_ad_has_none_of() -> 
 
 
 async def test_an_osascript_that_cannot_start_is_said() -> None:
-    async def unstartable(_script: Sequence[str], _argv: Sequence[str]) -> Ran:
-        raise FileNotFoundError(2, "No such file or directory", "osascript")
+    result = await tools(Osascript(NeverStarted(FileNotFoundError(2, "No such file or directory", "osascript"))))["spotify_pause"]()
+    assert result == {"error": "osascript could not be started: No such file or directory"}
 
-    result = await {tool.name: tool.body for tool in spotify_tools(Player(unstartable), Catalogue(Missing("none here"), VirtualClock()))}["spotify_pause"]()
-    assert str(result["error"]).startswith("osascript could not start:")
+
+async def test_a_spotify_that_does_not_answer_in_time_is_said() -> None:
+    late = Ran(Killed(Kill(Limit(TELL_SECONDS))), Captured(b""), Captured(b""))
+    assert await tools(Osascript(late))["spotify_pause"]() == {"error": f"Spotify did not answer in {TELL_SECONDS:.0f}s"}
 
 
 async def test_now_playing_says_a_spotify_that_is_closed_or_stopped_has_no_track() -> None:
@@ -135,7 +139,7 @@ async def test_a_volume_off_spotifys_scale_is_refused_before_spotify_is_told() -
 
 
 async def test_macos_withholding_control_of_spotify_is_said_with_where_to_allow_it() -> None:
-    denied = Ran(1, b"", b"execution error: Not authorized to send Apple events to Spotify. (-1743)\n")
+    denied = exited(1, b"", b"execution error: Not authorized to send Apple events to Spotify. (-1743)\n")
     result = await tools(Osascript(denied))["spotify_pause"]()
     assert result == {"error": "macOS has not let hands control Spotify: allow it under System Settings, Privacy & Security, Automation"}
 

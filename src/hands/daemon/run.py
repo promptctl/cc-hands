@@ -33,6 +33,7 @@ from pipecat.workers.runner import WorkerRunner
 from hands.clock import Clock, dashed
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
 from hands.sessions import heartbeat, tmux
+from hands.sessions.child import Children
 from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
@@ -124,11 +125,11 @@ class Configured:
     settings: Settings
 
 
-def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
+def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
     """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
     CannotStart where hands cannot run on them."""
     try:
-        llm = backend(settings.config.llm, home, environment)
+        llm = backend(children, settings.config.llm, home, environment)
     except Rejected as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
@@ -176,7 +177,7 @@ class Mind:
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
     """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await read_front(sessions.clock, running, environment)
+    return await read_front(sessions.children, running, environment)
 
 
 @asynccontextmanager
@@ -245,9 +246,10 @@ async def run(
         deltas = Deltas(record, environment, clock)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
+        children = Children(clock, record)
         sessions = Sessions(
             clock=clock, record=record, changes=deltas, names=names,
-            typist=partial(type_into, clock, environment), keyboards=partial(tmux.keyboards, clock, environment=environment),
+            typist=partial(type_into, children, environment), keyboards=partial(tmux.keyboards, children, environment=environment),
         )
         # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
         # before each turn's hook is applied.
@@ -371,7 +373,7 @@ async def converse(
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
-    channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, clock=clock), record, clock)
+    channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, children=Children(clock, record)), record, clock)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
@@ -451,7 +453,7 @@ async def converse(
             key = phone_key(clock, home)
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery), home, partial(tailnet, clock, home), record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery), home, partial(tailnet, Children(clock, record), home), record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()
