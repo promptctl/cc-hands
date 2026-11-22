@@ -36,7 +36,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain import configdir
-from hands.brain.configdir import Unstartable, brain_claude
+from hands.brain.configdir import Unstartable
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
 from hands.clock import Clock, wait
@@ -44,7 +44,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
-from hands.core.session import DenyAndInterrupt, PermissionMode, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -186,6 +186,8 @@ class Launch:
     instruction: str
     mcp_config: str
     conversation: "Conversation"
+    # What the start's preflight read it is run with: its pinned claude, and the mode its settings name.
+    brain: configdir.Runnable
 
     @property
     def session(self) -> SessionId:
@@ -273,11 +275,11 @@ def _conversing(conversation: Conversation) -> tuple[str, str]:
             return ("--resume", session)
 
 
-def command(launch: Launch, claude: Path, hooks: str, mode: PermissionMode | None) -> list[str]:
-    """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`;
-    `mode` is the permission mode the brain's own settings name, if they name one."""
+def command(launch: Launch, hooks: str) -> list[str]:
+    """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
+    mode = launch.brain.mode
     return [
-        *slim(claude, launch.station.model, launch.conversation),
+        *slim(launch.brain.claude, launch.station.model, launch.conversation),
         # The instruction as this hands writes it on every request, a resumed conversation's too: Claude Code otherwise
         # sends the system prompt its conversation first had until it is compacted, even for a resume launched with a new
         # --append-system-prompt. Rendered fresh, it is byte-identical request to request.
@@ -571,9 +573,13 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     keyboard. `method` is the login asked for: `claude auth login` makes it, and on the first run's login screen, which
     offers every login, it is the one to pick. Raises LoginFailed when the brain holds another after."""
     before = configdir.read(config_dir)
-    # Before any run of Claude Code on it, which would sync what the brain's settings do not keep out.
-    if kept := configdir.kept_out(before):
-        raise Unstartable("; ".join(kept))
+    # [LAW:single-enforcer] what any run of hands' own Claude Code is refused on, the start's included, checked before
+    # this one, which would sync what the brain's settings do not keep out. Its first screens are this run's to answer.
+    match configdir.runnable(before):
+        case configdir.Runnable(claude=claude):
+            pass
+        case refused:
+            raise Unstartable("; ".join(refused))
     first_run = "; ".join(configdir.unanswered(before)) or None
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
@@ -583,13 +589,13 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     # keyboard the person logging in types at; a session of its own, as the runner starts each child in, has no terminal.
     import subprocess
 
-    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
+    signed = subprocess.run([claude, *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
     if screens := configdir.first_screens(configdir.read(config_dir)):
         raise Unstartable("; ".join(screens))
-    held = logged_in(children, config_dir, base_url, inherited)
+    held = logged_in(children, claude, config_dir, base_url, inherited)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
     # brain on another login than the one asked for.
     if held.method != AUTH_METHODS[method]:
@@ -600,7 +606,7 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
 def starting_settings(config_dir: Path) -> bool:
     """Writes the settings.json a brain home starts with when it has none; whether it wrote one. One that is there is
     left as it is: the brain's settings are its directory's to say."""
-    # [LAW:one-source-of-truth] what configdir.kept_out requires, and the mode the README says the brain runs in.
+    # [LAW:one-source-of-truth] what configdir.runnable requires, and the mode the README says the brain runs in.
     starting = {**dict.fromkeys(configdir.KEPT_OUT, False), "permissions": {"defaultMode": "default"}}
     config_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -611,14 +617,14 @@ def starting_settings(config_dir: Path) -> bool:
     return True
 
 
-def logged_in(children: Children, config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
-    """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
-    none, or one whose requests do not reach hands' proxy, and Unstartable when Claude Code could not be asked.
+def logged_in(children: Children, claude: Path, config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
+    """The account `config_dir` is logged in as, asked of `claude`, its pinned Claude Code; raises NotLoggedIn, naming the
+    command that makes a login, when it has none, or one whose requests do not reach hands' proxy, and Unstartable when
+    Claude Code could not be asked.
 
     Asked as hands starts and by `hands check`, before any brain runs to say it; never by a weigh of an edit, which reads
     files alone (hands.daemon.preflight). A login lost since the start is the brain's own API answers' to say
     (promptctl-phone-app-9d9y.h4s)."""
-    claude = brain_claude(config_dir)
     asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, base_url, inherited), limit=AUTH_STATUS_SECONDS)
     match asked:
         case Ran(ending=Exited(), out=out):
@@ -1879,10 +1885,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         except Unpackaged as error:
             raise Unstartable(str(error)) from error
         annotate(fritter=fritter)
-        # Off the loop: a copy not hashed yet this process is read whole, about 230 MB.
-        claude = await asyncio.to_thread(brain_claude, station.config_dir)
-        mode = configdir.settings_mode(station.config_dir)
-        annotate(claude=claude, mode=mode)
+        annotate(claude=launch.brain.claude, mode=launch.brain.mode)
         # [LAW:one-source-of-truth] the brain's keybindings are hands' alone, written whole at every start from SUBMIT, the
         # chord hands types: a file that bound it to anything else would leave every turn unsent, or have it say yes.
         # Whole or not at all: Claude Code reloads the file as it changes, and a half-written one binds nothing.
@@ -1900,7 +1903,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
         by = clock.now() + START_SECONDS
         try:
-            running = await in_tmux(Children(clock, record), station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
+            running = await in_tmux(Children(clock, record), station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)

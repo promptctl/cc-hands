@@ -1,11 +1,12 @@
 """The voice the user chose, by its name: one of Pocket TTS's own, or one in Kyutai's voice library, and the one kept
-in the home for the next start. Free of the speech pipeline, so what reads a kept voice need not load it."""
+in the home for the next start. Free of the speech pipeline, torch's, so what reads a kept voice need not load it."""
 
+import ast
+import importlib.util
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import NewType
-
-from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
@@ -28,10 +29,28 @@ class LibraryVoice:
 # Any voice hands can speak in: a built-in name, or a library voice. The kind is in the type, never in a name's spelling.
 Chosen = Voice | LibraryVoice
 
+
+def _predefined() -> tuple[Voice, ...]:
+    """The names the installed pocket_tts resolves itself, read from its source: importing any of pocket_tts loads torch."""
+    # find_spec of the top package imports nothing; of a module inside it, it would import the package.
+    found = importlib.util.find_spec("pocket_tts")
+    if found is None or found.origin is None:
+        raise ImportError("pocket_tts is not installed, so hands has none of its voices")
+    source = Path(found.origin).parent / "utils" / "utils.py"
+    for statement in ast.parse(source.read_text()).body:
+        match statement:
+            case ast.Assign(targets=[ast.Name(id="_ORIGINS_OF_PREDEFINED_VOICES")], value=ast.Dict(keys=keys)):
+                return tuple(Voice(ast.literal_eval(key)) for key in keys if key is not None)
+            case _:
+                pass
+    # [LAW:no-silent-failure] a pocket_tts that keeps its voices elsewhere is one hands was not written against.
+    raise ImportError(f"{source} names no _ORIGINS_OF_PREDEFINED_VOICES, where the pocket_tts hands was written against keeps its voices")
+
+
 # [LAW:one-source-of-truth] the voices on offer are the ones the installed pocket_tts resolves by name itself, each to
 # a state primed by the very weights it loads; a state primed elsewhere is a cache from another network, and the loader
 # cannot tell.
-VOICES: tuple[Voice, ...] = tuple(Voice(name) for name in _ORIGINS_OF_PREDEFINED_VOICES)
+VOICES: tuple[Voice, ...] = _predefined()
 
 # The voice hands speaks in until the user chooses another (the user's choice of default, 2026-10-02).
 DEFAULT = Voice("charles")

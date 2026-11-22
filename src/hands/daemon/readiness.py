@@ -90,7 +90,7 @@ def check(children: Children, home: Home, path: str, granted: bool, reached: Fin
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), tmux(path), installed(children, path), shim(home, path), plugin(children, home, path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), tmux(path), installed(children, path), shim(home, path), plugin(children, home, path), reached, grant(granted), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -159,16 +159,6 @@ def installed(children: Children, path: str) -> Finding:
     return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs its `hands-shim` for the plugin in every session")
 
 
-def brain_claude(home: Home) -> Finding:
-    """Whether the brain's own Claude Code, hands' copy of the release it pins, is in the brain's directory and is that release."""
-    try:
-        found = pinned.verified(home.brain)
-    except pinned.Unpinned as error:
-        # The refusal is the line's fix: it names `hands install-brain`, and what is wrong with the copy, where there is one.
-        return Missing(f"brain's Claude Code {pinned.VERSION} missing", "the brain has no Claude Code to run, so hands cannot start", str(error))
-    return Ready(f"brain's Claude Code {pinned.VERSION}", f"the brain runs Claude Code {pinned.VERSION}, hands' own copy: {found}")
-
-
 def configured(children: Children, home: Home, environment: Mapping[str, str]) -> Finding:
     """Whether hands would start on its settings and its home's files, and the brain has the login it reaches its model with."""
     try:
@@ -178,13 +168,13 @@ def configured(children: Children, home: Home, environment: Mapping[str, str]) -
         return Missing("settings unreadable", f"hands cannot read its settings: {error}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse on the home's files is said here in
     # its words, every refusal at once, before the login is asked.
-    match preflight(home):
+    match preflight(home).verdict:
         case Refused(refusals=refusals):
-            return Missing("hands cannot start here", "hands cannot start on its home's files", "; ".join(refusals))
-        case Startable():
+            return unstartable("; ".join(refusals))
+        case Startable(brain=brain):
             pass
     try:
-        reached: Finding = reaching(resolve(children, config.llm, home, environment))
+        reached: Finding = reaching(resolve(children, config.llm, home, environment, brain))
     except Rejected as error:
         # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
         # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
@@ -197,8 +187,13 @@ def configured(children: Children, home: Home, environment: Mapping[str, str]) -
 
 
 def reaching(reached: backends.ClaudeCodeBackend) -> Ready:
-    """What a brain that has its login reaches."""
-    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model}")
+    """What a brain that has its login reaches, and the Claude Code it runs."""
+    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model} on Claude Code {pinned.VERSION}, hands' own copy: {reached.brain.claude}")
+
+
+def unstartable(reason: str) -> Missing:
+    """What a start refuses: `reason` names every refusal and its fix, so the line claims none of them."""
+    return Missing("hands cannot start here", "hands cannot start here", reason)
 
 
 def daemon(home: Home, now: datetime) -> Finding:
@@ -307,6 +302,8 @@ def shim(home: Home, path: str) -> Finding:
     match None if claude is None else wrapper.shim_of(claude):
         case None:
             return Missing("claude shim not first on PATH", f"`claude` on this PATH is {found or 'nothing'}, not hands' shim, so no session started from it can be typed into", fix)
+        case wrapper.Unreadable(reason=reason):
+            return Unknown("claude shim", f"cannot tell whether `claude` on this PATH, {found}, is hands' shim: {reason}")
         case wrapper.Stale():
             return Missing("claude shim out of date", f"`claude` on this PATH is hands' shim, {found}, but not the one this hands writes", refritter)
         case wrapper.Shim(fritter=runs) if not os.access(runs, os.X_OK):

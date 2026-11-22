@@ -35,6 +35,8 @@ from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
 from hands.sessions.wrapper import shim_script
+from hands.brain import pinned
+from hands.brain.configdir import Runnable
 from hands.voice.backends import Account, ClaudeCodeBackend
 
 
@@ -901,8 +903,8 @@ def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
-    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com")))
-    assert found == Ready("brain logged in as brain@example.com (claude.ai)", "the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5")
+    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(Path("/h/brain/pinned-claude/claude"), None)))
+    assert found == Ready("brain logged in as brain@example.com (claude.ai)", f"the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5 on Claude Code {pinned.VERSION}, hands' own copy: /h/brain/pinned-claude/claude")
 
 
 # hands running
@@ -936,12 +938,12 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 # hands check
 
 
-STEPS = ["claude", "portaudio", "tmux", "hands", "shim", "plugin", "brain_claude", "backend", "grant", "running", "sessions"]
+STEPS = ["claude", "portaudio", "tmux", "hands", "shim", "plugin", "backend", "grant", "running", "sessions"]
 
 
-def logged_in(_children: object, _llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
+def logged_in(_children: object, _llm: object, home: Home, _environment: object, brain: Runnable) -> ClaudeCodeBackend:
     """The brain as its login check finds it logged in: that check is the start's, tested beside it."""
-    return ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
+    return ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=brain)
 
 
 def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object) -> Home:
@@ -1023,9 +1025,9 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
 @pytest.mark.outside
 @pytest.mark.parametrize(
     ("undo", "steps"),
-    # A brain with no pinned claude is also one hands cannot start, which the backend step says of the start.
-    [(no_hands, {"hands"}), (unshimmed, {"shim"}), (no_plugin, {"plugin"}), (unpinned, {"brain_claude", "backend"}), (logged_out, {"backend"}), (ungranted, {"grant"}), (not_running, {"running"})],
-    ids=["hands", "shim", "plugin", "brain_claude", "backend", "grant", "running"],
+    # A brain with no pinned claude is one hands cannot start, which the backend step says of the start.
+    [(no_hands, {"hands"}), (unshimmed, {"shim"}), (no_plugin, {"plugin"}), (unpinned, {"backend"}), (logged_out, {"backend"}), (ungranted, {"grant"}), (not_running, {"running"})],
+    ids=["hands", "shim", "plugin", "unpinned", "backend", "grant", "running"],
 )
 def test_a_home_missing_one_step_names_that_step_and_exits_1(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, steps: set[str]

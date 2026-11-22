@@ -41,6 +41,8 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
+from hands.brain.configdir import Runnable
+from hands.core.session import PermissionMode
 from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
@@ -812,6 +814,11 @@ def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.chmod(0o755)
     pin(monkeypatch, script)
     return mark
+
+
+def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:
+    """What the start's preflight passes a brain on `config_dir` with: its pinned claude, wherever pin places it, and `mode`."""
+    return Runnable(pinned.claude(config_dir), mode)
 
 
 def pinned_to(script: Path) -> str:

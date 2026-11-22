@@ -122,7 +122,8 @@ class Plan:
 # The permission modes Claude Code has, named as every hook's permission_mode names them. Shift-tab cycles
 # them at the keyboard, and no hook fires when it does: a change is heard at the session's next hook.
 PermissionMode = Literal["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]
-# [LAW:one-source-of-truth] each mode by the name a hook and a settings.json defaultMode both spell it, read off the type.
+# [LAW:one-source-of-truth] each mode by the name a hook spells it, read off the type; a settings.json defaultMode
+# spells each the same, and takes one more name besides (hands.brain.configdir.SETTINGS_MODES).
 PERMISSION_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in sorted(get_args(PermissionMode))}
 
 

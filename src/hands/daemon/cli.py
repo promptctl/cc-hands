@@ -419,7 +419,7 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
 def door(home: Home, model: str | None) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant and the
     settings it starts on. CannotStart where either is missing. What the home's files refuse is the start's preflight's
-    to say, beside the readiness survey (hands.daemon.run.configured_from)."""
+    to say, a step of its own once the run has its heartbeat (hands.daemon.preflight)."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -624,10 +624,10 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
                 reached: readiness.Finding = readiness.reaching(voice.llm)
             case CannotStart() as error:
                 # Refused on its home's files, its login, or its kept voice's fetch: the reason names each, so the line claims none.
-                reached = readiness.Missing("hands cannot start", "hands cannot start here", str(error))
+                reached = readiness.unstartable(str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(lambda environment: configured_from(children, home, settings, environment, run_start), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings), clock)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings), clock)
 
 
 def start_indicator(home: Home) -> int:
@@ -912,7 +912,8 @@ def audit_log_of(clock: Clock, home: Home) -> audit.AuditLog:
 
 def login(children: Children, home: Home, method: "Method", record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
-    from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
+    from hands.brain.configdir import Unstartable
+    from hands.brain.process import LoginFailed, NotLoggedIn, starting_settings
     from hands.brain.process import login as brain_login
     from hands.core.wire import UPSTREAM
 

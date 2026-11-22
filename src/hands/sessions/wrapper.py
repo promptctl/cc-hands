@@ -150,11 +150,18 @@ class Stale:
     """A hands shim, by its mark, that is not the one this hands writes for any fritter and wire: an older hands wrote it."""
 
 
-def shim_of(path: Path) -> Shim | Stale | None:
-    """What the file at path is as a hands shim; None when it is not one."""
+@dataclass(frozen=True)
+class Unreadable:
+    """A file that is there and could not be read, so whether it is a hands shim is not known: why."""
+
+    reason: str
+
+
+def shim_of(path: Path) -> Shim | Stale | Unreadable | None:
+    """What the file at path is as a hands shim; None when it is not one, or not there."""
     text = _shim(path)
-    if text is None:
-        return None
+    if not isinstance(text, str):
+        return text
     try:
         words = [shlex.split(line.removeprefix(f"{name}=")) if line.startswith(f"{name}=") else [] for name, line in zip(("fritter", "wire"), text.splitlines()[2:4])]
     except ValueError:  # an unclosed quote: not a line shim_script writes
@@ -174,24 +181,27 @@ def real_claude(search: str) -> Path | None:
     # second line, and an empty entry is the current directory.
     for entry in search.split(":"):
         candidate = Path(entry or ".") / "claude"
-        if candidate.is_file() and os.access(candidate, os.X_OK) and _shim(candidate) is None:
+        # A file the shim cannot read is not a shim to it either.
+        if candidate.is_file() and os.access(candidate, os.X_OK) and not isinstance(_shim(candidate), str):
             # Absolute: whoever runs it may run it from another directory than the one an empty entry named.
             return candidate.absolute()
     return None
 
 
-def _shim(path: Path) -> str | None:
-    """The whole text of a hands shim; None when path is not a file marked as a shim."""
-    # [LAW:one-source-of-truth] the one reading of the mark in Python. Read as the shim reads each claude on PATH: a file
-    # it cannot read is not a shim to it either. Only a marked file is read past its mark: the real claude is large.
+def _shim(path: Path) -> str | Unreadable | None:
+    """The whole text of a hands shim; None when path is not there or not a file marked as a shim."""
+    # [LAW:one-source-of-truth] the one reading of the mark in Python. Only a marked file is read past its mark: the real
+    # claude is large.
     try:
         with path.open("rb") as found:
             head = found.readline() + found.readline()
             if head.splitlines()[1:] != [MARK.encode()]:
                 return None
             return (head + found.read()).decode(errors="replace")
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as error:
+        return Unreadable(str(error))
 
 
 def shim_script(fritter: Path, wire: Path) -> str:

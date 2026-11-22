@@ -105,7 +105,8 @@ from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
-from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
+from hands.brain.configdir import Unstartable
+from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -126,20 +127,17 @@ class Configured:
     settings: Settings
 
 
-def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str], run_start: Start) -> Configured:
-    """The process boundary: the settings the run started on, the home's files, and the environment's secrets in, typed
-    configuration out; CannotStart where hands cannot run on them, naming every refusal of the home's files at once."""
-    # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
-    # refusal only a Claude Code can say.
-    checked = preflight.preflight(home)
-    run_start.heard(fritter=checked.fritter, shim=checked.shim)
-    match checked:
+def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str], checked: preflight.Preflight) -> Configured:
+    """The process boundary: the settings the run started on, what the start's preflight found in the home's files, and
+    the environment's secrets in, typed configuration out; CannotStart where hands cannot run on them, naming every
+    refusal of the home's files at once."""
+    match checked.verdict:
         case preflight.Refused(refusals=refusals):
-            raise CannotStart("; ".join(refusals))
-        case preflight.Startable(voice=kept):
+            raise CannotStart(f"{'; '.join(refusals)}; then run hands again")
+        case preflight.Startable(brain=brain, voice=kept):
             pass
     try:
-        llm = backend(children, settings.config.llm, home, environment)
+        llm = backend(children, settings.config.llm, home, environment, brain)
     except Rejected as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_fetched(kept), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
@@ -210,7 +208,7 @@ async def mind(
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), session, record)
+            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
@@ -239,7 +237,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
+    configure: Callable[[Mapping[str, str], preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     run_start: Start,
@@ -298,7 +296,7 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        read = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        read = await start(lambda: configured(partial(configure, environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if read is not None:
             config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
@@ -326,12 +324,17 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> Configured:
+async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
     await sweep(home, sessions, frozenset())
-    read = await off_loop(lambda: _attempted(configure), "the configuration read")
+    # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
+    # refusal only a Claude Code can say. [LAW:no-ambient-temporal-coupling] its facts reach the start's event here, on
+    # the loop that owns it, never from the thread it ran on.
+    checked = await off_loop(partial(preflight.preflight, home), "the start's preflight")
+    run_start.heard(**checked.facts())
+    read = await off_loop(lambda: _attempted(partial(configure, checked)), "the configuration read")
     # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and
     # [LAW:dataflow-not-control-flow] every step is said whether or not hands can start, so a start refused on its
     # settings still names each other step it is missing.

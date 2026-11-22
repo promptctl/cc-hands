@@ -12,7 +12,6 @@ import pytest
 from aiohttp import web
 
 from hands.brain import pinned
-from hands.brain.configdir import Unstartable, brain_claude
 from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
@@ -42,7 +41,7 @@ def test_the_brain_runs_exactly_the_pinned_version_in_its_own_directory(tmp_path
     placed(config_dir / "pinned-claude" / pinned.VERSION / "claude", RELEASE)
     # Another version beside it is never the brain's.
     placed(config_dir / "pinned-claude" / ANOTHER_VERSION / "claude", RELEASE)
-    assert brain_claude(config_dir) == config_dir / "pinned-claude" / pinned.VERSION / "claude"
+    assert pinned.verified(config_dir) == config_dir / "pinned-claude" / pinned.VERSION / "claude"
 
 
 def test_a_brain_whose_pinned_release_is_not_installed_refuses_naming_the_version_and_the_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,8 +50,8 @@ def test_a_brain_whose_pinned_release_is_not_installed_refuses_naming_the_versio
     # Another version in its place is not the pin, and is never run for it.
     placed(config_dir / "pinned-claude" / AN_OLDER_VERSION / "claude", RELEASE)
     expected = config_dir / "pinned-claude" / pinned.VERSION / "claude"
-    with pytest.raises(Unstartable) as refused:
-        brain_claude(config_dir)
+    with pytest.raises(pinned.Unpinned) as refused:
+        pinned.verified(config_dir)
     assert str(refused.value) == f"Claude Code {pinned.VERSION}, the brain's, is not installed at {expected}: run `hands install-brain`"
 
 
@@ -60,21 +59,21 @@ def test_a_copy_that_is_not_the_pinned_release_refuses_naming_its_checksum_and_t
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
     copy = placed(pinned.claude(config_dir), OTHER)
-    with pytest.raises(Unstartable) as refused:
-        brain_claude(config_dir)
+    with pytest.raises(pinned.Unpinned) as refused:
+        pinned.verified(config_dir)
     assert str(refused.value) == (
         f"{copy} hashes to {hashlib.sha256(OTHER).hexdigest()}, not the {hashlib.sha256(RELEASE).hexdigest()} of Claude Code {pinned.VERSION}, the brain's: run `hands install-brain` to fetch it again"
     )
     # Written over with the pin, it is the brain's: what was hashed before is not taken for what is there now.
     placed(copy, RELEASE)
-    assert brain_claude(config_dir) == copy
+    assert pinned.verified(config_dir) == copy
     # Nor is it when other bytes of the same length are written into the same file and its modified time is set back.
     held = copy.stat()
     copy.write_bytes(RELEASE.replace(b"pinned", b"PINNED"))
     os.utime(copy, ns=(held.st_atime_ns, held.st_mtime_ns))
     assert (copy.stat().st_ino, copy.stat().st_size, copy.stat().st_mtime_ns) == (held.st_ino, held.st_size, held.st_mtime_ns)
-    with pytest.raises(Unstartable, match="hashes to"):
-        brain_claude(config_dir)
+    with pytest.raises(pinned.Unpinned, match="hashes to"):
+        pinned.verified(config_dir)
 
 
 def test_nothing_on_path_or_in_the_persons_own_install_is_the_brains_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,8 +87,8 @@ def test_nothing_on_path_or_in_the_persons_own_install_is_the_brains_claude(tmp_
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PATH", f"{home / '.local' / 'bin'}{os.pathsep}{os.environ['PATH']}")
     config_dir = tmp_path / "brain"
-    with pytest.raises(Unstartable, match="is not installed at"):
-        brain_claude(config_dir)
+    with pytest.raises(pinned.Unpinned, match="is not installed at"):
+        pinned.verified(config_dir)
 
 
 def test_a_copy_that_cannot_be_read_or_run_refuses_naming_the_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,19 +97,19 @@ def test_a_copy_that_cannot_be_read_or_run_refuses_naming_the_install(tmp_path: 
     copy = placed(pinned.claude(config_dir), RELEASE)
     # Not a file that can be read: refused with what reading it raised, not raised as it.
     copy.chmod(0o000)
-    with pytest.raises(Unstartable, match=r"cannot be read as Claude Code .*Permission denied.*: run `hands install-brain` to fetch it again"):
-        brain_claude(config_dir)
+    with pytest.raises(pinned.Unpinned, match=r"cannot be read as Claude Code .*Permission denied.*: run `hands install-brain` to fetch it again"):
+        pinned.verified(config_dir)
     # The pin's bytes, but not a file this process may run: refused, never left to fail at the spawn.
     copy.chmod(0o644)
-    with pytest.raises(Unstartable) as refused:
-        brain_claude(config_dir)
+    with pytest.raises(pinned.Unpinned) as refused:
+        pinned.verified(config_dir)
     assert str(refused.value) == f"{copy}, Claude Code {pinned.VERSION}, the brain's, cannot be run: run `hands install-brain` to fetch it again"
     # Where the version's directory should be, a file: the same.
     copy.unlink()
     copy.parent.rmdir()
     copy.parent.write_bytes(b"")
-    with pytest.raises(Unstartable, match=r"cannot be read as Claude Code .*Not a directory.*: run `hands install-brain`"):
-        brain_claude(config_dir)
+    with pytest.raises(pinned.Unpinned, match=r"cannot be read as Claude Code .*Not a directory.*: run `hands install-brain`"):
+        pinned.verified(config_dir)
 
 
 @pytest.fixture
@@ -142,7 +141,7 @@ async def test_install_fetches_the_pinned_build_once_and_replaces_a_copy_that_is
     target = config_dir / "pinned-claude" / pinned.VERSION / "claude"
     assert await pinned.install(config_dir, pinned.RELEASE) == pinned.Installed(target, unpinned=f"Claude Code {pinned.VERSION}, the brain's, is not installed at {target}: run `hands install-brain`")
     assert releases == [f"/{pinned.VERSION}/{built}/claude"]
-    assert brain_claude(config_dir).read_bytes() == RELEASE and os.access(brain_claude(config_dir), os.X_OK)
+    assert pinned.verified(config_dir).read_bytes() == RELEASE and os.access(pinned.verified(config_dir), os.X_OK)
     # There already, it is not fetched again.
     assert await pinned.install(config_dir, pinned.RELEASE) == pinned.Installed(pinned.claude(config_dir), unpinned=None)
     assert len(releases) == 1
@@ -169,7 +168,7 @@ async def test_install_replaces_a_copy_of_the_pin_that_cannot_be_run(tmp_path: P
     placed(pinned.claude(config_dir), RELEASE).chmod(0o644)
     installed = await pinned.install(config_dir, pinned.RELEASE)
     assert installed.unpinned is not None and installed.unpinned.endswith("cannot be run: run `hands install-brain` to fetch it again")
-    assert brain_claude(config_dir) == pinned.claude(config_dir) and len(releases) == 1
+    assert pinned.verified(config_dir) == pinned.claude(config_dir) and len(releases) == 1
 
 
 @pytest.mark.outside
@@ -180,7 +179,7 @@ async def test_two_installs_at_once_each_write_their_own_download_and_leave_the_
     assert first.fetched and second.fetched and len(releases) == 2
     # Neither removed or renamed the other's download, and what is left is the pin alone.
     assert list(pinned.claude(config_dir).parent.iterdir()) == [pinned.claude(config_dir)]
-    assert brain_claude(config_dir) == pinned.claude(config_dir)
+    assert pinned.verified(config_dir) == pinned.claude(config_dir)
 
 
 def serving(*chunks: bytes | Exception) -> pinned.Source:
@@ -215,7 +214,7 @@ async def test_install_holds_every_source_to_the_pin_and_leaves_nothing_of_one_t
     assert list(pinned.claude(config_dir).parent.iterdir()) == []
     # Its bytes the pin's, written in pieces, it is the brain's.
     installed = await pinned.install(config_dir, serving(RELEASE[:4], RELEASE[4:]))
-    assert installed.fetched and brain_claude(config_dir).read_bytes() == RELEASE
+    assert installed.fetched and pinned.verified(config_dir).read_bytes() == RELEASE
 
 
 @pytest.fixture

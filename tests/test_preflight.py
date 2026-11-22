@@ -5,14 +5,15 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from conftest import children_on, located, startable
+from conftest import children_on, located, new_sessions, startable
 from hands.brain import pinned
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, run
-from hands.daemon.preflight import Refused, Startable, preflight
+from hands.daemon.preflight import Preflight, Refused, Startable, preflight
 from hands.daemon.starting import CannotStart, Start
 from hands.sessions import wrapper
 from hands.sessions.audit import Entry, SettingsEdited
@@ -60,13 +61,27 @@ def _unreadable(path: Path) -> None:
     path.chmod(0)
 
 
+def _dangling_fritter(home: Home) -> None:
+    # A link to nothing: there, and nothing to read.
+    home.bin.mkdir()
+    home.fritter.symlink_to(home.root / "nowhere")
+
+
+def _unreadable_shim(home: Home) -> None:
+    home.bin.mkdir(parents=True, exist_ok=True)
+    home.shim.write_text(wrapper.shim_script(home.fritter, home.wire))
+    _unreadable(home.shim)
+
+
 # One row a refusal: what breaks the home, and what the refusal says.
 FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("pin missing", _unpinned, f"Claude Code {pinned.VERSION}, the brain's, is not installed at "),
     ("pin wrong", lambda home, _: (home.root / "pinned" / "claude").write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {pinned.VERSION}, the brain's: run `hands install-brain` to fetch it again"),
     ("hands built without its fritter", lambda home, monkeypatch: monkeypatch.setattr(wrapper, "PACKAGED", home.root / "package" / "bin" / "fritter"), "/package/bin/fritter: install hands again"),
     ("stale fritter copy", lambda home, _: (home.bin.mkdir(), home.fritter.write_bytes(b"#!/bin/sh\n")), "is not the fritter this hands carries"),
+    ("fritter copy unreadable", lambda home, _: _dangling_fritter(home), "/fritter is the fritter this hands carries: [Errno 2] No such file or directory"),
     ("stale shim", lambda home, _: _stale_shim(home), "is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`"),
+    ("shim unreadable", lambda home, _: _unreadable_shim(home), "/claude is the shim this hands writes: [Errno 13] Permission denied"),
     ("first screens unanswered", lambda home, _: (home.brain / ".claude.json").write_text("{}"), "first screens (its onboarding unfinished; "),
     ("its working directory untrusted", _untrusted, "/cwd untrusted): `hands login` answers them"),
     ("first screens unreadable", lambda home, _: _unreadable(home.brain / ".claude.json"), ".claude.json unreadable: [Errno 13] Permission denied"),
@@ -82,9 +97,9 @@ FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
 async def test_each_refusal_of_the_start_refuses_an_edit_and_a_voice_choice_which_the_watch_outlives(fault: Callable[[Home, pytest.MonkeyPatch], object], said: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
     mark = startable(tmp_path, monkeypatch)
-    assert isinstance(preflight(home), Startable)
+    assert isinstance(preflight(home).verdict, Startable)
     fault(home, monkeypatch)
-    match preflight(home):
+    match preflight(home).verdict:
         case Refused(refusals=refusals):
             assert [refusal for refusal in refusals if said in refusal] != [], refusals
         case passed:
@@ -118,15 +133,45 @@ def test_a_start_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path,
     home = Home(tmp_path)
     startable(tmp_path, monkeypatch)
     each = _faulted(home, monkeypatch)
-    run_start = Start(restarted=False, clock=VirtualClock())
+    checked = preflight(home)
     with pytest.raises(CannotStart) as refused:
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), os.environ, run_start)
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), os.environ, checked)
     assert [said for said in each if said not in str(refused.value)] == []
+    # Said once, after them all: the fix of each is made before hands is run again.
+    assert str(refused.value).endswith("; then run hands again")
     # An unreadable settings.json is its own refusal, never also a first screen unanswered.
     assert "first screens" not in str(refused.value)
+    assert checked.facts() == {"fritter": "absent", "shim": "stale"}
+
+
+async def test_the_start_records_what_its_preflight_found_before_its_configuration_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    _dangling_fritter(home)
+    run_start = Start(restarted=False, clock=VirtualClock())
+
+    def configure(checked: Preflight) -> run.Configured:
+        raise CannotStart("; ".join(cast(Refused, checked.verdict).refusals))
+
+    with pytest.raises(CannotStart):
+        await run.configured(configure, lambda _: None, home, new_sessions(clock=VirtualClock()), run_start)
     events: list[WideEvent] = []
-    run_start.ended(events.append, refused.value)
-    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("absent", "stale")]
+    run_start.ended(events.append, None)
+    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("unreadable", "not-a-shim")]
+
+
+def test_an_unreadable_record_of_api_key_answers_is_said_beside_an_unreadable_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "env": "x"}))
+    state = home.brain / ".claude.json"
+    state.write_text(json.dumps({**json.loads(state.read_text()), "customApiKeyResponses": []}))
+    match preflight(home).verdict:
+        case Refused(refusals=refusals):
+            assert any("an env hands cannot read" in refusal for refusal in refusals), refusals
+            assert any(f"{state} unreadable" in refusal for refusal in refusals), refusals
+        case passed:
+            raise AssertionError(f"{passed} passed the preflight")
 
 
 async def test_an_edit_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,6 +210,21 @@ async def test_an_edit_refused_on_its_home_is_taken_once_the_home_is_mended_its_
     assert await config.edited(home, recorded.append, running, VirtualClock(), period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert [entry.refused for entry in recorded if isinstance(entry, SettingsEdited)] == [f'the brain would load its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {settings}']
     assert not mark.exists()
+
+
+async def test_an_edit_whose_refusals_change_while_its_bytes_stand_is_said_again_with_those_standing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    _stale_shim(home)
+    home.voice.write_text("zed\n")
+    # Refused on both; the voice mended before the fifth read, then broken again before the seventh.
+    running = config.load(home)
+    monkeypatch.setattr(config, "_held", _reads([EDIT] * 8, {4: lambda: home.voice.unlink(), 6: lambda: home.voice.write_text("zed\n")}))
+    recorded: list[Entry] = []
+    with pytest.raises(Outlived):
+        await config.edited(home, recorded.append, running, VirtualClock(), period=0)
+    said = [(("is not the shim" in refused), ("says 'zed'" in refused)) for entry in recorded if isinstance(entry, SettingsEdited) and (refused := entry.refused) is not None]
+    assert said == [(True, True), (True, False), (True, True)]
 
 
 async def test_an_edit_refused_reverted_and_saved_again_is_refused_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

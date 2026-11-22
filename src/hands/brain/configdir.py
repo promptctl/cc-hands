@@ -5,26 +5,16 @@ claude, settings.json, the first screens .claude.json records, and the syncs set
 exception that discards the fields parsed beside it, so every refusal is read off the values and none hides another.
 """
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from hands.brain import pinned
-from hands.core.session import PERMISSION_MODES, PermissionMode
+from hands.core.session import PERMISSION_MODES, PermissionMode, UnknownMode
 from hands.sessions.payload import Payload, Rejected
 
 
 class Unstartable(Exception):
     """A Claude Code of hands' own could not be started: no claude to run, a config directory it would not start on, a fritter that never opened its socket, or a brain that never turned its input on."""
-
-
-def brain_claude(config_dir: Path) -> Path:
-    """The Claude Code hands runs as its own on `config_dir`: hands' copy of the release it is pinned to
-    (hands.brain.pinned), never the person's claude, whose release their own install moves under it."""
-    try:
-        return pinned.verified(config_dir)
-    except pinned.Unpinned as error:
-        raise Unstartable(str(error)) from None
 
 
 @dataclass(frozen=True)
@@ -38,14 +28,10 @@ class Unread:
 KEPT_OUT = ("syncClaudeAiSkills", "syncClaudeAiPlugins")
 
 # The permission modes Claude Code takes as a setting's defaultMode: a hook's, and "manual", the other name it reads as one of them.
-SETTINGS_MODES: Mapping[str, PermissionMode] = {**PERMISSION_MODES, "manual": "default"}
+SETTINGS_MODES: dict[str, PermissionMode] = {**PERMISSION_MODES, "manual": "default"}
 
-
-@dataclass(frozen=True)
-class Untaken:
-    """A defaultMode Claude Code does not take, by the name settings.json gives it."""
-
-    named: str
+SETTINGS = "settings.json"
+STATE = ".claude.json"
 
 
 @dataclass(frozen=True)
@@ -55,7 +41,7 @@ class Settings:
     a key it names none of."""
 
     synced: tuple[str, ...]
-    mode: PermissionMode | Untaken | Unread | None
+    mode: PermissionMode | UnknownMode | Unread | None
     key: str | Unread | None
 
 
@@ -76,20 +62,23 @@ class State:
 
 @dataclass(frozen=True)
 class ConfigDir:
-    """The brain's config directory, every file of it read."""
+    """The brain's config directory, every file of it read, and the directory the brain runs in, as Claude Code records
+    a directory it trusts: resolved."""
 
     path: Path
-    claude: Path | Unread
+    cwd: Path
+    claude: Path | pinned.Unpinned
     settings: Settings | Unread
     state: State | Absent | Unread
 
-    @property
-    def settings_path(self) -> Path:
-        return self.path / "settings.json"
 
-    @property
-    def state_path(self) -> Path:
-        return self.path / ".claude.json"
+@dataclass(frozen=True)
+class Runnable:
+    """What a Claude Code of hands' own is run with on a config directory it may run on: the pinned claude, and the
+    permission mode its settings name, None where they name none."""
+
+    claude: Path
+    mode: PermissionMode | None
 
 
 def cwd(config_dir: Path) -> Path:
@@ -101,10 +90,11 @@ def read(config_dir: Path) -> ConfigDir:
     """Every file of `config_dir` the brain starts on, read; never raises on what they hold. Hashes a pinned claude this
     process has not hashed since it changed, about 230 MB, so it is called off the loop."""
     try:
-        claude: Path | Unread = pinned.verified(config_dir)
+        claude: Path | pinned.Unpinned = pinned.verified(config_dir)
     except pinned.Unpinned as error:
-        claude = Unread(str(error))
-    return ConfigDir(config_dir, claude, _settings(config_dir / "settings.json"), _state(config_dir / ".claude.json", cwd(config_dir).resolve()))
+        claude = error
+    here = cwd(config_dir).resolve()
+    return ConfigDir(config_dir, here, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here))
 
 
 def _settings(path: Path) -> Settings | Unread:
@@ -118,14 +108,14 @@ def _settings(path: Path) -> Settings | Unread:
     return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said))
 
 
-def _mode(said: Payload) -> PermissionMode | Untaken | Unread | None:
+def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
     try:
         named = Payload.of(said.fields.get("permissions", {}), "its permissions").optional_text("defaultMode")
     except Rejected as error:
         return Unread(str(error))
     if named is None:
         return None
-    return SETTINGS_MODES.get(named) or Untaken(named)
+    return SETTINGS_MODES.get(named) or UnknownMode(named)
 
 
 def _key(said: Payload) -> str | Unread | None:
@@ -172,100 +162,99 @@ def _answered(said: Payload) -> frozenset[str] | Unread:
         return Unread(str(error))
 
 
+def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
+    """What a Claude Code of hands' own is run with on `config`, or every reason none may run on it, each naming its fix:
+    no pinned claude, or settings it must not start on, which a run of one, `hands login`'s among them, would load."""
+    # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
+    refused = (*_pinned(config.claude), *_kept_out(config))
+    match config.claude, config.settings:
+        case Path() as claude, Settings(mode=str() | None as mode) if not refused:
+            return Runnable(claude, mode)
+        case _:
+            return refused
+
+
+def _pinned(claude: Path | pinned.Unpinned) -> tuple[str, ...]:
+    match claude:
+        case pinned.Unpinned():
+            return (str(claude),)
+        case Path():
+            return ()
+
+
+def _kept_out(config: ConfigDir) -> tuple[str, ...]:
+    """What settings.json would have the brain start on that it must not: a sync not kept out, a mode Claude Code does
+    not take, which would put the settings beside it in doubt, or an env hands cannot read."""
+    path = config.path / SETTINGS
+    match config.settings:
+        case Unread(reason=reason):
+            return (f"the brain's settings could not be read ({reason}): correct {path}",)
+        case Settings(synced=synced, mode=mode, key=key):
+            pass
+    kept = " and ".join(f'"{switch}": false' for switch in KEPT_OUT)
+    return (
+        *((f"the brain would load its account's {' and '.join(synced)}: set {kept} in {path}",) if synced else ()),
+        *_moded(mode, path),
+        *((f"the brain's settings set an env hands cannot read ({key.reason}): correct {path}",) if isinstance(key, Unread) else ()),
+    )
+
+
+def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:
+    named = f"name one of {', '.join(SETTINGS_MODES)} in {path}"
+    match mode:
+        case UnknownMode(name=name):
+            return (f'the brain\'s settings name a defaultMode Claude Code does not take, "{name}": {named}',)
+        case Unread(reason=reason):
+            return (f"the brain's settings name no defaultMode hands can read ({reason}): {named}",)
+        case str() | None:
+            return ()
+
+
 def unanswered(config: ConfigDir) -> tuple[str, ...]:
     """Why the brain would start on one of Claude Code's first screens: none when it would not. A config directory made
     by anything but Claude Code's first run, `claude auth status` among them, records none of them."""
-    state = config.state_path
+    state = config.path / STATE
     match config.state:
         case Absent():
             return (f"no {state}",)
-        case Unread(reason=reason):
+        case Unread() as unread:
             # Claude Code's own first run is what writes this state, so it is the run that mends one hands cannot read.
-            return (f"{state} unreadable: {reason}",)
+            return (_unreadable(state, unread),)
         case State(onboarded=onboarded, trusted=trusted, answered=answered):
             pass
     # An unreadable key is the settings' refusal, said apart from these.
     key = config.settings.key if isinstance(config.settings, Settings) else None
     return (
         *_screen(onboarded, state, "its onboarding unfinished"),
-        *_screen(trusted, state, f"{cwd(config.path).resolve()} untrusted"),
-        *_keyed(answered, key, state, config.settings_path),
+        *_screen(trusted, state, f"{config.cwd} untrusted"),
+        *_keyed(answered, key, state, config.path / SETTINGS),
     )
+
+
+def _unreadable(state: Path, unread: Unread) -> str:
+    return f"{state} unreadable: {unread.reason}"
 
 
 def _screen(passed: bool | Unread, state: Path, why: str) -> tuple[str, ...]:
     match passed:
-        case Unread(reason=reason):
-            return (f"{state} unreadable: {reason}",)
+        case Unread() as unread:
+            return (_unreadable(state, unread),)
         case bool():
             return () if passed else (why,)
 
 
 def _keyed(answered: frozenset[str] | Unread, key: str | Unread | None, state: Path, settings: Path) -> tuple[str, ...]:
     match answered, key:
-        case Unread(reason=reason), str():
-            return (f"{state} unreadable: {reason}",)
-        case frozenset(), str() if key not in answered:
-            return (f"the API key {settings} sets unanswered",)
-        case _:
-            return ()
-
-
-def refusals(config: ConfigDir) -> tuple[str, ...]:
-    """Every reason the brain would not start on `config`, each naming its fix: none when it would."""
-    # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
-    return (*_pinned(config.claude), *kept_out(config), *first_screens(config))
-
-
-def _pinned(claude: Path | Unread) -> tuple[str, ...]:
-    return (claude.reason,) if isinstance(claude, Unread) else ()
-
-
-def kept_out(config: ConfigDir) -> tuple[str, ...]:
-    """What settings.json would have the brain start on that it must not: a sync not kept out, or a mode Claude Code does not take."""
-    path = config.settings_path
-    match config.settings:
-        case Unread(reason=reason):
-            return (_unreadable(path, reason),)
-        case Settings(synced=synced, mode=mode, key=key):
-            pass
-    kept = f'set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {path}'
-    # [LAW:parse-dont-validate] said again in the brain's --settings, beside its hooks: a mode Claude Code does not take
-    # would put the settings holding them in doubt, so the brain does not start on one.
-    return (
-        *((f"the brain would load its account's {' and '.join(synced)}: {kept}",) if synced else ()),
-        *_moded(mode, path),
-        *((f"the brain's settings set an env hands cannot read ({key.reason}): correct {path}",) if isinstance(key, Unread) else ()),
-    )
-
-
-def _unreadable(path: Path, reason: str) -> str:
-    return f"the brain's settings could not be read ({reason}): correct {path}"
-
-
-def _moded(mode: PermissionMode | Untaken | Unread | None, path: Path) -> tuple[str, ...]:
-    match mode:
-        case Untaken(named=named):
-            return (f'the brain\'s settings name a defaultMode Claude Code does not take, "{named}": name one of {", ".join(SETTINGS_MODES)} in {path}',)
-        case Unread(reason=reason):
-            return (f"the brain's settings name no defaultMode hands can read ({reason}): name one of {', '.join(SETTINGS_MODES)} in {path}",)
-        case _:
+        case Unread() as unread, _:
+            return (_unreadable(state, unread),)
+        case frozenset(), str():
+            return () if key in answered else (f"the API key {settings} sets unanswered",)
+        case frozenset(), None | Unread():
+            # No key, or one the settings' own refusal names: there is nothing it asks of.
             return ()
 
 
 def first_screens(config: ConfigDir) -> tuple[str, ...]:
+    """Why the brain would not start on `config` past Claude Code's first screens, naming `hands login`, which answers them."""
     why = unanswered(config)
     return (f"the brain has not been through Claude Code's first screens ({'; '.join(why)}): `hands login` answers them",) if why else ()
-
-
-def settings_mode(config_dir: Path) -> PermissionMode | None:
-    """The permission mode the brain's settings.json names, None where it names none; raises Unstartable where it
-    names one Claude Code does not take, or hands cannot read it."""
-    path = config_dir / "settings.json"
-    match _settings(path):
-        case Unread(reason=reason):
-            raise Unstartable(_unreadable(path, reason))
-        case Settings(mode=str() | None as mode):
-            return mode
-        case Settings(mode=mode):
-            raise Unstartable("; ".join(_moded(mode, path)))

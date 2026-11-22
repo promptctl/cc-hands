@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from hands.brain.configdir import Runnable
 
 
 @dataclass(frozen=True)
@@ -29,3 +30,5 @@ class ClaudeCodeBackend:
     config_dir: Path
     # The account its login held when the run started.
     account: Account
+    # [LAW:parse-dont-validate] what the start's preflight read it is run with: the launch never reads its files again.
+    brain: Runnable

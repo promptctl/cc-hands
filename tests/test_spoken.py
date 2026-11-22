@@ -20,7 +20,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.tests.utils import run_test
 
-from conftest import unprimed
+from conftest import run_as, unprimed
 from hands.virtualclock import VirtualClock
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
@@ -356,7 +356,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     voice = built.build_voice(
         clock,
         built.VoiceConfig(
-            llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None)),
+            llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None), brain=run_as(tmp_path)),
             voice=voicechoice.Voice("cosette"),
         ),
         llm=FrameProcessor(),

@@ -159,8 +159,11 @@ def test_any_home_s_shim_names_the_fritter_and_wire_it_runs_and_nothing_else_is_
     assert wrapper.shim_of(other) == wrapper.Shim(root / "it's other" / "fritter", root / "it's other" / "wire.sock")
     unreadable = executable(root / "locked" / "claude", "#!/bin/sh\n")
     unreadable.chmod(0o111)
-    for path in (root / "real" / "claude", root / "nowhere" / "claude", unreadable, root / "bin"):
+    for path in (root / "real" / "claude", root / "nowhere" / "claude"):
         assert wrapper.shim_of(path) is None
+    # There, and not to be read: whether it is a shim is not known, so it is never taken for none.
+    for path in (unreadable, root / "bin"):
+        assert isinstance(wrapper.shim_of(path), wrapper.Unreadable)
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""Which `hands` commands load Pipecat: status, check, log, phone, and login answer without it."""
+"""Which `hands` commands load Pipecat and torch: status, check, log, phone, and login answer without either."""
 
 import json
 import os
@@ -48,14 +48,14 @@ if command == "login":
     process.login = logged_in
 code = cli.main(["--home", home, command], clock)
 with open(out, "w") as file:
-    json.dump({"code": code, "pipecat": sorted(m for m in sys.modules if m.split(".")[0] == "pipecat")}, file)
+    json.dump({"code": code, "loaded": sorted({m.split(".")[0] for m in sys.modules} & {"pipecat", "torch"})}, file)
 """
 
 
 # Each command's code in a home with no daemon: status and check say it is not running, and the rest run whole.
 @pytest.mark.parametrize(("command", "code"), [("status", 1), ("check", 1), ("log", 0), ("phone", 0), ("login", 0)])
-def test_the_command_answers_without_loading_pipecat(command: str, code: int, tmp_path: Path) -> None:
+def test_the_command_answers_without_loading_pipecat_or_torch(command: str, code: int, tmp_path: Path) -> None:
     out = tmp_path / "modules.json"
     child = subprocess.run([sys.executable, "-c", CHILD, str(tmp_path / "home"), command, str(out)], env=os.environ | {"PATH": SYSTEM_PATH}, capture_output=True, text=True)
     assert child.returncode == 0, child.stderr
-    assert json.loads(out.read_text()) == {"code": code, "pipecat": []}, child.stderr
+    assert json.loads(out.read_text()) == {"code": code, "loaded": []}, child.stderr

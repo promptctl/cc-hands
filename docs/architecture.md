@@ -2572,9 +2572,13 @@ next `hands.start`, which says it was `restarted`. One that does not parse, or o
 start's preflight refuses (`hands.daemon.preflight`: every refusal a start makes on the home's
 files, read from them alone, starting no Claude Code), is said as a `SettingsEdited` that was
 refused, and the run keeps what it has. A home-refused edit is weighed again at each poll while
-its bytes stand, so it is taken once the home is mended; each refusal of those bytes is said once.
+its bytes stand, so it is taken once the home is mended; it is said again whenever what refuses it
+changes. A start that passes the preflight is run with what it read: the brain's pinned claude and
+the permission mode its settings name (`configdir.Runnable`), which the launch never reads again.
 The login is the one refusal the preflight leaves out: only a Claude Code can say it, so the start
-asks it and a weigh never does (promptctl-phone-app-9d9y.h4s reads it from the brain's own API answers). It is in the home, beside
+asks it and a weigh never does. Until promptctl-phone-app-9d9y.h4s reads it from the brain's own API
+answers, an edit or a choice by voice made on a brain logged out since its start is taken, and the
+restart on it is refused. It is in the home, beside
 everything else one hands keeps, so a second home is a second hands with settings of
 its own. A file left out, or a key, is the default; a key misspelled, or one its
 variant has no use for, stops the start naming it. hands holds no secret: the brain's

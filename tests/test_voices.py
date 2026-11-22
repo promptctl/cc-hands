@@ -71,6 +71,12 @@ def unlisted() -> Library:
     return Library(SYSTEM, lambda: [])
 
 
+def test_the_voices_on_offer_are_the_ones_the_installed_pocket_tts_resolves_by_name() -> None:
+    from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
+
+    assert VOICES == tuple(_ORIGINS_OF_PREDEFINED_VOICES)
+
+
 def test_a_voice_is_named_as_a_person_says_it_and_one_hands_does_not_have_is_refused() -> None:
     assert parse_voice("Bill Boerst") == "bill_boerst"
     assert parse_voice("charles") == DEFAULT

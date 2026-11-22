@@ -23,7 +23,7 @@ from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStar
 
 from conftest import children_on, located, new_sessions, RUN, running, unread
 from spoken import Received, Spoken
-from hands.brain import pinned
+from hands.brain import configdir, pinned
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.process import starting_settings, workdir
 from hands.clock import SYSTEM
@@ -218,6 +218,15 @@ class Hands:
         return self.stage._brain._claude  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
 
 
+def _runnable(brain: Path) -> configdir.Runnable:
+    """What the start's preflight passes the brain on `brain` with, as it reads it."""
+    match configdir.runnable(configdir.read(brain)):
+        case configdir.Runnable() as ran:
+            return ran
+        case refused:
+            raise AssertionError(f"the start's preflight would refuse the brain: {refused}")
+
+
 @pytest.fixture
 async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
@@ -240,7 +249,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
         # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
         environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
         refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
-        config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voicechoice.DEFAULT)
+        config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT, brain=_runnable(brain)), voice=voicechoice.DEFAULT)
         out = Spoken()
         store = SummaryStore(Summaries(tmp_path / "summaries.db"))
         async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
