@@ -28,6 +28,7 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
+from hands.daemon.preflight import Refused, Startable, preflight
 from hands.sessions import child, heartbeat, liveness, wrapper
 from hands.sessions.child import Children
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -169,12 +170,19 @@ def brain_claude(home: Home) -> Finding:
 
 
 def configured(children: Children, home: Home, environment: Mapping[str, str]) -> Finding:
-    """Whether the brain has the login it reaches its model with."""
+    """Whether hands would start on its settings and its home's files, and the brain has the login it reaches its model with."""
     try:
         config = load(home).config
     except Rejected as error:
         # The refusal names the file and what is wrong with it, so it is the detail, and the line names the file to mend.
         return Missing("settings unreadable", f"hands cannot read its settings: {error}", f"correct {home.config}")
+    # [LAW:single-enforcer] the start's own preflight, so what a start would refuse on the home's files is said here in
+    # its words, every refusal at once, before the login is asked.
+    match preflight(home):
+        case Refused(refusals=refusals):
+            return Missing("hands cannot start here", "hands cannot start on its home's files", "; ".join(refusals))
+        case Startable():
+            pass
     try:
         reached: Finding = reaching(resolve(children, config.llm, home, environment))
     except Rejected as error:

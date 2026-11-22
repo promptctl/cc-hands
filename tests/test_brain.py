@@ -25,14 +25,15 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from loguru import logger
 
 from hands.core.playback import Bookmark
-from hands.brain import pinned, process
+from hands.brain import configdir, pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
-from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.configdir import Unstartable, settings_mode
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
-from hands.core.session import DenyAndInterrupt, Permission
+from hands.core.session import DenyAndInterrupt, Permission, PermissionMode
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed
@@ -64,7 +65,7 @@ from hands.voice.summary import SummaryFailed, aside
 from hands.sessions.wide import Fact, WideEvent, begun, here, root, unit, within
 from hands.voice.tool import Result, tool
 from hands.voice.tools import Called, audited
-from hands.voice import voices
+from hands.voice import voicechoice
 
 # [LAW:no-silent-failure] an error hands logs that a test does not take fails it (`errors`).
 pytestmark = pytest.mark.usefixtures("errors")
@@ -430,7 +431,7 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
     with pytest.raises(Unstartable, match='name a defaultMode Claude Code does not take, "acceptedits"'):
         settings_mode(brain)
     settings.write_text(json.dumps({"permissions": {"defaultMode": 3}}))
-    with pytest.raises(Unstartable, match="the brain's settings could not be read"):
+    with pytest.raises(Unstartable, match="the brain's settings name no defaultMode hands can read"):
         settings_mode(brain)
     settings.unlink()
     settings.mkdir()
@@ -442,9 +443,9 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
 async def test_the_brain_starts_with_the_mode_its_settings_name_on_its_command_line_and_its_launch_says_which(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir(tmp_path / "brain")
     (tmp_path / "brain" / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "manual"}}))
-    told: list[Mode | None] = []
+    told: list[PermissionMode | None] = []
 
-    def told_of(launched: Launch, claude: Path, hooks: str, mode: Mode | None) -> list[str]:
+    def told_of(launched: Launch, claude: Path, hooks: str, mode: PermissionMode | None) -> list[str]:
         told.append(mode)
         return command(launched, claude, hooks, mode)
 
@@ -1493,7 +1494,7 @@ def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_code
     assert main(["--home", str(home), "login"]) == 0
     brain = home / "brain"
     assert json.loads((brain / "settings.json").read_text()) == {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False, "permissions": {"defaultMode": "default"}}
-    account_kept_out(brain)
+    assert configdir.kept_out(configdir.read(brain)) == ()
     # Claude Code's own first run, on the brain's settings sources, in the directory the brain runs in, where its screens,
     # the trust of that directory among them, are answered once at this terminal; its settings there before it started,
     # so that it never syncs the account's skills or plugins; with no credential of this shell's beside it.
@@ -1524,8 +1525,8 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     (brain / ".claude.json").write_text("{}")
     assert main(["--home", str(tmp_path), "login"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
-    account_kept_out(brain)
-    assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": "its onboarding unfinished", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
+    assert configdir.kept_out(configdir.read(brain)) == ()
+    assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": f"its onboarding unfinished; {brain.resolve() / 'cwd'} untrusted", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
 
 
 @pytest.mark.outside
@@ -1615,10 +1616,10 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
     brain = tmp_path / "brain"
     onboard(brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-0123456789abcdefghijklmn"}}')
     # The brain would start on Claude Code's screen asking whether to use the key, with nobody at its keyboard.
-    assert unanswered(brain) == f"the API key {brain / 'settings.json'} sets unanswered"
+    assert configdir.unanswered(configdir.read(brain)) == (f"the API key {brain / 'settings.json'} sets unanswered",)
     assert main(["--home", str(tmp_path), "login", "--console"]) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
-    assert unanswered(brain) is None
+    assert configdir.unanswered(configdir.read(brain)) == ()
 
 
 @pytest.mark.outside
@@ -1671,7 +1672,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voicechoice.DEFAULT)
     async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
@@ -1709,7 +1710,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     def minding(llm: ClaudeCodeBackend):
-        return mind(SYSTEM, VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention)
+        return mind(SYSTEM, VoiceConfig(llm=llm, voice=voicechoice.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention)
 
     launched: list[Launch] = []
 
@@ -1731,7 +1732,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voicechoice.DEFAULT)
     with pytest.raises(CannotStart, match=f"^Claude Code {pinned.VERSION}, the brain's, is not installed at {tmp_path / 'brain'}/"):
         async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_barged_in, Attention):
             pass
@@ -1750,7 +1751,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voicechoice.DEFAULT)
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):

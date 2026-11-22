@@ -29,7 +29,7 @@ from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.floor import Floor
 from hands.voice.player import Player
 from hands.voice.spoken import FenceAggregator, SpokenForm
-from hands.voice import voices
+from hands.voice import voicechoice
 from hands.voice.ptt import PushToTalk
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -357,7 +357,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         clock,
         built.VoiceConfig(
             llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None)),
-            voice=voices.Voice("cosette"),
+            voice=voicechoice.Voice("cosette"),
         ),
         llm=FrameProcessor(),
         key=PushToTalk(clock, lambda _: None),

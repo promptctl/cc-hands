@@ -26,7 +26,7 @@ from hands.voice.longpoll import version_of, waited
 from hands.voice.modelswitch import Heard, OwnModel, switch_model
 from hands.voice.trigger import described
 from hands.voice.library import Found
-from hands.voice.voices import VOICES, Chosen, Voice, parse_voice
+from hands.voice.voicechoice import VOICES, Chosen, Voice, parse_voice
 from hands.voice.wakeword import Word
 
 # [LAW:one-source-of-truth] the modalities are the ones Modality names; the page offers and accepts exactly those.

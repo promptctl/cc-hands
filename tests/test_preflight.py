@@ -1,0 +1,193 @@
+"""The start's preflight: every refusal a start makes on its home's files, said at once by the start and by each weigh of
+an edit or a model chosen by voice, starting no Claude Code."""
+
+import json
+import os
+from collections.abc import Callable
+from pathlib import Path
+
+import pytest
+
+from conftest import children_on, located, startable
+from hands.brain import pinned
+from hands.virtualclock import VirtualClock
+from hands.daemon import cli, config, run
+from hands.daemon.preflight import Refused, Startable, preflight
+from hands.daemon.starting import CannotStart, Start
+from hands.sessions import wrapper
+from hands.sessions.audit import Entry, SettingsEdited
+from hands.sessions.home import Home
+from hands.sessions.payload import Rejected
+from hands.sessions.wide import WideEvent
+
+EDIT = b'[llm]\nmodel = "claude-opus-5-5"\n'
+KEPT_OUT = {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False}
+
+
+class Outlived(Exception):
+    """The scripted file's reads ran out with the watch still running."""
+
+
+def _reads(script: list[bytes | None], at: dict[int, Callable[[], object]] | None = None) -> Callable[[Home], bytes | None]:
+    """config.toml as each poll reads it, in turn, doing what `at` names at that read first; Outlived once they are spent."""
+    reads = iter(enumerate(script))
+
+    def held(_home: Home) -> bytes | None:
+        for index, read in reads:
+            (at or {}).get(index, lambda: None)()
+            return read
+        raise Outlived
+
+    return held
+
+
+def _stale_shim(home: Home) -> None:
+    # As an older hands wrote it: without what this one writes into it.
+    home.bin.mkdir(parents=True, exist_ok=True)
+    home.shim.write_text(wrapper.shim_script(home.fritter, home.wire).replace("export DISABLE_AUTOUPDATER=1\n", ""))
+
+
+def _unpinned(home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pinned, "claude", located(home.brain / "pinned-claude" / pinned.VERSION / "claude"))
+
+
+def _untrusted(home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    # Onboarded, and the directory above the brain's, where its working directory is, not trusted.
+    (home.brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(home.root.resolve()): {"hasTrustDialogAccepted": False}}}))
+
+
+def _unreadable(path: Path) -> None:
+    path.chmod(0)
+
+
+# One row a refusal: what breaks the home, and what the refusal says.
+FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
+    ("pin missing", _unpinned, f"Claude Code {pinned.VERSION}, the brain's, is not installed at "),
+    ("pin wrong", lambda home, _: (home.root / "pinned" / "claude").write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {pinned.VERSION}, the brain's: run `hands install-brain` to fetch it again"),
+    ("hands built without its fritter", lambda home, monkeypatch: monkeypatch.setattr(wrapper, "PACKAGED", home.root / "package" / "bin" / "fritter"), "/package/bin/fritter: install hands again"),
+    ("stale fritter copy", lambda home, _: (home.bin.mkdir(), home.fritter.write_bytes(b"#!/bin/sh\n")), "is not the fritter this hands carries"),
+    ("stale shim", lambda home, _: _stale_shim(home), "is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`"),
+    ("first screens unanswered", lambda home, _: (home.brain / ".claude.json").write_text("{}"), "first screens (its onboarding unfinished; "),
+    ("its working directory untrusted", _untrusted, "/cwd untrusted): `hands login` answers them"),
+    ("first screens unreadable", lambda home, _: _unreadable(home.brain / ".claude.json"), ".claude.json unreadable: [Errno 13] Permission denied"),
+    ("a sync not kept out", lambda home, _: (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}'), "the brain would load its account's syncClaudeAiSkills: "),
+    # Left out, each switch is on.
+    ("no settings.json", lambda home, _: (home.brain / "settings.json").unlink(), 'its account\'s syncClaudeAiSkills and syncClaudeAiPlugins: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'),
+    ("a bad defaultMode", lambda home, _: (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "permissions": {"defaultMode": "acceptedits"}})), 'a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in'),
+    ("a kept voice hands has no voice for", lambda home, _: home.voice.write_text("zed\n"), "says 'zed', which names no voice hands has"),
+]
+
+
+@pytest.mark.parametrize(("fault", "said"), [(fault, said) for _, fault, said in FAULTS], ids=[name for name, _, _ in FAULTS])
+async def test_each_refusal_of_the_start_refuses_an_edit_and_a_voice_choice_which_the_watch_outlives(fault: Callable[[Home, pytest.MonkeyPatch], object], said: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    mark = startable(tmp_path, monkeypatch)
+    assert isinstance(preflight(home), Startable)
+    fault(home, monkeypatch)
+    match preflight(home):
+        case Refused(refusals=refusals):
+            assert [refusal for refusal in refusals if said in refusal] != [], refusals
+        case passed:
+            raise AssertionError(f"{passed} passed the preflight")
+    # A model chosen by voice is refused with it, and nothing is written.
+    with pytest.raises(Rejected) as refused:
+        config.OwnModel(home, config.load(home)).weigh("claude-opus-5-5")
+    assert said in str(refused.value)
+    assert not home.config.exists()
+    # An edit is refused with it, said once, and the watch is still weighing the edit when the reads run out.
+    running = config.load(home)
+    monkeypatch.setattr(config, "_held", _reads([EDIT] * 4))
+    recorded: list[Entry] = []
+    with pytest.raises(Outlived):
+        await config.edited(home, recorded.append, running, VirtualClock(), period=0)
+    [entry] = recorded
+    assert isinstance(entry, SettingsEdited) and entry.refused is not None and said in entry.refused
+    assert not mark.exists()
+
+
+def _faulted(home: Home, monkeypatch: pytest.MonkeyPatch) -> tuple[str, ...]:
+    """A home with several faults at once, an unreadable settings.json among them; what each refusal says."""
+    _unpinned(home, monkeypatch)
+    (home.brain / "settings.json").write_text("{")
+    _stale_shim(home)
+    home.voice.write_text("zed\n")
+    return (f"is not installed at {home.brain}", f"the brain's settings could not be read (", "is not the shim this hands writes", "says 'zed'")
+
+
+def test_a_start_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    each = _faulted(home, monkeypatch)
+    run_start = Start(restarted=False, clock=VirtualClock())
+    with pytest.raises(CannotStart) as refused:
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), os.environ, run_start)
+    assert [said for said in each if said not in str(refused.value)] == []
+    # An unreadable settings.json is its own refusal, never also a first screen unanswered.
+    assert "first screens" not in str(refused.value)
+    events: list[WideEvent] = []
+    run_start.ended(events.append, refused.value)
+    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("absent", "stale")]
+
+
+async def test_an_edit_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    mark = startable(tmp_path, monkeypatch)
+    each = _faulted(home, monkeypatch)
+    running = config.load(home)
+    monkeypatch.setattr(config, "_held", _reads([EDIT] * 3))
+    recorded: list[Entry] = []
+    with pytest.raises(Outlived):
+        await config.edited(home, recorded.append, running, VirtualClock(), period=0)
+    [entry] = recorded
+    assert isinstance(entry, SettingsEdited) and entry.refused is not None
+    assert [said for said in each if said not in entry.refused] == []
+    assert not mark.exists()
+
+
+def test_the_door_passes_a_home_whose_brain_is_refused_so_the_start_says_it_beside_the_survey(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    _stale_shim(home)
+    assert cli.door(home, None) == config.load(home)
+
+
+async def test_an_edit_refused_on_its_home_is_taken_once_the_home_is_mended_its_bytes_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    mark = startable(tmp_path, monkeypatch)
+    settings = home.brain / "settings.json"
+    settings.write_text('{"syncClaudeAiPlugins": false}')
+    # Seen, then weighed at each poll after while its bytes stand; the home is mended before the sixth read.
+    running = config.load(home)
+    monkeypatch.setattr(config, "_held", _reads([EDIT] * 8, {5: lambda: settings.write_text(json.dumps(KEPT_OUT))}))
+    recorded: list[Entry] = []
+    assert await config.edited(home, recorded.append, running, VirtualClock(), period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert [entry.refused for entry in recorded if isinstance(entry, SettingsEdited)] == [f'the brain would load its account\'s syncClaudeAiSkills: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {settings}']
+    assert not mark.exists()
+
+
+async def test_an_edit_refused_reverted_and_saved_again_is_refused_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    startable(tmp_path, monkeypatch)
+    _stale_shim(home)
+    # Refused, weighed again, reverted to the run's own bytes, and saved again: refused again.
+    running = config.load(home)
+    monkeypatch.setattr(config, "_held", _reads([EDIT, EDIT, EDIT, None, None, EDIT, EDIT, EDIT]))
+    recorded: list[Entry] = []
+    with pytest.raises(Outlived):
+        await config.edited(home, recorded.append, running, VirtualClock(), period=0)
+    assert len([entry for entry in recorded if isinstance(entry, SettingsEdited) and "is not the shim" in (entry.refused or "")]) == 2
+
+
+async def test_an_edit_and_a_voice_choice_are_weighed_without_starting_a_claude_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    mark = startable(tmp_path, monkeypatch)
+    held = config._held  # pyright: ignore[reportPrivateUsage]
+    running = config.load(home)
+    monkeypatch.setattr(config, "_held", _reads([EDIT, EDIT, EDIT]))
+    assert await config.edited(home, lambda _entry: None, running, VirtualClock(), period=0) == SettingsEdited(path=str(home.config), refused=None)
+    monkeypatch.setattr(config, "_held", held)
+    config.OwnModel(home, config.load(home)).weigh("claude-opus-5-5")()
+    assert config.load(home).config.llm.model == "claude-opus-5-5"
+    assert not mark.exists()

@@ -36,7 +36,7 @@ from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.summaries import Summaries
 from hands.sessions.tmux import TmuxExit, ran_at
 from hands.brain.stage import BrainStage
-from hands.voice import voices
+from hands.voice import voicechoice
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.conversation import UserWords
 from hands.voice.pipeline import VoiceConfig
@@ -240,7 +240,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
         # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
         environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
         refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
-        config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
+        config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voicechoice.DEFAULT)
         out = Spoken()
         store = SummaryStore(Summaries(tmp_path / "summaries.db"))
         async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:

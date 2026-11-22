@@ -74,6 +74,7 @@ from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
 from hands.voice.pipeline import Voice, VoiceConfig, build_voice
 from hands.daemon.backend import backend
+from hands.daemon import preflight
 from hands.voice.naming import NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS, keep_naming
 from hands.voice.narrator import Recounts, attending, narrate
 from hands.voice.utterance import Utterances
@@ -92,7 +93,7 @@ from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Fail
 from hands.tasks import cancel_and_wait
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
-from hands.voice import voices
+from hands.voice import voicechoice, voices
 from hands.voice.library import Library
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
@@ -125,14 +126,35 @@ class Configured:
     settings: Settings
 
 
-def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
-    """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
-    CannotStart where hands cannot run on them."""
+def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str], run_start: Start) -> Configured:
+    """The process boundary: the settings the run started on, the home's files, and the environment's secrets in, typed
+    configuration out; CannotStart where hands cannot run on them, naming every refusal of the home's files at once."""
+    # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
+    # refusal only a Claude Code can say.
+    checked = preflight.preflight(home)
+    run_start.heard(fritter=checked.fritter, shim=checked.shim)
+    match checked:
+        case preflight.Refused(refusals=refusals):
+            raise CannotStart("; ".join(refusals))
+        case preflight.Startable(voice=kept):
+            pass
     try:
         llm = backend(children, settings.config.llm, home, environment)
     except Rejected as error:
         raise CannotStart(str(error)) from error
-    return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
+    return Configured(VoiceConfig(llm=llm, voice=_fetched(kept), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
+
+
+def _fetched(kept: voicechoice.Chosen) -> voicechoice.Chosen:
+    """The voice the user kept, once a kept library voice the choice of it would refuse has stopped the process naming
+    it, since it would fail at its first utterance instead."""
+    try:
+        if isinstance(kept, voicechoice.LibraryVoice):
+            # The same check the choice made: the cloning model, then the voice's own audio prompt.
+            voices.fetched(kept)
+    except (Rejected, OSError) as error:
+        raise CannotStart(str(error)) from error
+    return kept
 
 
 def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
@@ -141,19 +163,6 @@ def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
         return configure()
     except CannotStart as error:
         return error
-
-
-def _voice(home: Home) -> voices.Chosen:
-    """The voice the user kept. A kept name hands has no voice for, or a file it cannot read, stops the process naming it;
-    so does a kept library voice that the choice of it would refuse, since it would fail at its first utterance instead."""
-    try:
-        kept = voices.chosen(home)
-        if isinstance(kept, voices.LibraryVoice):
-            # The same check the choice made: the cloning model, then the voice's own audio prompt.
-            voices.fetched(kept)
-    except (Rejected, OSError) as error:
-        raise CannotStart(str(error)) from error
-    return kept
 
 
 @dataclass(frozen=True)
@@ -289,11 +298,12 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
-        if config is not None:
+        read = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        if read is not None:
+            config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
-            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home))
+            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
             tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
@@ -316,7 +326,7 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
+async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
@@ -342,7 +352,7 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
         personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
         input_device=config.devices.input, output_device=config.devices.output,
     )
-    return config
+    return read
 
 
 async def converse(

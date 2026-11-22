@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on, executable, pin, stand_in, SYSTEM_PATH
+from conftest import children_on, executable, onboard, pin, stand_in, startable, SYSTEM_PATH
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
@@ -866,7 +866,9 @@ def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
 @pytest.mark.outside
 def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
-    found = readiness.configured(children_on(SYSTEM), Home(root / "home"), os.environ)
+    home = Home(root / "home")
+    onboard(home.brain)
+    found = readiness.configured(children_on(SYSTEM), home, os.environ)
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -880,13 +882,15 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
 
 
-def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
+def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    startable(root / "home", monkeypatch)
     found = readiness.configured(children_on(SYSTEM), Home(root / "home"), {"HANDS_DEBUG": "1"})
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
 def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
+    startable(home.root, monkeypatch)
 
     def unspawnable(*_: object) -> object:
         raise PermissionError("claude is not executable")
@@ -948,6 +952,7 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     beating(home)
     pin(monkeypatch, executable(root / "pinned" / "claude", "#!/bin/sh\n"))
+    onboard(home.brain)
     monkeypatch.setattr(readiness, "resolve", logged_in)
     hands_printing(root, f"hands {version('hands')}")
     executable(root / "tools" / "tmux", "#!/bin/sh\n")
@@ -1017,23 +1022,24 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.outside
 @pytest.mark.parametrize(
-    ("undo", "step"),
-    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (unpinned, "brain_claude"), (logged_out, "backend"), (ungranted, "grant"), (not_running, "running")],
+    ("undo", "steps"),
+    # A brain with no pinned claude is also one hands cannot start, which the backend step says of the start.
+    [(no_hands, {"hands"}), (unshimmed, {"shim"}), (no_plugin, {"plugin"}), (unpinned, {"brain_claude", "backend"}), (logged_out, {"backend"}), (ungranted, {"grant"}), (not_running, {"running"})],
     ids=["hands", "shim", "plugin", "brain_claude", "backend", "grant", "running"],
 )
 def test_a_home_missing_one_step_names_that_step_and_exits_1(
-    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, step: str
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, steps: set[str]
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), step: "✗"}
+    assert marks(capsys) == {step: "✗" if step in steps else "✓" for step in STEPS}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
-    assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each == step else "Ready" for each in STEPS]
-    # It fails saying why: the missing step, the first line of what was found of it, and its fix.
-    [missing] = [finding for finding in event["facts"]["findings"] if finding["type"] == "Missing"]
-    assert event["error"] == f"exited 1: {missing['step']}: {missing['detail'].partition('\n')[0]}: {missing['fix'].partition('\n')[0]}"
+    assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each in steps else "Ready" for each in STEPS]
+    # It fails saying why: each missing step, the first line of what was found of it, and its fix.
+    missing = [finding for finding in event["facts"]["findings"] if finding["type"] == "Missing"]
+    assert event["error"] == "exited 1: " + "; ".join(f"{each['step']}: {each['detail'].partition('\n')[0]}: {each['fix'].partition('\n')[0]}" for each in missing)
 
 
 @pytest.mark.outside

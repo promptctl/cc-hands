@@ -20,9 +20,10 @@ from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.library import Found
-from hands.voice.voices import Chosen, LibraryVoice
+from hands.voice.voicechoice import Chosen, LibraryVoice
 from hands.voice.trigger import described
-from hands.voice.voices import VOICES, Voice, said
+from hands.voice.voices import said
+from hands.voice.voicechoice import VOICES, Voice
 from hands.voice.wakeword import Pretrained
 from conftest import events
 

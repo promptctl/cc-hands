@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -798,6 +799,19 @@ def pin(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
     is ever the brain's."""
     monkeypatch.setattr(pinned, "claude", located(script))
     monkeypatch.setattr(pinned, "CHECKSUMS", dict.fromkeys(pinned.CHECKSUMS, sha256(script)))
+
+
+def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Makes `home` a hands home the start's preflight passes: its brain onboarded on settings that keep the syncs out,
+    and its pinned claude a script that only leaves a mark. The mark's path, which exists once anything has run it."""
+    onboard(home / "brain")
+    mark = home / "claude-ran"
+    script = home / "pinned" / "claude"
+    script.parent.mkdir(parents=True)
+    script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(mark))}\n")
+    script.chmod(0o755)
+    pin(monkeypatch, script)
+    return mark
 
 
 def pinned_to(script: Path) -> str:

@@ -24,7 +24,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.tool import tool
 from hands.voice.tools import audited
-from hands.voice.voices import VOICES, Voice
+from hands.voice.voicechoice import VOICES, Voice
 from hands.voice.wakeword import Pretrained
 from test_backlogpage import LIT, Workspace, epic, real_lit, workspace  # pyright: ignore[reportUnusedImport]  (a fixture, found by its name)
 from test_brainpage import SLEEPING, Brain
