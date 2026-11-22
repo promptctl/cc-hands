@@ -93,10 +93,10 @@ def parse_note(body: bytes) -> tuple[Path, str, str]:
     except ValueError as error:
         raise Rejected(f"a note is JSON: {error}") from error
     match sent:
-        case {"project": str(project), "ticket": str(ticket), "text": str(text)} if text.strip():
+        case {"project": str(project), "ticket": str(ticket), "text": str(text)} if text.strip() and not any("\0" in part for part in (project, ticket, text)):
             return parse_project(project), ticket, text.strip()
         case _:
-            raise Rejected("a note is {project, ticket, and text: what it says, not blank}")
+            raise Rejected("a note is {project, ticket, and text: what it says, not blank}, none of them holding a NUL")
 
 
 @dataclass(frozen=True)

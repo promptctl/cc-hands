@@ -269,8 +269,9 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
         # installed for the user or it is not; no claude at all is no plugin.
         under = readiness.plugin_environment(home, caller)
         match ran_step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, under):
-            case child.NeverStarted(error=FileNotFoundError()) as absent:
-                # No claude at all is no plugin to bring current.
+            case child.NeverStarted() | child.Ran(ending=child.Exited(code=127)) as absent:
+                # No claude that runs, none on PATH, one that is not executable, or a shim that found none (a shell's
+                # 127), is no plugin to bring current.
                 advised.append(Advised(Step.PLUGIN_LIST, f"`claude` {child.said(absent)}"))
                 held = False
             case listing:

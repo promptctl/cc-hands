@@ -93,19 +93,23 @@ async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, enviro
     closed: queue.SimpleQueue[None] = queue.SimpleQueue()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        started = children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": "xterm-256color"}, Terminal(slave, closed))
+        # [LAW:no-ambient-temporal-coupling] read before the child starts, so nothing that can fail comes between its
+        # start and the read of its terminal; the read closes the master once no process holds the slave.
+        terminal = _Terminal(master, closed)
     except BaseException:
         os.close(master)
+        os.close(slave)
         raise
+    try:
+        started = children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": "xterm-256color"}, Terminal(slave, closed))
     finally:
-        # The child holds its own: the master's read ends once it, and whatever it started, have let go of theirs.
+        # The child holds its own: the read ends once it, and whatever it started, have let go of theirs.
         os.close(slave)
     match started:
         case NeverStarted():
-            os.close(master)
             return started
         case Running():
-            return ClaudeCode(started, _Terminal(master, closed))
+            return ClaudeCode(started, terminal)
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:

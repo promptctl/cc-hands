@@ -653,6 +653,8 @@ class Page:
         (b"{", "a note is JSON"),
         (b'{"project": "/tmp", "ticket": "a"}', "a note is {project, ticket, and text"),
         (b'{"project": "/tmp", "ticket": "a", "text": "  \\n "}', "not blank"),
+        (b'{"project": "/tmp", "ticket": "a", "text": "a\\u0000b"}', "holding a NUL"),
+        (b'{"project": "/tmp", "ticket": "a\\u0000", "text": "ok"}', "holding a NUL"),
     ],
 )
 def test_a_note_the_page_sends_is_refused_naming_what_is_wrong(body: bytes, why: str) -> None:

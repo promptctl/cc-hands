@@ -601,15 +601,23 @@ def test_a_user_who_never_installed_the_plugin_is_not_blocked_by_it(listed: str,
     assert commands.ran == [step for step in expected(home, work) if step[0][:3] not in (("claude", "plugin", "marketplace"), ("claude", "plugin", "update"))]
 
 
-def test_no_claude_at_all_is_said_and_gone_past(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("gone", "said"),
+    [
+        (child.NeverStarted(FileNotFoundError(2, "No such file or directory", "claude")), "could not be started: No such file or directory"),
+        (child.NeverStarted(PermissionError(13, "Permission denied", "claude")), "could not be started: Permission denied"),
+        (child.Ran(child.Exited(127), child.Captured(b""), child.Captured(b"claude: command not found\n")), "exited 127: claude: command not found"),
+    ],
+    ids=["none on PATH", "not executable", "a shim that found none"],
+)
+def test_no_claude_that_runs_is_said_and_gone_past(gone: child.Outcome, said: str, tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
-    gone = child.NeverStarted(FileNotFoundError(2, "No such file or directory", "claude"))
     commands = Commands(tools_of_this_hands(tmp_path), Step.PLUGIN_LIST, gone)
 
     installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     assert isinstance(installed, Installed)
-    assert installed.advised == (update.Advised(Step.PLUGIN_LIST, "`claude` could not be started: No such file or directory"),)
+    assert installed.advised == (update.Advised(Step.PLUGIN_LIST, f"`claude` {said}"),)
     # The rendered trees are removed all the same.
     assert commands.ran[-1] == (("rm", "-rf", str(home.root / "plugins")), work)
 

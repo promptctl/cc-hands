@@ -3,8 +3,10 @@
 import ast
 import asyncio
 import errno
+import math
 import os
 import re
+import select
 import signal
 import tempfile
 import textwrap
@@ -140,9 +142,10 @@ def test_how_a_child_ended_is_read_from_its_code_and_what_hands_sent_it(returnco
     [
         (Exited(3), {"ending": "exited", "exit_code": 3}, "exited 3"),
         (Signalled(KILL), {"ending": "signalled", "signal": "SIGKILL"}, "was ended by SIGKILL"),
-        (Killed(Kill(Limit(2))), {"ending": "killed", "signal": "SIGKILL", "why": "it ran past 2.0s"}, "was killed with SIGKILL, because it ran past 2.0s"),
-        (Killed(Kill(Cancelled())), {"ending": "killed", "signal": "SIGKILL", "why": "its caller stopped waiting"}, "was killed with SIGKILL, because its caller stopped waiting"),
-        (Killed(Kill(WaitFailed("E()"))), {"ending": "killed", "signal": "SIGKILL", "why": "its wait failed: E()"}, "was killed with SIGKILL, because its wait failed: E()"),
+        (Killed(Kill(Limit(2))), {"ending": "killed", "signal": "SIGKILL", "why": "limit"}, "was killed with SIGKILL, because it ran past 2.0s"),
+        (Killed(Kill(Stop(2))), {"ending": "killed", "signal": "SIGKILL", "why": "stop"}, "was killed with SIGKILL, because it was told to stop, with 2.0s to end"),
+        (Killed(Kill(Cancelled())), {"ending": "killed", "signal": "SIGKILL", "why": "cancelled"}, "was killed with SIGKILL, because its caller stopped waiting"),
+        (Killed(Kill(WaitFailed("E()"))), {"ending": "killed", "signal": "SIGKILL", "why": "wait_failed", "why_error": "E()"}, "was killed with SIGKILL, because its wait failed: E()"),
         (Stopped(Stop(5)), {"ending": "stopped", "signal": "SIGTERM"}, "stopped as it was told to, within 5.0s"),
     ],
 )
@@ -161,6 +164,21 @@ def test_a_child_that_never_started_was_never_reaped_or_was_lost_is_said_so() ->
     assert said(Lost("OSError(5)")) == "ran, and hands lost its answer: OSError(5)"
 
 
+@pytest.mark.parametrize("seconds", [0, -1.0, math.nan, math.inf])
+def test_a_limit_that_is_no_finite_time_cannot_be_made(seconds: float) -> None:
+    with pytest.raises(ValueError, match="finite time"):
+        Limit(seconds)
+
+
+async def test_a_limit_that_is_no_time_is_refused_before_anything_starts() -> None:
+    recorded: list[WideEvent] = []
+    with pytest.raises(ValueError, match="finite time"):
+        await Children(VirtualClock(), recorded.append).run("true", limit=math.nan)
+    with pytest.raises(ValueError, match="finite time"):
+        Children(VirtualClock(), recorded.append).run_blocking("true", limit=-1)
+    assert recorded == []
+
+
 @pytest.mark.parametrize(
     ("argv", "cwd", "env", "refused"),
     [
@@ -169,6 +187,8 @@ def test_a_child_that_never_started_was_never_reaped_or_was_lost_is_said_so() ->
         (("git",), None, {"A": "b\0"}, "NUL"),
         (("git",), None, {"A=B": "c"}, "named 'A=B'"),
         (("git",), None, {"": "c"}, "named ''"),
+        (("git", "\ud800"), None, None, "no file name can encode"),
+        (("git",), None, {"A": "\ud800"}, "no file name can encode"),
         ((), None, None, "a program"),
     ],
 )
@@ -249,7 +269,7 @@ async def test_a_killed_child_whose_reap_does_not_come_ends_its_caller_s_wait_wi
     clock.advance(5)
     await clock.sleeping(5 + KILL_GRACE_SECONDS)
     clock.advance(KILL_GRACE_SECONDS)
-    assert child._told(await waiting, held) == Unreaped((Kill(Limit(5)),), 4242)  # pyright: ignore[reportPrivateUsage]
+    assert await waiting == Unreaped((Kill(Limit(5)),), 4242)
 
 
 async def test_a_child_reaped_whose_answer_its_thread_is_still_reading_is_waited_for_past_the_grace(kernel: list[tuple[str, int, signal.Signals]]) -> None:
@@ -386,7 +406,7 @@ def test_a_kill_of_a_group_every_process_of_which_has_exited_sends_nothing_and_l
 type Written = tuple[BaseException | None, str | None, dict[str, wide.Fact]]
 
 
-def followed(finish: "child._Finish[str]", monkeypatch: pytest.MonkeyPatch, exited: Callable[[int], None] = lambda _pid: None) -> tuple[list[str | Lost], list[Written]]:  # pyright: ignore[reportPrivateUsage]
+def followed(finish: "child._Finish[str]", monkeypatch: pytest.MonkeyPatch, exited: Callable[[object, int], None] = lambda _watch, _pid: None) -> tuple[list[str | Lost], list[Written]]:  # pyright: ignore[reportPrivateUsage]
     """What a child's thread tells its caller, and the event it writes, for a leader whose exit `exited` watches."""
     monkeypatch.setattr(child, "_exited", exited)
     settled: list[str | Lost] = []
@@ -399,7 +419,7 @@ def followed(finish: "child._Finish[str]", monkeypatch: pytest.MonkeyPatch, exit
     def event(raised: BaseException | None, failure: str | None, /, **said_of: wide.Fact) -> None:
         written.append((raised, failure, said_of))
 
-    child._supervise(handed, finish, event, settled.append)  # pyright: ignore[reportPrivateUsage]
+    child._supervise(select.kqueue(), handed, finish, event, settled.append)  # pyright: ignore[reportPrivateUsage]
     return settled, written
 
 
@@ -409,17 +429,41 @@ def test_a_child_whose_answer_cannot_be_read_is_lost_and_its_event_says_so(kerne
 
     settled, written = followed(unreadable, monkeypatch)
     assert settled == [Lost("OSError(5, 'Input/output error')")]
-    assert written == [(None, "ran, and hands lost its answer: OSError(5, 'Input/output error')", {"pid": 4242})]
+    # What the reap learned is kept beside what was lost.
+    assert written == [(None, "ran, and hands lost its answer: OSError(5, 'Input/output error')", {"pid": 4242, "kills": (), "leftovers": True, "ending": "exited", "exit_code": 0})]
+
+
+def test_a_cancelled_caller_s_child_whose_answer_is_lost_is_still_said_cancelled(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
+    class Killed(Leader):
+        def wait(self) -> int:
+            return -signal.SIGKILL
+
+    def exited(_watch: object, _pid: int) -> None:
+        pass
+
+    monkeypatch.setattr(child, "_exited", exited)
+    held = child._Supervised(Killed())  # pyright: ignore[reportPrivateUsage]
+    held.signal(Kill(Cancelled()))
+    handed: child.queue.SimpleQueue[child._Supervised | None] = child.queue.SimpleQueue()  # pyright: ignore[reportPrivateUsage]
+    handed.put(held)
+    written: list[Written] = []
+
+    def event(raised: BaseException | None, failure: str | None, /, **said_of: wide.Fact) -> None:
+        written.append((raised, failure, said_of))
+
+    child._supervise(select.kqueue(), handed, lambda ended: (Lost("cut"), {}), event, lambda _told: None)  # pyright: ignore[reportPrivateUsage]
+    [(raised, failure, _)] = written
+    assert isinstance(raised, asyncio.CancelledError) and failure is None
 
 
 def test_a_child_hands_cannot_watch_is_killed_with_its_group_and_reaped(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
-    def unwatchable(_pid: int) -> None:
+    def unwatchable(_watch: object, _pid: int) -> None:
         raise OSError(errno.EMFILE, "Too many open files")
 
     settled, [(_raised, _failure, said_of)] = followed(lambda ended: ("answered", {}), monkeypatch, unwatchable)
     assert settled == ["answered"]
     assert kernel == [("killpg", 4242, KILL), ("killpg", 4242, KILL)]
-    assert said_of["kills"] == ("SIGKILL, because its wait failed: OSError(24, 'Too many open files')",)
+    assert said_of["kills"] == ("SIGKILL:wait_failed",)
 
 
 def test_a_child_s_event_is_written_and_its_caller_told_where_it_exited(kernel: list[tuple[str, int, signal.Signals]], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -437,7 +481,7 @@ def test_a_child_s_terminal_read_to_its_end_or_not_is_on_its_event() -> None:
     assert children._after(Null()) == {}  # pyright: ignore[reportPrivateUsage]
 
 
-async def test_no_thread_to_follow_a_child_is_a_child_never_started_and_none_is_started(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_no_thread_to_follow_a_child_starts_no_child_and_hands_failure_goes_on(monkeypatch: pytest.MonkeyPatch) -> None:
     def refused(_thread: threading.Thread) -> None:
         raise RuntimeError("can't start new thread")
 
@@ -446,11 +490,29 @@ async def test_no_thread_to_follow_a_child_is_a_child_never_started_and_none_is_
 
     monkeypatch.setattr(child.threading.Thread, "start", refused)
     monkeypatch.setattr(child.subprocess, "Popen", started)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        await Children(VirtualClock(), lambda _: None).run("true", limit=5)
+
+
+async def test_a_watch_that_cannot_be_made_is_a_child_never_started_and_said_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused() -> None:
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(child.select, "kqueue", refused)
     recorded: list[WideEvent] = []
     outcome = await Children(VirtualClock(), recorded.append).run("true", limit=5)
-    assert isinstance(outcome, NeverStarted) and outcome.error.errno == errno.EAGAIN
+    assert isinstance(outcome, NeverStarted) and outcome.error.errno == errno.EMFILE
     [event] = events(recorded, "child.run")
-    assert event.facts["ending"] == "never_started"
+    assert (event.outcome, event.error, event.facts["ending"]) == ("failed", "could not be started: Too many open files", "never_started")
+
+
+async def test_a_started_child_s_ending_is_kept_whoever_cancels_their_view_of_it(kernel: list[tuple[str, int, signal.Signals]]) -> None:
+    held, _ = supervised()
+    own: asyncio.Future[child.Ending | Lost] = asyncio.get_running_loop().create_future()
+    running = child.Running(4242, own, held, VirtualClock())
+    running.ended.cancel()
+    own.set_result(Exited(0))
+    assert await running.ended == Exited(0)
 
 
 async def test_output_files_that_cannot_be_made_are_a_child_that_never_started_and_none_is_left_open(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -470,7 +532,7 @@ async def test_output_files_that_cannot_be_made_are_a_child_that_never_started_a
     [first] = made
     assert first.closed
     [event] = events(recorded, "child.run")
-    assert event.facts["ending"] == "never_started"
+    assert (event.outcome, event.facts["ending"]) == ("failed", "never_started")
 
 
 def gone(pid: int) -> bool:
@@ -565,14 +627,17 @@ async def test_a_child_whose_caller_stops_waiting_is_killed_and_its_event_says_c
         await running
     assert gone(int(pid.read_text())), "its caller left before it was reaped"
     [event] = events(recorded, "child.run")
-    assert (event.outcome, event.facts["why"]) == ("cancelled", "its caller stopped waiting")
+    assert (event.outcome, event.facts["why"]) == ("cancelled", "cancelled")
 
 
 @pytest.mark.outside
 async def test_a_program_that_is_not_there_never_started_and_the_os_says_why() -> None:
-    outcome = await Children(SYSTEM, lambda _: None).run("/nonexistent/hands-no-such-program", limit=5)
+    recorded: list[WideEvent] = []
+    outcome = await Children(SYSTEM, recorded.append).run("/nonexistent/hands-no-such-program", limit=5)
     assert isinstance(outcome, NeverStarted)
     assert (outcome.error.errno, outcome.error.filename) == (errno.ENOENT, "/nonexistent/hands-no-such-program")
+    [event] = events(recorded, "child.run")
+    assert (event.outcome, event.error) == ("failed", "could not be started: No such file or directory")
 
 
 @pytest.mark.outside
@@ -607,7 +672,7 @@ async def test_a_started_child_that_ignores_its_stop_is_killed_once_the_grace_is
     assert await started.stopped(0.2) == Killed(Kill(Stop(0.2)))
     [event] = events(recorded, "child.run")
     assert event.outcome == "failed"
-    assert event.facts["kills"] == ("SIGTERM, to stop within 0.2s", "SIGKILL, because it was told to stop, with 0.2s to end")
+    assert event.facts["kills"] == ("SIGTERM:stop", "SIGKILL:stop")
 
 
 @pytest.mark.outside
