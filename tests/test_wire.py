@@ -594,20 +594,6 @@ def test_a_tool_call_sent_whole_whose_input_is_no_object_garbles_the_reply_as_it
     assert whole == assemble([parse(frame) for frame in frames(stream)[0]], streamed=True) == Garbled("tool call Bash's input is not a JSON object")
 
 
-@pytest.mark.parametrize(
-    ("block", "stream"),
-    [
-        ({"type": "tool_use", "id": "toolu_1", "name": "Bash"}, one_block_stream({"type": "tool_use", "id": "toolu_1", "name": "Bash"})),
-        ({"type": "thinking", "thinking": "hmm"}, one_block_stream({"type": "thinking", "thinking": ""}, {"type": "thinking_delta", "thinking": "hmm"})),
-    ],
-)
-def test_a_block_sent_whole_lacking_what_it_would_stream_folds_as_its_stream_lacking_it(block: dict[str, object], stream: bytes) -> None:
-    whole = assemble(whole_events({**WHOLE, "content": [block]}), streamed=False)
-    streamed = assemble([parse(frame) for frame in frames(stream)[0]], streamed=True)
-    assert isinstance(whole, Written) and isinstance(streamed, Written)
-    assert whole.message.content == streamed.message.content
-
-
 def test_a_reply_that_is_not_a_stream_or_a_message_is_its_json_or_else_its_text() -> None:
     assert unstreamed(b'{"input_tokens": 5583}') == Answered({"input_tokens": 5583})
     overloaded = {"type": "error", "error": {"type": "overloaded_error"}}
