@@ -125,7 +125,8 @@ def fork(turn: Turn, question: str) -> Forked:
     messages = [_as_sent(_marked(message) if index == point else message) for index, message in enumerate(history)]
     marked = point if point is not None else Unmarked.NO_FORK_POINT if turn_marked else Unmarked.TURN_UNMARKED
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
-    body = {**_retimed(sent.fields), **_prompt(sent.system), "messages": messages}
+    marker = {} if sent.marker is None else {"cache_control": _retimed(sent.marker)}
+    body = {**sent.rest, **marker, **_prompt(sent.system), "messages": messages}
     return Forked(headers, body, marked)
 
 
@@ -218,14 +219,17 @@ def _as_sent(message: MessageParam) -> dict[str, object]:
     return {"role": message.role, "content": message.content if isinstance(message.content, str) else list(message.content), **message.rest}
 
 
-def _retimed(marked: Mapping[str, object]) -> dict[str, object]:
-    """A block, or a request, whose marker, if it has one, takes a side question's ttl: the rest of it, a system prompt's
-    scope and a request's eviction among them, stays as sent."""
-    if "cache_control" not in marked:
-        return dict(marked)
-    # An object, as `read_request` reads every marker on a request and its system prompt.
-    marker = cast(Mapping[str, object], marked["cache_control"])
-    return {**marked, "cache_control": {**{term: value for term, value in marker.items() if term != "ttl"}, **_TTL_TERMS[CACHE_TTL]}}
+def _retimed(marker: Mapping[str, object]) -> dict[str, object]:
+    """A marker given a side question's ttl: the rest of it, a system prompt's scope and a request's eviction among
+    them, stays as sent."""
+    return {**{term: value for term, value in marker.items() if term != "ttl"}, **_TTL_TERMS[CACHE_TTL]}
+
+
+def _retimed_block(block: Mapping[str, object]) -> dict[str, object]:
+    if "cache_control" not in block:
+        return dict(block)
+    # An object, as `read_request` reads every marker on a system prompt.
+    return {**block, "cache_control": _retimed(cast(Mapping[str, object], block["cache_control"]))}
 
 
 def _prompt(system: Content | None) -> dict[str, object]:
@@ -236,4 +240,4 @@ def _prompt(system: Content | None) -> dict[str, object]:
         case str():
             return {"system": system}
         case blocks:
-            return {"system": [_retimed(block) for block in blocks]}
+            return {"system": [_retimed_block(block) for block in blocks]}

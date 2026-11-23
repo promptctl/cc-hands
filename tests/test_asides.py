@@ -152,14 +152,6 @@ def test_no_marker_of_a_side_question_names_a_ttl_and_each_keeps_the_rest_of_its
     assert marks(sent) == [(1, FORKED)]
 
 
-def test_a_side_questions_markers_take_the_ttl_the_brain_is_pinned_to(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Were the pin an hour, every marker the question sends would name it, as Claude Code names an hour's.
-    monkeypatch.setattr("hands.brain.fork.CACHE_TTL", "1h")
-    history = {**body(user(text("hi", cache_control=MARK))), "system": [text("You are hands.", cache_control={"type": "ephemeral"})]}
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
-    assert sent["system"] == [text("You are hands.", cache_control=MARK)] and marks(sent) == [(1, MARK)]
-
-
 def test_a_turn_that_sent_no_system_prompt_forks_a_question_without_one() -> None:
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, json.dumps({"model": "claude-opus-5-5", "messages": [user(text("hi", cache_control=MARK))]}).encode(), reply(Text("So."))), "q")
     assert "system" not in sent and marks(sent) == [(1, FORKED)]

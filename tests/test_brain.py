@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import aiohttp
 import pytest
@@ -43,6 +44,7 @@ import turns
 from turns import RECORDINGS, prompts, stops
 from brains import dialogs, permissions, unasked
 
+from hands.brain.fork import Turn, fork
 from hands.brain.stage import BrainStage
 from hands.core.session import Keystroke, PromptText, SessionId, Submit, pasted
 from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Sent, Written
@@ -265,6 +267,19 @@ def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "
     return Exchanged(exchange, SessionId(session), kind, None, "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root(SYSTEM))
 
 
+def test_a_side_questions_markers_take_the_ttl_the_brains_command_line_pins(tmp_path: Path) -> None:
+    settings = json.loads((argv := command(launch(tmp_path), "http://127.0.0.1:7"))[argv.index("--settings") + 1])
+    ttl = settings["env"]["CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL"]
+    # As Claude Code writes a marker of that ttl: five minutes is the API's default and goes unnamed.
+    expected = {"type": "ephemeral", **({} if ttl == "5m" else {"ttl": ttl})}
+    marked = {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    turn = {"model": "m", "system": [{**marked, "text": "You are hands."}], "messages": [{"role": "user", "content": [marked]}]}
+    body = fork(Turn("x1", "/v1/messages", (), json.dumps(turn).encode(), Message("msg_1", "m", (Said("So."),), "end_turn", {})), "q").body
+    [system] = cast(list[dict[str, object]], body["system"])
+    replied = cast(list[dict[str, list[dict[str, object]]]], body["messages"])[1]
+    assert system["cache_control"] == expected and replied["content"][-1]["cache_control"] == expected
+
+
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
     argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), None)), "http://127.0.0.1:7")
     # The real claude, interactive: no -p, and no pipe to speak over.
@@ -284,7 +299,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     settings = json.loads(argv[argv.index("--settings") + 1])
     # hands' tools are offered to the model directly, never deferred behind ToolSearch: set where neither the brain's
     # settings.json env nor hands' environment outranks it. So are stellar drift, off, and a subagent's five-minute cache
-    # ttl, which the side questions hands forks follow (tests/test_asides.py).
+    # ttl, which the side questions hands forks follow (above).
     assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false", "CLAUDE_CODE_STELLAR_DRIFT": "0", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "5m"}
     assert "permissions" not in settings
     hooks = settings["hooks"]

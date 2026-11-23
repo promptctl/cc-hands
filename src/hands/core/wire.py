@@ -128,9 +128,10 @@ def _classify_messages(body: object, named: str | None) -> Kind:
         request = read_request(body)
     except UnreadableRequest as unread:
         return Unknown(f"a messages request hands cannot read: {unread}")
-    model = str(request.fields.get("model"))
+    model = str(request.rest.get("model"))
     billing = _billing(request.system)
-    # A class Claude Code names that is one kind outranks every reading of the body: it is Claude Code's own.
+    # A class Claude Code names that is one kind outranks every reading of the body's markers and words: it is Claude
+    # Code's own. A body hands cannot read at all is Unknown whatever its class, above.
     match named:
         case "main":
             return _turn(billing)
@@ -271,12 +272,13 @@ class MessageParam:
 
 @dataclass(frozen=True)
 class Request:
-    """A messages request, read: every field as sent, its system prompt (None when it sends none), and its messages. Its
-    cache markers, the request's own and its system prompt's, are objects."""
+    """A messages request, read: its system prompt (None when it sends none), its messages, its own cache marker (None
+    when it carries none), and the rest of its fields as sent. A marker on its system prompt is an object."""
 
-    fields: Mapping[str, object]
     system: Content | None
     messages: tuple[MessageParam, ...]
+    marker: Mapping[str, object] | None
+    rest: Mapping[str, object]
 
 
 def content_blocks(content: Content) -> tuple[Mapping[str, object], ...]:
@@ -302,9 +304,12 @@ def read_request(body: object) -> Request:
     if not isinstance(messages, list):
         raise UnreadableRequest(f"its messages are not a list but {type(messages).__name__}")
     system = _system(fields.get("system"))
+    marker = fields.get("cache_control")
     if any(not isinstance(marked.get("cache_control", {}), Mapping) for marked in (fields, *content_blocks(system or ()))):
         raise UnreadableRequest("a cache marker on it or its system prompt is not an object")
-    return Request(fields, system, tuple(_message_param(index, message) for index, message in enumerate(cast(list[object], messages))))
+    rest = {term: value for term, value in fields.items() if term not in ("system", "messages", "cache_control")}
+    parsed = tuple(_message_param(index, message) for index, message in enumerate(cast(list[object], messages)))
+    return Request(system, parsed, None if marker is None else cast(Mapping[str, object], marker), rest)
 
 
 def _system(system: object) -> Content | None:
