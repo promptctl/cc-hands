@@ -180,17 +180,18 @@ def _by_body(request: "Request", looped: Kind) -> Kind:
         case (kind,):
             return kind
         case _:
-            # [LAW:no-silent-failure] the one marker a reply of whitespace text puts where the loop marks under one drift
-            # and a fork under the other: no reading of it is Claude Code's.
+            # [LAW:no-silent-failure] a marker beside a reply of whitespace text, where the loop marks under one drift and
+            # a fork under the other: one reading is Claude Code's, and the request does not say which.
             return Unknown(f"a messages request to {request.model!r} that reads as {' or '.join(sorted(type(kind).__name__ for kind in readings))} by its sender's stellar drift")
 
 
 def _marked_by(messages: Sequence["MessageParam"], newest: int | None, stellar_drift: bool, looped: Kind) -> Kind | None:
     """Which request marks its newest marker where this one does, under a stellar drift: the loop, on its last carrier or
     on the system message closing its turn, the one it may mark (docs/claude-code-behavior.md, "loop markers"); a fork, on
-    its fork point; else none."""
+    its fork point; None when neither does, which rules that drift out."""
+    closing = len(messages) - 1 if messages[-1].role == "system" else None
     match newest:
-        case int() if messages[newest].role == "system" or _carriers(messages, stellar_drift)[-1:] == [newest]:
+        case int() if newest == closing or _carriers(messages, stellar_drift)[-1:] == [newest]:
             return looped
         case int() if newest == fork_point(messages, stellar_drift):
             return Fork()
@@ -385,7 +386,7 @@ def _carries(message: MessageParam, stellar_drift: bool) -> bool:
             # Ephemeral is no field on the wire: the continuation is told by its words, a block of its own that a merge keeps.
             return not any(text.startswith(CONTINUATION_OPENING) and text.rstrip().endswith(CONTINUATION_CLOSING) for text in content_texts(message.content))
         case "assistant":
-            return isinstance(message.content, str) or (message.content != () and _markable_block(message.content[-1], stellar_drift))
+            return isinstance(message.content, str) or _markable_block(message.content[-1], stellar_drift)
 
 
 def _markable_block(block: Mapping[str, object], stellar_drift: bool) -> bool:
