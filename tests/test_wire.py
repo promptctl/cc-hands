@@ -209,6 +209,39 @@ def test_a_request_is_told_by_its_markers_whatever_tools_it_carries() -> None:
     assert classify("/v1/messages", request(said("hi"), reply("ok"), said("go on", marked=True), tools=[])) == MainTurn(None)
 
 
+def ended(*blocks: dict[str, object], marked: bool = False) -> dict[str, object]:
+    """A reply ending in `blocks`, its last block marked when `marked`."""
+    *before, last = blocks
+    return {"role": "assistant", "content": [*before, {**last, "cache_control": MARKED} if marked else last]}
+
+
+THINKING: dict[str, object] = {"type": "thinking", "thinking": "hm", "signature": "sig"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Stellar drift off: text of whitespace alone carries the marker.
+        request(said("hi"), ended({"type": "text", "text": "So."}, {"type": "text", "text": " \n"}, marked=True), said("what now?")),
+        # Stellar drift on: it does not, and the marker goes on the message before.
+        request(said("hi", marked=True), ended({"type": "text", "text": "So."}, {"type": "text", "text": " \n"}), said("what now?")),
+        # A reply ending in thinking or in empty text never carries it.
+        request(said("hi", marked=True), ended({"type": "text", "text": "So."}, THINKING), said("what now?")),
+        request(said("hi", marked=True), ended(THINKING, {"type": "text", "text": ""}), said("what now?")),
+        # A system message never carries it.
+        request(said("hi", marked=True), {"role": "system", "content": [{"type": "text", "text": "Stay brief."}]}, said("what now?")),
+    ],
+    ids=["whitespace text under drift off", "whitespace text under drift on", "thinking", "empty text", "a system message"],
+)
+def test_a_fork_is_told_by_a_marker_on_its_fork_point_under_either_stellar_drift(body: dict[str, object]) -> None:
+    assert classify("/v1/messages", body) == Fork()
+
+
+def test_a_marker_short_of_the_fork_point_is_no_fork() -> None:
+    # A reply of text carries a marker, so one on the message before it is no fork's.
+    assert classify("/v1/messages", request(said("hi", marked=True), reply("So."), said("what now?"))) == Auxiliary("claude-opus-5-5")
+
+
 def test_a_request_marked_nowhere_a_loop_or_fork_marks_is_auxiliary() -> None:
     # The permission classifier, a title, a quota probe: no marker, or one earlier than a fork's.
     assert classify("/v1/messages", request(said("a"), said("b"), tools=[])) == Auxiliary("claude-opus-5-5")

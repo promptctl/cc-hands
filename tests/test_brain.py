@@ -283,8 +283,9 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
     settings = json.loads(argv[argv.index("--settings") + 1])
     # hands' tools are offered to the model directly, never deferred behind ToolSearch: set where neither the brain's
-    # settings.json env nor hands' environment outranks it.
-    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false"}
+    # settings.json env nor hands' environment outranks it. So are stellar drift, off, and a subagent's five-minute cache
+    # ttl, which the side questions hands forks follow (tests/test_asides.py).
+    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false", "CLAUDE_CODE_STELLAR_DRIFT": "0", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "5m"}
     assert "permissions" not in settings
     hooks = settings["hooks"]
     # The order of the brain's turns rests on its prompt hook and its Stop being waited on: a prompt's as long as a typed

@@ -99,8 +99,8 @@ def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
     Claude Code names the class itself in CLASS_HEADER, and a class that is one kind decides it. A request it names
     auxiliary is told by its body, since it names its forks so too; so is one without the header, from a Claude Code
     started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on the
-    last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last
-    point it shares with the loop.
+    last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on its fork point, the last
+    message that can carry one before the last that can (`fork_point`).
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
     asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o).
@@ -174,7 +174,8 @@ def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, st
         return Subagent()
     if newest == last:
         return _turn(billing)
-    if newest == last - 1:
+    # A request does not say whether its sender runs under stellar drift, so a fork point under either rule is one.
+    if newest is not None and newest in {fork_point(messages, stellar_drift) for stellar_drift in (False, True)}:
         return Fork()
     # Marked nowhere a loop or a fork marks: a call beside the loop.
     return Auxiliary(model)
@@ -252,6 +253,36 @@ def _blocks(message: object) -> list[object]:
 def cache_marked(message: object) -> bool:
     """Whether a message carries a cache marker on any of its blocks."""
     return any(isinstance(block, Mapping) and "cache_control" in block for block in _blocks(message))
+
+
+def markable(message: object, stellar_drift: bool) -> bool:
+    """Whether Claude Code can put a cache marker on a message (its Ipn): any message but a reply can, and a reply can
+    when its content is a string or its last block can. Under stellar drift, text of whitespace alone cannot."""
+    content = _content(message)
+    if _role(message) != "assistant" or isinstance(content, str):
+        return True
+    blocks = _list(content)
+    return bool(blocks) and isinstance(blocks[-1], Mapping) and _stampable(cast(Mapping[str, object], blocks[-1]), stellar_drift)
+
+
+def _stampable(block: Mapping[str, object], stellar_drift: bool) -> bool:
+    """Whether a block can carry a cache marker (Claude Code's UQe): any but thinking, and text only when it says something."""
+    match block.get("type"):
+        case "text":
+            text = block.get("text")
+            return isinstance(text, str) and text != "" and not (stellar_drift and text.strip() == "")
+        case "thinking" | "redacted_thinking":
+            return False
+        case _:
+            return True
+
+
+def fork_point(messages: Sequence[object], stellar_drift: bool) -> int | None:
+    """Where a fork that skips the cache write puts its marker (Claude Code's Dpn under skipCacheWrite): on the last
+    message that can carry one before the last that can, so the fork reads the loop's cached prefix and writes none of
+    its own. A system-role message never carries one."""
+    carriers = [index for index, message in enumerate(messages) if _role(message) != "system" and markable(message, stellar_drift)]
+    return carriers[-2] if len(carriers) > 1 else None
 
 
 def _texts(message: object) -> list[str]:

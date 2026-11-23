@@ -16,7 +16,7 @@ from enum import StrEnum
 
 import aiohttp
 
-from hands.brain.fork import Newest, fork
+from hands.brain.fork import Forked, Newest, Turn, fork
 from hands.clock import Clock
 from hands.core.trace import Span
 from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
@@ -142,18 +142,18 @@ class Asides:
                         case Deadline():
                             pass
                     turn = await self._newest.turn()
-                    return await self._answered(*fork(turn, question), turn.path, turn.exchange)
+                    return await self._answered(turn, fork(turn, question))
             except TimeoutError as error:
                 if not limit.expired():
                     raise AsideFailed(Unanswered.BROKEN, f"it timed out on its own, not its asker's time: {error!r}") from error
                 why, seen = waiting
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
-    async def _answered(self, headers: tuple[tuple[str, str], ...], body: dict[str, object], path: str, forked: str) -> str:
-        annotate(forked=forked)
-        self._sending = (here(), body)
+    async def _answered(self, turn: Turn, forked: Forked) -> str:
+        annotate(forked=turn.exchange, marked=forked.marked)
+        self._sending = (here(), forked.body)
         try:
-            async with self._client.post(self._proxy_url + path, headers=list(headers), data=json.dumps(body).encode()) as response:
+            async with self._client.post(self._proxy_url + turn.path, headers=list(forked.headers), data=json.dumps(forked.body).encode()) as response:
                 # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
                 reader = reply_reader(Fork(), response.headers, lambda _event: None)
                 async for chunk in response.content.iter_any():

@@ -37,6 +37,7 @@ from loguru import logger
 
 from hands.brain import configdir
 from hands.brain.configdir import Unstartable
+from hands.brain.fork import PINNED
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
 from hands.clock import Clock, wait
@@ -84,6 +85,16 @@ SLIM = {
 
 # The tool Claude Code offers in place of the MCP tools it defers.
 TOOL_SEARCH = "ToolSearch"
+
+# The brain's --settings env, which outranks the brain's settings.json env and hands' environment, as a process environment
+# does not (hands-brain-8gb).
+BRAIN_ENV = {
+    # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip of
+    # their own on a spoken turn.
+    "ENABLE_TOOL_SEARCH": "false",
+    # [LAW:one-source-of-truth] what decides where a side question's marker goes and its ttl, as hands forks by it.
+    **PINNED,
+}
 
 # The skills hands gives the brain, as a plugin of its own: shipped with the code that runs the jobs they are for, beside
 # the skills of the brain's own setup and never in it.
@@ -297,10 +308,7 @@ def command(launch: Launch, hooks: str) -> list[str]:
             # as a working session's, a day, and is denied only as that day ends, since its dialog is one nobody sees; a
             # prompt's and a Stop's as long as the order of the brain's turns rests on them (`ClaudeTurns`).
             "hooks": {event: [{"hooks": [brain_hook(event, hooks)]}] for event in BRAIN_HOOKS},
-            # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
-            # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
-            # which a process environment does not (hands-brain-8gb).
-            "env": {"ENABLE_TOOL_SEARCH": "false"},
+            "env": BRAIN_ENV,
             # The mode the brain's own settings name, said here too, so it is the same mode: Claude Code offers to make auto
             # mode the default to a session whose mode its user settings alone name, once it is idle, and the first turn
             # typed into the offer answers Yes (promptctl-brain-lq3.mcw).

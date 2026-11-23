@@ -16,14 +16,17 @@ from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
 from hands.brain.session import BrainSession
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
-from hands.core.wire import CLASS_HEADER, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
+from hands.core.wire import CLASS_HEADER, Block, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, RedactedThinking, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.core.trace import Span
 from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("b1")
+# The loop's own marker, as the brain's main turns carry it; a side question's names no ttl, so it takes the default five
+# minutes the brain's subagent ttl is pinned to.
 MARK = {"type": "ephemeral", "ttl": "1h"}
+FORKED = {"type": "ephemeral"}
 HEADERS = (("authorization", "Bearer the-brains-own"), ("x-claude-code-session-id", "b1"), (CLASS_HEADER, "main"), ("content-type", "application/json"))
 
 
@@ -39,13 +42,19 @@ def text(said: str, **more: object) -> dict[str, object]:
     return {"type": "text", "text": said, **more}
 
 
-def reply(*content: Text | Thinking | ToolUse, stop: str = "end_turn") -> Message:
+def reply(*content: Block, stop: str = "end_turn") -> Message:
     return Message("msg_1", "claude-opus-5-5", content, stop, {})
 
 
 def forked(turn: Turn, question: str) -> tuple[dict[str, str], dict[str, object]]:
-    headers, sent = fork(turn, question)
-    return dict(headers), sent
+    question_asked = fork(turn, question)
+    return dict(question_asked.headers), question_asked.body
+
+
+def marks(sent: dict[str, object]) -> list[tuple[int, object]]:
+    """Each message of a body that carries a cache marker, by its index, with the marker on its last block."""
+    messages = cast(list[dict[str, list[dict[str, object]]]], sent["messages"])
+    return [(index, message["content"][-1].get("cache_control")) for index, message in enumerate(messages) if cache_marked(message)]
 
 
 def as_sent(history: dict[str, object]) -> bytes:
@@ -55,12 +64,12 @@ def as_sent(history: dict[str, object]) -> bytes:
 ASKED = [text(REMINDER), text("what now?")]
 
 
-def test_a_question_before_any_reply_joins_the_last_user_message_and_the_newest_marker_moves_one_message_earlier() -> None:
+def test_a_question_before_any_reply_joins_the_last_user_message_and_its_one_marker_goes_on_the_message_before() -> None:
     history = body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)))
     headers, sent = forked(Turn("x1", "/v1/messages?beta=true", HEADERS, as_sent(history), None), "what now?")
     assert sent["messages"] == [
-        user(text("hi", cache_control=MARK)),
-        {"role": "assistant", "content": [text("hello", cache_control=MARK)]},
+        user(text("hi")),
+        {"role": "assistant", "content": [text("hello", cache_control=FORKED)]},
         user(text("and?"), *ASKED),
     ]
     # Everything else is the brain's request as it went upstream; the class is Claude Code's for a side question.
@@ -74,7 +83,7 @@ def test_a_question_after_a_finished_reply_follows_it_with_no_placeholder() -> N
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Thinking("hm", "sig"), Text("Done."))), "what now?")
     assert sent["messages"] == [
         user(text("hi")),
-        {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=MARK)]},
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=FORKED)]},
         user(*ASKED),
     ]
 
@@ -90,13 +99,56 @@ def test_each_call_of_a_reply_still_running_stands_in_with_claude_codes_placehol
     assert classify("/v1/messages", sent, {CLASS_HEADER: "auxiliary"}) == Fork()
 
 
-def test_markers_the_loop_put_on_earlier_messages_stay_and_a_lone_message_has_none_moved() -> None:
+def test_none_of_the_loops_markers_survive_and_a_lone_message_carries_none() -> None:
     history = body(user(text("one", cache_control=MARK)), {"role": "assistant", "content": [text("two")]}, user(text("three", cache_control=MARK)))
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("four."))), "q")
-    messages = cast(list[dict[str, list[dict[str, object]]]], sent["messages"])
-    assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[MARK], [None], [None], [MARK], [None, None]]
+    assert marks(sent) == [(3, FORKED)]
     _, alone = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), None), "q")
     assert alone["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
+
+
+def test_a_question_forked_from_a_turn_that_carried_no_marker_carries_none() -> None:
+    history = body(user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?")))
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
+    assert marks(question.body) == [] and question.marked is None
+
+
+# What the brain's reply ends in, and the message the question then marks: the reply when it can carry a marker, else the
+# user message before it.
+REPLY_KINDS = {
+    "text": (reply(Text("So.")), 1),
+    # Stellar drift is off in the brain: text of whitespace alone carries one.
+    "whitespace text": (reply(Text("So."), Text(" \n")), 1),
+    "a call": (reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use"), 1),
+    "empty text": (reply(Thinking("hm", "sig"), Text("")), 0),
+    "thinking": (reply(Text("So."), Thinking("hm", "sig")), 0),
+    "redacted thinking": (reply(Text("So."), RedactedThinking("data")), 0),
+}
+
+
+@pytest.mark.parametrize(("replied", "at"), REPLY_KINDS.values(), ids=REPLY_KINDS.keys())
+def test_a_reply_carries_the_marker_by_its_last_block(replied: Message, at: int) -> None:
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), replied), "q")
+    assert marks(question.body) == [(at, FORKED)] and question.marked == at
+
+
+def test_a_reply_the_loop_sent_as_a_string_carries_the_marker_as_one_text_block() -> None:
+    history = body(user(text("hi")), {"role": "assistant", "content": "hello"}, user(text("and?", cache_control=MARK)))
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), None), "q")
+    assert cast(list[object], sent["messages"])[1] == {"role": "assistant", "content": [text("hello", cache_control=FORKED)]}
+
+
+def test_no_marker_of_a_side_question_names_a_ttl() -> None:
+    history = {**body(user(text("hi", cache_control=MARK))), "cache_control": MARK, "system": [text("billing"), text("You are hands.", cache_control=MARK)]}
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
+    assert sent["cache_control"] == FORKED
+    assert sent["system"] == [text("billing"), text("You are hands.", cache_control=FORKED)]
+    assert marks(sent) == [(1, FORKED)]
+
+
+def test_a_message_neither_text_nor_blocks_fails_the_question_loudly() -> None:
+    with pytest.raises(ValueError, match="neither text nor blocks: None"):
+        fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": None})), None), "q")
 
 
 async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_reply_once_read() -> None:
@@ -299,6 +351,8 @@ async def test_a_side_question_is_the_brains_turn_forked_through_the_proxy_and_a
         "kind": "summary", "reply": "It said four.", "status": 200, "request_id": "req_1", "input_tokens": 3, "cache_read_input_tokens": 900, "output_tokens": 4,
     }
     assert isinstance(event.facts["forked"], str)
+    # Which message carries the question's marker, read off the body it was sent as.
+    assert marks(question) == [(event.facts["marked"], FORKED)]
 
 
 @pytest.mark.outside
@@ -391,37 +445,42 @@ SHAPES: dict[str, list[dict[str, object]]] = {
     "two system messages last": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)), SYSTEM_MESSAGE, DIRECTIVE],
 }
 REPLIES = {"no reply yet": None, "an empty reply": reply(), "a reply of thinking alone": reply(Thinking("hmm", "sig"), stop="max_tokens"), "a reply still calling": reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use")}
+# The message each shape's question marks, after each reply in REPLIES' order: the last that can carry a marker before
+# the question, never a system message nor a reply of thinking alone; None when only the question can.
+MARKED: dict[str, tuple[int | None, ...]] = {
+    "a system message last": (None, None, 0, 2),
+    "a system message before an assistant message": (2, 2, 3, 4),
+    "a marked system message last": (None, None, 0, 2),
+    "a directive-only system message before the question": (1, 1, 3, 4),
+    "two marked system messages last": (None, None, 0, 3),
+    "a directive-only system message last": (None, None, 0, 2),
+    "two system messages last": (1, 1, 2, 5),
+}
 
 
-@pytest.mark.parametrize("replied", REPLIES.values(), ids=REPLIES.keys())
-@pytest.mark.parametrize("shape", SHAPES.values(), ids=SHAPES.keys())
-def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: list[dict[str, object]], replied: Message | None) -> None:
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*shape)), replied), "what now?")
+@pytest.mark.parametrize(("replied", "after"), list(zip(REPLIES.values(), range(len(REPLIES)))), ids=REPLIES.keys())
+@pytest.mark.parametrize("shape", SHAPES.keys())
+def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: str, replied: Message | None, after: int) -> None:
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*SHAPES[shape])), replied), "what now?")
+    sent, at = question.body, MARKED[shape][after]
+    assert marks(sent) == ([] if at is None else [(at, FORKED)]) and question.marked == at
     messages = cast(list[dict[str, object]], sent["messages"])
     assert refused(messages) == []
     [*_, asking] = [message for message in messages if message["role"] == "user"]
     assert cast(list[object], asking["content"])[-2:] == ASKED
     # Every system message the turn held is still there, in its order: what it says, whatever marker moved off it.
-    assert [said(message) for message in messages if message["role"] == "system"] == [said(message) for message in shape if message["role"] == "system"]
+    assert [said(message) for message in messages if message["role"] == "system"] == [said(message) for message in SHAPES[shape] if message["role"] == "system"]
     # The question is what the model answers: the last message that is not a system message is the user's.
     assert [message for message in messages if message["role"] != "system"][-1] is asking
-    # skipCacheWrite: nothing from the question on is marked, so the question is never written to the cache.
-    assert not any(cache_marked(message) for message in messages[messages.index(asking):])
-    # The loop's newest marker is kept on a shared message that is not a system message, wherever one can carry it.
-    newest = [message for message in messages[: messages.index(asking)] if cache_marked(message) and message["role"] != "system"]
-    assert len(newest) == (1 if any(cache_marked(message) for message in shape) and len([m for m in messages if m["role"] != "system"]) > 1 else 0)
 
 
 def test_the_checker_refuses_the_order_that_was_refused_live() -> None:
     assert "messages.1: system before user" in refused([user(text("hi")), SYSTEM_MESSAGE, user(text("q"))])
 
 
-def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
-    history = body(user(text("hi", cache_control=MARK)))
-    _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
+def test_an_empty_reply_is_left_out() -> None:
+    _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), reply()), "q")
     assert empty["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
-    _, thought = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), Thinking("hm", "sig"))), "q")
-    assert cast(list[object], thought["messages"])[1] == {"role": "assistant", "content": [text("So.", cache_control=MARK), {"type": "thinking", "thinking": "hm", "signature": "sig"}]}
 
 
 @pytest.mark.outside
