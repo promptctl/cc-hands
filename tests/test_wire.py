@@ -573,19 +573,38 @@ def test_a_message_sent_whole_that_hands_cannot_read_garbles_the_reply_as_a_stre
     )
 
 
-@pytest.mark.parametrize("given", ["rm -rf /tmp/x", ["/a"], None])
-def test_a_tool_call_sent_whole_whose_input_is_no_object_garbles_the_reply_as_its_stream_would(given: object) -> None:
-    call = {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": given}
-    stream: list[WireEvent] = [
-        MessageStarted("msg_1", "claude-opus-5-5", {}),
-        BlockStarted(0, {**call, "input": {}}),
-        JsonDelta(0, json.dumps(given)),
-        BlockStopped(0),
-        MessageDelta("tool_use", {}),
-        MessageStopped(),
-    ]
-    whole = assemble(whole_events({**WHOLE, "content": [call]}), streamed=False)
-    assert whole == assemble(stream, streamed=True) == Garbled("tool call Bash's input is not a JSON object")
+@pytest.mark.parametrize("given", ['"rm -rf /tmp/x"', '["/a"]', "null"])
+def test_a_tool_call_sent_whole_whose_input_is_no_object_garbles_the_reply_as_its_stream_would(given: str) -> None:
+    call = {"type": "tool_use", "id": "toolu_1", "name": "Bash"}
+    stream = b"".join(
+        [
+            sse("message_start", {"type": "message_start", "message": {"id": "msg_1", "model": "claude-opus-5-5", "usage": {}}}),
+            sse("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {**call, "input": {}}}),
+            sse("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": given}}),
+            sse("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {}}),
+            sse("message_stop", {"type": "message_stop"}),
+        ]
+    )
+    unread = tool_input("Bash", given)
+    assert isinstance(unread, Unreadable)
+    whole = assemble(whole_events({**WHOLE, "content": [{**call, "input": json.loads(given)}]}), streamed=False)
+    assert whole == assemble([parse(frame) for frame in frames(stream)[0]], streamed=True) == Garbled(unread.reason)
+
+
+@pytest.mark.parametrize(
+    ("whole", "lacking"),
+    [
+        ({**WHOLE, "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash"}]}, "input"),
+        ({**WHOLE, "content": [{"type": "thinking", "thinking": "hmm"}]}, "signature"),
+        ({k: v for k, v in WHOLE.items() if k != "usage"}, "usage"),
+        ({k: v for k, v in WHOLE.items() if k != "stop_reason"}, "stop_reason"),
+    ],
+)
+def test_a_message_sent_whole_lacking_a_field_garbles_it_never_read_as_its_stream_not_sent_yet(whole: dict[str, object], lacking: str) -> None:
+    # A stream sends a tool call with no arguments as no input at all, and a thinking block's signature after it opens;
+    # a message sent whole states each, so lacking one is no call with empty input and no thinking left unsigned.
+    assert unstreamed(json.dumps(whole).encode()) == Garbled(f"a message sent whole lacks a field or has one of the wrong type: KeyError({lacking!r})")
 
 
 def test_a_reply_that_is_not_a_stream_or_a_message_is_its_json_or_else_its_text() -> None:

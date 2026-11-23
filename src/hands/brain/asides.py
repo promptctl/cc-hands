@@ -45,7 +45,7 @@ class Unanswered(StrEnum):
     UNFORKED = "unforked"  # the brain had sent no main turn to fork it from within its asker's time
     UNFORKABLE = "unforkable"  # the brain's newest main turn is no request hands can read to fork it from
     REFUSED = "refused"  # its request was answered with something other than a reply
-    BROKEN = "broken"  # its request or its reply broke off on the way
+    BROKEN = "broken"  # its request broke off on the way, or its reply did, or came whole and could not be read
     TIMED_OUT = "timed_out"  # no answer within what its asker gave it
     WORDLESS = "wordless"  # the model's reply did not end in words
 
@@ -184,8 +184,8 @@ class Asides:
                     return said
                 raise AsideFailed(Unanswered.WORDLESS, f"the model's reply ended {message.stop_reason!r} with {said!r}")
             case Garbled(reason=reason) if response.status == 200:
-                # Answered, then cut off on the way: the stream ended before its reply was whole.
-                raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
+                # Answered, then cut off on the way or unreadable when whole: the reason says which.
+                raise AsideFailed(Unanswered.BROKEN, f"its reply could not be read (request-id {request_id}): {reason}")
             case other:
                 # A 400 is logged as hands' bug by the proxy, the one place every request hands built or changed passes.
                 raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")
