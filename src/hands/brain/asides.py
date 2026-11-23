@@ -16,7 +16,7 @@ from enum import StrEnum
 
 import aiohttp
 
-from hands.brain.fork import Newest, fork
+from hands.brain.fork import CacheTtls, Forked, Newest, fork
 from hands.clock import Clock
 from hands.core.trace import Span
 from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
@@ -78,10 +78,12 @@ Within = Deadline | TimeLimit
 class Asides:
     """What answers hands' side questions: `ask` forks the brain's newest main turn with the question, through the proxy."""
 
-    def __init__(self, clock: Clock, proxy_url: str, newest: Newest, record: Record) -> None:
+    def __init__(self, clock: Clock, proxy_url: str, newest: Newest, ttls: CacheTtls, record: Record) -> None:
         self._clock = clock
         self._proxy_url = proxy_url
         self._newest = newest
+        # The brain's, for the ttl of each marker a question carries: as its settings and environment were at its start.
+        self._ttls = ttls
         self._record = record
         # One at a time: nothing asked here is waited on by the user, and the brain's account answers the user's turns first.
         self._one = asyncio.Lock()
@@ -142,18 +144,19 @@ class Asides:
                         case Deadline():
                             pass
                     turn = await self._newest.turn()
-                    return await self._answered(*fork(turn, question), turn.path, turn.exchange)
+                    return await self._answered(fork(turn, question, self._ttls), turn.path, turn.exchange)
             except TimeoutError as error:
                 if not limit.expired():
                     raise AsideFailed(Unanswered.BROKEN, f"it timed out on its own, not its asker's time: {error!r}") from error
                 why, seen = waiting
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
-    async def _answered(self, headers: tuple[tuple[str, str], ...], body: dict[str, object], path: str, forked: str) -> str:
-        annotate(forked=forked)
-        self._sending = (here(), body)
+    async def _answered(self, forked: Forked, path: str, exchange: str) -> str:
+        # marked: the message its one cache marker is on, None for a question that carries none.
+        annotate(forked=exchange, marked=forked.marked)
+        self._sending = (here(), forked.body)
         try:
-            async with self._client.post(self._proxy_url + path, headers=list(headers), data=json.dumps(body).encode()) as response:
+            async with self._client.post(self._proxy_url + path, headers=list(forked.headers), data=json.dumps(forked.body).encode()) as response:
                 # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
                 reader = reply_reader(Fork(), response.headers, lambda _event: None)
                 async for chunk in response.content.iter_any():

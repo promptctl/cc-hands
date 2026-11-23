@@ -110,6 +110,11 @@ def test_a_fork_that_skips_the_cache_write_marks_the_message_before_its_own_and_
     assert classify("/v1/messages?beta=true", request(said("hi"), said("ok", marked=True), said("suggest the next prompt"))) == Fork()
 
 
+def test_a_fork_after_a_reply_no_marker_can_go_on_marks_the_message_before_the_reply() -> None:
+    thought: dict[str, object] = {"role": "assistant", "content": [{"type": "text", "text": "ok"}, {"type": "thinking", "thinking": "hm", "signature": "sig"}]}
+    assert classify("/v1/messages", request(said("hi", marked=True), thought, said("suggest the next prompt"))) == Fork()
+
+
 QUESTION = SIDE_QUESTION_OPENING + " You must answer this question directly in a single response.</system-reminder>\n\nwhat did the read say?"
 
 

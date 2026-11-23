@@ -99,7 +99,7 @@ def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
     Claude Code names the class itself in CLASS_HEADER, and a class that is one kind decides it. A request it names
     auxiliary is told by its body, since it names its forks so too; so is one without the header, from a Claude Code
     started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on the
-    last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last
+    last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on its fork_point, the last
     point it shares with the loop.
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
@@ -174,7 +174,7 @@ def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, st
         return Subagent()
     if newest == last:
         return _turn(billing)
-    if newest == last - 1:
+    if newest is not None and newest == fork_point(messages):
         return Fork()
     # Marked nowhere a loop or a fork marks: a call beside the loop.
     return Auxiliary(model)
@@ -252,6 +252,43 @@ def _blocks(message: object) -> list[object]:
 def cache_marked(message: object) -> bool:
     """Whether a message carries a cache marker on any of its blocks."""
     return any(isinstance(block, Mapping) and "cache_control" in block for block in _blocks(message))
+
+
+def markable(message: object) -> bool:
+    """Whether Claude Code can put a cache marker on `message`, as the brain runs it (Ipn, whitespaceTextUnstampable off:
+    docs/claude-code-behavior.md, cache marker carriers): a system message never, a reply when its content is a string or
+    its last block can carry one, any other message always."""
+    content = _content(message)
+    match cast(Mapping[str, object], message).get("role") if isinstance(message, Mapping) else None, content:
+        case "system", _:
+            return False
+        case "assistant", str():
+            return True
+        case "assistant", list():
+            blocks = cast(list[object], content)
+            return blocks != [] and _stampable(blocks[-1])
+        case "assistant", _:
+            return False
+        case _:
+            return True
+
+
+def _stampable(block: object) -> bool:
+    # UQe: text with any characters in it, or a block that is neither thinking nor redacted thinking.
+    match block:
+        case {"type": "text", "text": str() as text}:
+            return text != ""
+        case {"type": "text" | "thinking" | "redacted_thinking"}:
+            return False
+        case _:
+            return True
+
+
+def fork_point(messages: Sequence[object]) -> int | None:
+    """The message a request Claude Code sends with skipCacheWrite marks (Dpn): the last that can carry a marker before
+    the last that can, the newest point it shares with the loop, so it reads the cache there and writes nothing."""
+    carriers = [index for index, message in enumerate(messages) if markable(message)]
+    return carriers[-2] if len(carriers) > 1 else None
 
 
 def _texts(message: object) -> list[str]:

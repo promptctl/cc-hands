@@ -3,22 +3,23 @@
 Claude Code asks a side question (DTt, in its side-question chunk) as one request beside its loop: the loop's own model,
 system, tools, and settings, its conversation so far, its newest reply included, then one user message holding a
 placeholder result for each call still running, its reminder, and the question. It sets skipCacheWrite, so the request
-writes nothing to the cache and reads it up to the message before its question (docs/claude-code-behavior.md, side
-question markers). hands builds that request from what its proxy forwarded for
-the brain, and sends it back through the proxy: no Claude Code is started to ask it.
+writes nothing to the cache and reads it up to its fork point (docs/claude-code-behavior.md, side question markers), each
+of its markers with a side question's own ttl. hands builds that request from what its proxy forwarded for the brain, and
+sends it back through the proxy: no Claude Code is started to ask it.
 """
 
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import Literal, cast
 
 from hands.brain.session import SessionView
 from hands.core.session import SessionId
 from hands.core.wire import (
     CLASS_HEADER,
     cache_marked,
+    fork_point,
     Block,
     Exchanged,
     Forwarded,
@@ -58,8 +59,40 @@ Simply answer the question with the information you have.</system-reminder>
 RUNNING = "[No result yet — this call is still in progress in the main conversation (running, awaiting approval, or queued)]"
 # The class Claude Code names a side question in (es() of querySource "side_question").
 SIDE_QUESTION_CLASS = "auxiliary"
-# The blocks the API refuses a cache marker on.
-UNMARKABLE = frozenset({"thinking", "redacted_thinking"})
+# The values Claude Code reads an environment variable as on by (Fe).
+ON = frozenset({"1", "true", "yes", "on"})
+
+
+@dataclass(frozen=True)
+class CacheTtls:
+    """The ttls Claude Code gives a side question's cache markers, None for the API's default of five minutes: its system
+    prompt's, and its messages' and the request's own."""
+
+    system: Literal["1h"] | None
+    messages: Literal["1h"] | None
+
+
+def side_question_ttls(environment: Mapping[str, str], setting: Literal["5m", "1h"] | None) -> CacheTtls:
+    """The ttls Claude Code gives a side question in `environment`, its settings.json naming `setting` as its
+    subagentPromptCacheTtl (Fwe, ain and UZ for querySource side_question): the hour the loop's markers have goes only to
+    the sources its 1h allowlist names, and that list never names a side question."""
+    named = environment.get("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "").strip()
+    chosen = "5m" if _on(environment, "FORCE_PROMPT_CACHING_5M") else named if named in ("5m", "1h") else setting or ("1h" if _on(environment, "ENABLE_PROMPT_CACHING_1H") else "5m")
+    system: Literal["1h"] | None = "1h" if chosen == "1h" else None
+    return CacheTtls(system, None if environment.get("CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL", "").strip() == "5m" else system)
+
+
+def _on(environment: Mapping[str, str], name: str) -> bool:
+    return environment.get(name, "").strip().lower() in ON
+
+
+@dataclass(frozen=True)
+class Forked:
+    """A side question's request, and the message of it its one cache marker is on, None when it carries none."""
+
+    headers: tuple[tuple[str, str], ...]
+    body: dict[str, object]
+    marked: int | None
 
 
 @dataclass(frozen=True)
@@ -74,18 +107,14 @@ class Turn:
     reply: Message | None
 
 
-def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[str, object]]:
-    """The headers and body of a side question asked of `turn`, as Claude Code's /btw builds them."""
+def fork(turn: Turn, question: str, ttls: CacheTtls) -> Forked:
+    """A side question asked of `turn`, as Claude Code's /btw builds it, its markers given `ttls`."""
     sent = cast(dict[str, object], json.loads(turn.body))
     messages = [dict(cast(Mapping[str, object], message)) for message in cast(Sequence[object], sent["messages"])]
     # An empty reply is no message the API takes: Claude Code's history has none for it.
     replied = [] if turn.reply is None or not turn.reply.content else [{"role": "assistant", "content": [_block(block) for block in turn.reply.content]}]
     running = [] if turn.reply is None else [{"type": "tool_result", "tool_use_id": block.id, "content": RUNNING} for block in turn.reply.content if isinstance(block, ToolUse)]
     asked = [*running, {"type": "text", "text": REMINDER}, {"type": "text", "text": question}]
-    # [LAW:one-source-of-truth] Claude Code places each request's markers afresh, none carried from the loop's: the fork's
-    # one marker is the loop's newest cache_control, its ttl the loop's, and there is none when the loop sent none.
-    newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
-    marker = None if newest is None else [cast(Mapping[str, object], block)["cache_control"] for block in _blocks(messages[newest]["content"]) if isinstance(block, Mapping) and "cache_control" in block][-1]
     shared = [_unmarked(message) for message in (*messages, *replied)]
     # The API takes a system message only before an assistant message or at the end: a run of them closing a turn with no
     # reply yet to follow it stays at the end, and the question goes before it.
@@ -97,15 +126,16 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
             history[-1] = {**history[-1], "content": [*_blocks(content), *asked]}
         case _:
             history.append({"role": "user", "content": asked})
-    # skipCacheWrite: the marker sits on the last message before the question's that can carry one, so nothing new is
-    # written. It is placed after the question is merged in, so a question merged into the loop's last message reads that
-    # message uncached (docs/claude-code-behavior.md, side question markers).
-    carrier = next((index for index in reversed(range(len(history) - 1)) if _markable(history[index])), None)
-    if marker is not None and carrier is not None:
-        history[carrier] = _marked(history[carrier], marker)
     history.extend(closing)
+    # [LAW:one-source-of-truth] Claude Code places a side question's markers afresh, none carried from the loop's: one on
+    # its fork point, found once the question is merged in, so a question merged into the loop's last message reads that
+    # message uncached; and one only when its caching marks messages at all, as the loop's markers say it does
+    # (docs/claude-code-behavior.md, side question markers).
+    point = fork_point(history) if any(cache_marked(message) for message in messages) else None
+    marker = _ttl({"type": "ephemeral"}, ttls.messages)
+    history = [_marked(message, marker) if index == point else message for index, message in enumerate(history)]
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
-    return headers, {**sent, "messages": history}
+    return Forked(headers, {**sent, **_retimed(sent, ttls), "messages": history}, point)
 
 
 class Newest:
@@ -166,30 +196,54 @@ def _block(block: Block) -> dict[str, object]:
 
 
 def _blocks(content: object) -> list[object]:
-    return [{"type": "text", "text": content}] if isinstance(content, str) else list(cast(Sequence[object], content))
+    match content:
+        case str():
+            return [{"type": "text", "text": content}]
+        case list():
+            return cast(list[object], content)
+        case _:
+            return []
 
 
 def _unmarked(message: Mapping[str, object]) -> dict[str, object]:
-    blocks = [{key: value for key, value in cast(Mapping[str, object], block).items() if key != "cache_control"} if isinstance(block, Mapping) else block for block in _blocks(message["content"])]
-    return {**message, "content": blocks}
-
-
-def _markable(message: Mapping[str, object]) -> bool:
-    # Claude Code's rule for a message that can carry a marker, on its last block (docs/claude-code-behavior.md, cache
-    # marker carriers): a system message never, a user message always, a reply only when its last block is text with
-    # words in it or a block that is not thinking.
-    match message.get("role"), _blocks(message["content"]):
-        case "system", _:
-            return False
-        case "assistant", [*_, last]:
-            block = cast(Mapping[str, object], last)
-            return str(block.get("text", "")).strip() != "" if block.get("type") == "text" else block.get("type") not in UNMARKABLE
-        case "assistant", []:
-            return False
+    # The message as the loop sent it, only its markers taken off.
+    content = message["content"]
+    match content:
+        case list():
+            return {**message, "content": [_fields(block, {key: value for key, value in _mapping(block).items() if key != "cache_control"}) for block in cast(list[object], content)]}
         case _:
-            return True
+            return dict(message)
 
 
-def _marked(message: Mapping[str, object], marker: object) -> dict[str, object]:
+def _marked(message: Mapping[str, object], marker: Mapping[str, object]) -> dict[str, object]:
+    # As Claude Code marks a message (bhr, whr): on its last block, text content made a block to carry it.
     blocks = _blocks(message["content"])
-    return {**message, "content": [*blocks[:-1], {**cast(Mapping[str, object], blocks[-1]), "cache_control": marker}]}
+    return {**message, "content": [*blocks[:-1], *(_fields(last, {**_mapping(last), "cache_control": marker}) for last in blocks[-1:])]}
+
+
+def _mapping(block: object) -> Mapping[str, object]:
+    return cast(Mapping[str, object], block) if isinstance(block, Mapping) else {}
+
+
+def _fields(block: object, fields: dict[str, object]) -> object:
+    # A block that is a JSON object, as `fields` remake it; any other kept as it is.
+    return fields if isinstance(block, Mapping) else block
+
+
+def _retimed(sent: Mapping[str, object], ttls: CacheTtls) -> dict[str, object]:
+    """The request's own marker and its system prompt's, each as the loop's is but for its ttl, the side question's."""
+    system = sent.get("system")
+    return {
+        **({"system": [_retimed_block(block, ttls.system) for block in cast(list[object], system)]} if isinstance(system, list) else {}),
+        **({"cache_control": _ttl(cast(Mapping[str, object], marker), ttls.messages)} if isinstance(marker := sent.get("cache_control"), Mapping) else {}),
+    }
+
+
+def _retimed_block(block: object, ttl: Literal["1h"] | None) -> object:
+    marker = _mapping(block).get("cache_control")
+    return {**_mapping(block), "cache_control": _ttl(cast(Mapping[str, object], marker), ttl)} if isinstance(marker, Mapping) else block
+
+
+def _ttl(marker: Mapping[str, object], ttl: Literal["1h"] | None) -> dict[str, object]:
+    # d9: a marker names its ttl only when it is an hour, five minutes being the API's default.
+    return {**{key: value for key, value in marker.items() if key != "ttl"}, **({"ttl": ttl} if ttl is not None else {})}

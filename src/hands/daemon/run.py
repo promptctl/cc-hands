@@ -106,7 +106,7 @@ from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
 from hands.brain.configdir import Unstartable
-from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, Station, conversation, exited, side_question_ttls, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -223,13 +223,14 @@ async def mind(
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
+            ttls = side_question_ttls(station)
             brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        asides = Asides(clock, proxy_url, Newest(session), record)
+        asides = Asides(clock, proxy_url, Newest(session), ttls, record)
         try:
             stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)

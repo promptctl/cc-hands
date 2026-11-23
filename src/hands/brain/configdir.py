@@ -6,8 +6,10 @@ exception that discards the fields parsed beside it, so every refusal is read of
 """
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from hands.brain import pinned
 from hands.core.session import PERMISSION_MODES, PermissionMode, Runnable, UnknownMode
@@ -31,13 +33,17 @@ STATE = ".claude.json"
 
 @dataclass(frozen=True)
 class Settings:
-    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, and the API key
-    it puts in the brain's environment, by the last 20 characters Claude Code records its answer on. None is a mode or
-    a key it names none of."""
+    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, the API key it
+    puts in the brain's environment, by the last 20 characters Claude Code records its answer on, the rest of what it
+    puts there, and the ttl it names for every request outside the main conversation. None is a mode, a key or a ttl it
+    names none of."""
 
     synced: tuple[str, ...]
     mode: PermissionMode | UnknownMode | Unread | None
     key: str | Unread | None
+    env: Mapping[str, str] | Unread
+    # subagentPromptCacheTtl, a value Claude Code does not take read as none, as Claude Code reads it.
+    subagent_ttl: Literal["5m", "1h"] | None
 
 
 @dataclass(frozen=True)
@@ -88,11 +94,35 @@ def _settings(path: Path) -> Settings | Unread:
     try:
         said = Payload.parse(path.read_bytes())
     except FileNotFoundError:
-        # Left out, each switch is on, and the brain names no mode and no key.
-        return Settings(KEPT_OUT, None, None)
+        # Left out, each switch is on, and the brain names no mode, no key, no env and no ttl.
+        return Settings(KEPT_OUT, None, None, {}, None)
     except (OSError, Rejected) as error:
         return Unread(str(error))
-    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said))
+    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said), _env(said), _subagent_ttl(said))
+
+
+def _subagent_ttl(said: Payload) -> Literal["5m", "1h"] | None:
+    match said.fields.get("subagentPromptCacheTtl"):
+        case "5m":
+            return "5m"
+        case "1h":
+            return "1h"
+        case _:
+            return None
+
+
+def settings(config_dir: Path) -> Settings | Unread:
+    """The settings.json of `config_dir`, read alone."""
+    return _settings(config_dir / SETTINGS)
+
+
+def _env(said: Payload) -> Mapping[str, str] | Unread:
+    """What settings.json puts in the brain's environment, over the environment it is started in."""
+    try:
+        env = Payload.of(said.fields.get("env", {}), "its env")
+    except Rejected as error:
+        return Unread(str(error))
+    return {name: value for name, value in env.fields.items() if isinstance(value, str)}
 
 
 def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:

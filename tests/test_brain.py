@@ -31,6 +31,7 @@ from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.brain.configdir import Unstartable
+from hands.brain.fork import CacheTtls
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission, Runnable
@@ -413,6 +414,24 @@ def test_the_mode_the_brains_settings_name_is_said_on_its_command_line_too_so_cl
     turn typed into the offer answers Yes (promptctl-brain-lq3.mcw): the same mode said in --settings means no offer."""
     argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), "acceptEdits")), "http://127.0.0.1:7")
     assert json.loads(argv[argv.index("--settings") + 1])["permissions"] == {"defaultMode": "acceptEdits"}
+
+
+def test_a_side_questions_ttls_are_read_from_the_brains_settings_over_the_environment_it_starts_in(tmp_path: Path) -> None:
+    brain = tmp_path / "brain"
+    brain.mkdir()
+    settings = brain / "settings.json"
+    on = Station(brain, workdir(brain), "claude-sonnet-5", "http://127.0.0.1:1", {"ENABLE_PROMPT_CACHING_1H": "1"})
+    assert process.side_question_ttls(on) == CacheTtls("1h", "1h")
+    settings.write_text(json.dumps({"env": {"FORCE_PROMPT_CACHING_5M": "1"}}))
+    assert process.side_question_ttls(on) == CacheTtls(None, None)
+    settings.write_text(json.dumps({"subagentPromptCacheTtl": "5m"}))
+    assert process.side_question_ttls(on) == CacheTtls(None, None)
+    # A ttl Claude Code does not take is read as none, as Claude Code reads it.
+    settings.write_text(json.dumps({"subagentPromptCacheTtl": "an hour"}))
+    assert process.side_question_ttls(on) == CacheTtls("1h", "1h")
+    settings.write_text(json.dumps({"env": ["FORCE_PROMPT_CACHING_5M"]}))
+    with pytest.raises(Unstartable, match="the brain's settings could not be read"):
+        process.side_question_ttls(on)
 
 
 def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_one_it_does_not_take_refuses_the_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

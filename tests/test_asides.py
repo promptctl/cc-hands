@@ -4,7 +4,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from conftest import patiently
@@ -12,18 +12,21 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
-from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
+from hands.brain.fork import REMINDER, RUNNING, CacheTtls, Newest, Turn, fork, side_question_ttls
 from hands.brain.session import BrainSession
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
-from hands.core.wire import CLASS_HEADER, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
+from hands.core.wire import CLASS_HEADER, Block, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, RedactedThinking, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.core.trace import Span
 from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("b1")
+# The loop's marker, an hour long, and a side question's, as Claude Code gives one by default.
 MARK = {"type": "ephemeral", "ttl": "1h"}
+SIDE = {"type": "ephemeral"}
+DEFAULT = CacheTtls(None, None)
 HEADERS = (("authorization", "Bearer the-brains-own"), ("x-claude-code-session-id", "b1"), (CLASS_HEADER, "main"), ("content-type", "application/json"))
 
 
@@ -39,13 +42,13 @@ def text(said: str, **more: object) -> dict[str, object]:
     return {"type": "text", "text": said, **more}
 
 
-def reply(*content: Text | Thinking | ToolUse, stop: str = "end_turn") -> Message:
+def reply(*content: Block, stop: str = "end_turn") -> Message:
     return Message("msg_1", "claude-opus-5-5", content, stop, {})
 
 
-def forked(turn: Turn, question: str) -> tuple[dict[str, str], dict[str, object]]:
-    headers, sent = fork(turn, question)
-    return dict(headers), sent
+def forked(turn: Turn, question: str, ttls: CacheTtls = DEFAULT) -> tuple[dict[str, str], dict[str, object]]:
+    made = fork(turn, question, ttls)
+    return dict(made.headers), made.body
 
 
 def as_sent(history: dict[str, object]) -> bytes:
@@ -60,7 +63,7 @@ def test_a_question_before_any_reply_joins_the_last_user_message_and_its_one_mar
     headers, sent = forked(Turn("x1", "/v1/messages?beta=true", HEADERS, as_sent(history), None), "what now?")
     assert sent["messages"] == [
         user(text("hi")),
-        {"role": "assistant", "content": [text("hello", cache_control=MARK)]},
+        {"role": "assistant", "content": [text("hello", cache_control=SIDE)]},
         user(text("and?"), *ASKED),
     ]
     # Everything else is the brain's request as it went upstream; the class is Claude Code's for a side question.
@@ -74,7 +77,7 @@ def test_a_question_after_a_finished_reply_follows_it_with_no_placeholder() -> N
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Thinking("hm", "sig"), Text("Done."))), "what now?")
     assert sent["messages"] == [
         user(text("hi")),
-        {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=MARK)]},
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=SIDE)]},
         user(*ASKED),
     ]
 
@@ -94,9 +97,64 @@ def test_no_marker_the_loop_put_is_carried_and_a_lone_message_gets_none() -> Non
     history = body(user(text("one", cache_control=MARK)), {"role": "assistant", "content": [text("two")]}, user(text("three", cache_control=MARK)))
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("four."))), "q")
     messages = cast(list[dict[str, list[dict[str, object]]]], sent["messages"])
-    assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[None], [None], [None], [MARK], [None, None]]
+    assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[None], [None], [None], [SIDE], [None, None]]
     _, alone = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), None), "q")
     assert alone["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
+
+
+def test_a_turn_the_loop_marked_nothing_of_forks_with_no_marker() -> None:
+    history = body(user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?")))
+    made = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), None), "q", DEFAULT)
+    assert made.marked is None
+    assert not any(cache_marked(message) for message in cast(list[object], made.body["messages"]))
+
+
+def test_every_marker_has_the_side_questions_ttl_and_the_loops_scope() -> None:
+    history = {
+        **body(user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK))),
+        "system": [text("billing"), text("You are hands.", cache_control={**MARK, "scope": "global"})],
+        "cache_control": {**MARK, "evict_on_complete": True},
+    }
+    turn = Turn("x1", "/v1/messages", HEADERS, as_sent(history), None)
+    for ttls, ttl in ((DEFAULT, {}), (CacheTtls("1h", "1h"), {"ttl": "1h"})):
+        made = fork(turn, "q", ttls)
+        assert made.body["system"] == [text("billing"), text("You are hands.", cache_control={"type": "ephemeral", "scope": "global", **ttl})]
+        assert made.body["cache_control"] == {"type": "ephemeral", "evict_on_complete": True, **ttl}
+        assert (made.marked, cast(list[dict[str, list[dict[str, object]]]], made.body["messages"])[1]["content"][-1]["cache_control"]) == (1, {"type": "ephemeral", **ttl})
+    # CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL takes the hour off the messages and the request alone.
+    made = fork(turn, "q", CacheTtls("1h", None))
+    assert cast(list[dict[str, object]], made.body["system"])[1]["cache_control"] == {"type": "ephemeral", "scope": "global", "ttl": "1h"}
+    assert made.body["cache_control"] == {"type": "ephemeral", "evict_on_complete": True}
+
+
+def test_a_message_the_loop_sent_unmarked_is_forked_as_it_was_sent_and_text_content_is_marked_as_a_block() -> None:
+    history = body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": "hello"}, {"role": "user", "content": "and?"}, {"role": "assistant", "content": [text("ok")]}, user(text("go", cache_control=MARK)))
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), None), "q")
+    assert cast(list[object], sent["messages"])[1:3] == [{"role": "assistant", "content": "hello"}, {"role": "user", "content": "and?"}]
+    # As Claude Code marks a message whose content is text: made one text block, the marker on it.
+    _, carried = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi")), {"role": "assistant", "content": "hello"}, user(text("go", cache_control=MARK)))), None), "q")
+    assert cast(list[object], carried["messages"])[1] == {"role": "assistant", "content": [text("hello", cache_control=SIDE)]}
+
+
+@pytest.mark.parametrize(
+    ("environment", "setting", "ttls"),
+    [
+        ({}, None, DEFAULT),
+        ({"ENABLE_PROMPT_CACHING_1H": "1"}, None, CacheTtls("1h", "1h")),
+        ({"ENABLE_PROMPT_CACHING_1H": " Yes "}, None, CacheTtls("1h", "1h")),
+        ({"ENABLE_PROMPT_CACHING_1H": "0"}, None, DEFAULT),
+        ({"ENABLE_PROMPT_CACHING_1H": "1", "CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL": "5m"}, None, CacheTtls("1h", None)),
+        ({"ENABLE_PROMPT_CACHING_1H": "1", "FORCE_PROMPT_CACHING_5M": "true"}, "1h", DEFAULT),
+        ({"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": " 1h "}, None, CacheTtls("1h", "1h")),
+        ({"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "5m", "ENABLE_PROMPT_CACHING_1H": "1"}, "1h", DEFAULT),
+        ({"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "an hour"}, "1h", CacheTtls("1h", "1h")),
+        ({"ENABLE_PROMPT_CACHING_1H": "1"}, "5m", DEFAULT),
+        # The loop's own: an hour for the main thread is none for a side question.
+        ({"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"}, None, DEFAULT),
+    ],
+)
+def test_a_side_questions_ttl_is_the_one_claude_code_gives_its_query_source(environment: dict[str, str], setting: Literal["5m", "1h"] | None, ttls: CacheTtls) -> None:
+    assert side_question_ttls(environment, setting) == ttls
 
 
 async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_reply_once_read() -> None:
@@ -248,7 +306,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         clock = VirtualClock(epoch=datetime.fromtimestamp(0, UTC))
         wire = Wire(clock, lambda _observed: None)
         proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=clock)
-        asides = Asides(clock, proxy.url, Newest(BrainSession(BRAIN)), recorded.append)
+        asides = Asides(clock, proxy.url, Newest(BrainSession(BRAIN)), DEFAULT, recorded.append)
 
         class Listening:
             def route(self, sent: Sent) -> Route:
@@ -391,13 +449,23 @@ SHAPES: dict[str, list[dict[str, object]]] = {
     "two system messages last": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)), SYSTEM_MESSAGE, DIRECTIVE],
 }
 REPLIES = {"no reply yet": None, "an empty reply": reply(), "a reply of thinking alone": reply(Thinking("hmm", "sig"), stop="max_tokens"), "a reply still calling": reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use")}
+# By shape, the message the fork's one marker is on after each of REPLIES, in its order: None where none can carry one.
+CARRIERS: dict[str, tuple[int | None, ...]] = {
+    "a system message last": (None, None, 0, 2),
+    "a system message before an assistant message": (2, 2, 3, 4),
+    "a marked system message last": (None, None, 0, 2),
+    "a directive-only system message before the question": (1, 1, 3, 4),
+    "two marked system messages last": (None, None, 0, 3),
+    "a directive-only system message last": (None, None, 0, 2),
+    "two system messages last": (1, 1, 2, 5),
+}
+CASES = [pytest.param(SHAPES[shape], replied, marked, id=f"{named}-{shape}") for shape, carriers in CARRIERS.items() for (named, replied), marked in zip(REPLIES.items(), carriers, strict=True)]
 
 
-@pytest.mark.parametrize("replied", REPLIES.values(), ids=REPLIES.keys())
-@pytest.mark.parametrize("shape", SHAPES.values(), ids=SHAPES.keys())
-def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: list[dict[str, object]], replied: Message | None) -> None:
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*shape)), replied), "what now?")
-    messages = cast(list[dict[str, object]], sent["messages"])
+@pytest.mark.parametrize(("shape", "replied", "marked"), CASES)
+def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: list[dict[str, object]], replied: Message | None, marked: int | None) -> None:
+    made = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*shape)), replied), "what now?", DEFAULT)
+    messages = cast(list[dict[str, object]], made.body["messages"])
     assert refused(messages) == []
     [*_, asking] = [message for message in messages if message["role"] == "user"]
     assert cast(list[object], asking["content"])[-2:] == ASKED
@@ -407,25 +475,25 @@ def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_ta
     assert [message for message in messages if message["role"] != "system"][-1] is asking
     # skipCacheWrite: nothing from the question on is marked, so the question is never written to the cache.
     assert not any(cache_marked(message) for message in messages[messages.index(asking):])
-    # The fork carries one marker, on a shared message that is not a system message, wherever one can carry it.
-    marked = [message for message in messages if cache_marked(message)]
-    assert all(message["role"] != "system" for message in marked)
-    assert len(marked) == (1 if any(cache_marked(message) for message in shape) and len([m for m in messages if m["role"] != "system"]) > 1 else 0)
+    # The fork carries one marker, on the message Claude Code's /btw puts it on.
+    assert (made.marked, [index for index, message in enumerate(messages) if cache_marked(message)]) == (marked, [] if marked is None else [marked])
 
 
 def test_the_checker_refuses_the_order_that_was_refused_live() -> None:
     assert "messages.1: system before user" in refused([user(text("hi")), SYSTEM_MESSAGE, user(text("q"))])
 
 
-@pytest.mark.parametrize("last", [Thinking("hm", "sig"), Text(""), Text("  \n")], ids=["thinking", "empty text", "whitespace"])
-def test_an_empty_reply_is_left_out_and_a_reply_whose_last_block_cannot_carry_a_marker_is_stepped_over(last: Text | Thinking) -> None:
+@pytest.mark.parametrize(
+    ("last", "carries"),
+    [(Thinking("hm", "sig"), False), (RedactedThinking("opaque"), False), (Text(""), False), (Text("  \n"), True), (ToolUse("t1", "list", {}), True)],
+    ids=["thinking", "redacted thinking", "empty text", "whitespace", "a call"],
+)
+def test_an_empty_reply_is_left_out_and_a_reply_carries_the_marker_when_its_last_block_can(last: Block, carries: bool) -> None:
     history = body(user(text("hi", cache_control=MARK)))
     _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
     assert empty["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
-    _, stepped = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), last)), "q")
-    [shared, replied, _] = cast(list[dict[str, object]], stepped["messages"])
-    assert shared == user(text("hi", cache_control=MARK))
-    assert not cache_marked(replied)
+    # Whitespace alone carries one in the brain, where whitespaceTextUnstampable is off.
+    assert fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), last)), "q", DEFAULT).marked == (1 if carries else 0)
 
 
 @pytest.mark.outside
@@ -497,7 +565,7 @@ async def test_a_timeout_that_is_not_its_askers_fails_the_question_broken_not_ti
         async def turn(self) -> Turn:
             raise TimeoutError("a wait of its own")
 
-    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(BrainSession(BRAIN)), lambda _entry: None)
+    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(BrainSession(BRAIN)), DEFAULT, lambda _entry: None)
     try:
         with pytest.raises(AsideFailed, match="not its asker's time") as failed:
             await asides.ask(AsideKind.LINE, "q", Deadline(10))

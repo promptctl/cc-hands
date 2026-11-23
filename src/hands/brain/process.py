@@ -35,8 +35,9 @@ from typing import Any, Literal
 from aiohttp import web
 from loguru import logger
 
-from hands.brain import configdir
+from hands.brain import configdir, fork
 from hands.brain.configdir import Unstartable
+from hands.brain.fork import CacheTtls
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
 from hands.clock import Clock, wait
@@ -57,7 +58,7 @@ from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
-from hands.sessions.files import replace_whole
+from hands.sessions.files import Unread, replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
@@ -307,6 +308,21 @@ def command(launch: Launch, hooks: str) -> list[str]:
             **({"permissions": {"defaultMode": mode}} if mode is not None else {}),
         }),
     ]
+
+
+def side_question_ttls(station: Station) -> CacheTtls:
+    """The ttls the brain on `station` gives a side question's cache markers, from the environment it is started in and
+    its settings.json's over it; raises Unstartable when its settings.json cannot be read."""
+    match configdir.settings(station.config_dir):
+        case configdir.Settings(env=env, subagent_ttl=ttl):
+            pass
+        case Unread() as env:
+            ttl = None
+    match env:
+        case Unread(reason=reason):
+            raise Unstartable(f"the brain's settings could not be read ({reason}): correct {station.config_dir / configdir.SETTINGS}")
+        case _:
+            return fork.side_question_ttls({**environment(station.config_dir, station.proxy_url, station.inherited), **env}, ttl)
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
