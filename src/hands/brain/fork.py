@@ -4,7 +4,7 @@ Claude Code 2.1.308 asks a side question (DTt, in its side-question chunk) as on
 model, system, tools, and settings, its conversation so far, its newest reply included, then one user message holding a
 placeholder result for each call still running, its reminder, and the question. It sets skipCacheWrite, so the request
 reads the loop's cached prefix and writes none of its own. hands builds that request from the brain's newest main turn as
-its proxy took it, and sends it back through the proxy: no Claude Code is started to ask it.
+its proxy received it, and sends it back through the proxy: no Claude Code is started to ask it.
 """
 
 import asyncio
@@ -75,7 +75,7 @@ class Unmarked(StrEnum):
 
 @dataclass(frozen=True)
 class Turn:
-    """The brain's newest main turn: its request as the proxy took it, and the reply's message once it is whole."""
+    """The brain's newest main turn: its request as the proxy received it, and the reply's message once it is whole."""
 
     exchange: str
     path: str
@@ -135,8 +135,8 @@ class Newest:
     def __init__(self, session: SessionView) -> None:
         # Which conversation the brain is in now: a question forks only from a turn of it.
         self._session = session
-        # Main turns of the brain's told and not yet taken, by the session each is of: its request is held once the proxy
-        # takes it, to go upstream or to be answered by hands.
+        # Main turns of the brain's told and not yet received, by the session each is of: its request is held once the
+        # proxy receives it, to go upstream or to be answered by hands.
         self._main: dict[str, SessionId | None] = {}
         # [LAW:one-source-of-truth] the newest turn held of each conversation, so a /resume back forks from where it was left.
         self._turns: dict[SessionId | None, Turn] = {}
@@ -159,7 +159,7 @@ class Newest:
                 self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
                 self._change()
             case Exchanged(exchange=exchange, reply=reply):
-                # A main turn that ended before the proxy took it is never waited on again.
+                # A main turn that ended before the proxy received it is never waited on again.
                 self._main.pop(exchange, None)
                 match reply:
                     # The model's answer, or the one hands gave in its place: either is the reply Claude Code holds.

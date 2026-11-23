@@ -992,16 +992,17 @@ def _block_streamed(index: int, block: Mapping[str, object]) -> tuple[BlockEvent
 def serialized(written: Written) -> tuple[str, bytes]:
     """A whole message as the API sends it: its content type and its bytes, a stream when it was streamed.
 
-    [LAW:one-source-of-truth] the reader's inverse, written from the message alone: each block streams as
-    `_block_streamed` reads a whole one, so `unstreamed`, or `frames`, `parse` and `assemble`, read it back to `written`.
+    [LAW:one-source-of-truth] written from the message alone, each block streamed by the rule `_block_streamed` reads a
+    whole one with; the envelope is laid out here, and tests/test_wire.py reads both encodings back to `written`.
     """
     message = written.message
+    content = [block_param(block) for block in message.content]
     whole: dict[str, object] = {
         "id": message.id,
         "type": "message",
         "role": "assistant",
         "model": message.model,
-        "content": [block_param(block) for block in message.content],
+        "content": content,
         "stop_reason": message.stop_reason,
         "stop_sequence": None,
         "usage": dict(message.usage),
@@ -1012,8 +1013,8 @@ def serialized(written: Written) -> tuple[str, bytes]:
         ("message_start", {"type": "message_start", "message": {**whole, "content": [], "stop_reason": None}}),
         *(
             frame
-            for index, block in enumerate(message.content)
-            for frame in (*map(_frame_of, _block_streamed(index, block_param(block))), ("content_block_stop", {"type": "content_block_stop", "index": index}))
+            for index, block in enumerate(content)
+            for frame in (*map(_frame_of, _block_streamed(index, block)),("content_block_stop", {"type": "content_block_stop", "index": index}))
         ),
         ("message_delta", {"type": "message_delta", "delta": {"stop_reason": message.stop_reason, "stop_sequence": None}, "usage": dict(message.usage)}),
         ("message_stop", {"type": "message_stop"}),
