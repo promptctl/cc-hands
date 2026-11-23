@@ -12,18 +12,21 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
-from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
+from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, Unmarked, fork
 from hands.brain.session import BrainSession
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
-from hands.core.wire import CLASS_HEADER, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
+from hands.core.wire import CLASS_HEADER, Block, Exchanged, Fork, Forwarded, MainTurn, Message, Observed, Reached, RedactedThinking, Route, Send, Sent, Text, Thinking, ToolUse, UnreadableRequest, Written, classify
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.core.trace import Span
 from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("b1")
+# The loop's own marker, as the brain's main turns carry it; a side question's names no ttl, so it takes the default five
+# minutes the brain's subagent ttl is pinned to.
 MARK = {"type": "ephemeral", "ttl": "1h"}
+FORKED = {"type": "ephemeral"}
 HEADERS = (("authorization", "Bearer the-brains-own"), ("x-claude-code-session-id", "b1"), (CLASS_HEADER, "main"), ("content-type", "application/json"))
 
 
@@ -39,13 +42,20 @@ def text(said: str, **more: object) -> dict[str, object]:
     return {"type": "text", "text": said, **more}
 
 
-def reply(*content: Text | Thinking | ToolUse, stop: str = "end_turn") -> Message:
+def reply(*content: Block, stop: str = "end_turn") -> Message:
     return Message("msg_1", "claude-opus-5-5", content, stop, {})
 
 
 def forked(turn: Turn, question: str) -> tuple[dict[str, str], dict[str, object]]:
-    headers, sent = fork(turn, question)
-    return dict(headers), sent
+    question_asked = fork(turn, question)
+    return dict(question_asked.headers), question_asked.body
+
+
+def marks(sent: dict[str, object]) -> list[tuple[int, object]]:
+    """Each message of a body that carries a cache marker, by its index, with the marker on its last block."""
+    messages = cast(list[dict[str, object]], sent["messages"])
+    blocks = [cast(list[dict[str, object]], content) if isinstance(content := message["content"], list) else [] for message in messages]
+    return [(index, said[-1].get("cache_control")) for index, said in enumerate(blocks) if any("cache_control" in block for block in said)]
 
 
 def as_sent(history: dict[str, object]) -> bytes:
@@ -55,12 +65,12 @@ def as_sent(history: dict[str, object]) -> bytes:
 ASKED = [text(REMINDER), text("what now?")]
 
 
-def test_a_question_before_any_reply_joins_the_last_user_message_and_the_newest_marker_moves_one_message_earlier() -> None:
+def test_a_question_before_any_reply_joins_the_last_user_message_and_its_one_marker_goes_on_the_message_before() -> None:
     history = body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)))
     headers, sent = forked(Turn("x1", "/v1/messages?beta=true", HEADERS, as_sent(history), None), "what now?")
     assert sent["messages"] == [
-        user(text("hi", cache_control=MARK)),
-        {"role": "assistant", "content": [text("hello", cache_control=MARK)]},
+        user(text("hi")),
+        {"role": "assistant", "content": [text("hello", cache_control=FORKED)]},
         user(text("and?"), *ASKED),
     ]
     # Everything else is the brain's request as it went upstream; the class is Claude Code's for a side question.
@@ -74,7 +84,7 @@ def test_a_question_after_a_finished_reply_follows_it_with_no_placeholder() -> N
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Thinking("hm", "sig"), Text("Done."))), "what now?")
     assert sent["messages"] == [
         user(text("hi")),
-        {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=MARK)]},
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=FORKED)]},
         user(*ASKED),
     ]
 
@@ -90,13 +100,96 @@ def test_each_call_of_a_reply_still_running_stands_in_with_claude_codes_placehol
     assert classify("/v1/messages", sent, {CLASS_HEADER: "auxiliary"}) == Fork()
 
 
-def test_markers_the_loop_put_on_earlier_messages_stay_and_a_lone_message_has_none_moved() -> None:
+def test_none_of_the_loops_markers_survive_and_a_lone_message_carries_none() -> None:
     history = body(user(text("one", cache_control=MARK)), {"role": "assistant", "content": [text("two")]}, user(text("three", cache_control=MARK)))
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("four."))), "q")
-    messages = cast(list[dict[str, list[dict[str, object]]]], sent["messages"])
-    assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[MARK], [None], [None], [MARK], [None, None]]
+    assert marks(sent) == [(3, FORKED)]
     _, alone = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), None), "q")
     assert alone["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
+
+
+def test_a_question_forked_from_a_turn_that_carried_no_marker_carries_none() -> None:
+    history = body(user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?")))
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
+    assert marks(question.body) == [] and question.marked == Unmarked.TURN_UNMARKED
+
+
+# What the brain's reply ends in, and the message the question then marks: the reply when it can carry a marker, else the
+# user message before it.
+REPLY_KINDS = {
+    "text": (reply(Text("So.")), 1),
+    # Stellar drift is off in the brain: text of whitespace alone carries one.
+    "whitespace text": (reply(Text("So."), Text(" \n")), 1),
+    "a call": (reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use"), 1),
+    "empty text": (reply(Thinking("hm", "sig"), Text("")), 0),
+    "thinking": (reply(Text("So."), Thinking("hm", "sig")), 0),
+    "redacted thinking": (reply(Text("So."), RedactedThinking("data")), 0),
+}
+
+
+@pytest.mark.parametrize(("replied", "at"), REPLY_KINDS.values(), ids=REPLY_KINDS.keys())
+def test_a_reply_carries_the_marker_by_its_last_block(replied: Message, at: int) -> None:
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), replied), "q")
+    assert marks(question.body) == [(at, FORKED)] and question.marked == at
+
+
+def test_a_reply_the_loop_sent_as_a_string_carries_the_marker_as_one_text_block() -> None:
+    history = body(user(text("hi")), {"role": "assistant", "content": "hello"}, user(text("and?", cache_control=MARK)))
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), None), "q")
+    assert cast(list[object], sent["messages"])[1] == {"role": "assistant", "content": [text("hello", cache_control=FORKED)]}
+
+
+def test_no_marker_of_a_side_question_names_a_ttl_and_each_keeps_the_rest_of_its_terms() -> None:
+    # As Claude Code marks them: a system prompt block of global scope, and the request under the beta that evicts it.
+    history = {
+        **body(user(text("hi", cache_control=MARK))),
+        "cache_control": {**MARK, "evict_on_complete": True},
+        "system": [text("billing"), text("You are hands.", cache_control={**MARK, "scope": "global"})],
+    }
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
+    assert sent["cache_control"] == {"type": "ephemeral", "evict_on_complete": True}
+    assert sent["system"] == [text("billing"), text("You are hands.", cache_control={"type": "ephemeral", "scope": "global"})]
+    assert marks(sent) == [(1, FORKED)]
+
+
+def test_a_turn_that_sent_no_system_prompt_forks_a_question_without_one() -> None:
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, json.dumps({"model": "claude-opus-5-5", "messages": [user(text("hi", cache_control=MARK))]}).encode(), reply(Text("So."))), "q")
+    assert "system" not in sent and marks(sent) == [(1, FORKED)]
+
+
+NO_MESSAGE = "is not a user, assistant or system message of text or blocks"
+UNREADABLE = {
+    "bytes that are not UTF-8": (b"\xff\xfe{", "its body is not JSON"),
+    "text that is not JSON": (b"{", "its body is not JSON"),
+    "JSON that is no object": (b"[]", "its body is not a JSON object"),
+    "messages that are no list": (as_sent({**body(), "messages": {}}), "its messages are not a list but dict"),
+    "content neither text nor blocks": (as_sent(body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": None})), f"its messages.1 {NO_MESSAGE}"),
+    "no blocks": (as_sent(body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": []})), f"its messages.1 {NO_MESSAGE}"),
+    "a block that is no object": (as_sent(body({"role": "user", "content": ["hi"]})), f"its messages.0 {NO_MESSAGE}"),
+    "a role the API has no message of": (as_sent(body({"role": "tool", "content": "hi"})), f"its messages.0 {NO_MESSAGE}"),
+    "a system prompt neither text nor blocks": (as_sent({**body(user(text("hi"))), "system": 3}), "its system prompt is neither text nor blocks but int"),
+    "a system marker that is no object": (as_sent({**body(user(text("hi"))), "system": [text("You are hands.", cache_control="1h")]}), "a cache marker on it or its system prompt is not an object"),
+}
+
+
+@pytest.mark.parametrize(("sent", "why"), UNREADABLE.values(), ids=UNREADABLE.keys())
+async def test_a_turn_hands_cannot_read_fails_the_question_unforkable(sent: bytes, why: str) -> None:
+    unreadable = Turn("x1", "/v1/messages", HEADERS, sent, None)
+
+    class Unforkable(Newest):
+        async def turn(self) -> Turn:
+            return unreadable
+
+    with pytest.raises(UnreadableRequest, match=why):
+        fork(unreadable, "q")
+    # Failed as a question fails, never past the asker that waits on its answer.
+    asides = Asides(VirtualClock(), "http://127.0.0.1:9", Unforkable(BrainSession(BRAIN)), lambda _entry: None)
+    try:
+        with pytest.raises(AsideFailed, match=why) as failed:
+            await asides.ask(AsideKind.LINE, "q", Deadline(10))
+        assert failed.value.why == Unanswered.UNFORKABLE
+    finally:
+        await asides.close()
 
 
 async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_reply_once_read() -> None:
@@ -299,6 +392,8 @@ async def test_a_side_question_is_the_brains_turn_forked_through_the_proxy_and_a
         "kind": "summary", "reply": "It said four.", "status": 200, "request_id": "req_1", "input_tokens": 3, "cache_read_input_tokens": 900, "output_tokens": 4,
     }
     assert isinstance(event.facts["forked"], str)
+    # Which message carries the question's marker, read off the body it was sent as.
+    assert marks(question) == [(event.facts["marked"], FORKED)]
 
 
 @pytest.mark.outside
@@ -391,37 +486,43 @@ SHAPES: dict[str, list[dict[str, object]]] = {
     "two system messages last": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)), SYSTEM_MESSAGE, DIRECTIVE],
 }
 REPLIES = {"no reply yet": None, "an empty reply": reply(), "a reply of thinking alone": reply(Thinking("hmm", "sig"), stop="max_tokens"), "a reply still calling": reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use")}
+# The message each shape's question marks, after each reply: the last that can carry a marker before the question, never a
+# system message nor a reply of thinking alone.
+NONE = Unmarked.NO_FORK_POINT
+MARKED: dict[str, dict[str, int | Unmarked]] = {
+    "a system message last": {"no reply yet": NONE, "an empty reply": NONE, "a reply of thinking alone": 0, "a reply still calling": 2},
+    "a system message before an assistant message": {"no reply yet": 2, "an empty reply": 2, "a reply of thinking alone": 3, "a reply still calling": 4},
+    "a marked system message last": {"no reply yet": NONE, "an empty reply": NONE, "a reply of thinking alone": 0, "a reply still calling": 2},
+    "a directive-only system message before the question": {"no reply yet": 1, "an empty reply": 1, "a reply of thinking alone": 3, "a reply still calling": 4},
+    "two marked system messages last": {"no reply yet": NONE, "an empty reply": NONE, "a reply of thinking alone": 0, "a reply still calling": 3},
+    "a directive-only system message last": {"no reply yet": NONE, "an empty reply": NONE, "a reply of thinking alone": 0, "a reply still calling": 2},
+    "two system messages last": {"no reply yet": 1, "an empty reply": 1, "a reply of thinking alone": 2, "a reply still calling": 5},
+}
 
 
-@pytest.mark.parametrize("replied", REPLIES.values(), ids=REPLIES.keys())
-@pytest.mark.parametrize("shape", SHAPES.values(), ids=SHAPES.keys())
-def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: list[dict[str, object]], replied: Message | None) -> None:
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*shape)), replied), "what now?")
+@pytest.mark.parametrize("replied", REPLIES.keys())
+@pytest.mark.parametrize("shape", SHAPES.keys())
+def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: str, replied: str) -> None:
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*SHAPES[shape])), REPLIES[replied]), "what now?")
+    sent, at = question.body, MARKED[shape][replied]
+    assert marks(sent) == ([] if isinstance(at, Unmarked) else [(at, FORKED)]) and question.marked == at
     messages = cast(list[dict[str, object]], sent["messages"])
     assert refused(messages) == []
     [*_, asking] = [message for message in messages if message["role"] == "user"]
     assert cast(list[object], asking["content"])[-2:] == ASKED
     # Every system message the turn held is still there, in its order: what it says, whatever marker moved off it.
-    assert [said(message) for message in messages if message["role"] == "system"] == [said(message) for message in shape if message["role"] == "system"]
+    assert [said(message) for message in messages if message["role"] == "system"] == [said(message) for message in SHAPES[shape] if message["role"] == "system"]
     # The question is what the model answers: the last message that is not a system message is the user's.
     assert [message for message in messages if message["role"] != "system"][-1] is asking
-    # skipCacheWrite: nothing from the question on is marked, so the question is never written to the cache.
-    assert not any(cache_marked(message) for message in messages[messages.index(asking):])
-    # The loop's newest marker is kept on a shared message that is not a system message, wherever one can carry it.
-    newest = [message for message in messages[: messages.index(asking)] if cache_marked(message) and message["role"] != "system"]
-    assert len(newest) == (1 if any(cache_marked(message) for message in shape) and len([m for m in messages if m["role"] != "system"]) > 1 else 0)
 
 
 def test_the_checker_refuses_the_order_that_was_refused_live() -> None:
     assert "messages.1: system before user" in refused([user(text("hi")), SYSTEM_MESSAGE, user(text("q"))])
 
 
-def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
-    history = body(user(text("hi", cache_control=MARK)))
-    _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
+def test_an_empty_reply_is_left_out() -> None:
+    _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), reply()), "q")
     assert empty["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
-    _, thought = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), Thinking("hm", "sig"))), "q")
-    assert cast(list[object], thought["messages"])[1] == {"role": "assistant", "content": [text("So.", cache_control=MARK), {"type": "thinking", "thinking": "hm", "signature": "sig"}]}
 
 
 @pytest.mark.outside

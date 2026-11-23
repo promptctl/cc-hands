@@ -16,10 +16,10 @@ from enum import StrEnum
 
 import aiohttp
 
-from hands.brain.fork import Newest, fork
+from hands.brain.fork import Forked, Newest, Turn, Unmarked, fork
 from hands.clock import Clock
 from hands.core.trace import Span
-from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
+from hands.core.wire import Fork, Garbled, Observed, Send, Sent, UnreadableRequest, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.replies import reply_reader
@@ -43,6 +43,7 @@ class Unanswered(StrEnum):
     """Why a side question has no answer."""
 
     UNFORKED = "unforked"  # the brain had sent no main turn to fork it from within its asker's time
+    UNFORKABLE = "unforkable"  # the brain's newest main turn is no request hands can read to fork it from
     REFUSED = "refused"  # its request was answered with something other than a reply
     BROKEN = "broken"  # its request or its reply broke off on the way
     TIMED_OUT = "timed_out"  # no answer within what its asker gave it
@@ -142,18 +143,28 @@ class Asides:
                         case Deadline():
                             pass
                     turn = await self._newest.turn()
-                    return await self._answered(*fork(turn, question), turn.path, turn.exchange)
+                    try:
+                        forked = fork(turn, question)
+                    except UnreadableRequest as unread:
+                        raise AsideFailed(Unanswered.UNFORKABLE, f"the brain's newest main turn cannot be read: {unread}") from unread
+                    return await self._answered(turn, forked)
             except TimeoutError as error:
                 if not limit.expired():
                     raise AsideFailed(Unanswered.BROKEN, f"it timed out on its own, not its asker's time: {error!r}") from error
                 why, seen = waiting
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
-    async def _answered(self, headers: tuple[tuple[str, str], ...], body: dict[str, object], path: str, forked: str) -> str:
-        annotate(forked=forked)
-        self._sending = (here(), body)
+    async def _answered(self, turn: Turn, forked: Forked) -> str:
+        annotate(forked=turn.exchange)
+        # [LAW:nothing-unseen] where its marker went, or why it has none: two facts, each of one type.
+        match forked.marked:
+            case Unmarked() as why:
+                annotate(unmarked=why)
+            case point:
+                annotate(marked=point)
+        self._sending = (here(), forked.body)
         try:
-            async with self._client.post(self._proxy_url + path, headers=list(headers), data=json.dumps(body).encode()) as response:
+            async with self._client.post(self._proxy_url + turn.path, headers=list(forked.headers), data=json.dumps(forked.body).encode()) as response:
                 # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
                 reader = reply_reader(Fork(), response.headers, lambda _event: None)
                 async for chunk in response.content.iter_any():

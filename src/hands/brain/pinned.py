@@ -16,6 +16,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import aiohttp
 
@@ -33,6 +34,16 @@ INSTALL = "hands install-brain"
 # hang it: a stall, never a slow link, which takes as long as 230 MB takes on it.
 STALL_SECONDS = 60
 _CHUNK = 1 << 20
+
+# [LAW:one-source-of-truth] how this release marks a side question's cache rests on two variables the brain runs under,
+# pinned in its --settings env (`hands.brain.process`), which outranks its settings.json env and its process environment,
+# and followed by the side questions hands forks (`hands.brain.fork`), never read from the brain's setup
+# (docs/claude-code-behavior.md, "brain stellar drift" and "brain prompt-cache ttl").
+# Off: text of whitespace alone carries a cache marker.
+STELLAR_DRIFT: Literal[False] = False
+# Five minutes, of the two a marker can give.
+CACHE_TTL: Literal["5m", "1h"] = "5m"
+ENV = {"CLAUDE_CODE_STELLAR_DRIFT": str(int(STELLAR_DRIFT)), "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": CACHE_TTL}
 
 
 class Unpinned(Exception):
