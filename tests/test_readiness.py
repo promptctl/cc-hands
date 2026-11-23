@@ -903,7 +903,7 @@ def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
-    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(Path("/h/brain/pinned-claude/claude"), None)))
+    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(Path("/h/brain/pinned-claude/claude"), None, {}, None)))
     assert found == Ready("brain logged in as brain@example.com (claude.ai)", f"the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5 on Claude Code {pinned.VERSION}, hands' own copy: /h/brain/pinned-claude/claude")
 
 

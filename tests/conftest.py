@@ -830,7 +830,7 @@ def standin(home: Home) -> subprocess.Popen[bytes]:
 
 def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:
     """What the start's preflight passes a brain on `config_dir` with: its pinned claude, wherever pin places it, and `mode`."""
-    return Runnable(pinned.claude(config_dir), mode)
+    return Runnable(pinned.claude(config_dir), mode, {}, None)
 
 
 def pinned_to(script: Path) -> str:

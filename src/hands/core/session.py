@@ -129,11 +129,14 @@ PERMISSION_MODES: Mapping[str, PermissionMode] = {mode: mode for mode in sorted(
 
 @dataclass(frozen=True)
 class Runnable:
-    """What a Claude Code of hands' own is run with on a config directory it may run on: the pinned claude, and the
-    permission mode its settings name, None where they name none (hands.brain.configdir.runnable parses it)."""
+    """What a Claude Code of hands' own is run with on a config directory it may run on: the pinned claude, and from its
+    settings the permission mode they name, what they put in its environment, and the subagentPromptCacheTtl they name,
+    None for a mode or a ttl they name none of (hands.brain.configdir.runnable parses it)."""
 
     claude: Path
     mode: PermissionMode | None
+    env: Mapping[str, str]
+    subagent_ttl: Literal["5m", "1h"] | None
 
 
 @dataclass(frozen=True)

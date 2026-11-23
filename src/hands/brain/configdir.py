@@ -5,6 +5,7 @@ claude, settings.json, the first screens .claude.json records, and the syncs set
 exception that discards the fields parsed beside it, so every refusal is read off the values and none hides another.
 """
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -33,17 +34,28 @@ STATE = ".claude.json"
 
 @dataclass(frozen=True)
 class Settings:
-    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, the API key it
-    puts in the brain's environment, by the last 20 characters Claude Code records its answer on, the rest of what it
-    puts there, and the ttl it names for every request outside the main conversation. None is a mode, a key or a ttl it
-    names none of."""
+    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, what it puts in the
+    brain's environment, and the ttl it names for every request outside the main conversation. None is a mode or a ttl
+    it names none of."""
 
     synced: tuple[str, ...]
     mode: PermissionMode | UnknownMode | Unread | None
-    key: str | Unread | None
     env: Mapping[str, str] | Unread
     # subagentPromptCacheTtl, a value Claude Code does not take read as none, as Claude Code reads it.
     subagent_ttl: Literal["5m", "1h"] | None
+
+    @property
+    def key(self) -> str | Unread | None:
+        """The API key the env puts in the brain's environment, where the brain's own is set: hands' never reaches it
+        (hands.brain.process.FOREIGN_LOGINS)."""
+        match self.env:
+            case Unread():
+                return self.env
+            case _:
+                # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its
+                # last 20 characters once it is trimmed.
+                key = self.env.get("ANTHROPIC_API_KEY")
+                return key.strip()[-20:] if key else None
 
 
 @dataclass(frozen=True)
@@ -95,10 +107,10 @@ def _settings(path: Path) -> Settings | Unread:
         said = Payload.parse(path.read_bytes())
     except FileNotFoundError:
         # Left out, each switch is on, and the brain names no mode, no key, no env and no ttl.
-        return Settings(KEPT_OUT, None, None, {}, None)
+        return Settings(KEPT_OUT, None, {}, None)
     except (OSError, Rejected) as error:
         return Unread(str(error))
-    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said), _env(said), _subagent_ttl(said))
+    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _env(said), _subagent_ttl(said))
 
 
 def _subagent_ttl(said: Payload) -> Literal["5m", "1h"] | None:
@@ -111,18 +123,33 @@ def _subagent_ttl(said: Payload) -> Literal["5m", "1h"] | None:
             return None
 
 
-def settings(config_dir: Path) -> Settings | Unread:
-    """The settings.json of `config_dir`, read alone."""
-    return _settings(config_dir / SETTINGS)
-
-
 def _env(said: Payload) -> Mapping[str, str] | Unread:
-    """What settings.json puts in the brain's environment, over the environment it is started in."""
+    """What settings.json puts in the brain's environment, over the environment it is started in: each value as Claude
+    Code's settings schema coerces it to a string (z.coerce.string), or Unread naming the first whose string hands cannot
+    tell."""
     try:
         env = Payload.of(said.fields.get("env", {}), "its env")
     except Rejected as error:
         return Unread(str(error))
-    return {name: value for name, value in env.fields.items() if isinstance(value, str)}
+    coerced = {name: _coerced(value) for name, value in env.fields.items()}
+    unread = [f"{name} is {json.dumps(value)}" for name, value in env.fields.items() if coerced[name] is None]
+    return Unread(f"its env sets {unread[0]}, a value hands cannot read as Claude Code does: set it as a string") if unread else {name: value for name, value in coerced.items() if value is not None}
+
+
+def _coerced(value: object) -> str | None:
+    # JavaScript's String() of a JSON value, where Python renders it the same: a string, a boolean, null, or a whole
+    # number JavaScript holds exactly. None for the rest.
+    match value:
+        case str():
+            return value
+        case bool():
+            return "true" if value else "false"
+        case None:
+            return "null"
+        case int() if abs(value) <= 2**53:
+            return str(value)
+        case _:
+            return None
 
 
 def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
@@ -133,18 +160,6 @@ def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
     if named is None:
         return None
     return SETTINGS_MODES.get(named) or UnknownMode(named)
-
-
-def _key(said: Payload) -> str | Unread | None:
-    """The API key settings.json puts in the brain's environment, where the brain's own is set: hands' never reaches it
-    (hands.brain.process.FOREIGN_LOGINS)."""
-    try:
-        key = Payload.of(said.fields.get("env", {}), "its env").optional_text("ANTHROPIC_API_KEY")
-    except Rejected as error:
-        return Unread(str(error))
-    # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its last 20
-    # characters once it is trimmed.
-    return key.strip()[-20:] if key else None
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -186,8 +201,8 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
     refused = (*_pinned(config.claude), *_kept_out(config))
     match config.claude, config.settings:
-        case Path() as claude, Settings(mode=str() | None as mode) if not refused:
-            return Runnable(claude, mode)
+        case Path() as claude, Settings(mode=str() | None as mode, env=Mapping() as env, subagent_ttl=ttl) if not refused:
+            return Runnable(claude, mode, env, ttl)
         case _:
             return refused
 
@@ -207,13 +222,13 @@ def _kept_out(config: ConfigDir) -> tuple[str, ...]:
     match config.settings:
         case Unread(reason=reason):
             return (f"the brain's settings could not be read ({reason}): correct {path}",)
-        case Settings(synced=synced, mode=mode, key=key):
+        case Settings(synced=synced, mode=mode, env=env):
             pass
     kept = " and ".join(f'"{switch}": false' for switch in KEPT_OUT)
     return (
         *((f"the brain would load its account's {' and '.join(synced)}: set {kept} in {path}",) if synced else ()),
         *_moded(mode, path),
-        *((f"the brain's settings set an env hands cannot read ({key.reason}): correct {path}",) if isinstance(key, Unread) else ()),
+        *((f"the brain's settings set an env hands cannot read ({env.reason}): correct {path}",) if isinstance(env, Unread) else ()),
     )
 
 

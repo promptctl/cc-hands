@@ -61,6 +61,8 @@ RUNNING = "[No result yet — this call is still in progress in the main convers
 SIDE_QUESTION_CLASS = "auxiliary"
 # The values Claude Code reads an environment variable as on by (Fe).
 ON = frozenset({"1", "true", "yes", "on"})
+# Whether the brain runs with stellar drift (eT): the brain's --settings env says so (hands.brain.process.SETTINGS_ENV).
+STELLAR_DRIFT = False
 
 
 @dataclass(frozen=True)
@@ -88,7 +90,7 @@ def _on(environment: Mapping[str, str], name: str) -> bool:
 
 @dataclass(frozen=True)
 class Forked:
-    """A side question's request, and the message of it its one cache marker is on, None when it carries none."""
+    """A side question's request, and the message of its body that carries its one cache marker, None when none does."""
 
     headers: tuple[tuple[str, str], ...]
     body: dict[str, object]
@@ -131,11 +133,12 @@ def fork(turn: Turn, question: str, ttls: CacheTtls) -> Forked:
     # its fork point, found once the question is merged in, so a question merged into the loop's last message reads that
     # message uncached; and one only when its caching marks messages at all, as the loop's markers say it does
     # (docs/claude-code-behavior.md, side question markers).
-    point = fork_point(history) if any(cache_marked(message) for message in messages) else None
+    point = fork_point(history, STELLAR_DRIFT) if any(cache_marked(message) for message in messages) else None
     marker = _ttl({"type": "ephemeral"}, ttls.messages)
     history = [_marked(message, marker) if index == point else message for index, message in enumerate(history)]
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
-    return Forked(headers, {**sent, **_retimed(sent, ttls), "messages": history}, point)
+    # [LAW:one-source-of-truth] the marked message is read off the messages sent, whose loop markers are all taken off.
+    return Forked(headers, {**sent, **_retimed(sent, ttls), "messages": history}, next((index for index, message in enumerate(history) if cache_marked(message)), None))
 
 
 class Newest:
@@ -202,7 +205,7 @@ def _blocks(content: object) -> list[object]:
         case list():
             return cast(list[object], content)
         case _:
-            return []
+            raise ValueError(f"a message whose content is neither text nor blocks, but {type(content).__name__}")
 
 
 def _unmarked(message: Mapping[str, object]) -> dict[str, object]:

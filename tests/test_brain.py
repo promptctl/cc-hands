@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import aiohttp
 import pytest
@@ -267,7 +268,7 @@ def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "
 
 
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
-    argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), None)), "http://127.0.0.1:7")
+    argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), None, {}, None)), "http://127.0.0.1:7")
     # The real claude, interactive: no -p, and no pipe to speak over.
     assert argv[0] == "/real/claude" and "-p" not in argv and "--print" not in argv
     # Its tools, what it may do without asking, and its MCP servers are its config directory's: nothing here narrows them.
@@ -283,9 +284,10 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     # The instruction this hands writes goes on every request, never the one its conversation first had.
     assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
     settings = json.loads(argv[argv.index("--settings") + 1])
-    # hands' tools are offered to the model directly, never deferred behind ToolSearch: set where neither the brain's
-    # settings.json env nor hands' environment outranks it.
-    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false"}
+    # hands' tools are offered to the model directly, never deferred behind ToolSearch, and the brain runs without stellar
+    # drift, as hands' fork reads its requests: set where neither the brain's settings.json env nor hands' environment
+    # outranks them.
+    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false", "CLAUDE_CODE_STELLAR_DRIFT": "0"}
     assert "permissions" not in settings
     hooks = settings["hooks"]
     # The order of the brain's turns rests on its prompt hook and its Stop being waited on: a prompt's as long as a typed
@@ -405,33 +407,31 @@ def test_a_brain_starts_new_until_one_has_held_a_conversation_and_resumes_it_whi
     transcript(brain, "c1")
     assert conversation(brain, SessionId("n1")) == Resumed(SessionId("c1"))
     # Resumed under its own session, which Claude Code keeps: never a session id of its own beside it.
-    argv = command(replace(launch(tmp_path), conversation=Resumed(SessionId("c1")), brain=Runnable(Path("/real/claude"), None)), "http://127.0.0.1:7")
+    argv = command(replace(launch(tmp_path), conversation=Resumed(SessionId("c1")), brain=Runnable(Path("/real/claude"), None, {}, None)),"http://127.0.0.1:7")
     assert argv[argv.index("--resume") + 1] == "c1" and "--session-id" not in argv
 
 
 def test_the_mode_the_brains_settings_name_is_said_on_its_command_line_too_so_claude_code_offers_no_other(tmp_path: Path) -> None:
     """Claude Code offers to make auto mode the default to a session whose mode its user settings alone name, and the first
     turn typed into the offer answers Yes (promptctl-brain-lq3.mcw): the same mode said in --settings means no offer."""
-    argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), "acceptEdits")), "http://127.0.0.1:7")
+    argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), "acceptEdits", {}, None)), "http://127.0.0.1:7")
     assert json.loads(argv[argv.index("--settings") + 1])["permissions"] == {"defaultMode": "acceptEdits"}
 
 
-def test_a_side_questions_ttls_are_read_from_the_brains_settings_over_the_environment_it_starts_in(tmp_path: Path) -> None:
+def test_a_side_questions_ttls_come_from_the_brains_environment_as_claude_code_layers_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     brain = tmp_path / "brain"
-    brain.mkdir()
-    settings = brain / "settings.json"
     on = Station(brain, workdir(brain), "claude-sonnet-5", "http://127.0.0.1:1", {"ENABLE_PROMPT_CACHING_1H": "1"})
-    assert process.side_question_ttls(on) == CacheTtls("1h", "1h")
-    settings.write_text(json.dumps({"env": {"FORCE_PROMPT_CACHING_5M": "1"}}))
-    assert process.side_question_ttls(on) == CacheTtls(None, None)
-    settings.write_text(json.dumps({"subagentPromptCacheTtl": "5m"}))
-    assert process.side_question_ttls(on) == CacheTtls(None, None)
-    # A ttl Claude Code does not take is read as none, as Claude Code reads it.
-    settings.write_text(json.dumps({"subagentPromptCacheTtl": "an hour"}))
-    assert process.side_question_ttls(on) == CacheTtls("1h", "1h")
-    settings.write_text(json.dumps({"env": ["FORCE_PROMPT_CACHING_5M"]}))
-    with pytest.raises(Unstartable, match="the brain's settings could not be read"):
-        process.side_question_ttls(on)
+
+    def ttls(env: dict[str, str], ttl: Literal["5m", "1h"] | None = None) -> CacheTtls:
+        return process.side_question_ttls(on, Runnable(Path("/real/claude"), None, env, ttl))
+
+    # The environment it is started in, its settings.json env over it, and the subagentPromptCacheTtl they name.
+    assert ttls({}) == CacheTtls("1h", "1h")
+    assert ttls({"FORCE_PROMPT_CACHING_5M": "1"}) == CacheTtls(None, None)
+    assert ttls({}, "5m") == CacheTtls(None, None)
+    # Its --settings env over both.
+    monkeypatch.setattr(process, "SETTINGS_ENV", {**process.SETTINGS_ENV, "FORCE_PROMPT_CACHING_5M": "0"})
+    assert ttls({"FORCE_PROMPT_CACHING_5M": "1"}) == CacheTtls("1h", "1h")
 
 
 def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_one_it_does_not_take_refuses_the_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -454,10 +454,18 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
             case _:
                 raise AssertionError(f"{ran} is not one refusal")
 
-    assert ran({}) == Runnable(pinned.claude(brain), None)
-    assert ran({"permissions": {"defaultMode": "plan", "allow": ["Bash(ls:*)"]}}) == Runnable(pinned.claude(brain), "plan")
+    assert ran({}) == Runnable(pinned.claude(brain), None, {}, None)
+    assert ran({"permissions": {"defaultMode": "plan", "allow": ["Bash(ls:*)"]}}) == Runnable(pinned.claude(brain), "plan", {}, None)
     # Claude Code's other name for its default mode.
-    assert ran({"permissions": {"defaultMode": "manual"}}) == Runnable(pinned.claude(brain), "default")
+    assert ran({"permissions": {"defaultMode": "manual"}}) == Runnable(pinned.claude(brain), "default", {}, None)
+    # Its env as Claude Code's settings schema coerces each value to a string, and its subagentPromptCacheTtl, one Claude
+    # Code does not take read as none.
+    env = {"A": "x", "B": True, "C": False, "D": None, "E": 7}
+    assert ran({"env": env, "subagentPromptCacheTtl": "1h"}) == Runnable(pinned.claude(brain), None, {"A": "x", "B": "true", "C": "false", "D": "null", "E": "7"}, "1h")
+    assert ran({"subagentPromptCacheTtl": "an hour"}) == Runnable(pinned.claude(brain), None, {}, None)
+    # A value whose string hands cannot tell is refused, never dropped.
+    assert 'its env sets E is {"x": 1}, a value hands cannot read as Claude Code does' in refused(ran({"env": {**env, "E": {"x": 1}}}))
+    assert "the brain's settings set an env hands cannot read" in refused(ran({"env": ["A"]}))
     assert refused(ran({"permissions": {"defaultMode": "acceptedits"}})) == f'the brain\'s settings name a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in {settings}'
     assert "the brain's settings name no defaultMode hands can read" in refused(ran({"permissions": {"defaultMode": 3}}))
     settings.unlink()

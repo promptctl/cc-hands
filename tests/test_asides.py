@@ -492,8 +492,19 @@ def test_an_empty_reply_is_left_out_and_a_reply_carries_the_marker_when_its_last
     history = body(user(text("hi", cache_control=MARK)))
     _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
     assert empty["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
-    # Whitespace alone carries one in the brain, where whitespaceTextUnstampable is off.
+    # Whitespace alone carries one in the brain, which runs without stellar drift.
     assert fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), last)), "q", DEFAULT).marked == (1 if carries else 0)
+
+
+def test_the_marked_message_a_question_says_is_the_one_its_body_marks() -> None:
+    # A last message with no block to carry the marker its fork point is given: the body sent marks nothing, and says so.
+    made = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)), user())), reply(Thinking("hm", "sig"))), "q", DEFAULT)
+    assert (made.marked, [message for message in cast(list[object], made.body["messages"]) if cache_marked(message)]) == (None, [])
+
+
+def test_a_message_whose_content_is_neither_text_nor_blocks_fails_the_question() -> None:
+    with pytest.raises(ValueError, match="neither text nor blocks, but NoneType"):
+        fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)), {"role": "user", "content": None})), None), "q", DEFAULT)
 
 
 @pytest.mark.outside

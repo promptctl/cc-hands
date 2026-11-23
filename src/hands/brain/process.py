@@ -58,7 +58,7 @@ from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
-from hands.sessions.files import Unread, replace_whole
+from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
@@ -276,6 +276,19 @@ def _conversing(conversation: Conversation) -> tuple[str, str]:
             return ("--resume", session)
 
 
+# What the brain's --settings put in its environment, over its settings.json env and hands' environment, which a
+# process environment does not outrank (hands-brain-8gb).
+SETTINGS_ENV = {
+    # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip of
+    # their own on a spoken turn.
+    "ENABLE_TOOL_SEARCH": "false",
+    # [LAW:single-enforcer] the brain's stellar drift (eT) is the one hands' fork reads its requests by, whatever the
+    # environment hands is started in says: it decides, among the rest of a request's shape, which messages carry a
+    # cache marker.
+    "CLAUDE_CODE_STELLAR_DRIFT": "1" if fork.STELLAR_DRIFT else "0",
+}
+
+
 def command(launch: Launch, hooks: str) -> list[str]:
     """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
     mode = launch.brain.mode
@@ -298,10 +311,7 @@ def command(launch: Launch, hooks: str) -> list[str]:
             # as a working session's, a day, and is denied only as that day ends, since its dialog is one nobody sees; a
             # prompt's and a Stop's as long as the order of the brain's turns rests on them (`ClaudeTurns`).
             "hooks": {event: [{"hooks": [brain_hook(event, hooks)]}] for event in BRAIN_HOOKS},
-            # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
-            # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
-            # which a process environment does not (hands-brain-8gb).
-            "env": {"ENABLE_TOOL_SEARCH": "false"},
+            "env": SETTINGS_ENV,
             # The mode the brain's own settings name, said here too, so it is the same mode: Claude Code offers to make auto
             # mode the default to a session whose mode its user settings alone name, once it is idle, and the first turn
             # typed into the offer answers Yes (promptctl-brain-lq3.mcw).
@@ -310,19 +320,10 @@ def command(launch: Launch, hooks: str) -> list[str]:
     ]
 
 
-def side_question_ttls(station: Station) -> CacheTtls:
-    """The ttls the brain on `station` gives a side question's cache markers, from the environment it is started in and
-    its settings.json's over it; raises Unstartable when its settings.json cannot be read."""
-    match configdir.settings(station.config_dir):
-        case configdir.Settings(env=env, subagent_ttl=ttl):
-            pass
-        case Unread() as env:
-            ttl = None
-    match env:
-        case Unread(reason=reason):
-            raise Unstartable(f"the brain's settings could not be read ({reason}): correct {station.config_dir / configdir.SETTINGS}")
-        case _:
-            return fork.side_question_ttls({**environment(station.config_dir, station.proxy_url, station.inherited), **env}, ttl)
+def side_question_ttls(station: Station, brain: Runnable) -> CacheTtls:
+    """The ttls `brain` on `station` gives a side question's cache markers, from its environment as Claude Code layers it:
+    the one it is started in, its settings.json env over that, and its --settings env over both."""
+    return fork.side_question_ttls({**environment(station.config_dir, station.proxy_url, station.inherited), **brain.env, **SETTINGS_ENV}, brain.subagent_ttl)
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:

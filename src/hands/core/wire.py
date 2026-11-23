@@ -174,7 +174,8 @@ def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, st
         return Subagent()
     if newest == last:
         return _turn(billing)
-    if newest is not None and newest == fork_point(messages):
+    # A request does not say whether its sender runs with stellar drift, so a fork's point is either one it may have.
+    if newest is not None and newest in (fork_point(messages, False), fork_point(messages, True)):
         return Fork()
     # Marked nowhere a loop or a fork marks: a call beside the loop.
     return Auxiliary(model)
@@ -254,10 +255,10 @@ def cache_marked(message: object) -> bool:
     return any(isinstance(block, Mapping) and "cache_control" in block for block in _blocks(message))
 
 
-def markable(message: object) -> bool:
-    """Whether Claude Code can put a cache marker on `message`, as the brain runs it (Ipn, whitespaceTextUnstampable off:
-    docs/claude-code-behavior.md, cache marker carriers): a system message never, a reply when its content is a string or
-    its last block can carry one, any other message always."""
+def markable(message: object, stellar_drift: bool) -> bool:
+    """Whether Claude Code can put a cache marker on `message`, run with or without `stellar_drift` (Ipn, its
+    whitespaceTextUnstampable: docs/claude-code-behavior.md, cache marker carriers): a system message never, a reply when
+    its content is a string or its last block can carry one, any other message always."""
     content = _content(message)
     match cast(Mapping[str, object], message).get("role") if isinstance(message, Mapping) else None, content:
         case "system", _:
@@ -266,28 +267,30 @@ def markable(message: object) -> bool:
             return True
         case "assistant", list():
             blocks = cast(list[object], content)
-            return blocks != [] and _stampable(blocks[-1])
+            return blocks != [] and _stampable(blocks[-1], stellar_drift)
         case "assistant", _:
             return False
         case _:
             return True
 
 
-def _stampable(block: object) -> bool:
-    # UQe: text with any characters in it, or a block that is neither thinking nor redacted thinking.
+def _stampable(block: object, stellar_drift: bool) -> bool:
+    # UQe: text with any characters in it, with stellar drift any but whitespace, or a block that is neither thinking nor
+    # redacted thinking.
     match block:
         case {"type": "text", "text": str() as text}:
-            return text != ""
+            return (text.strip() if stellar_drift else text) != ""
         case {"type": "text" | "thinking" | "redacted_thinking"}:
             return False
         case _:
             return True
 
 
-def fork_point(messages: Sequence[object]) -> int | None:
-    """The message a request Claude Code sends with skipCacheWrite marks (Dpn): the last that can carry a marker before
-    the last that can, the newest point it shares with the loop, so it reads the cache there and writes nothing."""
-    carriers = [index for index, message in enumerate(messages) if markable(message)]
+def fork_point(messages: Sequence[object], stellar_drift: bool) -> int | None:
+    """The message a request Claude Code sends with skipCacheWrite marks (Dpn), run with or without `stellar_drift`: the
+    last that can carry a marker before the last that can, the newest point it shares with the loop, so it reads the
+    cache there and writes nothing."""
+    carriers = [index for index, message in enumerate(messages) if markable(message, stellar_drift)]
     return carriers[-2] if len(carriers) > 1 else None
 
 

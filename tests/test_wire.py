@@ -115,6 +115,14 @@ def test_a_fork_after_a_reply_no_marker_can_go_on_marks_the_message_before_the_r
     assert classify("/v1/messages", request(said("hi", marked=True), thought, said("suggest the next prompt"))) == Fork()
 
 
+def test_a_fork_is_told_whether_or_not_its_sender_runs_with_stellar_drift() -> None:
+    # A reply ending in whitespace text carries the marker without stellar drift, and passes it to the message before with it.
+    spaced: dict[str, object] = {"role": "assistant", "content": [{"type": "text", "text": "ok"}, {"type": "text", "text": "\n\n"}]}
+    for marked in (0, 1):
+        messages = [said("hi", marked=marked == 0), {**spaced, "content": [*cast(list[object], spaced["content"])[:-1], {"type": "text", "text": "\n\n", **({"cache_control": MARKED} if marked == 1 else {})}]}, said("suggest the next prompt")]
+        assert classify("/v1/messages", request(*messages)) == Fork()
+
+
 QUESTION = SIDE_QUESTION_OPENING + " You must answer this question directly in a single response.</system-reminder>\n\nwhat did the read say?"
 
 
