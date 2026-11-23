@@ -168,8 +168,8 @@ def _reply_end(sent_at: float, reply: Ending) -> tuple[float, str | None, Mappin
     match reply:
         case Unreached(error=error, failed_at=at) | Uncopied(reason=error, lost_at=at) | Unfinished(reason=error, stopped_at=at):
             return at, error, {}
-        case Synthetic(answered_at=at):
-            return at, None, {}
+        case Synthetic(written=written, answered_at=at):
+            return at, None, _said(written)
         case Reached(status=status, first_byte_at=first, last_byte_at=last, reply_bytes=size, body=body):
             facts = {"status": status, "first_byte_ms": round((first - sent_at) * 1000, 3), "reply_bytes": size, **_said(body)}
             return last, body.reason if isinstance(body, Garbled) else f"the API answered {status}", facts

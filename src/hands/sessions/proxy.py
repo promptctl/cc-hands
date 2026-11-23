@@ -4,9 +4,9 @@
 
 It forwards each request upstream as it came, or with the changes its route gives it made to it, and
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
-request of its own; it tells each request as it forwards it, and what hands' side questions fork from the brain's comes
-back through it as the brain's own Claude Code would send it (`hands.brain.fork`). The one request it
-does not forward is one its route answers itself, with the words the route gives it, so the model is not asked at all.
+request of its own; it tells each request it takes, and what hands' side questions fork from the brain's comes back
+through it as the brain's own Claude Code would send it (`hands.brain.fork`). The one request it does not forward is one
+its route answers itself, with the words the route gives it, so the model is not asked at all.
 """
 
 import asyncio
@@ -14,7 +14,7 @@ import json
 from collections.abc import Awaitable, Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol
 
 import aiohttp
 from aiohttp import web
@@ -29,22 +29,27 @@ from hands.core.wire import (
     Change,
     Ending,
     Exchanged,
-    Forwarded,
     Garbled,
     Heard,
+    Message,
     Observed,
     Reached,
+    Received,
     Route,
     Seconds,
     Send,
     Sent,
     Synthesize,
     Synthetic,
+    Text,
     Unfinished,
     Unreached,
+    Written,
     edited,
     is_stream,
+    read_request,
     refused_message,
+    serialized,
     streams,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
@@ -158,17 +163,23 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
         changes: tuple[Change, ...] = ()
         # [LAW:single-enforcer] from here until the API's answer has a head, whatever stops the exchange ends it here.
         try:
+            headers = _end_to_end(request.headers)
             match routed:
                 case Synthesize(said=said):
-                    content_type, answer = _synthetic(clock, parsed, said)
+                    # [LAW:single-enforcer] exception: classify read this request and kept no Request, so its model is read
+                    # again by the one reader; promptctl-brain-ny8p.mz4 has Sent carry what was read.
+                    model = read_request(parsed).model
+                    written = Written(Message(f"msg_hands_{clock.uuid()}", model, (Text(said),), "end_turn", {"input_tokens": 0, "output_tokens": 0}), streams(parsed))
+                    content_type, answer = serialized(written)
                     # Its answer made before its ending is told: once told, nothing here can raise and tell another.
                     response = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-                    tell(exchanged((), Synthetic(said, clock.wall().timestamp()), False))
+                    # The request as the client sent it: the client holds it, answered, as its conversation's newest.
+                    tell(Received(exchange, request.path_qs, tuple(headers.items()), body))
+                    tell(exchanged((), Synthetic(written, clock.wall().timestamp()), False))
                     return response
                 case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
-            headers = _end_to_end(request.headers)
-            tell(Forwarded(exchange, request.path_qs, tuple(headers.items()), onward))
+            tell(Received(exchange, request.path_qs, tuple(headers.items()), onward))
             try:
                 reached = await client.request(request.method, upstream + request.path_qs, headers=headers, data=onward)
             except (aiohttp.ClientError, OSError) as error:
@@ -178,7 +189,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
                 tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock.wall().timestamp()), final))
                 return refused
         except BaseException as error:
-            # [LAW:no-silent-failure] it goes on as it came; the exchange is still recorded as ended, and how.
+            # [LAW:no-silent-failure] the error goes on as it came; the exchange is still recorded as ended, and how.
             tell(exchanged(changes, Unfinished(_unfinished(error), clock.wall().timestamp()), False))
             raise
         async with reached:
@@ -283,32 +294,6 @@ def _unfinished(error: BaseException) -> str:
             return "cancelled before the API answered: its client hung up or hands stopped"
         case _:
             return f"{type(error).__name__}: {error}"
-
-
-def _synthetic(clock: Clock, body: object, said: str) -> tuple[str, bytes]:
-    """A finished reply holding one text block, as a stream when the request asked for one."""
-    request: Mapping[str, object] = cast(Mapping[str, object], body) if isinstance(body, Mapping) else {}
-    message: dict[str, object] = {
-        "id": f"msg_hands_{clock.uuid()}",
-        "type": "message",
-        "role": "assistant",
-        "model": request.get("model"),
-        "content": [],
-        "stop_reason": None,
-        "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": 0},
-    }
-    if not streams(request):
-        return "application/json", json.dumps({**message, "content": [{"type": "text", "text": said}], "stop_reason": "end_turn"}).encode()
-    events: list[tuple[str, Mapping[str, object]]] = [
-        ("message_start", {"type": "message_start", "message": message}),
-        ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
-        ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": said}}),
-        ("content_block_stop", {"type": "content_block_stop", "index": 0}),
-        ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 0}}),
-        ("message_stop", {"type": "message_stop"}),
-    ]
-    return "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
 
 
 def _asked_again(status: int, headers: Mapping[str, str], reply: Body) -> bool:
