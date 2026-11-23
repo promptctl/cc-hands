@@ -126,7 +126,7 @@ def fork(turn: Turn, question: str) -> Forked:
     marked = point if point is not None else Unmarked.NO_FORK_POINT if turn_marked else Unmarked.TURN_UNMARKED
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
     marker = {} if sent.marker is None else {"cache_control": _retimed(sent.marker)}
-    body = {**sent.rest, **marker, **_prompt(sent.system), "messages": messages}
+    body = {"model": sent.model, **sent.rest, **marker, **_prompt(sent.system), "messages": messages}
     return Forked(headers, body, marked)
 
 
