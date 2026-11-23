@@ -155,7 +155,10 @@ def _classify_messages(body: object, named: str | None) -> Kind:
 
 def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, str]) -> Kind:
     """The kind a request's body reads as: by the words Claude Code opens a prompt of its own with, else by its markers."""
-    messages = _list(request.get("messages"))
+    try:
+        messages = read_request(request).messages
+    except UnreadableRequest as unread:
+        return Unknown(f"a messages request to {model!r} hands cannot read: {unread}")
     if not messages:
         return Unknown(f"a messages request to {model!r} with no messages")
     # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
@@ -175,7 +178,8 @@ def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, st
     if newest == last:
         return _turn(billing)
     # A request does not say whether its sender runs under stellar drift, so a fork point under either rule is one.
-    if newest is not None and newest in {fork_point(messages, stellar_drift) for stellar_drift in (False, True)}:
+    points = {point for stellar_drift in (False, True) if (point := fork_point(messages, stellar_drift)) is not None}
+    if newest in points:
         return Fork()
     # Marked nowhere a loop or a fork marks: a call beside the loop.
     return Auxiliary(model)
@@ -250,38 +254,107 @@ def _blocks(message: object) -> list[object]:
     return _list(_content(message))
 
 
-def cache_marked(message: object) -> bool:
+@dataclass(frozen=True)
+class Said:
+    """One message of a messages request: its role, its content as sent, a string or a run of blocks, which only a system
+    message's directive leaves empty, and the rest of its fields as sent, a directive's output_config among them."""
+
+    role: str
+    content: str | tuple[Mapping[str, object], ...]
+    rest: Mapping[str, object] = field(default_factory=dict[str, object])
+
+
+@dataclass(frozen=True)
+class Request:
+    """A messages request, read: every field as sent, its system prompt (None when it sends none), and its messages."""
+
+    fields: Mapping[str, object]
+    system: str | tuple[Mapping[str, object], ...] | None
+    messages: tuple[Said, ...]
+
+
+class UnreadableRequest(ValueError):
+    """A body that is no messages request hands can read, and what in it is not."""
+
+
+def read_request(body: object) -> Request:
+    """A messages request's body, read, or UnreadableRequest naming what in it could not be: a message is a role and its
+    content, a string or a list of blocks, which only a system message's directive leaves empty, and a system prompt, if
+    the request sends one, is a string or a list of blocks."""
+    # [LAW:parse-dont-validate] the one reader of a request's messages and system prompt, the classifier's and the side
+    # question's: past it, every message is a role and its content.
+    if not isinstance(body, Mapping):
+        raise UnreadableRequest("its body is not a JSON object")
+    fields = cast(Mapping[str, object], body)
+    messages = fields.get("messages")
+    if not isinstance(messages, list):
+        raise UnreadableRequest(f"its messages are not a list but {type(messages).__name__}")
+    return Request(fields, _system(fields.get("system")), tuple(_said(index, message) for index, message in enumerate(cast(list[object], messages))))
+
+
+def _system(system: object) -> str | tuple[Mapping[str, object], ...] | None:
+    match system, _text_or_blocks(system):
+        case None, _:
+            return None
+        case _, None:
+            raise UnreadableRequest(f"its system prompt is neither text nor blocks but {type(system).__name__}")
+        case _, read:
+            return read
+
+
+def _said(index: int, message: object) -> Said:
+    fields: Mapping[str, object] = cast(Mapping[str, object], message) if isinstance(message, Mapping) else {}
+    match fields.get("role"), _text_or_blocks(fields.get("content")):
+        case str() as role, str() | tuple() as content if content != () or role == "system":
+            return Said(role, content, {term: value for term, value in fields.items() if term not in ("role", "content")})
+        case _:
+            # Never the message itself: it is the conversation, and this is said in a log.
+            raise UnreadableRequest(f"its messages.{index} is not a role with text or blocks")
+
+
+def _text_or_blocks(content: object) -> str | tuple[Mapping[str, object], ...] | None:
+    match content:
+        case str():
+            return content
+        case list() if all(isinstance(block, Mapping) for block in cast(list[object], content)):
+            return tuple(cast(list[Mapping[str, object]], content))
+        case _:
+            return None
+
+
+def cache_marked(message: Said) -> bool:
     """Whether a message carries a cache marker on any of its blocks."""
-    return any(isinstance(block, Mapping) and "cache_control" in block for block in _blocks(message))
+    return not isinstance(message.content, str) and any("cache_control" in block for block in message.content)
 
 
-def markable(message: object, stellar_drift: bool) -> bool:
-    """Whether Claude Code can put a cache marker on a message (its Ipn): any message but a reply can, and a reply can
-    when its content is a string or its last block can. Under stellar drift, text of whitespace alone cannot."""
-    content = _content(message)
-    if _role(message) != "assistant" or isinstance(content, str):
-        return True
-    blocks = _list(content)
-    return bool(blocks) and isinstance(blocks[-1], Mapping) and _stampable(cast(Mapping[str, object], blocks[-1]), stellar_drift)
+def markable(message: Said, stellar_drift: bool) -> bool:
+    """Whether Claude Code can put a cache marker on a message: any message but a reply can, and a reply can when its
+    content is a string or its last block can (docs/claude-code-behavior.md, "cache marker carriers")."""
+    match message:
+        case Said(role="assistant", content=(*_, last)):
+            return _markable_block(last, stellar_drift)
+        case _:
+            return True
 
 
-def _stampable(block: Mapping[str, object], stellar_drift: bool) -> bool:
-    """Whether a block can carry a cache marker (Claude Code's UQe): any but thinking, and text only when it says something."""
+def _markable_block(block: Mapping[str, object], stellar_drift: bool) -> bool:
+    """Whether a block can carry a cache marker: text when it says something, which under stellar drift whitespace alone
+    does not, and any other block but thinking and a fallback, as Claude Code judges one."""
     match block.get("type"):
         case "text":
             text = block.get("text")
             return isinstance(text, str) and text != "" and not (stellar_drift and text.strip() == "")
-        case "thinking" | "redacted_thinking":
+        case "thinking" | "redacted_thinking" | "fallback":
             return False
         case _:
             return True
 
 
-def fork_point(messages: Sequence[object], stellar_drift: bool) -> int | None:
-    """Where a fork that skips the cache write puts its marker (Claude Code's Dpn under skipCacheWrite): on the last
-    message that can carry one before the last that can, so the fork reads the loop's cached prefix and writes none of
-    its own. A system-role message never carries one."""
-    carriers = [index for index, message in enumerate(messages) if _role(message) != "system" and markable(message, stellar_drift)]
+def fork_point(messages: Sequence[Said], stellar_drift: bool) -> int | None:
+    """Where a fork that skips the cache write puts its marker: on the last message that can carry one before the last
+    that can, so the fork reads the loop's cached prefix and writes none of its own; None when fewer than two can. A
+    system-role message never carries one (docs/claude-code-behavior.md, "side question markers")."""
+    carriers = [index for index, message in enumerate(messages) if message.role != "system" and markable(message, stellar_drift)]
     return carriers[-2] if len(carriers) > 1 else None
 
 

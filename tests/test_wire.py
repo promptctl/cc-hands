@@ -228,13 +228,21 @@ THINKING: dict[str, object] = {"type": "thinking", "thinking": "hm", "signature"
         # A reply ending in thinking or in empty text never carries it.
         request(said("hi", marked=True), ended({"type": "text", "text": "So."}, THINKING), said("what now?")),
         request(said("hi", marked=True), ended(THINKING, {"type": "text", "text": ""}), said("what now?")),
+        # Nor in a fallback block, as Claude Code judges one.
+        request(said("hi", marked=True), ended({"type": "text", "text": "So."}, {"type": "fallback"}), said("what now?")),
         # A system message never carries it.
         request(said("hi", marked=True), {"role": "system", "content": [{"type": "text", "text": "Stay brief."}]}, said("what now?")),
     ],
-    ids=["whitespace text under drift off", "whitespace text under drift on", "thinking", "empty text", "a system message"],
+    ids=["whitespace text under drift off", "whitespace text under drift on", "thinking", "empty text", "fallback", "a system message"],
 )
 def test_a_fork_is_told_by_a_marker_on_its_fork_point_under_either_stellar_drift(body: dict[str, object]) -> None:
     assert classify("/v1/messages", body) == Fork()
+
+
+def test_a_request_whose_messages_hands_cannot_read_is_unknown_and_says_which() -> None:
+    # Read by the reader a side question is forked by, so the two never judge one body two ways.
+    unread = request(said("hi", marked=True), {"role": "assistant", "content": None}, said("what now?"))
+    assert classify("/v1/messages", unread) == Unknown("a messages request to 'claude-opus-5-5' hands cannot read: its messages.1 is not a role with text or blocks")
 
 
 def test_a_marker_short_of_the_fork_point_is_no_fork() -> None:

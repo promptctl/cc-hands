@@ -37,7 +37,7 @@ from loguru import logger
 
 from hands.brain import configdir
 from hands.brain.configdir import Unstartable
-from hands.brain.fork import PINNED
+from hands.brain.pinned import ENV as PINNED
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
 from hands.clock import Clock, wait

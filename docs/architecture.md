@@ -1191,10 +1191,11 @@ it was done for, if any, is stopped as an Escape stops it and ends with that err
 a hook is answered however its hearing ended, so one whose hearing broke is no turn's and the hooks after it are still heard.
 Each side question (`brain.aside`), a /btw forked from the brain's newest main turn and sent through the proxy, is one
 event from when it is asked: what it is for (`kind`), the question and its answer, the main turn it forked (`forked`),
-which message of the body it sends carries its cache marker (`marked`, null when none does),
+which message of the body it sends carries its cache marker (`marked`), or why none does: the brain's turn marked
+none of its messages (`uncached`) or no message before the question's own can carry one (`no_fork_point`),
 its reply's `status`, `request_id` and token counts, how long it waited behind the ones before it (`queued_ms`, absent
 for a question that never had its turn; the rest of its duration is its request answered), or why it has none
-(`unanswered`): no main turn to fork yet, a refused request, a wordless reply, or its asker's time running out (a
+(`unanswered`): no main turn to fork yet, a main turn hands cannot read to fork from, a refused request, a wordless reply, or its asker's time running out (a
 `Deadline` from asking, or for the line an old result goes as a `TimeLimit` from its turn). An explanation is a part of
 the `utterance` it delays, a summary of the `summary.backlog` or `summary.turns` pass that asked it, and a name of
 its `name.judged`; a line, asked once its result's turn has ended, begins a trace of its own.
