@@ -34,21 +34,22 @@ from hands.core.wire import (
     Message,
     Observed,
     Reached,
+    Received,
     Route,
     Seconds,
     Send,
     Sent,
     Synthesize,
     Synthetic,
-    Taken,
     Text,
     Unfinished,
     Unreached,
-    block_param,
+    Written,
     edited,
     is_stream,
     read_request,
     refused_message,
+    serialized,
     streams,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
@@ -165,16 +166,20 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
             headers = _end_to_end(request.headers)
             match routed:
                 case Synthesize(said=said):
-                    message, content_type, answer = synthesized(clock, parsed, said)
+                    # [LAW:single-enforcer] exception: classify read this request and kept no Request, so its model is read
+                    # again by the one reader; promptctl-brain-ny8p.mz4 has Sent carry what was read.
+                    model = read_request(parsed).model
+                    written = Written(Message(f"msg_hands_{clock.uuid()}", model, (Text(said),), "end_turn", {"input_tokens": 0, "output_tokens": 0}), streams(parsed))
+                    content_type, answer = serialized(written)
                     # Its answer made before its ending is told: once told, nothing here can raise and tell another.
                     response = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
                     # The request as the client sent it: the client holds it, answered, as its conversation's newest.
-                    tell(Taken(exchange, request.path_qs, tuple(headers.items()), body))
-                    tell(exchanged((), Synthetic(message, clock.wall().timestamp()), False))
+                    tell(Received(exchange, request.path_qs, tuple(headers.items()), body))
+                    tell(exchanged((), Synthetic(written, clock.wall().timestamp()), False))
                     return response
                 case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
-            tell(Taken(exchange, request.path_qs, tuple(headers.items()), onward))
+            tell(Received(exchange, request.path_qs, tuple(headers.items()), onward))
             try:
                 reached = await client.request(request.method, upstream + request.path_qs, headers=headers, data=onward)
             except (aiohttp.ClientError, OSError) as error:
@@ -289,43 +294,6 @@ def _unfinished(error: BaseException) -> str:
             return "cancelled before the API answered: its client hung up or hands stopped"
         case _:
             return f"{type(error).__name__}: {error}"
-
-
-def synthesized(clock: Clock, body: object, said: str) -> tuple[Message, str, bytes]:
-    """The message holding `said` as its one text block, and the bytes it is sent as: a stream when the request asked for one.
-
-    [LAW:one-source-of-truth] both encodings are written from the message alone, so what the client holds is what is told.
-    """
-    texts = (Text(said),)
-    # [LAW:single-enforcer] the model as the request was read when it was classified: one hands cannot read ends Unfinished.
-    answer = Message(f"msg_hands_{clock.uuid()}", read_request(body).model, texts, "end_turn", {"input_tokens": 0, "output_tokens": 0})
-    whole: dict[str, object] = {
-        "id": answer.id,
-        "type": "message",
-        "role": "assistant",
-        "model": answer.model,
-        "content": [block_param(block) for block in answer.content],
-        "stop_reason": answer.stop_reason,
-        "stop_sequence": None,
-        "usage": dict(answer.usage),
-    }
-    if not streams(body):
-        return answer, "application/json", json.dumps(whole).encode()
-    events: list[tuple[str, Mapping[str, object]]] = [
-        ("message_start", {"type": "message_start", "message": {**whole, "content": [], "stop_reason": None}}),
-        *(
-            event
-            for index, text in enumerate(texts)
-            for event in (
-                ("content_block_start", {"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}}),
-                ("content_block_delta", {"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text.text}}),
-                ("content_block_stop", {"type": "content_block_stop", "index": index}),
-            )
-        ),
-        ("message_delta", {"type": "message_delta", "delta": {"stop_reason": answer.stop_reason, "stop_sequence": None}, "usage": {"output_tokens": answer.usage["output_tokens"]}}),
-        ("message_stop", {"type": "message_stop"}),
-    ]
-    return answer, "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
 
 
 def _asked_again(status: int, headers: Mapping[str, str], reply: Body) -> bool:

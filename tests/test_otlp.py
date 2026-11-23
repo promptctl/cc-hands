@@ -230,9 +230,9 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     cut, whole = (traced(_exchanged(Reached(200, 1001.0, 1001.0, 10, Unkept(way)))) for way in ("the reply ended early: context canceled", None))
     assert cut is not None and (cut.outcome, cut.error, cut.facts["cut"]) == ("ok", None, "the reply ended early: context canceled")
     assert whole is not None and whole.facts["cut"] is None and "cut" not in answered.facts
-    # One hands answered itself is answered whole, as the API never saw it.
-    synthetic = traced(_exchanged(Synthetic(Message("msg_hands_1", "claude-opus-5-5", (), "end_turn", {}), 1000.75)))
-    assert synthetic is not None and (synthetic.outcome, synthetic.error, synthetic.duration_ms) == ("ok", None, 250.0)
+    # One hands answered itself is answered whole, as the API never saw it, and says which way its answer went.
+    synthetic = traced(_exchanged(Synthetic(Written(Message("msg_hands_1", "claude-opus-5-5", (), "end_turn", {}), True), 1000.75)))
+    assert synthetic is not None and (synthetic.outcome, synthetic.error, synthetic.duration_ms, synthetic.facts["streamed"]) == ("ok", None, 250.0, True)
 
 
 @pytest.mark.outside

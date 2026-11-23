@@ -34,7 +34,7 @@ from hands.core.wire import (
     Request,
     Sent,
     Synthetic,
-    Taken,
+    Received,
     ToolUse,
     UnreadableRequest,
     Written,
@@ -155,7 +155,7 @@ class Newest:
         match observed:
             case Sent(exchange=exchange, session=session, kind=MainTurn()):
                 self._main[exchange] = session
-            case Taken(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
+            case Received(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
                 self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
                 self._change()
             case Exchanged(exchange=exchange, reply=reply):
@@ -163,7 +163,7 @@ class Newest:
                 self._main.pop(exchange, None)
                 match reply:
                     # The model's answer, or the one hands gave in its place: either is the reply Claude Code holds.
-                    case Reached(body=Written(message=message)) | Synthetic(message=message):
+                    case Reached(body=Written(message=message)) | Synthetic(written=Written(message=message)):
                         self._turns = {of: replace(turn, reply=message) if turn.exchange == exchange else turn for of, turn in self._turns.items()}
                     case _:
                         pass

@@ -55,6 +55,7 @@ from hands.core.wire import (
     frames,
     is_stream,
     parse,
+    serialized,
     session_of,
 )
 
@@ -556,6 +557,19 @@ def test_a_message_sent_whole_is_the_events_its_stream_would_carry_and_the_same_
     assert events[0] == MessageStarted("msg_1", "claude-opus-5-5", {"input_tokens": 3, "output_tokens": 42})
     assert [event.text for event in events if isinstance(event, TextDelta)] == ["Reading é now."]
     assert BlockStarted(3, {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}}) in events
+
+
+def test_a_message_serialized_as_a_stream_reads_back_as_the_same_message() -> None:
+    content_type, data = serialized(Written(MESSAGE, True))
+    whole, rest = frames(data)
+    assert (content_type, rest) == ("text/event-stream", b"")
+    assert assemble([parse(frame) for frame in whole], streamed=True) == Written(MESSAGE, True)
+
+
+def test_a_message_serialized_whole_reads_back_as_the_same_message() -> None:
+    content_type, data = serialized(Written(MESSAGE, False))
+    assert content_type == "application/json"
+    assert assemble(whole_events(json.loads(data)), streamed=False) == Written(MESSAGE, False)
 
 
 def test_a_message_sent_whole_that_hands_cannot_read_garbles_the_reply_as_a_stream_of_it_would() -> None:

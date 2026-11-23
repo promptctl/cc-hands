@@ -762,8 +762,8 @@ def block_param(block: Block) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class Written:
-    """A message the model wrote, every part of it read: streamed to message_stop, or sent whole when the request asked
-    for no stream, as Claude Code asks again after a stream that fails before any block of it is finished."""
+    """A message whole, every part of it: streamed to message_stop, or sent whole when the request asked for no stream, as
+    Claude Code asks again after a stream that fails before any block of it is finished."""
 
     message: Message
     streamed: bool
@@ -970,7 +970,10 @@ def _streamed(message: Mapping[str, object]) -> tuple[WireEvent, ...]:
     )
 
 
-def _block_streamed(index: int, block: Mapping[str, object]) -> tuple[WireEvent, ...]:
+BlockEvent = BlockStarted | TextDelta | ThinkingDelta | SignatureDelta | JsonDelta
+
+
+def _block_streamed(index: int, block: Mapping[str, object]) -> tuple[BlockEvent, ...]:
     """A whole block as its stream would carry it: opened empty, then what it holds as deltas."""
     match block:
         case {"type": "text", "text": str() as text}:
@@ -984,6 +987,52 @@ def _block_streamed(index: int, block: Mapping[str, object]) -> tuple[WireEvent,
             # [LAW:single-enforcer] a block with nothing to stream, one lacking what it would stream, or one hands does
             # not read, opens as it came, and the fold reads or refuses it as it would a streamed one.
             return (BlockStarted(index, block),)
+
+
+def serialized(written: Written) -> tuple[str, bytes]:
+    """A whole message as the API sends it: its content type and its bytes, a stream when it was streamed.
+
+    [LAW:one-source-of-truth] the reader's inverse, written from the message alone: each block streams as
+    `_block_streamed` reads a whole one, so `unstreamed`, or `frames`, `parse` and `assemble`, read it back to `written`.
+    """
+    message = written.message
+    whole: dict[str, object] = {
+        "id": message.id,
+        "type": "message",
+        "role": "assistant",
+        "model": message.model,
+        "content": [block_param(block) for block in message.content],
+        "stop_reason": message.stop_reason,
+        "stop_sequence": None,
+        "usage": dict(message.usage),
+    }
+    if not written.streamed:
+        return "application/json", json.dumps(whole).encode()
+    events: list[tuple[str, Mapping[str, object]]] = [
+        ("message_start", {"type": "message_start", "message": {**whole, "content": [], "stop_reason": None}}),
+        *(
+            frame
+            for index, block in enumerate(message.content)
+            for frame in (*map(_frame_of, _block_streamed(index, block_param(block))), ("content_block_stop", {"type": "content_block_stop", "index": index}))
+        ),
+        ("message_delta", {"type": "message_delta", "delta": {"stop_reason": message.stop_reason, "stop_sequence": None}, "usage": dict(message.usage)}),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+    return "text/event-stream", b"".join(f"event: {name}\ndata: {json.dumps(data)}\n\n".encode() for name, data in events)
+
+
+def _frame_of(event: BlockEvent) -> tuple[str, Mapping[str, object]]:
+    match event:
+        case BlockStarted(index=index, block=block):
+            return "content_block_start", {"type": "content_block_start", "index": index, "content_block": dict(block)}
+        case TextDelta(index=index, text=text):
+            return "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}}
+        case ThinkingDelta(index=index, thinking=thinking):
+            return "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {"type": "thinking_delta", "thinking": thinking}}
+        case SignatureDelta(index=index, signature=signature):
+            return "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {"type": "signature_delta", "signature": signature}}
+        case JsonDelta(index=index, partial_json=partial):
+            return "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {"type": "input_json_delta", "partial_json": partial}}
 
 
 # A content-type is a stream when it names text/event-stream, whatever parameters follow.
@@ -1157,9 +1206,9 @@ class Sent:
 
 
 @dataclass(frozen=True)
-class Taken:
-    """A request as the proxy takes it on, whichever way it is answered: its path, its end-to-end headers, and the bytes
-    its conversation goes on from, sent upstream with hands' changes made or, for one hands answers itself, as the client
+class Received:
+    """A request the proxy received, whichever way it is answered: its path, its end-to-end headers, and the bytes its
+    conversation goes on from, sent upstream with hands' changes made or, for one hands answers itself, as the client
     sent them. Its headers carry the client's credentials, so it is heard and never recorded."""
 
     exchange: str
@@ -1214,10 +1263,10 @@ class Unreached:
 
 @dataclass(frozen=True)
 class Synthetic:
-    """hands answered the request itself and the API never saw it: the model was not asked, and `message` is the answer the
-    client holds as the model's."""
+    """hands answered the request itself and the API never saw it: the model was not asked, and `written` is the answer the
+    client holds as the model's, as it was sent."""
 
-    message: Message
+    written: Written
     answered_at: Seconds
 
 
@@ -1269,4 +1318,4 @@ class Exchanged:
     span: Span
 
 
-Observed = Sent | Taken | Heard | Answering | Exchanged
+Observed = Sent | Received | Heard | Answering | Exchanged

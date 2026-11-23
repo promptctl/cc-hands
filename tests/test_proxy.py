@@ -39,19 +39,17 @@ from hands.core.wire import (
     Synthesize,
     Synthetic,
     Tail,
-    Taken,
+    Received,
     Written,
     Text,
     TextDelta,
     Unfinished,
     Unkept,
     Unreached,
-    UnreadableRequest,
     UsageLimitReached,
     assemble,
     frames,
     parse,
-    unstreamed,
 )
 from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
@@ -694,34 +692,13 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
     assert (reply.message.model, reply.message.content, reply.message.stop_reason) == ("claude-opus-5-5", (Text("(stayed silent)"),), "end_turn")
     # Recorded with the message the bytes the client got carry.
     exchange = only_exchange(wire)
-    assert exchange.kind == MainTurn(None) and isinstance(exchange.reply, Synthetic) and exchange.reply.message == reply.message
-    assert [type(seen) for seen in wire.seen] == [Sent, Taken, Exchanged]
-    # Taken as the client sent it: the bytes it posted and its own credentials.
-    taken = wire.seen[1]
-    assert isinstance(taken, Taken)
-    assert (taken.path, taken.body) == ("/v1/messages?beta=true", REQUEST)
-    assert ("Authorization", "Bearer the-clients-own") in taken.headers
-
-
-@pytest.mark.parametrize("stream", [True, False])
-def test_a_held_requests_answer_reads_back_as_the_message_told_whether_streamed_or_whole(stream: bool) -> None:
-    message, content_type, answer = proxy.synthesized(VirtualClock(), {**json.loads(REQUEST), "stream": stream}, "(stayed silent)")
-    assert (message.content, message.stop_reason) == ((Text("(stayed silent)"),), "end_turn")
-    if stream:
-        whole, rest = frames(answer)
-        read = assemble([parse(frame) for frame in whole], streamed=True)
-        assert (content_type, rest) == ("text/event-stream", b"")
-    else:
-        events = unstreamed(answer)
-        assert isinstance(events, tuple)
-        read = assemble(events, streamed=False)
-        assert content_type == "application/json"
-    assert isinstance(read, Written) and read.message == message
-
-
-def test_a_held_request_hands_cannot_read_has_no_answer_made_for_it() -> None:
-    with pytest.raises(UnreadableRequest):
-        proxy.synthesized(VirtualClock(), {"messages": [{"role": "user", "content": "hi"}]}, "(stayed silent)")
+    assert exchange.kind == MainTurn(None) and isinstance(exchange.reply, Synthetic) and exchange.reply.written == reply
+    assert [type(seen) for seen in wire.seen] == [Sent, Received, Exchanged]
+    # Received as the client sent it: the bytes it posted and its own credentials.
+    received = wire.seen[1]
+    assert isinstance(received, Received)
+    assert (received.path, received.body) == ("/v1/messages?beta=true", REQUEST)
+    assert ("Authorization", "Bearer the-clients-own") in received.headers
 
 
 @pytest.mark.outside
