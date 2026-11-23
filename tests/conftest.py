@@ -795,20 +795,27 @@ def pin(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
     """`script`, as its bytes are now, is the brain's pinned claude, whatever directory the brain is on: nothing on PATH
     is ever the brain's."""
     monkeypatch.setattr(pinned, "claude", located(script))
-    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(script))
+    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(script.read_bytes()))
 
 
-def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Makes `home` a hands home the start's preflight passes, in this process and in any hands run on it: its brain
-    onboarded on settings that keep the syncs out, and in its pinned claude's place a script that only leaves a mark. The
-    mark's path, which exists once anything has run it."""
-    onboard(home / "brain")
-    mark = home / "claude-ran"
-    script = pinned.claude(home / "brain")
+def laid_out(home: Home) -> Path:
+    """Lays `home` out as one the start's preflight passes in a process whose pin is the script in the pin's place: its
+    brain onboarded on settings that keep the syncs out, and in its pinned claude's place a script that only leaves a
+    mark. The mark's path, which exists once anything has run it."""
+    onboard(home.brain)
+    mark = home.root / "claude-ran"
+    script = pinned.claude(home.brain)
     script.parent.mkdir(parents=True)
     script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(mark))}\n")
     script.chmod(0o755)
-    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(script))
+    return mark
+
+
+def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Makes `home` a hands home the start's preflight passes in this process: laid out, and its pin the script there."""
+    hands = Home(home)
+    mark = laid_out(hands)
+    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(pinned.claude(hands.brain).read_bytes()))
     return mark
 
 
@@ -816,9 +823,8 @@ STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 
 
 def standin(home: Home) -> subprocess.Popen[bytes]:
-    """The stand-in daemon, running on `home` made startable, whose pin the stand-in fakes for itself."""
-    with pytest.MonkeyPatch.context() as patch:
-        startable(home.root, patch)
+    """The stand-in daemon, running on `home` laid out, whose pin the stand-in fakes in its own process."""
+    laid_out(home)
     return subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
 
 
@@ -830,7 +836,7 @@ def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:
 def pinned_to(script: Path) -> str:
     """The lines a hands run in a process of its own starts with, so its brain's pinned claude is `script`, as fake_claude
     pins it in this one."""
-    return f"from hands.brain import pinned\npinned.claude = lambda _config_dir: __import__('pathlib').Path({str(script)!r})\npinned.CHECKSUMS = {checksums(script)!r}\n"
+    return f"from hands.brain import pinned\npinned.claude = lambda _config_dir: __import__('pathlib').Path({str(script)!r})\npinned.CHECKSUMS = {checksums(script.read_bytes())!r}\n"
 
 
 @pytest.fixture

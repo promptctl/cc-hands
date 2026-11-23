@@ -29,7 +29,7 @@ from pins import checksums
 
 def main() -> None:
     home = Home(Path(sys.argv[1]))
-    pinned.CHECKSUMS = checksums(pinned.claude(home.brain))
+    pinned.CHECKSUMS = checksums(pinned.claude(home.brain).read_bytes())
     run_start = Start(restarted="--restarted" in sys.argv[2:], clock=SYSTEM)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     heart.beat("starting", None, 0, listening=False, degraded=())

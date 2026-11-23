@@ -51,7 +51,7 @@ def restart(home: Home, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(skill_command("restart"), shell=True, env=environment, cwd=cwd, capture_output=True, text=True, timeout=60)
 
 
-def running(home: Home, deadline: float = 10.0, after: datetime = datetime.min.replace(tzinfo=UTC)) -> heartbeat.Status:
+def running(home: Home, after: datetime, deadline: float = 10.0) -> heartbeat.Status:
     """The heartbeat once it says the pipeline is running, in a run started after `after`."""
     until = time.monotonic() + deadline
     while time.monotonic() < until:
@@ -77,9 +77,10 @@ def session(tmp_path: Path) -> Iterator[Membership]:
 def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, session: Membership) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
+    before_start = datetime.now(UTC)
     daemon = standin(home)
     try:
-        before = running(home)
+        before = running(home, after=before_start)
         assert before.live_sessions == 1
 
         done = restart(home, tmp_path)
@@ -114,9 +115,10 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
 def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_sessions(tmp_path: Path, session: Membership) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
+    before_start = datetime.now(UTC)
     daemon = standin(home)
     try:
-        before = running(home)
+        before = running(home, after=before_start)
         # The second edit is weighed by the run the first restarted onto.
         models = ("claude-opus-5-5", "claude-fable-5-1")
         for model in models:

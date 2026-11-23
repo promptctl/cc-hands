@@ -1,12 +1,10 @@
-"""The brain's pin as a test fakes it, in its own process or in a hands run of its own: a script in the pin's place."""
+"""The brain's pin as a test fakes it, in its own process or in a hands run of its own: bytes of the test's own as the release."""
 
 import hashlib
-from pathlib import Path
 
 from hands.brain import pinned
 
 
-def checksums(script: Path) -> dict[str, str]:
-    """pinned.CHECKSUMS for a pin that is `script`, as its bytes are now, on every build."""
-    with script.open("rb") as held:
-        return dict.fromkeys(pinned.CHECKSUMS, hashlib.file_digest(held, "sha256").hexdigest())
+def checksums(release: bytes) -> dict[str, str]:
+    """pinned.CHECKSUMS for a pin whose every build is `release`."""
+    return dict.fromkeys(pinned.CHECKSUMS, hashlib.sha256(release).hexdigest())

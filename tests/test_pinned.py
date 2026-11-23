@@ -15,6 +15,7 @@ from hands.brain import pinned
 from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
+from fixtures.pins import checksums
 
 RELEASE = b"#!/bin/sh\necho 'the pinned release'\n"
 OTHER = b"#!/bin/sh\necho 'another release'\n"
@@ -25,7 +26,7 @@ AN_OLDER_VERSION = f"{pinned.VERSION}.0"
 
 def pin_bytes(monkeypatch: pytest.MonkeyPatch, release: bytes) -> None:
     """Pins `release`'s bytes in place of the real release's, under the real VERSION."""
-    monkeypatch.setattr(pinned, "CHECKSUMS", dict.fromkeys(pinned.CHECKSUMS, hashlib.sha256(release).hexdigest()))
+    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(release))
 
 
 def placed(path: Path, content: bytes) -> Path:
