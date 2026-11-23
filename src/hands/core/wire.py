@@ -679,7 +679,7 @@ def _delta(index: int, delta: Mapping[str, object]) -> WireEvent | None:
 
 def _started(message: Mapping[str, object]) -> MessageStarted:
     """A message's head, as its stream's message_start carries it and as a message sent whole begins."""
-    return MessageStarted(id=_str(message["id"]), model=_str(message["model"]), usage=_object(message["usage"]))
+    return MessageStarted(id=_str(message["id"]), model=_str(message["model"]), usage=_object(message.get("usage", {})))
 
 
 def _array(value: object) -> list[object]:
@@ -877,7 +877,8 @@ def _opened(block: Mapping[str, object]) -> Block:
             case "redacted_thinking":
                 return RedactedThinking(_str(block["data"]))
             case "tool_use":
-                return ToolUse(_str(block["id"]), _str(block["name"]), {})
+                # A stream opens every call with the empty input its deltas fill; a call opened with none has no input.
+                return ToolUse(_str(block["id"]), _str(block["name"]), _object(block["input"]))
             case other:
                 raise _Broken(f"a content block of type {other!r}, which hands does not read")
     except (KeyError, TypeError) as error:
@@ -895,13 +896,18 @@ def _closed(blocks: Mapping[int, _Open | Block], index: int) -> Block:
     building = blocks.get(index)
     if not isinstance(building, _Open):
         raise _Broken(f"content_block_stop for block {index}, which is not open")
-    if not isinstance(building.block, ToolUse):
-        return building.block
-    match tool_input(building.block.name, building.json):
-        case Unreadable(reason=reason):
-            raise _Broken(reason)
-        case given:
-            return replace(building.block, input=given)
+    match building.block:
+        case Thinking(signature=""):
+            # A stream signs a thinking block by a delta after it opens; one closed unsigned cannot be sent back.
+            raise _Broken(f"thinking block {index} closed with no signature")
+        case ToolUse() as call:
+            match tool_input(call.name, building.json):
+                case Unreadable(reason=reason):
+                    raise _Broken(reason)
+                case given:
+                    return replace(call, input=given)
+        case block:
+            return block
 
 
 @dataclass(frozen=True)
@@ -947,7 +953,7 @@ def unstreamed(data: bytes) -> tuple[WireEvent, ...] | Answered | Garbled:
 def _streamed(message: Mapping[str, object]) -> tuple[WireEvent, ...]:
     """The events a stream of this whole message would have carried, its usage given at its start, whole already."""
     blocks = [_object(block) for block in _array(message["content"])]
-    stop = message["stop_reason"]
+    stop = message.get("stop_reason")
     return (
         _started(message),
         *(event for index, block in enumerate(blocks) for event in (*_block_streamed(index, block), BlockStopped(index))),
@@ -957,24 +963,18 @@ def _streamed(message: Mapping[str, object]) -> tuple[WireEvent, ...]:
 
 
 def _block_streamed(index: int, block: Mapping[str, object]) -> tuple[WireEvent, ...]:
-    """A whole block as its stream would carry it: opened empty, then what it holds as deltas.
-
-    [LAW:parse-dont-validate] a block sent whole states every field it holds, so one it lacks garbles its message here,
-    never read as a field its stream has not sent yet.
-    """
-    match block.get("type"):
-        case "text":
-            return BlockStarted(index, {**block, "text": ""}), TextDelta(index, _str(block["text"]))
-        case "thinking":
-            thinking, signature = _str(block["thinking"]), _str(block["signature"])
+    """A whole block as its stream would carry it: opened empty, then what it holds as deltas."""
+    match block:
+        case {"type": "text", "text": str() as text}:
+            return BlockStarted(index, {**block, "text": ""}), TextDelta(index, text)
+        case {"type": "thinking", "thinking": str() as thinking, "signature": str() as signature}:
             return BlockStarted(index, {**block, "thinking": "", "signature": ""}), ThinkingDelta(index, thinking), SignatureDelta(index, signature)
-        case "tool_use":
-            # [LAW:single-enforcer] whatever the input is, it streams as its JSON, so tool_input, the one reader of a
-            # call's input, reads or refuses it as it would a stream's.
-            return BlockStarted(index, {**block, "input": {}}), JsonDelta(index, json.dumps(block["input"]))
+        case {"type": "tool_use", "input": given}:
+            # Whatever the input is, it streams as its JSON, so tool_input reads or refuses it as it would a stream's.
+            return BlockStarted(index, {**block, "input": {}}), JsonDelta(index, json.dumps(given))
         case _:
-            # [LAW:single-enforcer] a block with nothing to stream, or one hands does not read, opens as it came, and
-            # the fold reads or refuses it as it would a streamed one.
+            # [LAW:single-enforcer] a block with nothing to stream, one lacking what it would stream, or one hands does
+            # not read, opens as it came, and the fold reads or refuses it as it would a streamed one.
             return (BlockStarted(index, block),)
 
 
