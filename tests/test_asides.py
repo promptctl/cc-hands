@@ -16,7 +16,7 @@ from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, Unmarked, fork
 from hands.brain.session import BrainSession
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
-from hands.core.wire import CLASS_HEADER, Block, Exchanged, Fork, Forwarded, MainTurn, Message, Observed, Reached, RedactedThinking, Route, Send, Sent, Text, Thinking, ToolUse, UnreadableRequest, Written, classify
+from hands.core.wire import CLASS_HEADER, CONTINUATION_CLOSING, CONTINUATION_OPENING, Block, Exchanged, Fork, Forwarded, MainTurn, Message, Observed, Reached, RedactedThinking, Route, Send, Sent, Text, Thinking, ToolUse, UnreadableRequest, Written, classify
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.core.trace import Span
@@ -108,6 +108,14 @@ def test_none_of_the_loops_markers_survive_and_a_lone_message_carries_none() -> 
     assert alone["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
 
 
+def test_a_question_merged_into_the_refusal_continuation_is_no_carrier_and_the_marker_goes_on_the_carrier_before_the_last() -> None:
+    continuation = f"{CONTINUATION_OPENING}\n<partial-response>\nHalf\n</partial-response>\n{CONTINUATION_CLOSING}"
+    history = body(user(text("hi")), {"role": "assistant", "content": [text("hello", cache_control=MARK)]}, user(text(continuation)))
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), None), "q")
+    # Ephemeral, the continuation keeps the flag the question merges into: the carriers are the prompt and the reply.
+    assert marks(sent) == [(0, FORKED)]
+
+
 def test_a_question_forked_from_a_turn_that_carried_no_marker_carries_none() -> None:
     history = body(user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?")))
     question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
@@ -168,7 +176,7 @@ UNREADABLE = {
     "a block that is no object": (as_sent(body({"role": "user", "content": ["hi"]})), f"its messages.0 {NO_MESSAGE}"),
     "a role the API has no message of": (as_sent(body({"role": "tool", "content": "hi"})), f"its messages.0 {NO_MESSAGE}"),
     "a system prompt neither text nor blocks": (as_sent({**body(user(text("hi"))), "system": 3}), "its system prompt is neither text nor blocks but int"),
-    "a system marker that is no object": (as_sent({**body(user(text("hi"))), "system": [text("You are hands.", cache_control="1h")]}), "a cache marker on it or its system prompt is not an object"),
+    "a system marker that is no object": (as_sent({**body(user(text("hi"))), "system": [text("You are hands.", cache_control="1h")]}), "a cache marker on it, its system prompt or a message is not an object"),
 }
 
 

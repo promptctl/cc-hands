@@ -83,6 +83,10 @@ Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Auxiliary | Elsew
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
 # The first words Claude Code wraps every side question in, in its utils/sideQuestion.ts.
 SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user."
+# The first and last words of the refusal continuation, the ephemeral message Claude Code asks its fallback model to
+# continue a refused reply's salvaged text with (docs/claude-code-behavior.md, "cache marker carriers").
+CONTINUATION_OPENING = "The previous attempt at this response was interrupted before it could complete."
+CONTINUATION_CLOSING = "Do not repeat any of the quoted text, do not apologize or recap, and do not mention the interruption in this or any future turn."
 # The line Claude Code opens its system prompt with, in its attribution header builder: `key=value;` pairs after it.
 BILLING_OPENING = "x-anthropic-billing-header:"
 # The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
@@ -98,9 +102,9 @@ def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
 
     Claude Code names the class itself in CLASS_HEADER, and a class that is one kind decides it. A request it names
     auxiliary is told by its body, since it names its forks so too; so is one without the header, from a Claude Code
-    started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on the
-    last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on its fork point, the last
-    message that can carry one before the last that can (`fork_point`).
+    started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on its
+    last carrier or on a closing system message (docs/claude-code-behavior.md, "loop markers"); a fire-and-forget fork
+    (skipCacheWrite in services/api/claude.ts) puts it on its fork point, the carrier before the last (`fork_point`).
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
     asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o).
@@ -128,7 +132,7 @@ def _classify_messages(body: object, named: str | None) -> Kind:
         request = read_request(body)
     except UnreadableRequest as unread:
         return Unknown(f"a messages request hands cannot read: {unread}")
-    model = str(request.rest.get("model"))
+    model = request.model
     billing = _billing(request.system)
     # A class Claude Code names that is one kind outranks every reading of the body's markers and words: it is Claude
     # Code's own. A body hands cannot read at all is Unknown whatever its class, above.
@@ -143,23 +147,20 @@ def _classify_messages(body: object, named: str | None) -> Kind:
             return Fork()
         case "auxiliary":
             # Not one kind: Claude Code's es() names every request that is neither its loop's nor a subagent's auxiliary, its
-            # side questions and prompt suggestions among them. The body tells which, all but the loop's kinds it rules out.
-            match _by_body(request, model, billing):
-                case MainTurn() | Subagent():
-                    return Auxiliary(model)
-                case kind:
-                    return kind
+            # side questions and prompt suggestions among them. The body tells which, all but the loop's kinds it rules out:
+            # marked where the loop marks, it is a call beside the loop.
+            return _by_body(request, Auxiliary(model))
         case str() as other:
             return Unknown(f"a messages request to {model!r} Claude Code names {other!r}, a class hands does not know")
         case None:
-            return _by_body(request, model, billing)
+            # A subagent's requests carry its parent's session header and shape; only its billing line tells them apart.
+            return _by_body(request, Subagent() if billing.get("cc_is_subagent") == "true" else _turn(billing))
 
 
-def _by_body(request: "Request", model: str, billing: Mapping[str, str]) -> Kind:
-    """The kind a request's body reads as: by the words Claude Code opens a prompt of its own with, else by its markers."""
+def _by_body(request: "Request", looped: Kind) -> Kind:
+    """The kind a request's body reads as: by the words Claude Code opens a prompt of its own with, else by its markers,
+    `looped` when they sit where the loop marks."""
     messages = request.messages
-    if not messages:
-        return Unknown(f"a messages request to {model!r} with no messages")
     # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
     # can follow a prompt just typed or a tool's result, and a message of its own can follow it.
     texts = asked(messages)
@@ -170,18 +171,32 @@ def _by_body(request: "Request", model: str, billing: Mapping[str, str]) -> Kind
     # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
     # message of a long history, and offers no tools in the body.
     newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
-    last = len(messages) - 1
-    if newest == last and billing.get("cc_is_subagent") == "true":
-        # A subagent's requests carry its parent's session header and shape; only this line tells them apart.
-        return Subagent()
-    if newest == last:
-        return _turn(billing)
-    # A request does not say whether its sender runs under stellar drift, so a fork point under either rule is one.
-    points = {point for stellar_drift in (False, True) if (point := fork_point(messages, stellar_drift)) is not None}
-    if newest in points:
-        return Fork()
-    # Marked nowhere a loop or a fork marks: a call beside the loop.
-    return Auxiliary(model)
+    # A request does not say whether its sender runs under stellar drift: it reads as what it reads as under each.
+    readings = {kind for stellar_drift in (False, True) if (kind := _marked_by(messages, newest, stellar_drift, looped)) is not None}
+    match tuple(readings):
+        case ():
+            # Marked nowhere a loop or a fork marks: a call beside the loop.
+            return Auxiliary(request.model)
+        case (kind,):
+            return kind
+        case _:
+            # [LAW:no-silent-failure] a marker beside a reply of whitespace text, where the loop marks under one drift and
+            # a fork under the other: one reading is Claude Code's, and the request does not say which.
+            return Unknown(f"a messages request to {request.model!r} that reads as {' or '.join(sorted(type(kind).__name__ for kind in readings))} by its sender's stellar drift")
+
+
+def _marked_by(messages: Sequence["MessageParam"], newest: int | None, stellar_drift: bool, looped: Kind) -> Kind | None:
+    """Which request marks its newest marker where this one does, under a stellar drift: the loop, on its last carrier or
+    on the system message closing its turn, the one it may mark (docs/claude-code-behavior.md, "loop markers"); a fork, on
+    its fork point; None when neither does, which rules that drift out."""
+    closing = len(messages) - 1 if messages[-1].role == "system" else None
+    match newest:
+        case int() if newest == closing or _carriers(messages, stellar_drift)[-1:] == [newest]:
+            return looped
+        case int() if newest == fork_point(messages, stellar_drift):
+            return Fork()
+        case _:
+            return None
 
 
 def _turn(billing: Mapping[str, str]) -> MainTurn:
@@ -192,8 +207,7 @@ def _turn(billing: Mapping[str, str]) -> MainTurn:
 
 def _billing(system: "Content | None") -> Mapping[str, str]:
     """The pairs of the billing line Claude Code opens its system prompt with; none when it has no such line."""
-    texts = [text for block in content_blocks(system or ()) if isinstance(text := block.get("text"), str)]
-    line = next((text for text in texts if text.startswith(BILLING_OPENING)), "").partition("\n")[0].removeprefix(BILLING_OPENING)
+    line = next((text for text in content_texts(system or ()) if text.startswith(BILLING_OPENING)), "").partition("\n")[0].removeprefix(BILLING_OPENING)
     pairs = (pair.strip().partition("=") for pair in line.split(";"))
     return {name: value for name, sep, value in pairs if sep}
 
@@ -202,7 +216,7 @@ def asked(messages: Sequence["MessageParam"]) -> tuple[str, ...]:
     """The text of a messages request after the model's last reply: what the request is asking now."""
     replies = [index for index, message in enumerate(messages) if message.role == "assistant"]
     since = replies[-1] + 1 if replies else 0
-    return tuple(text for message in messages[since:] for block in content_blocks(message.content) if isinstance(text := block.get("text"), str))
+    return tuple(text for message in messages[since:] for text in content_texts(message.content))
 
 
 def tool_names(body: object) -> tuple[str, ...]:
@@ -272,9 +286,11 @@ class MessageParam:
 
 @dataclass(frozen=True)
 class Request:
-    """A messages request, read: its system prompt (None when it sends none), its messages, its own cache marker (None
-    when it carries none), and the rest of its fields as sent. A marker on its system prompt is an object."""
+    """A messages request, read: the model it asks, its system prompt (None when it sends none), its messages, at least
+    one, its own cache marker (None when it carries none), and the rest of its fields as sent. Every cache marker on it is
+    an object."""
 
+    model: str
     system: Content | None
     messages: tuple[MessageParam, ...]
     marker: Mapping[str, object] | None
@@ -286,30 +302,41 @@ def content_blocks(content: Content) -> tuple[Mapping[str, object], ...]:
     return ({"type": "text", "text": content},) if isinstance(content, str) else content
 
 
+def content_texts(content: Content) -> tuple[str, ...]:
+    """The text of a message's content, block by block."""
+    return tuple(text for block in content_blocks(content) if isinstance(text := block.get("text"), str))
+
+
 class UnreadableRequest(ValueError):
     """A body that is no messages request hands can read, and what in it is not."""
 
 
 def read_request(body: object) -> Request:
     """A messages request's body, read, or UnreadableRequest naming what in it could not be: a message is a role and its
-    content, a string or a list of blocks, which only a system message's directive leaves empty; a system prompt, if
-    the request sends one, is a string or a list of blocks; a cache marker on the request or its system prompt is an
-    object."""
+    content, a string or a list of blocks, which only a system message's directive leaves empty; the request names its
+    model and sends at least one message; a system prompt, if it sends one, is a string or a list of blocks; a cache
+    marker, wherever it is, is an object."""
     # [LAW:parse-dont-validate] the reader of a request's messages and system prompt for the classifier, the rewrite's
     # compaction steer and the side question: past it, every message is a role and its content.
     if not isinstance(body, Mapping):
         raise UnreadableRequest("its body is not a JSON object")
     fields = cast(Mapping[str, object], body)
+    model = fields.get("model")
+    if not isinstance(model, str):
+        raise UnreadableRequest(f"its model is not a name but {type(model).__name__}")
     messages = fields.get("messages")
     if not isinstance(messages, list):
         raise UnreadableRequest(f"its messages are not a list but {type(messages).__name__}")
+    if not messages:
+        raise UnreadableRequest("it sends no messages")
     system = _system(fields.get("system"))
-    marker = fields.get("cache_control")
-    if any(not isinstance(marked.get("cache_control", {}), Mapping) for marked in (fields, *content_blocks(system or ()))):
-        raise UnreadableRequest("a cache marker on it or its system prompt is not an object")
-    rest = {term: value for term, value in fields.items() if term not in ("system", "messages", "cache_control")}
     parsed = tuple(_message_param(index, message) for index, message in enumerate(cast(list[object], messages)))
-    return Request(system, parsed, None if marker is None else cast(Mapping[str, object], marker), rest)
+    marker = fields.get("cache_control")
+    blocks = (*content_blocks(system or ()), *(block for message in parsed for block in content_blocks(message.content)))
+    if any(not isinstance(marked.get("cache_control", {}), Mapping) for marked in (fields, *blocks)):
+        raise UnreadableRequest("a cache marker on it, its system prompt or a message is not an object")
+    rest = {term: value for term, value in fields.items() if term not in ("model", "system", "messages", "cache_control")}
+    return Request(model, system, parsed, None if marker is None else cast(Mapping[str, object], marker), rest)
 
 
 def _system(system: object) -> Content | None:
@@ -349,15 +376,17 @@ def cache_marked(message: MessageParam) -> bool:
 
 
 def _carries(message: MessageParam, stellar_drift: bool) -> bool:
-    """Whether a message carries a fork's cache marker: a user message does, a system message never, and a reply when its
-    content is a string or its last block can (docs/claude-code-behavior.md, "cache marker carriers")."""
-    match message:
-        case MessageParam(role="system"):
+    """Whether a message carries a cache marker: a system message never, a user message unless it holds the refusal
+    continuation, and a reply when its content is a string or its last block can (docs/claude-code-behavior.md, "cache
+    marker carriers")."""
+    match message.role:
+        case "system":
             return False
-        case MessageParam(role="assistant", content=(*_, last)):
-            return _markable_block(last, stellar_drift)
-        case _:
-            return True
+        case "user":
+            # Ephemeral is no field on the wire: the continuation is told by its words, a block of its own that a merge keeps.
+            return not any(text.startswith(CONTINUATION_OPENING) and text.rstrip().endswith(CONTINUATION_CLOSING) for text in content_texts(message.content))
+        case "assistant":
+            return isinstance(message.content, str) or _markable_block(message.content[-1], stellar_drift)
 
 
 def _markable_block(block: Mapping[str, object], stellar_drift: bool) -> bool:
@@ -377,8 +406,12 @@ def fork_point(messages: Sequence[MessageParam], stellar_drift: bool) -> int | N
     """Where a fork that skips the cache write puts its marker: on the last message that can carry one before the last
     that can, so the fork reads the loop's cached prefix and writes none of its own; None when fewer than two can
     (docs/claude-code-behavior.md, "side question markers")."""
-    carriers = [index for index, message in enumerate(messages) if _carries(message, stellar_drift)]
-    return carriers[-2] if len(carriers) > 1 else None
+    found = _carriers(messages, stellar_drift)
+    return found[-2] if len(found) > 1 else None
+
+
+def _carriers(messages: Sequence[MessageParam], stellar_drift: bool) -> list[int]:
+    return [index for index, message in enumerate(messages) if _carries(message, stellar_drift)]
 
 
 def _texts(message: object) -> list[str]:

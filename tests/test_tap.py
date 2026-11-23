@@ -20,6 +20,7 @@ from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Written, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
 from hands.sessions.audit import CopiesLost, Entry, level
+from hands.sessions.replies import sent_of
 from hands.sessions.tap import _copy, moves, serve_tap, tap_observer  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.wide import root
 
@@ -393,6 +394,19 @@ def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
 def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_its_stop_carries_it() -> None:
     thought = replied(MainTurn(TURN), "end_turn", Text("Done."), Text("Pushed."))
     assert moves(thought) == (Closed(SessionId("s1"), TURN, "Pushed."),)
+
+
+def test_a_turn_without_a_class_header_closed_by_a_system_message_closes_when_its_reply_ends_the_turn() -> None:
+    def block(text: str, marked: bool = False) -> dict[str, object]:
+        return {"type": "text", "text": text, **({"cache_control": {"type": "ephemeral"}} if marked else {})}
+
+    body = {
+        "model": "claude-opus-5-5",
+        "system": [block("x-anthropic-billing-header: cc_version=1.0.0.a1b; cc_prompt_id=p1;")],
+        "messages": [{"role": "user", "content": [block("hi")]}, {"role": "assistant", "content": [block("hello")]}, {"role": "user", "content": [block("go on", marked=True)]}, {"role": "system", "content": [block("Stay brief.")]}],
+    }
+    sent = sent_of(SYSTEM, {}, "/v1/messages", json.dumps(body).encode())
+    assert moves(replied(sent.kind, "end_turn", Text("Pushed."))) == (Closed(SessionId("s1"), TURN, "Pushed."),)
 
 
 @pytest.mark.parametrize(
