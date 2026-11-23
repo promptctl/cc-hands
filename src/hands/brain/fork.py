@@ -212,7 +212,7 @@ def _unmarked(message: MessageParam) -> MessageParam:
 def _marked(message: MessageParam) -> MessageParam:
     # On its last block, as Claude Code marks a message: a reply's is one that can carry it, or it is no fork point.
     *before, last = content_blocks(message.content)
-    return replace(message, content=(*before, {**last, "cache_control": {"type": "ephemeral", **_TTL_TERMS[CACHE_TTL]}}))
+    return replace(message, content=(*before, {**last, "cache_control": _retimed({"type": "ephemeral"})}))
 
 
 def _as_sent(message: MessageParam) -> dict[str, object]:

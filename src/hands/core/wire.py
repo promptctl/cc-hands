@@ -10,7 +10,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Literal, cast
+from typing import Literal, cast, get_args
 
 from hands.core.session import PromptId, SessionId
 from hands.core.trace import Span
@@ -255,7 +255,7 @@ def _blocks(message: object) -> list[object]:
 
 # The roles a request's message has: the API's two, and the system message Claude Code sends between them.
 Role = Literal["user", "assistant", "system"]
-_ROLES: Mapping[str, Role] = {"user": "user", "assistant": "assistant", "system": "system"}
+_ROLES: Mapping[str, Role] = {role: role for role in get_args(Role)}
 Content = str | tuple[Mapping[str, object], ...]
 
 
@@ -295,8 +295,8 @@ def read_request(body: object) -> Request:
     content, a string or a list of blocks, which only a system message's directive leaves empty; a system prompt, if
     the request sends one, is a string or a list of blocks; a cache marker on the request or its system prompt is an
     object."""
-    # [LAW:parse-dont-validate] the one reader of a request's messages and system prompt, the classifier's, its rewrite's
-    # and the side question's: past it, every message is a role and its content.
+    # [LAW:parse-dont-validate] the reader of a request's messages and system prompt for the classifier, the rewrite's
+    # compaction steer and the side question: past it, every message is a role and its content.
     if not isinstance(body, Mapping):
         raise UnreadableRequest("its body is not a JSON object")
     fields = cast(Mapping[str, object], body)
