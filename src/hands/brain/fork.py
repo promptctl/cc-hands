@@ -97,8 +97,10 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
             history[-1] = {**history[-1], "content": [*_blocks(content), *asked]}
         case _:
             history.append({"role": "user", "content": asked})
-    # skipCacheWrite: the marker sits on the last message the fork shares with the loop that can carry one, so nothing new
-    # is written. A system message never carries it, and a reply of thinking alone has no block that can.
+    # skipCacheWrite: the marker sits on the message before the question's, the last that can carry one, so nothing new is
+    # written. Claude Code places markers after it merges the question in (Dpn runs on normalised messages), so a question
+    # merged into the loop's last message reads that message's own input uncached, as Claude Code's /btw does. A system
+    # message never carries it, and a reply of thinking alone has no block that can.
     carrier = next((index for index in reversed(range(len(history) - 1)) if history[index].get("role") != "system" and _markable(history[index])), None)
     if marker is not None and carrier is not None:
         history[carrier] = _marked(history[carrier], marker)
