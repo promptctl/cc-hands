@@ -24,7 +24,6 @@ from hands.core.wire import (
     Ending,
     Exchanged,
     Fork,
-    Forwarded,
     MainTurn,
     Message,
     Observed,
@@ -33,8 +32,8 @@ from hands.core.wire import (
     Route,
     Send,
     Sent,
-    Synthesized,
     Synthetic,
+    Taken,
     Text,
     Thinking,
     ToolUse,
@@ -226,35 +225,35 @@ async def test_a_turn_hands_cannot_read_fails_the_question_unforkable(sent: byte
         await asides.close()
 
 
+def main_exchanged(exchange: str, reply: Ending, session: SessionId = BRAIN) -> Exchanged:
+    return Exchanged(exchange, session, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, reply, False, root(VirtualClock()))
+
+
+def answered(message: Message) -> Reached:
+    return Reached(200, 0.0, 0.0, 0, Written(message, True))
+
+
 async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_reply_once_read() -> None:
     newest = Newest(BrainSession(BRAIN))
     waiting = asyncio.create_task(newest.turn())
     message = reply(Text("Done."))
-    clock = VirtualClock()
-
-    def exchanged(exchange: str, session: SessionId) -> Exchanged:
-        return Exchanged(exchange, session, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 0, Written(message, True)), False, root(clock))
 
     # Another session's main turn, and a fork of the brain's, are never what a question forks from.
     for observed in (
         Sent("o1", SessionId("other"), MainTurn(None), "main", {}),
-        Forwarded("o1", "/v1/messages", HEADERS, b"{}"),
+        Taken("o1", "/v1/messages", HEADERS, b"{}"),
         Sent("f1", BRAIN, Fork(), "auxiliary", {}),
-        Forwarded("f1", "/v1/messages", HEADERS, b"{}"),
+        Taken("f1", "/v1/messages", HEADERS, b"{}"),
     ):
         newest.hear(observed)
     await asyncio.sleep(0)
     assert not waiting.done()
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
-    newest.hear(Forwarded("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}'))
+    newest.hear(Taken("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}'))
     assert await waiting == Turn("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}', None)
-    newest.hear(exchanged("o1", SessionId("other")))
-    newest.hear(exchanged("x1", BRAIN))
+    newest.hear(main_exchanged("o1", answered(message), SessionId("other")))
+    newest.hear(main_exchanged("x1", answered(message)))
     assert (await newest.turn()).reply == message
-
-
-def main_exchanged(exchange: str, reply: Ending) -> Exchanged:
-    return Exchanged(exchange, BRAIN, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, reply, False, root(VirtualClock()))
 
 
 # The brain's held turn: its stay_silent call answered, and the proxy answering the request that carries the answer.
@@ -264,22 +263,17 @@ HELD = body(user(text("hi")), {"role": "assistant", "content": [block_param(SILE
 STAYED_SILENT = Message("msg_hands_1", "claude-opus-5-5", (Text("(stayed silent)"),), "end_turn", {"input_tokens": 0, "output_tokens": 0})
 
 
-def upstream_turn(newest: Newest, exchange: str, sent: dict[str, object], answer: Message) -> None:
+def main_turn(newest: Newest, exchange: str, sent: dict[str, object], reply: Ending) -> None:
+    """A main turn of the brain's as the proxy tells it, from its request to its end."""
     newest.hear(Sent(exchange, BRAIN, MainTurn(None), "main", sent))
-    newest.hear(Forwarded(exchange, "/v1/messages", HEADERS, as_sent(sent)))
-    newest.hear(main_exchanged(exchange, Reached(200, 0.0, 0.0, 0, Written(answer, True))))
-
-
-def held_turn(newest: Newest, exchange: str, sent: dict[str, object]) -> None:
-    newest.hear(Sent(exchange, BRAIN, MainTurn(None), "main", sent))
-    newest.hear(Synthesized(exchange, "/v1/messages", HEADERS, as_sent(sent), STAYED_SILENT))
-    newest.hear(main_exchanged(exchange, Synthetic("(stayed silent)", 0.0)))
+    newest.hear(Taken(exchange, "/v1/messages", HEADERS, as_sent(sent)))
+    newest.hear(main_exchanged(exchange, reply))
 
 
 async def test_a_question_after_a_turn_the_proxy_answered_itself_forks_from_that_turn_with_its_answer() -> None:
     newest = Newest(BrainSession(BRAIN))
-    upstream_turn(newest, "x1", OPENED, reply(SILENT_CALL, stop="tool_use"))
-    held_turn(newest, "x2", HELD)
+    main_turn(newest, "x1", OPENED, answered(reply(SILENT_CALL, stop="tool_use")))
+    main_turn(newest, "x2", HELD, Synthetic(STAYED_SILENT, 0.0))
     turn = await newest.turn()
     assert turn == Turn("x2", "/v1/messages", HEADERS, as_sent(HELD), STAYED_SILENT)
     # The stay_silent call goes with the result Claude Code holds for it, and no call is left running.
@@ -289,10 +283,10 @@ async def test_a_question_after_a_turn_the_proxy_answered_itself_forks_from_that
 
 async def test_a_question_after_a_held_turn_and_then_one_sent_upstream_forks_from_the_one_sent_upstream() -> None:
     newest = Newest(BrainSession(BRAIN))
-    held_turn(newest, "x1", HELD)
+    main_turn(newest, "x1", HELD, Synthetic(STAYED_SILENT, 0.0))
     asking = body(*cast(list[dict[str, object]], HELD["messages"]), {"role": "assistant", "content": [text("(stayed silent)")]}, user(text("read it")))
     reading = ToolUse("t2", "Read", {"file_path": "/a"})
-    upstream_turn(newest, "x2", asking, reply(reading, stop="tool_use"))
+    main_turn(newest, "x2", asking, answered(reply(reading, stop="tool_use")))
     turn = await newest.turn()
     assert turn.exchange == "x2"
     # Only the call Claude Code holds no result for stands in as running.
@@ -305,7 +299,7 @@ async def test_a_question_asked_as_the_brain_moves_forks_from_the_conversation_i
     held = BrainSession(BRAIN)
     newest = Newest(held)
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {}))
-    newest.hear(Forwarded("x1", "/v1/messages", HEADERS, b'{"messages": [1]}'))
+    newest.hear(Taken("x1", "/v1/messages", HEADERS, b'{"messages": [1]}'))
     first = Turn("x1", "/v1/messages", HEADERS, b'{"messages": [1]}', None)
     cleared = SessionId("cleared")
     held.enter(cleared)
@@ -314,7 +308,7 @@ async def test_a_question_asked_as_the_brain_moves_forks_from_the_conversation_i
     await asyncio.sleep(0)
     assert not waiting.done()
     newest.hear(Sent("x2", cleared, MainTurn(None), "main", {}))
-    newest.hear(Forwarded("x2", "/v1/messages", HEADERS, b'{"messages": [2]}'))
+    newest.hear(Taken("x2", "/v1/messages", HEADERS, b'{"messages": [2]}'))
     assert await waiting == Turn("x2", "/v1/messages", HEADERS, b'{"messages": [2]}', None)
     # Resumed back, it forks from the turn the conversation last sent before it was left.
     held.enter(BRAIN)
@@ -325,7 +319,7 @@ async def test_a_question_waiting_in_a_new_conversation_wakes_as_the_brain_resum
     held = BrainSession(BRAIN)
     newest = Newest(held)
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {}))
-    newest.hear(Forwarded("x1", "/v1/messages", HEADERS, b'{"messages": [1]}'))
+    newest.hear(Taken("x1", "/v1/messages", HEADERS, b'{"messages": [1]}'))
     held.enter(SessionId("cleared"))
     waiting = asyncio.create_task(newest.turn())
     await asyncio.sleep(0)

@@ -1157,27 +1157,15 @@ class Sent:
 
 
 @dataclass(frozen=True)
-class Forwarded:
-    """A request as the proxy sends it upstream: its path, its end-to-end headers, and its bytes with hands' changes made.
-    Its headers carry the client's credentials, so it is heard and never recorded."""
+class Taken:
+    """A request as the proxy takes it on, whichever way it is answered: its path, its end-to-end headers, and the bytes
+    its conversation goes on from, sent upstream with hands' changes made or, for one hands answers itself, as the client
+    sent them. Its headers carry the client's credentials, so it is heard and never recorded."""
 
     exchange: str
     path: str
     headers: tuple[tuple[str, str], ...]
     body: bytes
-
-
-@dataclass(frozen=True)
-class Synthesized:
-    """A request the proxy answers itself and never sends upstream: its path, its end-to-end headers, its bytes as the
-    client sent them, and the message it is answered with. Its headers carry the client's credentials, so it is heard and
-    never recorded."""
-
-    exchange: str
-    path: str
-    headers: tuple[tuple[str, str], ...]
-    body: bytes
-    message: Message
 
 
 @dataclass(frozen=True)
@@ -1226,9 +1214,10 @@ class Unreached:
 
 @dataclass(frozen=True)
 class Synthetic:
-    """hands answered the request itself and the API never saw it: the model was not asked, and is recorded as saying `said`."""
+    """hands answered the request itself and the API never saw it: the model was not asked, and `message` is the answer the
+    client holds as the model's."""
 
-    said: str
+    message: Message
     answered_at: Seconds
 
 
@@ -1280,4 +1269,4 @@ class Exchanged:
     span: Span
 
 
-Observed = Sent | Forwarded | Synthesized | Heard | Answering | Exchanged
+Observed = Sent | Taken | Heard | Answering | Exchanged

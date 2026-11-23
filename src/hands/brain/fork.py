@@ -4,8 +4,7 @@ Claude Code 2.1.308 asks a side question (DTt, in its side-question chunk) as on
 model, system, tools, and settings, its conversation so far, its newest reply included, then one user message holding a
 placeholder result for each call still running, its reminder, and the question. It sets skipCacheWrite, so the request
 reads the loop's cached prefix and writes none of its own. hands builds that request from the brain's newest main turn as
-its proxy took it, forwarded upstream or answered by hands itself, and sends it back through the proxy: no Claude Code is
-started to ask it.
+its proxy took it, and sends it back through the proxy: no Claude Code is started to ask it.
 """
 
 import asyncio
@@ -27,7 +26,6 @@ from hands.core.wire import (
     read_request,
     block_param,
     Exchanged,
-    Forwarded,
     MainTurn,
     Message,
     MessageParam,
@@ -35,7 +33,8 @@ from hands.core.wire import (
     Reached,
     Request,
     Sent,
-    Synthesized,
+    Synthetic,
+    Taken,
     ToolUse,
     UnreadableRequest,
     Written,
@@ -76,13 +75,13 @@ class Unmarked(StrEnum):
 
 @dataclass(frozen=True)
 class Turn:
-    """The brain's newest main turn: its request as the proxy forwarded it or answered it itself, and the reply's message
-    once read whole."""
+    """The brain's newest main turn: its request as the proxy took it, and the reply's message once it is whole."""
 
     exchange: str
     path: str
     headers: tuple[tuple[str, str], ...]
-    # The bytes as the proxy took them, parsed only when a question is forked from them: never on the way upstream.
+    # The bytes the conversation goes on from: as forwarded, hands' changes made, or as the client sent a request hands
+    # answered itself. Parsed only when a question is forked from them: never on the way upstream.
     body: bytes
     reply: Message | None
 
@@ -136,8 +135,8 @@ class Newest:
     def __init__(self, session: SessionView) -> None:
         # Which conversation the brain is in now: a question forks only from a turn of it.
         self._session = session
-        # Main turns of the brain's told and not yet taken, by the session each is of: its request is held once its bytes
-        # go upstream, or once the proxy answers it itself.
+        # Main turns of the brain's told and not yet taken, by the session each is of: its request is held once the proxy
+        # takes it, to go upstream or to be answered by hands.
         self._main: dict[str, SessionId | None] = {}
         # [LAW:one-source-of-truth] the newest turn held of each conversation, so a /resume back forks from where it was left.
         self._turns: dict[SessionId | None, Turn] = {}
@@ -156,18 +155,15 @@ class Newest:
         match observed:
             case Sent(exchange=exchange, session=session, kind=MainTurn()):
                 self._main[exchange] = session
-            case Forwarded(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
+            case Taken(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
                 self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
                 self._change()
-            # A turn the proxy answers itself is the newest as Claude Code holds it, its answer whole already.
-            case Synthesized(exchange=exchange, path=path, headers=headers, body=body, message=message) if exchange in self._main:
-                self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, message)
-                self._change()
             case Exchanged(exchange=exchange, reply=reply):
-                # A main turn held or refused before it was forwarded is never waited on again.
+                # A main turn that ended before the proxy took it is never waited on again.
                 self._main.pop(exchange, None)
                 match reply:
-                    case Reached(body=Written(message=message)):
+                    # The model's answer, or the one hands gave in its place: either is the reply Claude Code holds.
+                    case Reached(body=Written(message=message)) | Synthetic(message=message):
                         self._turns = {of: replace(turn, reply=message) if turn.exchange == exchange else turn for of, turn in self._turns.items()}
                     case _:
                         pass

@@ -231,7 +231,7 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     assert cut is not None and (cut.outcome, cut.error, cut.facts["cut"]) == ("ok", None, "the reply ended early: context canceled")
     assert whole is not None and whole.facts["cut"] is None and "cut" not in answered.facts
     # One hands answered itself is answered whole, as the API never saw it.
-    synthetic = traced(_exchanged(Synthetic("(stayed silent)", 1000.75)))
+    synthetic = traced(_exchanged(Synthetic(Message("msg_hands_1", "claude-opus-5-5", (), "end_turn", {}), 1000.75)))
     assert synthetic is not None and (synthetic.outcome, synthetic.error, synthetic.duration_ms) == ("ok", None, 250.0)
 
 
