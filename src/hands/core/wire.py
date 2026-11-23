@@ -877,8 +877,7 @@ def _opened(block: Mapping[str, object]) -> Block:
             case "redacted_thinking":
                 return RedactedThinking(_str(block["data"]))
             case "tool_use":
-                # A stream opens every call with the empty input its deltas fill; a call opened with none has no input.
-                return ToolUse(_str(block["id"]), _str(block["name"]), _object(block["input"]))
+                return ToolUse(_str(block["id"]), _str(block["name"]), {})
             case other:
                 raise _Broken(f"a content block of type {other!r}, which hands does not read")
     except (KeyError, TypeError) as error:
@@ -896,18 +895,13 @@ def _closed(blocks: Mapping[int, _Open | Block], index: int) -> Block:
     building = blocks.get(index)
     if not isinstance(building, _Open):
         raise _Broken(f"content_block_stop for block {index}, which is not open")
-    match building.block:
-        case Thinking(signature=""):
-            # A stream signs a thinking block by a delta after it opens; one closed unsigned cannot be sent back.
-            raise _Broken(f"thinking block {index} closed with no signature")
-        case ToolUse() as call:
-            match tool_input(call.name, building.json):
-                case Unreadable(reason=reason):
-                    raise _Broken(reason)
-                case given:
-                    return replace(call, input=given)
-        case block:
-            return block
+    if not isinstance(building.block, ToolUse):
+        return building.block
+    match tool_input(building.block.name, building.json):
+        case Unreadable(reason=reason):
+            raise _Broken(reason)
+        case given:
+            return replace(building.block, input=given)
 
 
 @dataclass(frozen=True)

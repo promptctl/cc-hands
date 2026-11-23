@@ -595,25 +595,17 @@ def test_a_tool_call_sent_whole_whose_input_is_no_object_garbles_the_reply_as_it
 
 
 @pytest.mark.parametrize(
-    ("block", "stream", "reason"),
+    ("block", "stream"),
     [
-        # A call with no arguments streams an empty input and no delta; a call with no input at all is no call.
-        (
-            {"type": "tool_use", "id": "toolu_1", "name": "Bash"},
-            one_block_stream({"type": "tool_use", "id": "toolu_1", "name": "Bash"}),
-            "a 'tool_use' block whose start lacks a field: KeyError('input')",
-        ),
-        # A thinking block never signed cannot be sent back to the API that must verify it.
-        (
-            {"type": "thinking", "thinking": "hmm"},
-            one_block_stream({"type": "thinking", "thinking": ""}, {"type": "thinking_delta", "thinking": "hmm"}),
-            "thinking block 0 closed with no signature",
-        ),
+        ({"type": "tool_use", "id": "toolu_1", "name": "Bash"}, one_block_stream({"type": "tool_use", "id": "toolu_1", "name": "Bash"})),
+        ({"type": "thinking", "thinking": "hmm"}, one_block_stream({"type": "thinking", "thinking": ""}, {"type": "thinking_delta", "thinking": "hmm"})),
     ],
 )
-def test_a_block_lacking_a_field_garbles_the_reply_sent_whole_or_streamed(block: dict[str, object], stream: bytes, reason: str) -> None:
+def test_a_block_sent_whole_lacking_what_it_would_stream_folds_as_its_stream_lacking_it(block: dict[str, object], stream: bytes) -> None:
     whole = assemble(whole_events({**WHOLE, "content": [block]}), streamed=False)
-    assert whole == assemble([parse(frame) for frame in frames(stream)[0]], streamed=True) == Garbled(reason)
+    streamed = assemble([parse(frame) for frame in frames(stream)[0]], streamed=True)
+    assert isinstance(whole, Written) and isinstance(streamed, Written)
+    assert whole.message.content == streamed.message.content
 
 
 def test_a_reply_that_is_not_a_stream_or_a_message_is_its_json_or_else_its_text() -> None:
