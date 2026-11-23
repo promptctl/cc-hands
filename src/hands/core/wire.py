@@ -963,8 +963,9 @@ def _block_streamed(index: int, block: Mapping[str, object]) -> tuple[WireEvent,
             return BlockStarted(index, {**block, "text": ""}), TextDelta(index, text)
         case {"type": "thinking", "thinking": str() as thinking, "signature": str() as signature}:
             return BlockStarted(index, {**block, "thinking": "", "signature": ""}), ThinkingDelta(index, thinking), SignatureDelta(index, signature)
-        case {"type": "tool_use", "input": dict()}:
-            return BlockStarted(index, {**block, "input": {}}), JsonDelta(index, json.dumps(block["input"]))
+        case {"type": "tool_use", "input": given}:
+            # Whatever the input is, it streams as its JSON, so tool_input reads or refuses it as it would a stream's.
+            return BlockStarted(index, {**block, "input": {}}), JsonDelta(index, json.dumps(given))
         case _:
             # [LAW:single-enforcer] a block with nothing to stream, or one hands does not read, opens as it came, and
             # the fold reads or refuses it as it would a streamed one.

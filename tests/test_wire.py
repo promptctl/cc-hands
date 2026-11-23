@@ -573,6 +573,21 @@ def test_a_message_sent_whole_that_hands_cannot_read_garbles_the_reply_as_a_stre
     )
 
 
+@pytest.mark.parametrize("given", ["rm -rf /tmp/x", ["/a"], None])
+def test_a_tool_call_sent_whole_whose_input_is_no_object_garbles_the_reply_as_its_stream_would(given: object) -> None:
+    call = {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": given}
+    stream: list[WireEvent] = [
+        MessageStarted("msg_1", "claude-opus-5-5", {}),
+        BlockStarted(0, {**call, "input": {}}),
+        JsonDelta(0, json.dumps(given)),
+        BlockStopped(0),
+        MessageDelta("tool_use", {}),
+        MessageStopped(),
+    ]
+    whole = assemble(whole_events({**WHOLE, "content": [call]}), streamed=False)
+    assert whole == assemble(stream, streamed=True) == Garbled("tool call Bash's input is not a JSON object")
+
+
 def test_a_reply_that_is_not_a_stream_or_a_message_is_its_json_or_else_its_text() -> None:
     assert unstreamed(b'{"input_tokens": 5583}') == Answered({"input_tokens": 5583})
     overloaded = {"type": "error", "error": {"type": "overloaded_error"}}
