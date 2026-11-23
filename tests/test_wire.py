@@ -573,6 +573,27 @@ def test_a_message_sent_whole_that_hands_cannot_read_garbles_the_reply_as_a_stre
     )
 
 
+def one_block_stream(start: dict[str, object], *deltas: dict[str, object]) -> bytes:
+    return b"".join(
+        [
+            sse("message_start", {"type": "message_start", "message": {"id": "msg_1", "model": "claude-opus-5-5", "usage": {}}}),
+            sse("content_block_start", {"type": "content_block_start", "index": 0, "content_block": start}),
+            *(sse("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": delta}) for delta in deltas),
+            sse("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            sse("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}}),
+            sse("message_stop", {"type": "message_stop"}),
+        ]
+    )
+
+
+@pytest.mark.parametrize("given", ['"rm -rf /tmp/x"', '["/a"]', "null"])
+def test_a_tool_call_sent_whole_whose_input_is_no_object_garbles_the_reply_as_its_stream_would(given: str) -> None:
+    call = {"type": "tool_use", "id": "toolu_1", "name": "Bash"}
+    stream = one_block_stream({**call, "input": {}}, {"type": "input_json_delta", "partial_json": given})
+    whole = assemble(whole_events({**WHOLE, "content": [{**call, "input": json.loads(given)}]}), streamed=False)
+    assert whole == assemble([parse(frame) for frame in frames(stream)[0]], streamed=True) == Garbled("tool call Bash's input is not a JSON object")
+
+
 def test_a_reply_that_is_not_a_stream_or_a_message_is_its_json_or_else_its_text() -> None:
     assert unstreamed(b'{"input_tokens": 5583}') == Answered({"input_tokens": 5583})
     overloaded = {"type": "error", "error": {"type": "overloaded_error"}}
