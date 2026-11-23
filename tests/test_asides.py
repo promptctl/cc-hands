@@ -55,11 +55,11 @@ def as_sent(history: dict[str, object]) -> bytes:
 ASKED = [text(REMINDER), text("what now?")]
 
 
-def test_a_question_before_any_reply_joins_the_last_user_message_and_the_newest_marker_moves_one_message_earlier() -> None:
+def test_a_question_before_any_reply_joins_the_last_user_message_and_its_one_marker_goes_on_the_message_before() -> None:
     history = body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)))
     headers, sent = forked(Turn("x1", "/v1/messages?beta=true", HEADERS, as_sent(history), None), "what now?")
     assert sent["messages"] == [
-        user(text("hi", cache_control=MARK)),
+        user(text("hi")),
         {"role": "assistant", "content": [text("hello", cache_control=MARK)]},
         user(text("and?"), *ASKED),
     ]
@@ -90,11 +90,11 @@ def test_each_call_of_a_reply_still_running_stands_in_with_claude_codes_placehol
     assert classify("/v1/messages", sent, {CLASS_HEADER: "auxiliary"}) == Fork()
 
 
-def test_markers_the_loop_put_on_earlier_messages_stay_and_a_lone_message_has_none_moved() -> None:
+def test_no_marker_the_loop_put_is_carried_and_a_lone_message_gets_none() -> None:
     history = body(user(text("one", cache_control=MARK)), {"role": "assistant", "content": [text("two")]}, user(text("three", cache_control=MARK)))
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("four."))), "q")
     messages = cast(list[dict[str, list[dict[str, object]]]], sent["messages"])
-    assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[MARK], [None], [None], [MARK], [None, None]]
+    assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[None], [None], [None], [MARK], [None, None]]
     _, alone = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), None), "q")
     assert alone["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
 
@@ -407,21 +407,25 @@ def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_ta
     assert [message for message in messages if message["role"] != "system"][-1] is asking
     # skipCacheWrite: nothing from the question on is marked, so the question is never written to the cache.
     assert not any(cache_marked(message) for message in messages[messages.index(asking):])
-    # The loop's newest marker is kept on a shared message that is not a system message, wherever one can carry it.
-    newest = [message for message in messages[: messages.index(asking)] if cache_marked(message) and message["role"] != "system"]
-    assert len(newest) == (1 if any(cache_marked(message) for message in shape) and len([m for m in messages if m["role"] != "system"]) > 1 else 0)
+    # The fork carries one marker, on a shared message that is not a system message, wherever one can carry it.
+    marked = [message for message in messages if cache_marked(message)]
+    assert all(message["role"] != "system" for message in marked)
+    assert len(marked) == (1 if any(cache_marked(message) for message in shape) and len([m for m in messages if m["role"] != "system"]) > 1 else 0)
 
 
 def test_the_checker_refuses_the_order_that_was_refused_live() -> None:
     assert "messages.1: system before user" in refused([user(text("hi")), SYSTEM_MESSAGE, user(text("q"))])
 
 
-def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
+@pytest.mark.parametrize("last", [Thinking("hm", "sig"), Text(""), Text("  \n")], ids=["thinking", "empty text", "whitespace"])
+def test_an_empty_reply_is_left_out_and_a_reply_whose_last_block_cannot_carry_a_marker_is_stepped_over(last: Text | Thinking) -> None:
     history = body(user(text("hi", cache_control=MARK)))
     _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
     assert empty["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
-    _, thought = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), Thinking("hm", "sig"))), "q")
-    assert cast(list[object], thought["messages"])[1] == {"role": "assistant", "content": [text("So.", cache_control=MARK), {"type": "thinking", "thinking": "hm", "signature": "sig"}]}
+    _, stepped = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), last)), "q")
+    [shared, replied, _] = cast(list[dict[str, object]], stepped["messages"])
+    assert shared == user(text("hi", cache_control=MARK))
+    assert not cache_marked(replied)
 
 
 @pytest.mark.outside

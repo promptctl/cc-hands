@@ -1,9 +1,10 @@
 """A side question as the brain's Claude Code asks one: /btw, forked from the brain's newest main turn.
 
-Claude Code 2.1.308 asks a side question (DTt, in its side-question chunk) as one request beside its loop: the loop's own
-model, system, tools, and settings, its conversation so far, its newest reply included, then one user message holding a
+Claude Code asks a side question (DTt, in its side-question chunk) as one request beside its loop: the loop's own model,
+system, tools, and settings, its conversation so far, its newest reply included, then one user message holding a
 placeholder result for each call still running, its reminder, and the question. It sets skipCacheWrite, so the request
-reads the loop's cached prefix and writes none of its own. hands builds that request from what its proxy forwarded for
+writes nothing to the cache and reads it up to the message before its question (docs/claude-code-behavior.md, side
+question markers). hands builds that request from what its proxy forwarded for
 the brain, and sends it back through the proxy: no Claude Code is started to ask it.
 """
 
@@ -81,27 +82,25 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
     replied = [] if turn.reply is None or not turn.reply.content else [{"role": "assistant", "content": [_block(block) for block in turn.reply.content]}]
     running = [] if turn.reply is None else [{"type": "tool_result", "tool_use_id": block.id, "content": RUNNING} for block in turn.reply.content if isinstance(block, ToolUse)]
     asked = [*running, {"type": "text", "text": REMINDER}, {"type": "text", "text": question}]
-    # [LAW:one-source-of-truth] the loop's own newest marker is the one moved: same cache_control, on the last message the
-    # fork shares with the loop. Markers it put on earlier messages stay where they are.
+    # [LAW:one-source-of-truth] Claude Code places each request's markers afresh, none carried from the loop's: the fork's
+    # one marker is the loop's newest cache_control, its ttl the loop's, and there is none when the loop sent none.
     newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
     marker = None if newest is None else [cast(Mapping[str, object], block)["cache_control"] for block in _blocks(messages[newest]["content"]) if isinstance(block, Mapping) and "cache_control" in block][-1]
-    shared = [_unmarked(message) if index == newest else message for index, message in enumerate((*messages, *replied))]
+    shared = [_unmarked(message) for message in (*messages, *replied)]
     # The API takes a system message only before an assistant message or at the end: a run of them closing a turn with no
     # reply yet to follow it stays at the end, and the question goes before it.
     at = next((index + 1 for index in reversed(range(len(shared))) if shared[index].get("role") != "system"), 0)
-    # Past the question, a marker would write the question to the cache: the closing messages carry none.
-    history, closing = shared[:at], [_unmarked(message) for message in shared[at:]]
+    history, closing = shared[:at], shared[at:]
     # Claude Code's normalisation merges adjacent user messages: the question joins a last message that is the user's.
     match history:
         case [*_, {"role": "user", "content": content}]:
             history[-1] = {**history[-1], "content": [*_blocks(content), *asked]}
         case _:
             history.append({"role": "user", "content": asked})
-    # skipCacheWrite: the marker sits on the message before the question's, the last that can carry one, so nothing new is
-    # written. Claude Code places markers after it merges the question in (Dpn runs on normalised messages), so a question
-    # merged into the loop's last message reads that message's own input uncached, as Claude Code's /btw does. A system
-    # message never carries it, and a reply of thinking alone has no block that can.
-    carrier = next((index for index in reversed(range(len(history) - 1)) if history[index].get("role") != "system" and _markable(history[index])), None)
+    # skipCacheWrite: the marker sits on the last message before the question's that can carry one, so nothing new is
+    # written. It is placed after the question is merged in, so a question merged into the loop's last message reads that
+    # message uncached (docs/claude-code-behavior.md, side question markers).
+    carrier = next((index for index in reversed(range(len(history) - 1)) if _markable(history[index])), None)
     if marker is not None and carrier is not None:
         history[carrier] = _marked(history[carrier], marker)
     history.extend(closing)
@@ -176,11 +175,21 @@ def _unmarked(message: Mapping[str, object]) -> dict[str, object]:
 
 
 def _markable(message: Mapping[str, object]) -> bool:
-    return any(cast(Mapping[str, object], block).get("type") not in UNMARKABLE for block in _blocks(message["content"]))
+    # Claude Code's rule for a message that can carry a marker, on its last block (docs/claude-code-behavior.md, cache
+    # marker carriers): a system message never, a user message always, a reply only when its last block is text with
+    # words in it or a block that is not thinking.
+    match message.get("role"), _blocks(message["content"]):
+        case "system", _:
+            return False
+        case "assistant", [*_, last]:
+            block = cast(Mapping[str, object], last)
+            return str(block.get("text", "")).strip() != "" if block.get("type") == "text" else block.get("type") not in UNMARKABLE
+        case "assistant", []:
+            return False
+        case _:
+            return True
 
 
 def _marked(message: Mapping[str, object], marker: object) -> dict[str, object]:
-    # The API takes no marker on a thinking block: it goes on the message's last block that is not one.
     blocks = _blocks(message["content"])
-    at = next((index for index in reversed(range(len(blocks))) if cast(Mapping[str, object], blocks[index]).get("type") not in UNMARKABLE), None)
-    return {**message, "content": [{**cast(Mapping[str, object], block), "cache_control": marker} if index == at else block for index, block in enumerate(blocks)]}
+    return {**message, "content": [*blocks[:-1], {**cast(Mapping[str, object], blocks[-1]), "cache_control": marker}]}
