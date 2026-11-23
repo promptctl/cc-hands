@@ -41,8 +41,8 @@ _CHUNK = 1 << 20
 # (docs/claude-code-behavior.md, "brain stellar drift" and "brain prompt-cache ttl").
 # Off: text of whitespace alone carries a cache marker.
 STELLAR_DRIFT: Literal[False] = False
-# Five minutes: the ttl a marker gives by naming none.
-CACHE_TTL: Literal["5m"] = "5m"
+# Five minutes, of the two a marker can give.
+CACHE_TTL: Literal["5m", "1h"] = "5m"
 ENV = {"CLAUDE_CODE_STELLAR_DRIFT": str(int(STELLAR_DRIFT)), "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": CACHE_TTL}
 
 

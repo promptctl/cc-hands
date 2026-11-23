@@ -124,11 +124,12 @@ def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
 
 
 def _classify_messages(body: object, named: str | None) -> Kind:
-    if not isinstance(body, Mapping):
-        return Unknown("a messages request whose body is not a JSON object")
-    request = cast(Mapping[str, object], body)
-    model = str(request.get("model"))
-    billing = _billing(request)
+    try:
+        request = read_request(body)
+    except UnreadableRequest as unread:
+        return Unknown(f"a messages request hands cannot read: {unread}")
+    model = str(request.fields.get("model"))
+    billing = _billing(request.system)
     # A class Claude Code names that is one kind outranks every reading of the body: it is Claude Code's own.
     match named:
         case "main":
@@ -153,17 +154,14 @@ def _classify_messages(body: object, named: str | None) -> Kind:
             return _by_body(request, model, billing)
 
 
-def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, str]) -> Kind:
+def _by_body(request: "Request", model: str, billing: Mapping[str, str]) -> Kind:
     """The kind a request's body reads as: by the words Claude Code opens a prompt of its own with, else by its markers."""
-    try:
-        messages = read_request(request).messages
-    except UnreadableRequest as unread:
-        return Unknown(f"a messages request to {model!r} hands cannot read: {unread}")
+    messages = request.messages
     if not messages:
         return Unknown(f"a messages request to {model!r} with no messages")
     # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
     # can follow a prompt just typed or a tool's result, and a message of its own can follow it.
-    texts = asked(request)
+    texts = asked(messages)
     if any(text.startswith(COMPACTION_OPENING) for text in texts):
         return Compaction()
     if any(text.startswith(SIDE_QUESTION_OPENING) for text in texts):
@@ -191,19 +189,19 @@ def _turn(billing: Mapping[str, str]) -> MainTurn:
     return MainTurn(None if prompt is None else PromptId(prompt))
 
 
-def _billing(request: Mapping[str, object]) -> Mapping[str, str]:
+def _billing(system: "Content | None") -> Mapping[str, str]:
     """The pairs of the billing line Claude Code opens its system prompt with; none when it has no such line."""
-    system = request.get("system")
-    texts = [system] if isinstance(system, str) else [text for block in _mappings(_list(system)) if isinstance(text := block.get("text"), str)]
+    texts = [text for block in content_blocks(system or ()) if isinstance(text := block.get("text"), str)]
     line = next((text for text in texts if text.startswith(BILLING_OPENING)), "").partition("\n")[0].removeprefix(BILLING_OPENING)
     pairs = (pair.strip().partition("=") for pair in line.split(";"))
     return {name: value for name, sep, value in pairs if sep}
 
 
-def asked(body: object) -> tuple[str, ...]:
+def asked(messages: Sequence["MessageParam"]) -> tuple[str, ...]:
     """The text of a messages request after the model's last reply: what the request is asking now."""
-    messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
-    return tuple(text for message in messages[_since_reply(messages) :] for text in _texts(message))
+    replies = [index for index, message in enumerate(messages) if message.role == "assistant"]
+    since = replies[-1] + 1 if replies else 0
+    return tuple(text for message in messages[since:] for block in content_blocks(message.content) if isinstance(text := block.get("text"), str))
 
 
 def tool_names(body: object) -> tuple[str, ...]:
@@ -254,23 +252,36 @@ def _blocks(message: object) -> list[object]:
     return _list(_content(message))
 
 
-@dataclass(frozen=True)
-class Said:
-    """One message of a messages request: its role, its content as sent, a string or a run of blocks, which only a system
-    message's directive leaves empty, and the rest of its fields as sent, a directive's output_config among them."""
+# The roles a request's message has: the API's two, and the system message Claude Code sends between them.
+Role = Literal["user", "assistant", "system"]
+_ROLES: Mapping[str, Role] = {"user": "user", "assistant": "assistant", "system": "system"}
+Content = str | tuple[Mapping[str, object], ...]
 
-    role: str
-    content: str | tuple[Mapping[str, object], ...]
+
+@dataclass(frozen=True)
+class MessageParam:
+    """One message of a messages request, as the API names it beside the Message a reply is: its role, its content as
+    sent, a string or a run of blocks, which only a system message's directive leaves empty, and the rest of its fields
+    as sent, a directive's output_config among them."""
+
+    role: Role
+    content: Content
     rest: Mapping[str, object] = field(default_factory=dict[str, object])
 
 
 @dataclass(frozen=True)
 class Request:
-    """A messages request, read: every field as sent, its system prompt (None when it sends none), and its messages."""
+    """A messages request, read: every field as sent, its system prompt (None when it sends none), and its messages. Its
+    cache markers, the request's own and its system prompt's, are objects."""
 
     fields: Mapping[str, object]
-    system: str | tuple[Mapping[str, object], ...] | None
-    messages: tuple[Said, ...]
+    system: Content | None
+    messages: tuple[MessageParam, ...]
+
+
+def content_blocks(content: Content) -> tuple[Mapping[str, object], ...]:
+    """A message's content as blocks, a string as the one text block Claude Code sends it as."""
+    return ({"type": "text", "text": content},) if isinstance(content, str) else content
 
 
 class UnreadableRequest(ValueError):
@@ -279,20 +290,24 @@ class UnreadableRequest(ValueError):
 
 def read_request(body: object) -> Request:
     """A messages request's body, read, or UnreadableRequest naming what in it could not be: a message is a role and its
-    content, a string or a list of blocks, which only a system message's directive leaves empty, and a system prompt, if
-    the request sends one, is a string or a list of blocks."""
-    # [LAW:parse-dont-validate] the one reader of a request's messages and system prompt, the classifier's and the side
-    # question's: past it, every message is a role and its content.
+    content, a string or a list of blocks, which only a system message's directive leaves empty; a system prompt, if
+    the request sends one, is a string or a list of blocks; a cache marker on the request or its system prompt is an
+    object."""
+    # [LAW:parse-dont-validate] the one reader of a request's messages and system prompt, the classifier's, its rewrite's
+    # and the side question's: past it, every message is a role and its content.
     if not isinstance(body, Mapping):
         raise UnreadableRequest("its body is not a JSON object")
     fields = cast(Mapping[str, object], body)
     messages = fields.get("messages")
     if not isinstance(messages, list):
         raise UnreadableRequest(f"its messages are not a list but {type(messages).__name__}")
-    return Request(fields, _system(fields.get("system")), tuple(_said(index, message) for index, message in enumerate(cast(list[object], messages))))
+    system = _system(fields.get("system"))
+    if any(not isinstance(marked.get("cache_control", {}), Mapping) for marked in (fields, *content_blocks(system or ()))):
+        raise UnreadableRequest("a cache marker on it or its system prompt is not an object")
+    return Request(fields, system, tuple(_message_param(index, message) for index, message in enumerate(cast(list[object], messages))))
 
 
-def _system(system: object) -> str | tuple[Mapping[str, object], ...] | None:
+def _system(system: object) -> Content | None:
     match system, _text_or_blocks(system):
         case None, _:
             return None
@@ -302,17 +317,18 @@ def _system(system: object) -> str | tuple[Mapping[str, object], ...] | None:
             return read
 
 
-def _said(index: int, message: object) -> Said:
+def _message_param(index: int, message: object) -> MessageParam:
     fields: Mapping[str, object] = cast(Mapping[str, object], message) if isinstance(message, Mapping) else {}
-    match fields.get("role"), _text_or_blocks(fields.get("content")):
+    role = fields.get("role")
+    match _ROLES.get(role) if isinstance(role, str) else None, _text_or_blocks(fields.get("content")):
         case str() as role, str() | tuple() as content if content != () or role == "system":
-            return Said(role, content, {term: value for term, value in fields.items() if term not in ("role", "content")})
+            return MessageParam(role, content, {term: value for term, value in fields.items() if term not in ("role", "content")})
         case _:
             # Never the message itself: it is the conversation, and this is said in a log.
-            raise UnreadableRequest(f"its messages.{index} is not a role with text or blocks")
+            raise UnreadableRequest(f"its messages.{index} is not a user, assistant or system message of text or blocks")
 
 
-def _text_or_blocks(content: object) -> str | tuple[Mapping[str, object], ...] | None:
+def _text_or_blocks(content: object) -> Content | None:
     match content:
         case str():
             return content
@@ -322,16 +338,18 @@ def _text_or_blocks(content: object) -> str | tuple[Mapping[str, object], ...] |
             return None
 
 
-def cache_marked(message: Said) -> bool:
+def cache_marked(message: MessageParam) -> bool:
     """Whether a message carries a cache marker on any of its blocks."""
     return not isinstance(message.content, str) and any("cache_control" in block for block in message.content)
 
 
-def markable(message: Said, stellar_drift: bool) -> bool:
-    """Whether Claude Code can put a cache marker on a message: any message but a reply can, and a reply can when its
+def _carries(message: MessageParam, stellar_drift: bool) -> bool:
+    """Whether a message carries a fork's cache marker: a user message does, a system message never, and a reply when its
     content is a string or its last block can (docs/claude-code-behavior.md, "cache marker carriers")."""
     match message:
-        case Said(role="assistant", content=(*_, last)):
+        case MessageParam(role="system"):
+            return False
+        case MessageParam(role="assistant", content=(*_, last)):
             return _markable_block(last, stellar_drift)
         case _:
             return True
@@ -350,11 +368,11 @@ def _markable_block(block: Mapping[str, object], stellar_drift: bool) -> bool:
             return True
 
 
-def fork_point(messages: Sequence[Said], stellar_drift: bool) -> int | None:
+def fork_point(messages: Sequence[MessageParam], stellar_drift: bool) -> int | None:
     """Where a fork that skips the cache write puts its marker: on the last message that can carry one before the last
-    that can, so the fork reads the loop's cached prefix and writes none of its own; None when fewer than two can. A
-    system-role message never carries one (docs/claude-code-behavior.md, "side question markers")."""
-    carriers = [index for index, message in enumerate(messages) if message.role != "system" and markable(message, stellar_drift)]
+    that can, so the fork reads the loop's cached prefix and writes none of its own; None when fewer than two can
+    (docs/claude-code-behavior.md, "side question markers")."""
+    carriers = [index for index, message in enumerate(messages) if _carries(message, stellar_drift)]
     return carriers[-2] if len(carriers) > 1 else None
 
 
@@ -1005,7 +1023,7 @@ def edited(body: object, changes: Sequence[Change]) -> Mapping[str, object]:
             case Stub(call=call) if call not in stubbed:
                 raise ValueError(f"no tool result answers call {call}")
             case Steer(prompt=prompt):
-                if not any(text.startswith(COMPACTION_OPENING) for text in asked(request)):
+                if not any(text.startswith(COMPACTION_OPENING) for text in asked(read_request(request).messages)):
                     raise ValueError("no message since the last reply holds a compaction prompt to steer")
                 since = _since_reply(messages)
                 messages[since:] = [_steered(message, prompt) for message in messages[since:]]

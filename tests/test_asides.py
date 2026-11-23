@@ -111,7 +111,7 @@ def test_none_of_the_loops_markers_survive_and_a_lone_message_carries_none() -> 
 def test_a_question_forked_from_a_turn_that_carried_no_marker_carries_none() -> None:
     history = body(user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?")))
     question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
-    assert marks(question.body) == [] and question.marked == Unmarked.UNCACHED
+    assert marks(question.body) == [] and question.marked == Unmarked.TURN_UNMARKED
 
 
 # What the brain's reply ends in, and the message the question then marks: the reply when it can carry a marker, else the
@@ -152,22 +152,37 @@ def test_no_marker_of_a_side_question_names_a_ttl_and_each_keeps_the_rest_of_its
     assert marks(sent) == [(1, FORKED)]
 
 
+def test_a_side_questions_markers_take_the_ttl_the_brain_is_pinned_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Were the pin an hour, every marker the question sends would name it, as Claude Code names an hour's.
+    monkeypatch.setattr("hands.brain.fork.CACHE_TTL", "1h")
+    history = {**body(user(text("hi", cache_control=MARK))), "system": [text("You are hands.", cache_control={"type": "ephemeral"})]}
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
+    assert sent["system"] == [text("You are hands.", cache_control=MARK)] and marks(sent) == [(1, MARK)]
+
+
 def test_a_turn_that_sent_no_system_prompt_forks_a_question_without_one() -> None:
     _, sent = forked(Turn("x1", "/v1/messages", HEADERS, json.dumps({"model": "claude-opus-5-5", "messages": [user(text("hi", cache_control=MARK))]}).encode(), reply(Text("So."))), "q")
     assert "system" not in sent and marks(sent) == [(1, FORKED)]
 
 
+NO_MESSAGE = "is not a user, assistant or system message of text or blocks"
 UNREADABLE = {
-    "content neither text nor blocks": (body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": None}), "its messages.1 is not a role with text or blocks"),
-    "no blocks": (body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": []}), "its messages.1 is not a role with text or blocks"),
-    "a block that is no object": (body({"role": "user", "content": ["hi"]}), "its messages.0 is not a role with text or blocks"),
-    "a system prompt neither text nor blocks": ({**body(user(text("hi"))), "system": 3}, "its system prompt is neither text nor blocks but int"),
+    "bytes that are not UTF-8": (b"\xff\xfe{", "its body is not JSON"),
+    "text that is not JSON": (b"{", "its body is not JSON"),
+    "JSON that is no object": (b"[]", "its body is not a JSON object"),
+    "messages that are no list": (as_sent({**body(), "messages": {}}), "its messages are not a list but dict"),
+    "content neither text nor blocks": (as_sent(body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": None})), f"its messages.1 {NO_MESSAGE}"),
+    "no blocks": (as_sent(body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": []})), f"its messages.1 {NO_MESSAGE}"),
+    "a block that is no object": (as_sent(body({"role": "user", "content": ["hi"]})), f"its messages.0 {NO_MESSAGE}"),
+    "a role the API has no message of": (as_sent(body({"role": "tool", "content": "hi"})), f"its messages.0 {NO_MESSAGE}"),
+    "a system prompt neither text nor blocks": (as_sent({**body(user(text("hi"))), "system": 3}), "its system prompt is neither text nor blocks but int"),
+    "a system marker that is no object": (as_sent({**body(user(text("hi"))), "system": [text("You are hands.", cache_control="1h")]}), "a cache marker on it or its system prompt is not an object"),
 }
 
 
-@pytest.mark.parametrize(("history", "why"), UNREADABLE.values(), ids=UNREADABLE.keys())
-async def test_a_turn_hands_cannot_read_fails_the_question_unforkable(history: dict[str, object], why: str) -> None:
-    unreadable = Turn("x1", "/v1/messages", HEADERS, as_sent(history), None)
+@pytest.mark.parametrize(("sent", "why"), UNREADABLE.values(), ids=UNREADABLE.keys())
+async def test_a_turn_hands_cannot_read_fails_the_question_unforkable(sent: bytes, why: str) -> None:
+    unreadable = Turn("x1", "/v1/messages", HEADERS, sent, None)
 
     class Unforkable(Newest):
         async def turn(self) -> Turn:

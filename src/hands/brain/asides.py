@@ -16,7 +16,7 @@ from enum import StrEnum
 
 import aiohttp
 
-from hands.brain.fork import Forked, Newest, Turn, fork
+from hands.brain.fork import Forked, Newest, Turn, Unmarked, fork
 from hands.clock import Clock
 from hands.core.trace import Span
 from hands.core.wire import Fork, Garbled, Observed, Send, Sent, UnreadableRequest, Written
@@ -155,7 +155,13 @@ class Asides:
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
     async def _answered(self, turn: Turn, forked: Forked) -> str:
-        annotate(forked=turn.exchange, marked=forked.marked)
+        annotate(forked=turn.exchange)
+        # [LAW:nothing-unseen] where its marker went, or why it has none: two facts, each of one type.
+        match forked.marked:
+            case Unmarked() as why:
+                annotate(unmarked=why)
+            case point:
+                annotate(marked=point)
         self._sending = (here(), forked.body)
         try:
             async with self._client.post(self._proxy_url + turn.path, headers=list(forked.headers), data=json.dumps(forked.body).encode()) as response:

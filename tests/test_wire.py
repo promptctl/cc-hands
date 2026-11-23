@@ -242,7 +242,13 @@ def test_a_fork_is_told_by_a_marker_on_its_fork_point_under_either_stellar_drift
 def test_a_request_whose_messages_hands_cannot_read_is_unknown_and_says_which() -> None:
     # Read by the reader a side question is forked by, so the two never judge one body two ways.
     unread = request(said("hi", marked=True), {"role": "assistant", "content": None}, said("what now?"))
-    assert classify("/v1/messages", unread) == Unknown("a messages request to 'claude-opus-5-5' hands cannot read: its messages.1 is not a role with text or blocks")
+    assert classify("/v1/messages", unread) == Unknown("a messages request hands cannot read: its messages.1 is not a user, assistant or system message of text or blocks")
+
+
+def test_a_request_hands_cannot_read_is_unknown_whatever_class_claude_code_names() -> None:
+    # A main turn too: the turn a side question would fork from is one hands can read.
+    unread = {**request(said("hi")), "messages": "hi"}
+    assert classify("/v1/messages", unread, {"x-claude-code-request-class": "main"}) == Unknown("a messages request hands cannot read: its messages are not a list but str")
 
 
 def test_a_marker_short_of_the_fork_point_is_no_fork() -> None:
@@ -298,7 +304,7 @@ def test_a_main_turn_claude_code_names_still_names_its_turn_by_the_billing_line(
 
 
 def test_every_request_no_rule_can_read_is_unknown_and_says_what_it_was() -> None:
-    assert classify("/v1/messages", None) == Unknown("a messages request whose body is not a JSON object")
+    assert classify("/v1/messages", None) == Unknown("a messages request hands cannot read: its body is not a JSON object")
     assert classify("/v1/messages", request()) == Unknown("a messages request to 'claude-opus-5-5' with no messages")
     assert classify("/v1/messages", request(said("a")), {"x-claude-code-request-class": "dreaming"}) == Unknown(
         "a messages request to 'claude-opus-5-5' Claude Code names 'dreaming', a class hands does not know"
