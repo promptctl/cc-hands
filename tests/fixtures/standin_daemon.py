@@ -3,7 +3,9 @@
     python standin_daemon.py <home> [--restarted]
 
 It stands in for `hands run`, which needs a microphone, the talk key's grant, and the speech models, so that a test
-can restart a running daemon through the plugin, or by editing its settings, and see what the run after it knows.
+can restart a running daemon through the plugin, or by editing its settings, and see what the run after it knows. The
+script in its brain's pinned claude's place is the pin, in every run, so the start's preflight, which weighs each edit,
+passes the home with no Claude Code installed.
 """
 
 import asyncio
@@ -12,6 +14,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from hands.brain import pinned
 from hands.clock import SYSTEM
 from hands.daemon.cli import launch
 from hands.daemon.config import edited, load
@@ -21,10 +24,12 @@ from hands.sessions.audit import AuditLog
 from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.registry import Sessions
+from pins import checksums
 
 
 def main() -> None:
     home = Home(Path(sys.argv[1]))
+    pinned.CHECKSUMS = checksums(pinned.claude(home.brain).read_bytes())
     run_start = Start(restarted="--restarted" in sys.argv[2:], clock=SYSTEM)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     heart.beat("starting", None, 0, listening=False, degraded=())

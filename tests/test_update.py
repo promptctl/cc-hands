@@ -20,7 +20,7 @@ from typing import Any, TextIO
 
 import pytest
 
-from conftest import children_on, exited
+from conftest import children_on, exited, standin
 from hands.brain.process import PLUGIN
 from hands.clock import Clock, SYSTEM
 from hands.daemon import cli, update
@@ -35,7 +35,6 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.wrapper import Installing
 from hands.voice.intermediary_instruction import brain_instruction
 
-STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 # The steps of an update of the uv tool environment, in order; a checkout's update runs pull and sync in place of fetch,
 # constraints, and install.
@@ -315,7 +314,7 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
     home, log, said = Home(tmp_path / "home"), tmp_path / "commands", tmp_path / "said"
     # The finally reads it however early this test fails.
     said.touch()
-    daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
+    daemon = standin(home)
     # The brain: a process group of its own, as hands starts it, which the update is run from.
     brain = subprocess.Popen(["sleep", "60"], process_group=0)
     try:
