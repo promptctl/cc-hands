@@ -16,7 +16,33 @@ from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, Unmarked, fork
 from hands.brain.session import BrainSession
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
-from hands.core.wire import CLASS_HEADER, CONTINUATION_CLOSING, CONTINUATION_OPENING, Block, Exchanged, Fork, Forwarded, MainTurn, Message, Observed, Reached, RedactedThinking, Route, Send, Sent, Text, Thinking, ToolUse, UnreadableRequest, Written, classify
+from hands.core.wire import (
+    CLASS_HEADER,
+    CONTINUATION_CLOSING,
+    CONTINUATION_OPENING,
+    Block,
+    Ending,
+    Exchanged,
+    Fork,
+    Forwarded,
+    MainTurn,
+    Message,
+    Observed,
+    Reached,
+    RedactedThinking,
+    Route,
+    Send,
+    Sent,
+    Synthesized,
+    Synthetic,
+    Text,
+    Thinking,
+    ToolUse,
+    UnreadableRequest,
+    Written,
+    block_param,
+    classify,
+)
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.core.trace import Span
@@ -225,6 +251,54 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     newest.hear(exchanged("o1", SessionId("other")))
     newest.hear(exchanged("x1", BRAIN))
     assert (await newest.turn()).reply == message
+
+
+def main_exchanged(exchange: str, reply: Ending) -> Exchanged:
+    return Exchanged(exchange, BRAIN, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, reply, False, root(VirtualClock()))
+
+
+# The brain's held turn: its stay_silent call answered, and the proxy answering the request that carries the answer.
+SILENT_CALL = ToolUse("t1", "stay_silent", {})
+OPENED = body(user(text("hi")))
+HELD = body(user(text("hi")), {"role": "assistant", "content": [block_param(SILENT_CALL)]}, user({"type": "tool_result", "tool_use_id": "t1", "content": "held"}))
+STAYED_SILENT = Message("msg_hands_1", "claude-opus-5-5", (Text("(stayed silent)"),), "end_turn", {"input_tokens": 0, "output_tokens": 0})
+
+
+def upstream_turn(newest: Newest, exchange: str, sent: dict[str, object], answer: Message) -> None:
+    newest.hear(Sent(exchange, BRAIN, MainTurn(None), "main", sent))
+    newest.hear(Forwarded(exchange, "/v1/messages", HEADERS, as_sent(sent)))
+    newest.hear(main_exchanged(exchange, Reached(200, 0.0, 0.0, 0, Written(answer, True))))
+
+
+def held_turn(newest: Newest, exchange: str, sent: dict[str, object]) -> None:
+    newest.hear(Sent(exchange, BRAIN, MainTurn(None), "main", sent))
+    newest.hear(Synthesized(exchange, "/v1/messages", HEADERS, as_sent(sent), STAYED_SILENT))
+    newest.hear(main_exchanged(exchange, Synthetic("(stayed silent)", 0.0)))
+
+
+async def test_a_question_after_a_turn_the_proxy_answered_itself_forks_from_that_turn_with_its_answer() -> None:
+    newest = Newest(BrainSession(BRAIN))
+    upstream_turn(newest, "x1", OPENED, reply(SILENT_CALL, stop="tool_use"))
+    held_turn(newest, "x2", HELD)
+    turn = await newest.turn()
+    assert turn == Turn("x2", "/v1/messages", HEADERS, as_sent(HELD), STAYED_SILENT)
+    # The stay_silent call goes with the result Claude Code holds for it, and no call is left running.
+    _, asked = forked(turn, "what now?")
+    assert asked["messages"] == [*cast(list[object], HELD["messages"]), {"role": "assistant", "content": [text("(stayed silent)")]}, user(*ASKED)]
+
+
+async def test_a_question_after_a_held_turn_and_then_one_sent_upstream_forks_from_the_one_sent_upstream() -> None:
+    newest = Newest(BrainSession(BRAIN))
+    held_turn(newest, "x1", HELD)
+    asking = body(*cast(list[dict[str, object]], HELD["messages"]), {"role": "assistant", "content": [text("(stayed silent)")]}, user(text("read it")))
+    reading = ToolUse("t2", "Read", {"file_path": "/a"})
+    upstream_turn(newest, "x2", asking, reply(reading, stop="tool_use"))
+    turn = await newest.turn()
+    assert turn.exchange == "x2"
+    # Only the call Claude Code holds no result for stands in as running.
+    _, asked = forked(turn, "what now?")
+    running: dict[str, object] = {"type": "tool_result", "tool_use_id": "t2", "content": RUNNING}
+    assert cast(list[object], asked["messages"])[-1] == user(running, *ASKED)
 
 
 async def test_a_question_asked_as_the_brain_moves_forks_from_the_conversation_it_moved_to() -> None:

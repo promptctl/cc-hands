@@ -40,7 +40,7 @@ from hands.sessions.home import Home
 from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
-from hands.core.wire import UPSTREAM, Answering, Exchanged, Forwarded, Heard, Observed, Sent
+from hands.core.wire import UPSTREAM, Answering, Exchanged, Forwarded, Heard, Observed, Sent, Synthesized
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
@@ -564,7 +564,7 @@ def wire_to(record: Record) -> Callable[[Observed], None]:
             case Sent() | Heard() | Answering():
                 # Heard as it happens by what speaks from the wire; the exchange's line already holds the request's kind and the whole reply.
                 pass
-            case Forwarded():
+            case Forwarded() | Synthesized():
                 # Its headers carry the client's credentials: what side questions fork from, never written down.
                 pass
 

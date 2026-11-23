@@ -37,6 +37,7 @@ from hands.core.wire import (
     Send,
     Sent,
     Synthesize,
+    Synthesized,
     Synthetic,
     Tail,
     Written,
@@ -691,7 +692,12 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
     assert (reply.message.model, reply.message.content, reply.message.stop_reason) == ("claude-opus-5-5", (Text("(stayed silent)"),), "end_turn")
     exchange = only_exchange(wire)
     assert exchange.kind == MainTurn(None) and isinstance(exchange.reply, Synthetic) and exchange.reply.said == "(stayed silent)"
-    assert [type(seen) for seen in wire.seen] == [Sent, Exchanged]
+    assert [type(seen) for seen in wire.seen] == [Sent, Synthesized, Exchanged]
+    # Told as the client holds it: the bytes it posted, its own credentials, and the message the bytes it got carry.
+    told = wire.seen[1]
+    assert isinstance(told, Synthesized)
+    assert (told.path, told.body, told.message) == ("/v1/messages?beta=true", REQUEST, reply.message)
+    assert ("Authorization", "Bearer the-clients-own") in told.headers
 
 
 @pytest.mark.outside

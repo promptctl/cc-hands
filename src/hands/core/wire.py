@@ -737,13 +737,27 @@ Block = Text | Thinking | RedactedThinking | ToolUse
 
 @dataclass(frozen=True)
 class Message:
-    """A message the model wrote: a streamed reply put back together, or one a request without streaming was answered with."""
+    """An assistant message a request is answered with: one the model wrote, streamed and put back together or sent
+    whole, or one hands answered the request with itself."""
 
     id: str
     model: str
     content: tuple[Block, ...]
     stop_reason: str | None
     usage: Mapping[str, object]
+
+
+def block_param(block: Block) -> dict[str, object]:
+    """A content block as the API's JSON carries it, in a reply or in the history a later request sends back."""
+    match block:
+        case Text(text=text):
+            return {"type": "text", "text": text}
+        case Thinking(thinking=thinking, signature=signature):
+            return {"type": "thinking", "thinking": thinking, "signature": signature}
+        case RedactedThinking(data=data):
+            return {"type": "redacted_thinking", "data": data}
+        case ToolUse(id=call, name=name, input=given):
+            return {"type": "tool_use", "id": call, "name": name, "input": given}
 
 
 @dataclass(frozen=True)
@@ -1154,6 +1168,19 @@ class Forwarded:
 
 
 @dataclass(frozen=True)
+class Synthesized:
+    """A request the proxy answers itself and never sends upstream: its path, its end-to-end headers, its bytes as the
+    client sent them, and the message it is answered with. Its headers carry the client's credentials, so it is heard and
+    never recorded."""
+
+    exchange: str
+    path: str
+    headers: tuple[tuple[str, str], ...]
+    body: bytes
+    message: Message
+
+
+@dataclass(frozen=True)
 class Heard:
     """One event of a streamed reply, as its frame arrived."""
 
@@ -1253,4 +1280,4 @@ class Exchanged:
     span: Span
 
 
-Observed = Sent | Forwarded | Heard | Answering | Exchanged
+Observed = Sent | Forwarded | Synthesized | Heard | Answering | Exchanged
