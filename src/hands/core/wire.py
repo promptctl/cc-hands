@@ -83,6 +83,8 @@ Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Auxiliary | Elsew
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
 # The first words Claude Code wraps every side question in, in its utils/sideQuestion.ts.
 SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user."
+# The first words of the message Claude Code continues a reply cut short with (Z4s), the one message it marks ephemeral.
+CONTINUATION_OPENING = "The previous attempt at this response was interrupted before it could complete."
 # The line Claude Code opens its system prompt with, in its attribution header builder: `key=value;` pairs after it.
 BILLING_OPENING = "x-anthropic-billing-header:"
 # The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
@@ -98,9 +100,9 @@ def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
 
     Claude Code names the class itself in CLASS_HEADER, and a class that is one kind decides it. A request it names
     auxiliary is told by its body, since it names its forks so too; so is one without the header, from a Claude Code
-    started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on the
-    last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on its fork point, the last
-    message that can carry one before the last that can (`fork_point`).
+    started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on its
+    last carrier or on a closing system message (docs/claude-code-behavior.md, "loop markers"); a fire-and-forget fork
+    (skipCacheWrite in services/api/claude.ts) puts it on its fork point, the carrier before the last (`fork_point`).
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
     asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o).
@@ -170,15 +172,19 @@ def _by_body(request: "Request", model: str, billing: Mapping[str, str]) -> Kind
     # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
     # message of a long history, and offers no tools in the body.
     newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
-    last = len(messages) - 1
-    if newest == last and billing.get("cc_is_subagent") == "true":
+    # [LAW:one-source-of-truth] where the loop marks and where a fork marks, from the one list of carriers. A request does
+    # not say whether its sender runs under stellar drift, nor whether it may mark a system message, so every place it
+    # could have chosen is one. Under one drift the two never meet; across the two they meet only on a request whose last
+    # carrier is a reply of whitespace text, which no loop or fork sends, and there it reads as the loop's (as the
+    # body of a request Claude Code names auxiliary reads as a call beside the loop).
+    turns = {at for stellar_drift in (False, True) for at in _loop_marks(messages, stellar_drift)}
+    forks = {point for stellar_drift in (False, True) if (point := fork_point(messages, stellar_drift)) is not None}
+    if newest in turns and billing.get("cc_is_subagent") == "true":
         # A subagent's requests carry its parent's session header and shape; only this line tells them apart.
         return Subagent()
-    if newest == last:
+    if newest in turns:
         return _turn(billing)
-    # A request does not say whether its sender runs under stellar drift, so a fork point under either rule is one.
-    points = {point for stellar_drift in (False, True) if (point := fork_point(messages, stellar_drift)) is not None}
-    if newest in points:
+    if newest in forks:
         return Fork()
     # Marked nowhere a loop or a fork marks: a call beside the loop.
     return Auxiliary(model)
@@ -349,13 +355,17 @@ def cache_marked(message: MessageParam) -> bool:
 
 
 def _carries(message: MessageParam, stellar_drift: bool) -> bool:
-    """Whether a message carries a fork's cache marker: a user message does, a system message never, and a reply when its
-    content is a string or its last block can (docs/claude-code-behavior.md, "cache marker carriers")."""
+    """Whether a message carries a cache marker: a user message does but the ephemeral continuation, a system message
+    never, and a reply when its content is a string or its last block can (docs/claude-code-behavior.md, "cache marker
+    carriers")."""
     match message:
         case MessageParam(role="system"):
             return False
         case MessageParam(role="assistant", content=(*_, last)):
             return _markable_block(last, stellar_drift)
+        case MessageParam(role="user", content=content):
+            # Ephemeral is no field on the wire: the continuation is told by its words, which a merge keeps.
+            return not any(isinstance(text := block.get("text"), str) and text.startswith(CONTINUATION_OPENING) for block in content_blocks(content))
         case _:
             return True
 
@@ -377,8 +387,21 @@ def fork_point(messages: Sequence[MessageParam], stellar_drift: bool) -> int | N
     """Where a fork that skips the cache write puts its marker: on the last message that can carry one before the last
     that can, so the fork reads the loop's cached prefix and writes none of its own; None when fewer than two can
     (docs/claude-code-behavior.md, "side question markers")."""
-    carriers = [index for index, message in enumerate(messages) if _carries(message, stellar_drift)]
-    return carriers[-2] if len(carriers) > 1 else None
+    found = _carriers(messages, stellar_drift)
+    return found[-2] if len(found) > 1 else None
+
+
+def _loop_marks(messages: Sequence[MessageParam], stellar_drift: bool) -> set[int]:
+    """Where Claude Code's loop may put its newest marker: on its last carrier, or on a closing system message that says
+    something, which it marks when it may mark a system message (docs/claude-code-behavior.md, "loop markers")."""
+    found = _carriers(messages, stellar_drift)
+    *_, last = messages
+    said = any(isinstance(text := block.get("text"), str) and text.strip() for block in content_blocks(last.content))
+    return {*found[-1:], *([len(messages) - 1] if last.role == "system" and said else [])}
+
+
+def _carriers(messages: Sequence[MessageParam], stellar_drift: bool) -> list[int]:
+    return [index for index, message in enumerate(messages) if _carries(message, stellar_drift)]
 
 
 def _texts(message: object) -> list[str]:

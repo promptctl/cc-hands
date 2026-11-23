@@ -18,6 +18,7 @@ from hands.core.wire import (
     COMPACTION_INSTRUCTIONS,
     COMPACTION_OPENING,
     COMPACTION_REMINDER,
+    CONTINUATION_OPENING,
     Answered,
     Auxiliary,
     BlockStarted,
@@ -70,8 +71,8 @@ def request(*messages: dict[str, object], tools: list[object] = TOOLS) -> dict[s
     return {"model": "claude-opus-5-5", "tools": tools, "system": [{"type": "text", "text": "you are"}], "messages": list(messages)}
 
 
-# The shapes below are the ones Claude Code sent through the proxy: its own loop marks the last
-# message, and its compaction marks the one before.
+# The shapes below are the ones Claude Code sent through the proxy: its own loop marks its last carrier or a closing
+# system message (docs/claude-code-behavior.md, "loop markers"), and a fork marks the carrier before.
 
 
 def test_the_loop_marks_its_last_message_and_is_a_main_turn() -> None:
@@ -260,6 +261,35 @@ def test_a_request_marked_nowhere_a_loop_or_fork_marks_is_auxiliary() -> None:
     # The permission classifier, a title, a quota probe: no marker, or one earlier than a fork's.
     assert classify("/v1/messages", request(said("a"), said("b"), tools=[])) == Auxiliary("claude-opus-5-5")
     assert classify("/v1/messages", request(said("a", marked=True), said("b"), said("c"))) == Auxiliary("claude-opus-5-5")
+
+
+def closing(text: str, marked: bool = False) -> dict[str, object]:
+    return {**said(text, marked), "role": "system"}
+
+
+SUBAGENT_BILLING = "x-anthropic-billing-header: cc_version=1.0.0.a1b; cc_is_subagent=true;"
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        # The loop marks its last carrier, however many system messages close the turn after it.
+        (request(said("hi"), reply("hello"), said("go on", marked=True), closing("Stay brief.")), MainTurn(None)),
+        (request(said("hi"), reply("hello"), said("go on", marked=True), closing("Stay brief."), closing("Be kind.")), MainTurn(None)),
+        # Or the closing system message itself, when it says something and the loop may mark one.
+        (request(said("hi"), reply("hello"), said("go on"), closing("Stay brief.", marked=True)), MainTurn(None)),
+        # The continuation of a reply cut short is ephemeral, no carrier: the loop marks the carrier before it.
+        (request(said("hi"), reply("Half of it", marked=True), said(CONTINUATION_OPENING + " The text it had produced so far is quoted below:")), MainTurn(None)),
+        (billed(SUBAGENT_BILLING, said("hi"), reply("hello"), said("go on", marked=True), closing("Stay brief.")), Subagent()),
+        # A fork without a side question's words, closed by a system message: marked on the carrier before the last.
+        (request(said("hi"), reply("hello", marked=True), said("suggest the next prompt"), closing("Stay brief.")), Fork()),
+        # Marked short of both.
+        (request(said("hi", marked=True), reply("hello"), said("go on"), closing("Stay brief.")), Auxiliary("claude-opus-5-5")),
+    ],
+    ids=["one closing", "two closing", "closing marked", "continuation", "subagent", "fork", "auxiliary"],
+)
+def test_a_turn_closed_by_system_messages_reads_by_where_the_loop_or_a_fork_marks_it(body: dict[str, object], kind: object) -> None:
+    assert classify("/v1/messages", body) == kind
 
 
 @pytest.mark.parametrize(
