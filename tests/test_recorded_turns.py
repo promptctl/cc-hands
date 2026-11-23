@@ -188,7 +188,7 @@ def test_every_recorded_turn_begins_at_its_sessions_start() -> None:
 def test_every_recorded_turn_is_of_the_brains_pin() -> None:
     # The records name the release they were written by: once the pin moves, the turns are recorded again on it.
     versions = {line.record["version"] for recording in RECORDINGS.values() for line in recording if isinstance(line, Written) and "version" in line.record}
-    assert versions == {pinned.VERSION}
+    assert versions == {pinned.PIN.version}
 
 
 @pytest.mark.parametrize(("name", "schedule"), [(name, schedule) for name in RECORDINGS for schedule in SCHEDULES])

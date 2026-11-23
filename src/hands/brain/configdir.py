@@ -72,11 +72,11 @@ def cwd(config_dir: Path) -> Path:
     return config_dir / "cwd"
 
 
-def read(config_dir: Path) -> ConfigDir:
-    """Every file of `config_dir` the brain starts on, read; never raises on what they hold. Hashes a pinned claude this
-    process has not hashed since it changed, about 230 MB, so it is called off the loop."""
+def read(config_dir: Path, pin: pinned.Pin) -> ConfigDir:
+    """Every file of `config_dir` the brain starts on, read, its claude weighed against `pin`; never raises on what they
+    hold. Hashes a pinned claude this process has not hashed since it changed, about 230 MB, so it is called off the loop."""
     try:
-        claude: Path | pinned.Unpinned = pinned.verified(config_dir)
+        claude: Path | pinned.Unpinned = pin.verified(config_dir)
     except pinned.Unpinned as error:
         claude = error
     # realpath, not resolve: a link loop is a directory Claude Code trusts none of, never a raise.

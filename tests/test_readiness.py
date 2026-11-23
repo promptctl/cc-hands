@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on, executable, onboard, pin, stand_in, startable, SYSTEM_PATH
+from conftest import children_on, executable, laid_out, onboard, pin, stand_in, SYSTEM_PATH
+from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
@@ -870,7 +871,7 @@ def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monk
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(root / "home")
     onboard(home.brain)
-    found = readiness.configured(children_on(SYSTEM), home, os.environ)
+    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), os.environ)
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -878,33 +879,34 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
-    reached = readiness.configured(children_on(SYSTEM), home, {})
+    reached = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {})
     # The refusal, which names the file, is the detail, and the fix names the file without the refusal again.
     assert isinstance(reached, Missing) and reached.fix == f"correct {home.config}"
     assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
 
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    startable(root / "home", monkeypatch)
-    found = readiness.configured(children_on(SYSTEM), Home(root / "home"), {"HANDS_DEBUG": "1"})
+    home = Home(root / "home")
+    laid_out(home)
+    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {"HANDS_DEBUG": "1"})
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
 def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
-    startable(home.root, monkeypatch)
+    laid_out(home)
 
     def unspawnable(*_: object) -> object:
         raise PermissionError("claude is not executable")
 
     monkeypatch.setattr(readiness, "resolve", unspawnable)
-    found = readiness.configured(children_on(SYSTEM), home, {})
+    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {})
     assert isinstance(found, Unknown) and "claude is not executable" in found.said
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
-    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(Path("/h/brain/pinned-claude/claude"), None)))
-    assert found == Ready("brain logged in as brain@example.com (claude.ai)", f"the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5 on Claude Code {pinned.VERSION}, hands' own copy: /h/brain/pinned-claude/claude")
+    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(Path("/h/brain/pinned-claude/claude"), None)), pinned.PIN)
+    assert found == Ready("brain logged in as brain@example.com (claude.ai)", f"the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5 on Claude Code {pinned.PIN.version}, hands' own copy: /h/brain/pinned-claude/claude")
 
 
 # hands running
@@ -953,8 +955,7 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
     shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     beating(home)
-    pin(monkeypatch, executable(root / "pinned" / "claude", "#!/bin/sh\n"))
-    onboard(home.brain)
+    laid_out(home)
     monkeypatch.setattr(readiness, "resolve", logged_in)
     hands_printing(root, f"hands {version('hands')}")
     executable(root / "tools" / "tmux", "#!/bin/sh\n")
@@ -983,7 +984,7 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
 @pytest.mark.outside
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
-    assert main(["--home", str(home.root), "check"]) == 0
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 0
     assert marks(capsys) == dict.fromkeys(STEPS, "✓")
 
 
@@ -1010,8 +1011,8 @@ def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(readiness, "resolve", refused)
 
 
-def unpinned(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
-    (root / "pinned" / "claude").unlink()
+def unpinned(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    pinned.PIN.claude(home.brain).unlink()
 
 
 def ungranted(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1034,7 +1035,7 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"]) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 1
     assert marks(capsys) == {step: "✗" if step in steps else "✓" for step in STEPS}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1049,10 +1050,10 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     home = set_up(root, fritter, monkeypatch, "unreadable")
-    assert main(["--home", str(home.root), "check"]) == 2
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 2
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?"}
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
-    assert main(["--home", str(home.root), "check"]) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?", "grant": "✗"}
     # Each event's reason names the steps that decided its exit: the one not looked at, then the missing one alone.
     events = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1069,14 +1070,14 @@ def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_b
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     no_hands(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"]) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 1
     *terse, hint = capsys.readouterr().out.splitlines()
     assert hint == VERBOSE_HINT
     [line] = [each for each in terse if each.startswith("✗")]
     named, fix = line.split("  → ")
     assert (named.rstrip(), fix) == ("✗ `hands` not on PATH", "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH")
     assert not any(each.startswith(" ") for each in terse)
-    assert main(["--home", str(home.root), "check", "-v"]) == 1
+    assert main(["--home", str(home.root), "check", "-v"], pin=LAID_OUT) == 1
     full = capsys.readouterr().out.splitlines()
     # Each step's line is the one the terse check printed, and beneath it, what is said of it in full, less its fix.
     assert [each for each in full if not each.startswith(" ")] == terse

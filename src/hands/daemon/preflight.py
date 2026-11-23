@@ -10,7 +10,7 @@ it, and a login lost since the start is the brain's own API answers' to say (pro
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.brain import configdir
+from hands.brain import configdir, pinned
 from hands.core.session import Runnable
 from hands.sessions import wrapper
 from hands.sessions.files import Unread
@@ -64,10 +64,10 @@ def _fact(state: FritterState | ShimState) -> str:
             return state
 
 
-def preflight(home: Home) -> Preflight:
-    """Every refusal a start would make on `home`'s files. Hashes a pinned claude this process has not hashed since it
-    changed, about 230 MB, so it is called off the loop."""
-    config = configdir.read(home.brain)
+def preflight(home: Home, pin: pinned.Pin) -> Preflight:
+    """Every refusal a start whose brain runs `pin` would make on `home`'s files. Hashes a pinned claude this process has
+    not hashed since it changed, about 230 MB, so it is called off the loop."""
+    config = configdir.read(home.brain, pin)
     fritter = _fritter(home)
     shim = _shim(home)
     brain = configdir.runnable(config)
@@ -89,10 +89,10 @@ def preflight(home: Home) -> Preflight:
             return Preflight(fritter, shim, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
-def beside(home: Home, unread: Rejected) -> tuple[str, ...]:
+def beside(home: Home, pin: pinned.Pin, unread: Rejected) -> tuple[str, ...]:
     """Every refusal of a start whose settings do not parse: theirs, then every one the preflight finds beside it, so a
     settings file that cannot be read hides none of the home's other refusals."""
-    match preflight(home).verdict:
+    match preflight(home, pin).verdict:
         case Refused(refusals=refusals):
             return (str(unread), *refusals)
         case Startable():

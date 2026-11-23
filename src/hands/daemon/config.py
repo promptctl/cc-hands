@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 
 import tomlkit
 
+from hands.brain import pinned
 from hands.clock import Clock
 from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions.audit import Record, SettingsEdited
@@ -104,9 +105,9 @@ def load(home: Home, model: str | None = None) -> Settings:
     return Settings(held, _settings(home, held, model), model)
 
 
-async def edited(home: Home, record: Record, running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
+async def edited(home: Home, pin: pinned.Pin, record: Record, running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
     """The edit, once the file holds settings other than `running`, the ones the run was started on: written, rewritten,
-    or removed, and a start on it would refuse none of the home's files.
+    or removed, and a start on it, its brain on `pin`, would refuse none of the home's files.
 
     [LAW:no-ambient-temporal-coupling] weighed against the bytes the run read, not a read of its own, so an edit is never
     missed, however late after the run's read the watch begins. An edit is weighed once its bytes read the same on two
@@ -133,12 +134,12 @@ async def edited(home: Home, record: Record, running: Settings, clock: Clock, pe
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
         except Rejected as error:
-            refusals: tuple[str, ...] = await off_loop(partial(beside, home, error), "weighing a settings edit")
+            refusals: tuple[str, ...] = await off_loop(partial(beside, home, pin, error), "weighing a settings edit")
         else:
             if settings == running.config:
                 settled = now
                 continue
-            match (await off_loop(partial(preflight, home), "weighing a settings edit")).verdict:
+            match (await off_loop(partial(preflight, home, pin), "weighing a settings edit")).verdict:
                 # [LAW:escape-local-minima] exception: a login lost since the start passes here, until
                 # promptctl-phone-app-9d9y.h4s (blocked by promptctl-brain-uoz0.gi7) weighs it with no Claude Code started.
                 case Startable():
@@ -163,8 +164,9 @@ class OwnModel:
     starting again on it once `edited` has weighed it.
     """
 
-    def __init__(self, home: Home, running: Settings) -> None:
+    def __init__(self, home: Home, pin: pinned.Pin, running: Settings) -> None:
         self._home = home
+        self._pin = pin
         self._running = running
         # [LAW:single-enforcer] the one lock over a switch of the model, taken by `hands.voice.modelswitch.switch_model`.
         self.changing = asyncio.Lock()
@@ -190,7 +192,7 @@ class OwnModel:
             held = _readable(self._home, _held(self._home))
             on_file = _settings(self._home, held, self._running.model)
         except Rejected as error:
-            raise Rejected("; ".join(beside(self._home, error))) from error
+            raise Rejected("; ".join(beside(self._home, self._pin, error))) from error
         edited = _with_model(held, model)
         chosen = _settings(self._home, edited, self._running.model)
         if chosen == self._running.config:
@@ -200,7 +202,7 @@ class OwnModel:
             # same bytes written again would not change. Which of the two is not known here, so the reason names both.
             raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
         # [LAW:escape-local-minima] exception: a login lost since the start passes here, until promptctl-phone-app-9d9y.h4s.
-        match preflight(self._home).verdict:
+        match preflight(self._home, self._pin).verdict:
             case Refused(refusals=refusals):
                 raise Rejected("; ".join(refusals))
             case Startable():

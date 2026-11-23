@@ -160,17 +160,17 @@ def installed(children: Children, path: str) -> Finding:
     return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs its `hands-shim` for the plugin in every session")
 
 
-def configured(children: Children, home: Home, environment: Mapping[str, str]) -> Finding:
-    """Whether hands would start on its settings and its home's files, and the brain has the login it reaches its model with."""
+def configured(children: Children, home: Home, pin: pinned.Pin, environment: Mapping[str, str]) -> Finding:
+    """Whether hands would start on its settings and its home's files, its brain on `pin`, and the brain has the login it reaches its model with."""
     try:
         config = load(home).config
     except Rejected as error:
         # The refusal names the file and what is wrong with it, so it is the detail, beside every other refusal of the
         # home's files, each naming its own fix, and the line names the file to mend.
-        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(home, error))}", f"correct {home.config}")
+        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(home, pin, error))}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse on the home's files is said here in
     # its words, every refusal at once, and the login beside them wherever the brain's own config directory runs one.
-    match preflight(home).verdict:
+    match preflight(home, pin).verdict:
         case Startable(brain=brain):
             refusals: tuple[str, ...] = ()
         case Refused(refusals=refusals, brain=brain):
@@ -178,7 +178,7 @@ def configured(children: Children, home: Home, environment: Mapping[str, str]) -
     if brain is None:
         # The run that asks would load what the brain's own settings keep out.
         return unstartable("; ".join(refusals))
-    match _reached(children, config.llm, home, environment, brain):
+    match _reached(children, config.llm, home, pin, environment, brain):
         case reached if not refusals:
             return reached
         case Missing(fix=fix) | Unknown(detail=fix):
@@ -187,9 +187,9 @@ def configured(children: Children, home: Home, environment: Mapping[str, str]) -
             return unstartable("; ".join(refusals))
 
 
-def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Finding:
+def _reached(children: Children, llm: Claude, home: Home, pin: pinned.Pin, environment: Mapping[str, str], brain: Runnable) -> Finding:
     try:
-        reached: Finding = reaching(resolve(children, llm, home, environment, brain))
+        reached: Finding = reaching(resolve(children, llm, home, environment, brain), pin)
     except Rejected as error:
         # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
         # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
@@ -201,9 +201,9 @@ def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[s
     return reached
 
 
-def reaching(reached: backends.ClaudeCodeBackend) -> Ready:
-    """What a brain that has its login reaches, and the Claude Code it runs."""
-    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model} on Claude Code {pinned.VERSION}, hands' own copy: {reached.brain.claude}")
+def reaching(reached: backends.ClaudeCodeBackend, pin: pinned.Pin) -> Ready:
+    """What a brain that has its login reaches, and the Claude Code it runs, `pin`'s."""
+    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model} on Claude Code {pin.version}, hands' own copy: {reached.brain.claude}")
 
 
 def unstartable(reason: str) -> Missing:

@@ -6,7 +6,6 @@ import json
 import os
 import platform
 import re
-import shlex
 import shutil
 import stat
 import subprocess
@@ -40,7 +39,6 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.core.session import PermissionMode, Runnable
 from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
@@ -57,7 +55,7 @@ from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
-from fixtures.pins import checksums
+from fixtures import pins
 import offline
 import clockwatch
 import timeouts
@@ -721,7 +719,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
         hold = offline.hold(offline.Unit((Path(huggingface_hub.constants.HF_HUB_CACHE), Path(huggingface_hub.constants.HF_XET_CACHE), wake_word)))
         write(f"unit layer ({layer}): nothing outside the process, no fetched weight read and no Claude Code policy from here ({hold})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
-    config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary(), runtime)
+    config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.PIN.claude(claude_code), fetches.mock_binary(), runtime)
 
 
 @pytest.fixture(scope="session")
@@ -795,62 +793,49 @@ def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "sync
     (brain / "settings.json").write_bytes(settings)
 
 
-def located(script: Path) -> Callable[[Path], Path]:
-    """A stand-in for pinned.claude that puts the brain's pinned claude at `script`, whatever directory the brain is on."""
-    return lambda _config_dir: script
+def placed(config_dir: Path, claude: Path) -> None:
+    """Links `claude` in the pinned claude's place of the brain on `config_dir`."""
+    place = pinned.PIN.claude(config_dir)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    place.symlink_to(claude)
 
 
-def pin(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
-    """`script`, as its bytes are now, is the brain's pinned claude, whatever directory the brain is on: nothing on PATH
-    is ever the brain's."""
-    monkeypatch.setattr(pinned, "claude", located(script))
-    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(script.read_bytes()))
+def pin(config_dir: Path, script: Path) -> pinned.Pin:
+    """`script`, as its bytes are now, as the pinned claude of the brain on `config_dir`: placed there, and the pin whose
+    every build it is. Nothing on PATH is ever the brain's."""
+    placed(config_dir, script)
+    return pins.of(script.read_bytes())
 
 
 def laid_out(home: Home) -> Path:
-    """Lays `home` out as one the start's preflight passes in a process whose pin is the script in the pin's place: its
-    brain onboarded on settings that keep the syncs out, and in its pinned claude's place a script that only leaves a
-    mark. The mark's path, which exists once anything has run it."""
+    """Lays `home` out as one the start's preflight passes on pins.LAID_OUT: its brain onboarded on settings that keep the
+    syncs out, and in its pinned claude's place the script that only leaves a mark. The mark's path, which exists once
+    anything has run it."""
     onboard(home.brain)
-    mark = home.root / "claude-ran"
-    script = pinned.claude(home.brain)
+    script = pinned.PIN.claude(home.brain)
     script.parent.mkdir(parents=True)
-    script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(mark))}\n")
+    script.write_bytes(pins.MARKING)
     script.chmod(0o755)
-    return mark
-
-
-def startable(home: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Makes `home` a hands home the start's preflight passes in this process: laid out, and its pin the script there."""
-    hands = Home(home)
-    mark = laid_out(hands)
-    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(pinned.claude(hands.brain).read_bytes()))
-    return mark
+    return Path(f"{script}.ran")
 
 
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 
 
 def standin(home: Home) -> subprocess.Popen[bytes]:
-    """The stand-in daemon, running on `home` laid out, whose pin the stand-in fakes in its own process."""
+    """The stand-in daemon, running on `home` laid out, which it weighs on pins.LAID_OUT."""
     laid_out(home)
     return subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
 
 
-def run_as(config_dir: Path, mode: PermissionMode | None = None) -> Runnable:
-    """What the start's preflight passes a brain on `config_dir` with: its pinned claude, wherever pin places it, and `mode`."""
-    return Runnable(pinned.claude(config_dir), mode)
-
-
-def pinned_to(script: Path) -> str:
-    """The lines a hands run in a process of its own starts with, so its brain's pinned claude is `script`, as fake_claude
-    pins it in this one."""
-    return f"from hands.brain import pinned\npinned.claude = lambda _config_dir: __import__('pathlib').Path({str(script)!r})\npinned.CHECKSUMS = {checksums(script.read_bytes())!r}\n"
+def faked(tmp: Path) -> Path:
+    """Where fake_claude writes the brain's claude, under a test's `tmp`."""
+    return tmp / "bin" / "claude"
 
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what Claude Code says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
+    """A `claude` for the brain, at faked(tmp_path), the pinned claude of a brain `pin` lays it in, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what Claude Code says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and says each turn as Claude Code does on each channel hands reads: the hooks its --settings name, as Claude Code fills them, the records of its transcript, and the status in its sessions/<pid>.json, idle as it starts; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under, and
     each prompt a Return sent is a line in the file ANSWERED names once it is done with all it does with it at once; a side
@@ -859,7 +844,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
     ["played", name] once it has said all of it. It writes a line to said.log beside TYPED as each line of the recording starts, and with
     PLAY_PAUSE named waits that many seconds before starting each line ahead of the first transcript record. It starts its session as it starts, and "/clear" or "/resume <id>" ends it and starts another, running each command hook its --settings name with the payload on stdin; the one FAILING_HOOK names fails."""
-    script = tmp_path / "bin" / "claude"
+    script = faked(tmp_path)
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
 import datetime, itertools, json, os, select, signal, subprocess, sys, termios, threading, time, tty, urllib.request, uuid
@@ -1213,7 +1198,6 @@ while True:
     draw()
 """)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    pin(monkeypatch, script)
     monkeypatch.setenv("LOGGED_IN", "1")
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
     monkeypatch.setenv("ANSWERED", str(tmp_path / "answered"))

@@ -149,7 +149,7 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
         fetching(write, f"the {word.phrase} wake word's models", (Unserved,), partial(asyncio.run, WakeModels(fetches.wake_word, SYSTEM).ensured(word)))
     # The runtime the phone's page runs the wake word on, which its page test has the page fetch from hands.
     fetching(write, f"ONNX Runtime Web {ortweb.VERSION}", (Unserved,), partial(asyncio.run, Release(fetches.runtime, SYSTEM).ensured(file.pin for file in ortweb.FILES)))
-    fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, REGISTRY)))
+    fetching(write, f"Claude Code {pinned.PIN.version} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, pinned.PIN, REGISTRY)))
     fetching(write, f"{MOCK_MODULE}@{MOCK_RELEASE}", (subprocess.CalledProcessError, OSError), partial(installed_mock, fetches.mock_binary(), fetches.machine))
 
 

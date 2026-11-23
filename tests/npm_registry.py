@@ -30,7 +30,7 @@ async def unpacked(url: str, write: pinned.Write) -> None:
 
 
 REGISTRY = pinned.Source(
-    url=lambda built: f"https://registry.npmjs.org/@anthropic-ai/claude-code-{built}/-/claude-code-{built}-{pinned.VERSION}.tgz",
+    url=lambda version, built: f"https://registry.npmjs.org/@anthropic-ai/claude-code-{built}/-/claude-code-{built}-{version}.tgz",
     fetch=unpacked,
     failures=(*pinned.DOWNLOAD_FAILURES, tarfile.TarError),
 )

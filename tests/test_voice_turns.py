@@ -36,7 +36,8 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import events, model_facts, patiently, run_as, running, unprimed
+from conftest import events, model_facts, patiently, running, unprimed
+from hands.brain import pinned
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -56,7 +57,7 @@ from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
 from hands.voice.trigger import Trigger, place_of
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
-from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
+from hands.core.session import Held, Membership, Permission, RequestId, Runnable, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
@@ -298,7 +299,7 @@ async def rigged(
 
     voice = built.build_voice(
         SYSTEM,
-        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None), brain=run_as(tmp_path)), voice=voicechoice.DEFAULT),
+        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(pinned.PIN.claude(tmp_path), None)), voice=voicechoice.DEFAULT),
         llm=llm,
         key=PushToTalk(SYSTEM, recorded.append),
         player=Player(recorded.append),

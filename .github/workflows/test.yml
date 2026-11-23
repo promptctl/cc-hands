@@ -69,9 +69,9 @@ jobs:
         if: matrix.fetches
         id: e2e
         run: |
-          claude=$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' src/hands/brain/pinned.py)
+          claude=$(sed -n 's/^PIN = Pin("\([0-9.]*\)", {$/\1/p' src/hands/brain/pinned.py)
           mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/fetches.py)
-          test -n "$claude" || { echo "src/hands/brain/pinned.py pins no VERSION this step can read" >&2; exit 1; }
+          test -n "$claude" || { echo "src/hands/brain/pinned.py pins no version this step can read" >&2; exit 1; }
           test -n "$mock" || { echo "tests/fetches.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
           echo "claude=$claude" >> "$GITHUB_OUTPUT"
           echo "mock=$mock" >> "$GITHUB_OUTPUT"

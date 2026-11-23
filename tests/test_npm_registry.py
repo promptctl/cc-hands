@@ -9,7 +9,7 @@ import pytest
 from aiohttp import web
 
 from hands.brain import pinned
-from fixtures.pins import checksums
+from fixtures import pins
 from npm_registry import REGISTRY
 
 
@@ -44,15 +44,15 @@ async def registry() -> AsyncIterator[Callable[[str], pinned.Source]]:
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     [(_, port)] = runner.addresses
-    yield lambda name: pinned.Source(url=lambda built: f"http://127.0.0.1:{port}/{name}.tgz", fetch=REGISTRY.fetch, failures=REGISTRY.failures)
+    yield lambda name: pinned.Source(url=lambda _version, _built: f"http://127.0.0.1:{port}/{name}.tgz", fetch=REGISTRY.fetch, failures=REGISTRY.failures)
     await runner.cleanup()
 
 
-async def test_the_pin_is_read_out_of_its_package_and_a_package_without_it_is_refused_leaving_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry: Callable[[str], pinned.Source]) -> None:
-    monkeypatch.setattr(pinned, "CHECKSUMS", checksums(RELEASE))
+async def test_the_pin_is_read_out_of_its_package_and_a_package_without_it_is_refused_leaving_nothing(tmp_path: Path, registry: Callable[[str], pinned.Source]) -> None:
+    pin = pins.of(RELEASE)
     with pytest.raises(pinned.Uninstallable, match=r"^could not fetch http://127\.0\.0\.1:\d+/without\.tgz: ExtractError\('the package holds no package/claude file'\)$"):
-        await pinned.install(tmp_path, registry("without"))
-    assert list(pinned.claude(tmp_path).parent.iterdir()) == []
-    installed = await pinned.install(tmp_path, registry("whole"))
-    assert installed.fetched and pinned.verified(tmp_path).read_bytes() == RELEASE
+        await pinned.install(tmp_path, pin, registry("without"))
+    assert list(pin.claude(tmp_path).parent.iterdir()) == []
+    installed = await pinned.install(tmp_path, pin, registry("whole"))
+    assert installed.fetched and pin.verified(tmp_path).read_bytes() == RELEASE
 

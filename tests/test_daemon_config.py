@@ -15,7 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on, new_sessions, onboard, patiently, run_as, startable
+from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin
+from fixtures.pins import LAID_OUT
+from hands.brain import pinned
+from hands.core.session import Runnable
 from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, preflight, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
@@ -55,8 +58,9 @@ def test_the_file_names_the_backend_and_its_model(tmp_path: Path) -> None:
 def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
+    brain = pin(home.brain, fake_claude)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home)).voice.personality == "Dry and wry."
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home, brain)).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -85,8 +89,9 @@ def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake
     # And the voice is built on them.
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
+    brain = pin(home.brain, fake_claude)
     home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home)).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home, brain)).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
 
 
 @pytest.mark.parametrize(
@@ -161,24 +166,25 @@ def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
+    brain = pin(home.brain, fake_claude)
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home, brain))
 
 
-def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
     # The variables settings used to be: one still exported would run hands on the default backend, silently.
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}, preflight.preflight(home))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}, preflight.preflight(home, LAID_OUT))
 
 
 @pytest.mark.outside
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(children_on(SYSTEM), Claude(), home, os.environ, run_as(home.brain)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=run_as(home.brain))
-    assert backend(children_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, run_as(home.brain)).model == "claude-opus-5-5"
+    assert backend(children_on(SYSTEM), Claude(), home, os.environ, Runnable(fake_claude, None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(fake_claude, None))
+    assert backend(children_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(fake_claude, None)).model == "claude-opus-5-5"
 
 
 @pytest.mark.outside
@@ -186,7 +192,7 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fa
 def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(children_on(SYSTEM), Claude(model=model), home, os.environ, run_as(home.brain)).model == model
+    assert backend(children_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(fake_claude, None)).model == model
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
@@ -240,9 +246,9 @@ def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path
 
     home = Home(tmp_path / ".hands")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    assert cli.door(home, "claude-opus-5-5") == config.load(home, "claude-opus-5-5")
+    assert cli.door(home, LAID_OUT, "claude-opus-5-5") == config.load(home, "claude-opus-5-5")
     with pytest.raises(CannotStart, match="^--model 'opus': "):
-        cli.door(home, "opus")
+        cli.door(home, LAID_OUT, "opus")
 
 
 @pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
@@ -250,7 +256,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     home = Home(tmp_path)
     loaded: list[str | None] = []
 
-    def door(_home: Home, model: str | None) -> config.Settings:
+    def door(_home: Home, _pin: pinned.Pin, model: str | None) -> config.Settings:
         # Only what the restart is given is weighed here: an id that begins with a dash is no model hands offers.
         loaded.append(model)
         return config.Settings(None, Config(), model)
@@ -281,13 +287,13 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     assert loaded == [loads, loads]
 
 
-async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks_it_and_one_to_anything_else_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks_it_and_one_to_anything_else_is(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     home.config.write_text('[llm]\nbackend = "claude"\n')
     recorded: list[Entry] = []
     running = config.load(home, "claude-opus-5-5")
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, running, SYSTEM, period=0.01), 0.3))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, recorded.append, running, SYSTEM, period=0.01), 0.3))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n')
     await asyncio.sleep(0.05)
@@ -295,7 +301,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "opus"\n')
     with pytest.raises(TimeoutError):
         await watching
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, running, SYSTEM, period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, recorded.append, running, SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[talk]\npersonality = "Dry."\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
@@ -310,17 +316,17 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(Rejected, match="`hands login` gives it one"):
-        backend(children_on(SYSTEM), Claude(), HOME, os.environ, run_as(HOME.brain))
+        backend(children_on(SYSTEM), Claude(), HOME, os.environ, Runnable(fake_claude, None))
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
     sessions = new_sessions(clock=SYSTEM)
-    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=run_as(tmp_path / "brain")), voice=voicechoice.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")), devices=Choices(Named("MacBook Pro Microphone"), Auto()))
+    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(pinned.PIN.claude(tmp_path / "brain"), None)), voice=voicechoice.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")), devices=Choices(Named("MacBook Pro Microphone"), Auto()))
     return Home(tmp_path), sessions, heart, config
 
 
-async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path) -> None:
     # A login check answered slowly is a start that is waiting, never one that looks stuck.
     home, sessions, heart, config = _starting(tmp_path)
     answered = threading.Event()
@@ -332,7 +338,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     run_start = Start(restarted=False, clock=SYSTEM)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
     exporting_down = heartbeat.Degradation("can't export traces", "the collector has not taken all of its traces")
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, LAID_OUT, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -372,7 +378,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     stop = Stop()
     stop.tell(QuitKey())
-    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
+    assert await start(lambda: run.configured(prompted, lambda _: None, home, LAID_OUT, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
     never.set()
 
 
@@ -385,7 +391,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     surveyed: list[run.Configured | CannotStart] = []
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, LAID_OUT, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     # Every other step is still said: the readiness check is given the refusal, as the backend's step.
     [refusal] = surveyed
     assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
@@ -403,7 +409,7 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
         return run.Configured(config, run.Settings(b"", Config()))
 
     monkeypatch.setattr(run, "sweep", swept)
-    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, LAID_OUT, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     assert order == ["sweep", "configure", "survey"]
 
 
@@ -423,7 +429,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE), SYSTEM)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, _NO_FILE), SYSTEM)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -441,7 +447,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     from hands.voice import talkkey
 
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     monkeypatch.setattr(talkkey, "granted", lambda: True)
     # No indicator is shown.
     def unshown(_home: Home) -> int:
@@ -453,18 +459,18 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "start_indicator", unshown)
     monkeypatch.setattr(cli, "reap", kept)
 
-    def loaded(clock: Clock, home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
+    def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:
             configure = partial(run.configured_from, children_on(clock), home, settings, {"HANDS_LLM": "claude"})
-            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
+            await start(lambda: run.configured(configure, lambda _: None, home, pin, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
 
     monkeypatch.setattr(cli, "loaded", loaded)
-    assert cli.main(["--home", str(home.root), "run"]) == 1
+    assert cli.main(["--home", str(home.root), "run"], pin=LAID_OUT) == 1
     reason = f"HANDS_LLM set, and hands reads no setting from the environment; settings go in {home.config}"
     assert capsys.readouterr().err == f"hands: {reason}\n"
     # The start's one event is failed with the reason, and says which run it was.
@@ -561,19 +567,20 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     logged_in = os.environ
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home)).voice.voice == "charles"
+    brain = pin(home.brain, fake_claude)
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain)).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voicechoice.keep(home, voicechoice.parse_voice("Bill Boerst"))
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home)).voice.voice == "bill_boerst"
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain)).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain))
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain))
 
 
 # The settings of a run started with no file: every default.
@@ -582,14 +589,14 @@ _NO_FILE = config.Settings(None, Config())
 
 async def _edited_within(home: Home, recorded: list[Entry], seconds: float = 0.5) -> SettingsEdited | None:
     try:
-        return await asyncio.wait_for(config.edited(home, recorded.append, config.load(home), SYSTEM, period=0.01), seconds)
+        return await asyncio.wait_for(config.edited(home, LAID_OUT, recorded.append, config.load(home), SYSTEM, period=0.01), seconds)
     except TimeoutError:
         return None
 
 
-async def test_an_edit_that_parses_is_heard_and_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_edit_that_parses_is_heard_and_said(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded))
     await asyncio.sleep(0.05)
@@ -609,9 +616,9 @@ async def test_a_file_saved_unchanged_is_no_edit(tmp_path: Path) -> None:
     assert recorded == []
 
 
-async def test_an_edit_that_does_not_parse_is_said_and_outlived_until_one_that_does(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_edit_that_does_not_parse_is_said_and_outlived_until_one_that_does(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=2.0))
     await asyncio.sleep(0.05)
@@ -626,9 +633,9 @@ async def test_an_edit_that_does_not_parse_is_said_and_outlived_until_one_that_d
     assert len(recorded) == 1
 
 
-async def test_settings_removed_are_an_edit_back_to_the_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_settings_removed_are_an_edit_back_to_the_defaults(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded))
@@ -652,9 +659,9 @@ async def test_an_edit_undone_back_to_the_settings_the_run_is_on_is_no_edit(tmp_
     assert [type(entry) for entry in recorded] == [SettingsEdited] and audit.level(recorded[0]) == "error"
 
 
-async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=2.0))
@@ -672,7 +679,7 @@ async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_pat
 
 async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     # What each poll after the run's read reads, as an editor that truncates and then writes leaves it: one poll lands between the two.
     reads = iter([b'[llm]\nbackend = "cla', b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-opus-5-5"\n'])
 
@@ -681,7 +688,7 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, LAID_OUT, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
 
@@ -747,20 +754,20 @@ def test_a_sample_line_is_never_kept_in_a_file_a_start_would_refuse(tmp_path: Pa
 
 async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     recorded: list[Entry] = []
     weighed: list[bytes] = []
 
-    def overwritten(weighing: Home) -> preflight.Preflight:
+    def overwritten(weighing: Home, pin: pinned.Pin) -> preflight.Preflight:
         weighed.append(weighing.config.read_bytes())
         # The first edit is saved over with a typo while the home is weighed for it.
         if weighed == [b'[llm]\nmodel = "claude-opus-5-5"\n']:
             home.config.write_text('[llm]\nbackend = "claud"\n')
-        return preflight.preflight(weighing)
+        return preflight.preflight(weighing, pin)
 
     monkeypatch.setattr(config, "preflight", overwritten)
     # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
-    watching = asyncio.create_task(config.edited(home, recorded.append, config.load(home), SYSTEM, period=0.01))
+    watching = asyncio.create_task(config.edited(home, LAID_OUT, recorded.append, config.load(home), SYSTEM, period=0.01))
     try:
         home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
         # Moved by each weigh, the hop to a thread that a loaded machine is slowest to take.
@@ -778,7 +785,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
 
 async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
-    startable(tmp_path, monkeypatch)
+    laid_out(home)
     edit, other = b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-haiku-4-5-20251001"\n'
     # Seen, settled, saved over as its backend is checked, and back before the next poll.
     reads = iter([edit, edit, other, edit, edit])
@@ -788,5 +795,5 @@ async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, LAID_OUT, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
