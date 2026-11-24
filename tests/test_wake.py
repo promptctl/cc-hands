@@ -235,7 +235,7 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     async def on_move(move: Made) -> None:
         made.append(move.move)
 
-    async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append) as ears, loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
+    async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append, "desk") as ears, loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
         driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:

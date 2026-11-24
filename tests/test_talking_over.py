@@ -234,7 +234,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     assert load.outcome == "ok", load.error
     listener = Counted(recognizer, lambda: captured * FRAME)
     downstream = Downstream()
-    async with running([ClipOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record) as models:
+    async with running([ClipOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record, "desk") as models:
         async def capture(audio: bytes) -> None:
             nonlocal captured
             captured += 1

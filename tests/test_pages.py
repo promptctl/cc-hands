@@ -92,7 +92,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
     home = Home(tmp_path / "hands")
     key = phone_key(SYSTEM, home)
     recorded = list[Entry]()
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, speaking=lambda: False, record=recorded.append)
     brain, typed, voices = Brain(), list[str](), Voicing()
 
     async def typing(text: str) -> None:

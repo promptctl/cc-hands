@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from hands.voice.desk import Leveled
+from hands.voice.ptt import Gate
 from hands.voice.tools import listening_tools
-from hands.voice.trigger import Levels
+from hands.voice.trigger import Levels, by_hand, place_of, turn_start
 from hands.voice.wake import Unheard, WakeWord
 from hands.voice.wakemodels import EMBEDDING, MELSPECTROGRAM, PRETRAINED, Files
 from hands.voice.wakeword import Pretrained, Trained
@@ -20,18 +21,18 @@ OFF = "The microphone is off between turns. Hold Right Shift to talk, and let go
 
 
 async def test_the_level_is_said_and_starts_off() -> None:
-    level, _ = listening_tools(Levels(), Pretrained())
+    level, _ = listening_tools(Levels(), Pretrained(), Gate)
     assert await level.body() == {"level": "off", "readback": OFF}
 
 
 async def test_a_level_not_built_is_refused() -> None:
-    _, choose = listening_tools(Levels(), Pretrained())
+    _, choose = listening_tools(Levels(), Pretrained(), Gate)
     assert "error" in await choose.body(level="clap")
 
 
 async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_it() -> None:
     levels = Levels()
-    level, choose = listening_tools(levels, Pretrained())
+    level, choose = listening_tools(levels, Pretrained(), Gate)
     asked: list[str] = []
 
     async def driver() -> None:
@@ -57,7 +58,7 @@ async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -
     for word, phrase in ((Pretrained("Hey Mycroft"), "Hey Mycroft"), (Trained("Hey Computer", tmp_path / "hey_computer.onnx"), "Hey Computer")):
         levels = Levels()
         levels.leveled(Leveled("off", "wake word", "tap"))
-        level, _ = listening_tools(levels, word)
+        level, _ = listening_tools(levels, word, Gate)
         assert str((await level.body())["readback"]).startswith(f"The wake word: say {phrase}, then what you want;")
 
 
@@ -82,3 +83,35 @@ def test_a_trained_wake_word_it_cannot_hear_with_is_refused_naming_the_model(tmp
     with pytest.raises(Unheard) as refused:
         WakeWord(Files(models / MELSPECTROGRAM.name, models / EMBEDDING.name, trained))
     assert str(refused.value).startswith(said.format(model=trained))
+
+
+def at_the_phone(listening: bool) -> Gate:
+    """The gate with hands at the phone, its page at its wake word or not."""
+    gate = Gate().moved("phone")
+    return gate.after("listen", "phone wake word") if listening else gate
+
+
+async def test_at_the_phone_the_phones_level_is_said_and_the_pages_button_is_what_sets_it() -> None:
+    levels = Levels()
+    levels.leveled(Leveled("off", "engaged", "tap"))
+    for listening, level, said in ((True, "wake word", "The phone listens for the wake word: say Hey Jarvis, then what you want;"), (False, "off", "The phone's wake word is off.")):
+        read, _ = listening_tools(levels, Pretrained(), lambda listening=listening: at_the_phone(listening))
+        # The desk's level is no part of what is said at the phone.
+        assert (await read.body())["level"] == level
+        assert str((await read.body())["readback"]).startswith(said)
+        assert "Phone wake word button" in str((await read.body())["readback"])
+
+
+async def test_choosing_a_level_at_the_phone_changes_nothing_and_says_the_page_sets_it() -> None:
+    levels = Levels()
+    _, choose = listening_tools(levels, Pretrained(), lambda: at_the_phone(True))
+    chosen = await choose.body(level="engaged")
+    assert chosen["level"] == "wake word"
+    assert str(chosen["readback"]).startswith("The page's Phone wake word button sets the phone's level, so it stays as it is.")
+    # Nothing was asked of the desk's driver, so the desk's level is where it was.
+    assert (levels.chosen.empty(), levels.level) == (True, "off")
+
+
+def test_a_turn_a_wake_opened_at_the_phone_cuts_hands_off_once_a_person_is_heard_and_is_no_hands() -> None:
+    assert (turn_start("phone wake word"), turn_start("phone button")) == ("on a person", "on the clip")
+    assert (place_of("phone wake word"), by_hand("phone wake word")) == ("phone", False)

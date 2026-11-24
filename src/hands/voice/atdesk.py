@@ -84,7 +84,7 @@ async def serve_desk(
             ensured = await models.ensured(word)
             files = ensured.files
             annotate(**ensured.facts())
-        async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, files, word, record) as heard:
+        async with loaded(clock, rate, record, "desk") as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
 
     await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels.chosen, at_desk, at_level, record)

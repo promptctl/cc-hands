@@ -31,6 +31,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.clock import Clock
+from hands.core.place import Place
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads, voiceturn
@@ -145,11 +146,12 @@ class Models:
 
 
 @asynccontextmanager
-async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
-    """Both models, loaded off the loop as their own unit of work, Smart Turn judging at a turn's latency from the first
-    verdict, for as long as the desk hears with them."""
+async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], None], place: Place) -> AsyncGenerator[Models]:
+    """Both models, loaded off the loop as their own unit of work, `<place>.loaded`, Smart Turn judging at a turn's latency
+    from the first verdict, for as long as `place` hears with them: each place's stream has a pair of its own, since each
+    pair holds the state of one."""
     async with AsyncExitStack() as held:
-        with loads.loading(clock, "desk.loaded", emit):
+        with loads.loading(clock, f"{place}.loaded", emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
             # pause the detector ends speech at, as it was loaded with it, and how long Smart Turn's warm-up took.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)

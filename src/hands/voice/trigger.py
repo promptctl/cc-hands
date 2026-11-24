@@ -6,6 +6,7 @@ the voice alone at their own.
 
 import asyncio
 from dataclasses import dataclass
+from typing import Literal
 
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
@@ -19,17 +20,17 @@ def place_of(trigger: Trigger) -> Place:
     match trigger:
         case "shortcut" | "engaged conversation" | "wake word":
             return "desk"
-        case "phone button":
+        case "phone button" | "phone wake word":
             return "phone"
 
 
 def by_hand(trigger: Trigger) -> bool:
-    """Whether `trigger` is the user's hand on a key or a button, which only the user moves, rather than a voice the desk
-    heard, which can be anyone's or nobody's."""
+    """Whether `trigger` is the user's hand on a key or a button, which only the user moves, rather than a voice, which
+    can be anyone's or nobody's."""
     match trigger:
         case "shortcut" | "phone button":
             return True
-        case "engaged conversation" | "wake word":
+        case "engaged conversation" | "wake word" | "phone wake word":
             return False
 
 
@@ -80,6 +81,20 @@ class Levels:
     @property
     def level(self) -> Level:
         return self._level
+
+
+# What the phone's page listens at, for the call: the phone's own two levels, with the desk's names.
+PhoneLevel = Literal["off", "wake word"]
+
+
+def described_at_phone(level: PhoneLevel, word: Word) -> str:
+    """What hands says of the phone's level, `word` being the wake word. The page's own button is what sets it."""
+    held = "Hold the page's button to talk, and let go to send."
+    match level:
+        case "off":
+            return f"The phone's wake word is off. {held} The page's Phone wake word button turns it on."
+        case "wake word":
+            return f"The phone listens for the wake word: say {word.phrase}, then what you want; hands answers when you finish. {held} The page's Phone wake word button turns it off."
 
 
 def described(level: Level, word: Word) -> str:

@@ -4,6 +4,7 @@ import pytest
 
 from conftest import events
 from hands.virtualclock import VirtualClock
+from hands.core.place import Place
 from hands.voice.shortcut import Move
 from hands.sessions.audit import Entry
 from hands.voice.ptt import Gate, Key, PushToTalk
@@ -12,6 +13,8 @@ from hands.voice.trigger import Trigger
 
 LOUD = b"\x7f\x7f" * 160
 QUIET = b"\x00\x00" * 160
+DESK: frozenset[Place] = frozenset({"desk"})
+PHONE: frozenset[Place] = frozenset({"phone"})
 
 
 def test_starts_up_and_silent() -> None:
@@ -46,20 +49,20 @@ def test_every_turn_is_counted_sent_or_thrown_away_and_the_key_rests_after_eithe
 
 def test_an_engaged_desk_is_heard_between_turns_and_each_turn_ends_back_to_listening() -> None:
     engaged = Gate().after("listen", "engaged conversation")
-    assert (engaged.key, engaged.listens, engaged.turn_open) == ("listening", True, False)
+    assert (engaged.key, engaged.listening, engaged.turn_open) == ("listening", DESK, False)
     assert engaged.audible(LOUD) == LOUD
     turn = engaged.after("arm", "engaged conversation").after("start", "engaged conversation")
     assert turn.turn_open
     assert turn.after("stop", "engaged conversation").key == "listening"
     assert engaged.after("arm", "engaged conversation").after("disarm", "engaged conversation").key == "listening"
     # And listens on; the turn the limit sent was opened by the voice.
-    assert turn.after("timeout", "engaged conversation") == Gate("listening", "desk", listens=True, ended=("sent",), opened="engaged conversation")
+    assert turn.after("timeout", "engaged conversation") == Gate("listening", "desk", listening=DESK, ended=("sent",), opened="engaged conversation")
 
 
 @pytest.mark.parametrize(("before", "after"), [("listening", "up"), ("arming", "arming"), ("down", "down")])
 def test_disengaging_stops_the_desk_listening_and_leaves_a_press_or_a_turn_to_end_as_it_ends(before: Key, after: Key) -> None:
-    gate = Gate(before, "desk", listens=True).after("deafen", "engaged conversation")
-    assert (gate.key, gate.listens) == (after, False)
+    gate = Gate(before, "desk", listening=DESK).after("deafen", "engaged conversation")
+    assert (gate.key, gate.listening) == (after, frozenset())
 
 
 def test_the_phone_never_listens_between_turns_and_the_desk_does_again_once_hands_is_back() -> None:
@@ -69,7 +72,7 @@ def test_the_phone_never_listens_between_turns_and_the_desk_does_again_once_hand
     assert at_the_phone.moved("desk").key == "listening"
     # Engaged while hands is at the phone: the desk listens once hands is back, and the call hears nothing meanwhile.
     engaged_away = Gate().moved("phone").after("listen", "engaged conversation")
-    assert (engaged_away.key, engaged_away.place, engaged_away.listens) == ("up", "phone", True)
+    assert (engaged_away.key, engaged_away.place, engaged_away.listening) == ("up", "phone", DESK)
     assert engaged_away.moved("desk").key == "listening"
 
 
@@ -102,7 +105,7 @@ def test_a_call_that_comes_never_cuts_off_a_press_or_a_clip_at_the_desk(held: Ga
 
 def test_a_call_that_goes_sends_its_clip_and_one_that_comes_to_a_quiet_desk_takes_hands() -> None:
     assert Gate().after("start", "phone button").called("desk") == Gate("up", "desk", ended=("sent",), opened="phone button")
-    assert Gate(listens=True).after("listen", "wake word").called("phone") == Gate("up", "phone", listens=True)
+    assert Gate(listening=DESK).after("listen", "wake word").called("phone") == Gate("up", "phone", listening=DESK)
 
 
 def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
@@ -215,3 +218,67 @@ async def test_set_modality_switches_it_says_so_and_refuses_what_is_neither() ->
     assert key.modality == "screen"
     assert "error" in await switch.body(modality="video")
     assert key.modality == "screen"
+
+
+def listening_at_the_phone() -> Gate:
+    return Gate().moved("phone").after("listen", "phone wake word")
+
+
+def test_the_phone_listens_between_turns_at_its_own_level_and_a_wake_opens_a_turn_that_ends_back_to_listening() -> None:
+    waiting = listening_at_the_phone()
+    assert (waiting.key, waiting.listening, waiting.audible(LOUD)) == ("listening", PHONE, LOUD)
+    turn = waiting.after("arm", "phone wake word").after("start", "phone wake word")
+    assert (turn.turn_open, turn.place, turn.opened, turn.wake_turn) == (True, "phone", "phone wake word", 0)
+    assert turn.after("stop", "phone wake word") == Gate("listening", "phone", listening=PHONE, ended=("sent",), opened="phone wake word")
+    assert waiting.after("deafen", "phone wake word").key == "up"
+
+
+def test_the_desks_level_and_the_phones_never_move_each_other() -> None:
+    at_the_desk = Gate(listening=DESK).after("listen", "wake word")
+    assert at_the_desk.after("deafen", "phone wake word").key == "listening"
+    assert at_the_desk.moved("phone").key == "up"
+    assert at_the_desk.moved("phone").after("listen", "phone wake word").key == "listening"
+    # The phone at its wake word, hands at the desk: the desk's key rests as the desk's level says, and the phone's is waiting.
+    away = listening_at_the_phone().moved("desk")
+    assert (away.key, away.listening) == ("up", PHONE)
+    assert away.moved("phone").key == "listening"
+    assert away.after("listen", "wake word").after("deafen", "wake word").listening == PHONE
+
+
+@pytest.mark.parametrize("to", ["phone", "desk"])
+def test_a_call_that_comes_or_goes_leaves_the_phones_level_off(to: Place) -> None:
+    held = Gate(listening=DESK | PHONE).moved("phone")
+    assert held.called(to).listening == DESK
+
+
+def test_a_wake_heard_on_the_phone_opens_nothing_while_hands_is_at_the_desk_and_moves_hands_nowhere() -> None:
+    for at_the_desk in (Gate(), Gate(listening=DESK), Gate("down", "desk", opened="shortcut")):
+        assert at_the_desk.took("arm", "phone wake word") is None
+        assert at_the_desk.took("start", "phone wake word") is None
+        assert at_the_desk.after("start", "phone wake word") == at_the_desk
+
+
+def test_the_turn_a_wake_opened_is_ended_by_its_own_number_and_by_nothing_stale() -> None:
+    key = PushToTalk(VirtualClock(), lambda _: None)
+    key.go("phone")
+    key.move("listen", "phone wake word")
+    key.move("arm", "phone wake word")
+    key.move("start", "phone wake word")
+    assert key.gate.wake_turn == 0
+    # No turn, a turn that is not the one open, and one another trigger opened are none of it to end.
+    assert [key.end(turn, "stop", "phone wake word") for turn in (None, 1)] == [None, None]
+    assert key.end(0, "stop", "phone button") is None and key.gate.wake_turn == 0
+    assert key.end(0, "stop", "phone wake word") == "stop"
+    # The same verdict again, now that the turn is over, ends nothing; and nor does it end the button's turn that took its place.
+    assert key.end(0, "stop", "phone wake word") is None
+    key.move("start", "phone button")
+    assert (key.end(0, "stop", "phone wake word"), key.gate.turn_open, key.gate.wake_turn) == (None, True, None)
+    assert key.end(1, "stop", "phone button") == "stop"
+
+
+def test_audio_says_whether_it_is_of_a_wake_turn_by_the_gate_it_was_captured_under() -> None:
+    waiting = listening_at_the_phone()
+    turn = waiting.after("arm", "phone wake word").after("start", "phone wake word")
+    assert [gate.framed(LOUD, LOUD, None, 16000, 1, "phone").wake_turn for gate in (waiting, turn, turn.after("stop", "phone wake word"))] == [None, 0, None]
+    button = Gate().moved("phone").after("start", "phone button")
+    assert button.framed(LOUD, LOUD, None, 16000, 1, "phone").wake_turn is None
