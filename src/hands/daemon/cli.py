@@ -1043,13 +1043,13 @@ def file_tickets(children: Children, home: Home, project: Path, epic: str, recor
             lines=found.lines, unreadable=found.unreadable, unparsed=found.unparsed, retold=found.retold,
             sightings=sum(len(group.sightings) for group in found.groups), groups=len(found.groups),
         )
-        ended = asyncio.run(_filed(children, project, epic, found.groups, filing.where(home.audit, Path.home()), backlog.Lit(children, os.environ)))
+        ended = asyncio.run(_filed(backlog.Lit(children, os.environ), project, epic, found.groups, filing.where(home.audit, Path.home())))
         if isinstance(ended, exits.Failed):
             wide.fail(ended.why)
     return ended
 
 
-async def _filed(children: Children, project: Path, epic: str, groups: Sequence[grouping.Group], logs: str, lit: backlog.Lit) -> exits.Exit:
+async def _filed(lit: backlog.Lit, project: Path, epic: str, groups: Sequence[grouping.Group], logs: str) -> exits.Exit:
     """File what `filing` decides for `groups` in `project`'s backlog, one at a time, saying each; the first lit refuses
     stops the pass, and what was filed before it stays filed, which the next pass reads back."""
     try:

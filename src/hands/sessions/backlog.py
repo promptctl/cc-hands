@@ -127,13 +127,19 @@ class NoTicketId:
 
 
 @dataclass(frozen=True)
-class NeverRan:
-    """lit's program never ran: the OS could not start it."""
+class ProjectGone:
+    """The directory lit was to run in no longer exists (a worktree cleaned up): lit never started there."""
 
 
-# [LAW:types-are-the-program] how lit failed, closed: a caller tells a refusal lit gave a reason for from every other
-# failure by matching `Reasoned`, never by reading the message.
-Failure = Reasoned | Unexplained | Unexited | NoTicketId | NeverRan
+@dataclass(frozen=True)
+class Unlaunched:
+    """The OS could not start lit's program in the directory; the message says what the OS said."""
+
+
+# [LAW:types-are-the-program] how lit failed, closed, and [LAW:one-source-of-truth] the one discriminator of it: a
+# caller tells each failure from the others by matching it, never by reading the message. The last two are lit never
+# run, so nothing was written.
+Failure = Reasoned | Unexplained | Unexited | NoTicketId | ProjectGone | Unlaunched
 
 
 class LitFailed(Exception):
@@ -142,20 +148,6 @@ class LitFailed(Exception):
     def __init__(self, message: str, failure: Failure) -> None:
         super().__init__(message)
         self.failure = failure
-
-
-class LitNotStarted(LitFailed):
-    """lit's program never ran in the directory; the message says what the OS said."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, NeverRan())
-
-
-class ProjectGone(LitNotStarted):
-    """The directory lit was to run in no longer exists: lit never started there."""
-
-    def __init__(self, project: Path) -> None:
-        super().__init__(f"{project} no longer exists")
 
 
 @dataclass(frozen=True)
@@ -414,11 +406,11 @@ async def read_backlog(lit: Lit, project: Path) -> Backlog | Untracked:
     """The backlog `lit` holds for `project`, or that it has none (no lit workspace, or the directory is gone); raises
     LitFailed when lit cannot say, and Rejected when what it said does not parse."""
     try:
-        out = await _lit(lit, project, "export", by=Inherited())
-    except ProjectGone:
-        return Untracked(project, gone=True)
+        out = await _lit(lit, project, "export", runs_as=Inherited())
     except LitFailed as failed:
         match failed.failure:
+            case ProjectGone():
+                return Untracked(project, gone=True)
             case Reasoned(reason=reason) if reason in NO_WORKSPACE:
                 return Untracked(project)
             case _:
@@ -427,29 +419,29 @@ async def read_backlog(lit: Lit, project: Path) -> Backlog | Untracked:
     return await asyncio.to_thread(parse_export, out)
 
 
-async def rank(lit: Lit, project: Path, move: Move, by: Signer) -> str:
-    """Have lit in `project` make `move` for `by`, in the environment it runs in for them, and what lit said of what it
-    ranked; raises LitFailed when it fails. lit records no one for a rank.
+async def rank(lit: Lit, project: Path, move: Move, runs_as: Signer) -> str:
+    """Have lit in `project` make `move` in the environment it runs in for `runs_as`, unsigned, and what lit said of what
+    it ranked; raises LitFailed when it fails. lit records no one for a rank, and takes no `--by` for it.
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    return await _said(lit, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, by=by)
+    return await _said(lit, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, runs_as=runs_as)
 
 
 async def make_epic(lit: Lit, project: Path, new: NewEpic, by: Signer) -> str:
     """Have lit in `project` make `new`, at the bottom of its frame, signed `by`, and what lit said; raises LitFailed when it fails. It is found after by its frame, title, and topic, as every level's epic is (`Backlog.level_epics`)."""
-    return await _said(lit, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), by=by)
+    return await _signed(lit, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), by=by)
 
 
 async def adopt(lit: Lit, project: Path, ticket: str, epic: str, by: Signer) -> str:
     """Have lit in `project` move `ticket` inside `epic`, keeping its id, signed `by`, and what lit said; raises LitFailed when it fails."""
-    return await _said(lit, project, "parent", "set", "--child", ticket, "--parent", epic, by=by)
+    return await _signed(lit, project, "parent", "set", "--child", ticket, "--parent", epic, by=by)
 
 
 async def file_ticket(lit: Lit, project: Path, epic: str, topic: str, title: str, description: str, label: str, by: Signer) -> str:
     """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`, signed `by`; the id of the
     ticket it filed, the first word lit says. Raises LitFailed when it fails, or says no id."""
-    filed = await _said(lit, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, by=by)
+    filed = await _signed(lit, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, by=by)
     said = filed.split()
     if not said:
         raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", NoTicketId())
@@ -458,31 +450,30 @@ async def file_ticket(lit: Lit, project: Path, epic: str, topic: str, title: str
 
 async def comment(lit: Lit, project: Path, ticket: str, body: str, by: Signer) -> str:
     """Have lit in `project` add a comment to `ticket`, signed `by`, and what lit said; raises LitFailed when it fails."""
-    return await _said(lit, project, "comment", "add", ticket, "--body", body, by=by)
+    return await _signed(lit, project, "comment", "add", ticket, "--body", body, by=by)
 
 
-async def _said(lit: Lit, project: Path, *arguments: str, by: Signer) -> str:
+async def _signed(lit: Lit, project: Path, *arguments: str, by: Signer) -> str:
+    """What lit said, as `_said`, of a write it records as `by`'s: signed with `by`'s name, in their environment."""
+    return await _said(lit, project, *arguments, *by.signature, runs_as=by)
+
+
+async def _said(lit: Lit, project: Path, *arguments: str, runs_as: Signer) -> str:
     """What lit run as `_lit` runs it said, as text: a write's own account of what it wrote."""
-    return (await _lit(lit, project, *arguments, by=by)).decode(errors="replace").strip()
+    return (await _lit(lit, project, *arguments, runs_as=runs_as)).decode(errors="replace").strip()
 
 
-# The commands of lit's hands runs that take no `--by` (links docs/cli-reference.md): every other is signed, so a
-# command added here unsigned is lit's refusal of an unknown flag, aloud, and never a write recorded as no one's.
-_UNSIGNED = frozenset({"export", "rank"})
+async def _lit(lit: Lit, project: Path, *arguments: str, runs_as: Signer) -> bytes:
+    """What `lit` run in `project` with `arguments`, in the environment it runs in for `runs_as`, wrote out; raises
+    LitFailed when it never ran, did not answer, exited non-zero, or failed once it was running.
 
-
-async def _lit(lit: Lit, project: Path, *arguments: str, by: Signer) -> bytes:
-    """What `lit` run in `project` with `arguments`, as `by`, wrote out; raises LitNotStarted when it never ran, and
-    LitFailed when it did not answer, exited non-zero, or failed once it was running.
-
-    [LAW:single-enforcer] the one place hands runs lit, under one bound, signs it, and reads its failure.
+    [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
     command = f"lit {arguments[0]}"
     # lit runs as the span of its own `child.run` event, inside the work it is run for (links docs/events.md,
     # TRACEPARENT): its line in its events file, which holds a refusal's reason, names that span as its parent.
-    traced = child.Traced(by.runs_in(lit.environment), wide.begun(lit.children.clock))
-    signed = () if arguments[0] in _UNSIGNED else by.signature
-    ran = await lit.children.run("lit", *arguments, *signed, limit=LIT_TIMEOUT_SECONDS, cwd=project, env=traced)
+    traced = child.Traced(runs_as.runs_in(lit.environment), wide.begun(lit.children.clock))
+    ran = await lit.children.run("lit", *arguments, limit=LIT_TIMEOUT_SECONDS, cwd=project, env=traced)
     match ran:
         case child.Ran(ending=child.Exited(code=0), out=out):
             return out.data
@@ -498,8 +489,8 @@ async def _lit(lit: Lit, project: Path, *arguments: str, by: Signer) -> bytes:
         case child.NeverStarted(error=error):
             # The start names the path it could not use: the project directory as given, where the chdir failed, not lit.
             if error.errno == errno.ENOENT and str(error.filename) == str(project):
-                raise ProjectGone(project) from error
-            raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
+                raise LitFailed(f"{project} no longer exists", ProjectGone()) from error
+            raise LitFailed(f"lit could not be started in {project}: {error}", Unlaunched()) from error
 
 
 def events_file(environment: Mapping[str, str], cwd: Path) -> Path | Unexplained:
@@ -524,8 +515,8 @@ def _recorded(span: Span, events: Path | Unexplained) -> Reasoned | Unexplained:
 
     lit rotates the file to `.1` past 8 MiB, which a run since may have done, so both are searched, the newest line
     first, and a file that cannot be read stops no search of the other. A worker lit spawns has a line in the trace
-    too, under the run's own span, so the run's line is the one whose parent is `span`. A line that does not parse
-    cannot be shown to be the run's, so it is passed over, and counted.
+    too, under the run's own span, so the run's line is the one whose parent is `span`. A line that does not parse,
+    or whose fields are not lit's, cannot be shown to be the run's, so it is passed over, and counted.
     """
     if isinstance(events, Unexplained):
         return events
@@ -538,16 +529,17 @@ def _recorded(span: Span, events: Path | Unexplained) -> Reasoned | Unexplained:
                     continue
                 try:
                     event = Payload.parse(line.encode())
+                    run_s = (event.optional_text("trace_id"), event.optional_text("parent_span_id")) == (span.trace_id, span.span_id)
+                    reason = event.optional_text("reason") if run_s else None
                 except Rejected:
                     torn += 1
                     continue
-                if (event.optional_text("trace_id"), event.optional_text("parent_span_id")) == (span.trace_id, span.span_id):
-                    reason = event.optional_text("reason")
+                if run_s:
                     return Reasoned(reason) if reason else Unexplained(f"lit's line for {span.traceparent} in {path} names no reason")
         except OSError as error:
             looked.append(f"{path} could not be read: {error}")
             continue
-        looked.append(f"{path} holds no line for it" + (f", past {torn} it could not parse" if torn else ""))
+        looked.append(f"{path} holds no line for it" + (f", past {torn} it could not read as lit's" if torn else ""))
     return Unexplained(f"lit wrote no line hands could read for {span.traceparent}: {'; '.join(looked)}")
 
 

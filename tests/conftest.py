@@ -241,7 +241,7 @@ class Unstarting(Children):
     async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
         raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
 
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
         raise AssertionError(f"{type(self).__name__} does not answer a blocking run of {argv[0]}")
 
     def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: child.Stdio) -> child.Running | child.NeverStarted:
@@ -256,9 +256,10 @@ class Answering(Unstarting):
     asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
 
     async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
-        return self.run_blocking(*argv, limit=limit, cwd=cwd, env=env)
+        # Every run ends the same, whatever it is handed: the environment is no part of the answer.
+        return self.run_blocking(*argv, limit=limit, cwd=cwd)
 
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
         self.asked.append(argv)
         return self.outcome
 

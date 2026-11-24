@@ -562,12 +562,11 @@ class Children:
             return started
         return await _awaited(_bounded(bound), started, ended, self.clock)
 
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None) -> Outcome:
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
         """`run`, waited on by the calling thread, for code that runs off any event loop."""
         bound = Limit(limit)
         ended: queue.SimpleQueue[Ran | Lost] = queue.SimpleQueue()
-        began, handed = _as(env, self.clock)
-        started = self._captured(began, Command(argv, cwd, handed), limit, ended.put)
+        started = self._captured(wide.begun(self.clock), Command(argv, cwd, env), limit, ended.put)
         if isinstance(started, NeverStarted):
             return started
         return _waited(_bounded(bound), started, ended, self.clock)

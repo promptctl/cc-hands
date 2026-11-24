@@ -658,7 +658,19 @@ def test_a_note_the_page_sends_is_its_project_resolved_its_ticket_and_its_words_
 
 
 @pytest.fixture
-async def page(tmp_path: Path) -> AsyncGenerator[Page]:
+def environment() -> Mapping[str, str]:
+    """The environment hands was started in, which the page's lit runs in: this process's, unless a test names another
+    by parametrizing this fixture."""
+    return os.environ
+
+
+# hands started from inside a Claude Code session: its environment carries the session's id, which lit would take for
+# who acts before any `--by`.
+INSIDE_A_SESSION = pytest.mark.parametrize("environment", [{**os.environ, "CLAUDE_CODE_SESSION_ID": "a-session"}], ids=["inside a session"])
+
+
+@pytest.fixture
+async def page(tmp_path: Path, environment: Mapping[str, str]) -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     app = web.Application()
@@ -667,7 +679,7 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     # The page's lit is the one in the test's own bin, lit itself until a test stubs it (`stub_lit`), and none once a
     # stub removes itself: no other lit is on the page's PATH.
     unstub_lit(tmp_path)
-    app.add_routes(backlog_routes(Lit(Children(clock, recorded.append), {**os.environ, "PATH": f"{tmp_path / 'bin'}:{SYSTEM_PATH}"}), store, KEY, recorded.append))
+    app.add_routes(backlog_routes(Lit(Children(clock, recorded.append), {**environment, "PATH": f"{tmp_path / 'bin'}:{SYSTEM_PATH}"}), store, KEY, recorded.append))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded, clock)
@@ -1206,10 +1218,9 @@ async def noted(page: Page, workspace: Workspace, ticket: str, text: str) -> tup
 
 @pytest.mark.outside
 @real_lit
-async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_session(page: Page, workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+@INSIDE_A_SESSION
+async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_session(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    # A hands started from inside a Claude Code session carries its id, which lit would sign the note with.
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "a-session")
     assert await noted(page, workspace, hey, "  Say which word wakes it \n") == (204, "")
     shown = subprocess.run([str(LIT), "show", hey], cwd=workspace.root, check=True, capture_output=True, text=True).stdout
     assert f"[{getpass.getuser()}] Say which word wakes it" in shown
@@ -1243,10 +1254,10 @@ def actors(workspace: Workspace) -> list[tuple[str, str]]:
 
 @pytest.mark.outside
 @real_lit
-async def test_a_level_press_is_signed_by_the_person_even_inside_a_session(page: Page, workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+@INSIDE_A_SESSION
+async def test_a_level_press_is_signed_by_the_person_even_inside_a_session(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     before = len(actors(workspace))
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", str(uuid.uuid4()))
     await level(page, workspace, hey, "high")
     # The epic it made and the move into it are the person's.
     made = actors(workspace)[before:]
@@ -1318,12 +1329,12 @@ async def test_a_level_whose_lit_is_gone_for_its_first_write_says_nothing_was_le
 
 @pytest.mark.outside
 @real_lit
-async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_in(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@INSIDE_A_SESSION
+async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_in(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     seen = tmp_path / "seen"
     # lit rank takes no --by, and still runs in the person's environment, not the session's.
     stub_lit(tmp_path, rank=f'echo "session=$CLAUDE_CODE_SESSION_ID" > {seen}')
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", str(uuid.uuid4()))
     status, _ = await moved(page, workspace, parser, above=mic)
     assert status == 200 and seen.read_text() == "session=\n"
 

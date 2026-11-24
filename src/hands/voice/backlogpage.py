@@ -26,7 +26,7 @@ from typing import Literal
 from aiohttp import web
 
 from hands.sessions.audit import Record
-from hands.sessions.backlog import LEVELS, Backlog, Level, Lit, LitFailed, LitNotStarted, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
+from hands.sessions.backlog import LEVELS, Backlog, Level, Lit, LitFailed, Move, NewEpic, Person, Place, ProjectGone, Standing, Status, Unlaunched, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
@@ -366,14 +366,16 @@ class Writes:
         _landed("unknown", write.step)
         try:
             said = f"lit exited 0: {await writing}"
-        except LitNotStarted as error:
-            # `_lit` raises it only where child.run could not spawn lit: no lit ran, so nothing was written, and no lit
-            # can run to read the backlog either. hands' own record, not lit's.
-            annotate(**{f"{write.step}_said": str(error)})
-            _landed("no", write.step)
-            raise Halted(502, str(error)) from error
         except LitFailed as error:
-            said = str(error)
+            match error.failure:
+                case ProjectGone() | Unlaunched():
+                    # No lit ran, so nothing was written, and no lit can run to read the backlog either. hands' own
+                    # record, not lit's.
+                    annotate(**{f"{write.step}_said": str(error)})
+                    _landed("no", write.step)
+                    raise Halted(502, str(error)) from error
+                case _:
+                    said = str(error)
         self.ran = True
         annotate(**{f"{write.step}_said": said})
         match await _read(lit, project):

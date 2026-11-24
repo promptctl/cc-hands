@@ -21,7 +21,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.child import Children, Outcome as Ended
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent
-from hands.sessions.backlog import BACKLOG, Lit, LitFailed, LitNotStarted, Reasoned, Unexplained, Untracked, events_file, parse_export, read_backlog
+from hands.sessions.backlog import BACKLOG, Lit, LitFailed, Reasoned, Unexplained, Unlaunched, Untracked, events_file, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.voice.summarising import BACKLOG_PASS, summarise_backlog, told
@@ -385,8 +385,9 @@ async def test_a_removed_directory_reads_as_no_backlog_saying_it_is_gone(project
 async def test_a_project_path_that_is_a_file_is_a_lit_that_never_started_not_a_removed_directory(project: Path) -> None:
     file = project / "a-file"
     file.write_text("")
-    with pytest.raises(LitNotStarted, match="Not a directory"):
+    with pytest.raises(LitFailed, match="Not a directory") as failed:
         await read_backlog(Lit(children_on(SYSTEM), os.environ), file)
+    assert failed.value.failure == Unlaunched()
 
 
 @pytest.mark.outside
@@ -395,8 +396,9 @@ async def test_a_project_hands_cannot_enter_is_a_lit_that_never_started_not_a_re
     (locked / "inside").mkdir(parents=True)
     locked.chmod(0)
     try:
-        with pytest.raises(LitNotStarted, match="Permission denied"):
+        with pytest.raises(LitFailed, match="Permission denied") as failed:
             await read_backlog(Lit(children_on(SYSTEM), os.environ), locked / "inside")
+        assert failed.value.failure == Unlaunched()
     finally:
         locked.chmod(0o700)
 
