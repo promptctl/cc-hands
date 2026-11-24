@@ -97,8 +97,8 @@ def listening(
             return None
         # Off the loop as scoring is: forgetting refills the model with seconds of features. CoreAudio is asked off it too.
         await asyncio.to_thread(word.reset)
-        # [LAW:one-source-of-truth] the clip owner's own second, read as the turn is about to open on it: what it holds then
-        # is what the turn keeps, however far behind the microphone the desk is.
+        # [LAW:one-source-of-truth] the clip owner's own second, read as the turn is about to open on it, which is the second
+        # the turn would keep from before it.
         hands, on_built_in = over_hands(), await asyncio.to_thread(built_in)
         count(wake_words=1)
         # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and the facts the desk takes it
