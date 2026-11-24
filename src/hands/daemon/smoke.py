@@ -49,6 +49,7 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
 from hands.sessions.wrapper import EVERY_RUN
 from hands.voice import clips, transcription
+from hands.voice.phone import quiet_message
 from hands.voice.phoneaddress import PHONE_PORT, phone_key
 
 # Each stage of the pipeline, in the order the turns reach it: hands running; a session started from the `claude` on
@@ -205,23 +206,23 @@ class Caller:
                 raise NotReached(stage, f"{task.get_name()} stopped: {stopped!r}" if stopped else f"{task.get_name()} stopped: the call dropped")
 
     async def keep_sending(self) -> None:
-        """A frame every FRAME_SECS for as long as the call is up, silence where nothing is being said: hands hangs up a
-        call that goes quiet, as it does a page that is closed."""
+        """A message every FRAME_SECS for as long as the call is up, a `quiet` where no turn is open, as the page sends one:
+        hands hangs up a call that goes quiet, as it does a page that is closed."""
         start, sent = self.clock.now(), 0
-        silence = bytes(FRAME_BYTES)
+        held_back = quiet_message(FRAME_BYTES // 2)
         while True:
-            said = self.pending.popleft() if self.pending else silence
+            said = self.pending.popleft() if self.pending else held_back
             self.channel.send(said)
             if not self.pending:
                 self.drained.set()
             match said:
-                case bytes():
+                case "press" | "release":
+                    # A press or a release goes out with the message after it, as the page's button does.
+                    pass
+                case _:
                     # Paced by the count sent against the clock at the first, as hands paces what it sends the page.
                     sent += 1
                     await self.clock.sleep(max(0.0, start + sent * FRAME_SECS - self.clock.now()))
-                case str():
-                    # A press or a release goes out with the frame after it, as the page's button does.
-                    pass
 
     async def say(self, stage: Stage, audio: bytes) -> float:
         """Hold the button, say `audio`, and let go once it has all gone; when it was let go of, by the call's clock.

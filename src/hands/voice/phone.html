@@ -312,6 +312,11 @@ async function connect(claim) {
   // Twenty milliseconds of the microphone a message.
   const per = Math.round(audio.sampleRate / 50);
   let pending = [], count = 0, marked = null;
+  // No sample leaves the phone outside a turn. Inside one, what is gathered goes as audio; outside one, only how many
+  // samples were gathered goes, as a `quiet`, which hands hears as that much silence: a message every 20 ms either way is
+  // what hands' clock and its watch on this call run on (hands.voice.phone). The turn's edges end the message being
+  // gathered, in the order the button's messages go out, so no sample of one side rides in a message of the other.
+  let inTurn = false;
   const tag = ++tags;
   tap.port.onmessage = ({data}) => {
     if (typeof data === "number") { if (data === tag) { flush(); marked(); } return; }
@@ -319,7 +324,7 @@ async function connect(claim) {
     if (count >= per) flush();
   };
   function flush() {
-    if (count && channel.readyState === "open") channel.send(pcm(pending));
+    if (count && channel.readyState === "open") channel.send(inTurn ? pcm(pending) : JSON.stringify({kind: "quiet", samples: count}));
     pending = []; count = 0;
   }
   // Each press and release goes out after the one before it has: a press made while a release still waits on its mark
@@ -327,9 +332,10 @@ async function connect(claim) {
   let sent = Promise.resolve();
   // Each press is numbered in the call, as hands numbers the presses it hears over the ordered channel.
   const made = call = {pc, channel, ended: false, presses: 0,
-    press() { sent = sent.then(() => channel.send("press")); return ++this.presses; },
-    // The release waits for the mark to come back through the tap: everything said before it has been sent first.
-    release() { sent = sent.then(() => new Promise((done) => { marked = () => { channel.send("release"); done(); }; tap.port.postMessage(tag); })); },
+    // What was gathered before the press goes as a count: the turn begins with the press.
+    press() { sent = sent.then(() => { flush(); inTurn = true; channel.send("press"); }); return ++this.presses; },
+    // The release waits for the mark to come back through the tap: everything said before it has been sent first, as audio.
+    release() { sent = sent.then(() => new Promise((done) => { marked = () => { channel.send("release"); inTurn = false; done(); }; tap.port.postMessage(tag); })); },
   };
   channel.onopen = () => {
     wanted = true; tries = 0;

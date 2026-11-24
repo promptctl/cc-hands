@@ -5,7 +5,8 @@ import datetime
 import itertools
 import json
 import ssl
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from importlib import resources
@@ -32,7 +33,7 @@ from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
 from hands.voice.clips import Clip
 from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
-from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, kind
+from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, Quiet, kind, parse_said, quiet_message
 from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -150,8 +151,9 @@ class Call:
         return frames
 
 
-@pytest.fixture
-async def call() -> AsyncGenerator[Call, None]:
+@asynccontextmanager
+async def calling() -> AsyncGenerator[Call, None]:
+    """A call up, hands at the phone, ended as the block ends."""
     key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
     phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
     page, offer = await a_page()
@@ -160,9 +162,17 @@ async def call() -> AsyncGenerator[Call, None]:
         await page.opened.wait()
         while key.gate.place != "phone":
             await asyncio.sleep(0.01)
-    yield Call(phone, key, page, recorded)
-    await page.peer.close()
-    await phone.stop()
+    try:
+        yield Call(phone, key, page, recorded)
+    finally:
+        await page.peer.close()
+        await phone.stop()
+
+
+@pytest.fixture
+async def call() -> AsyncGenerator[Call, None]:
+    async with calling() as up:
+        yield up
 
 
 @pytest.mark.outside
@@ -427,6 +437,97 @@ async def test_a_message_that_is_neither_audio_nor_the_button_is_said_and_moves_
         logger.remove(sink)
     assert "'wave'" in errors[0]
     assert call.key.gate.key == "up"
+
+
+# What a page that is never silent sends around one press: its first messages are held back (960 samples is 20 ms at 48 kHz,
+# 1024 what a page cuts there), then a turn, then held back again.
+HELD_BACK = [960, 1024, 1024]
+AROUND_A_PRESS = [*map(quiet_message, HELD_BACK), "press", LOUD, LOUD, "release", *map(quiet_message, HELD_BACK)]
+
+
+def as_zero_audio(script: Sequence[bytes | str]) -> list[bytes | str]:
+    """`script` with each `quiet` replaced by the audio of that many zero samples."""
+    return [bytes(2 * quiet.samples) if isinstance(said, str) and isinstance(quiet := parse_said(said, PAGE_RATE), Quiet) else said for said in script]
+
+
+async def heard_from(script: Sequence[bytes | str]) -> list[tuple[str, int, int, int, bytes]]:
+    """What the pipeline hears of `script` sent by a page on a call of its own, each frame with the gate as it was."""
+    async with calling() as up:
+        for said in [*script, "press"]:
+            up.page.send(said)
+        # The last press is the script's end: the channel is ordered, so everything before it has been heard.
+        await up.until(lambda: up.phone.moves.qsize() == script.count("press") + script.count("release") + 1)
+        return [(frame.key, frame.sent, frame.turn, frame.sample_rate, frame.audio) for frame in up.heard()]
+
+
+@pytest.mark.outside
+async def test_a_quiet_is_heard_as_the_zero_audio_it_counts_and_a_turn_around_it_is_heard_as_ever() -> None:
+    held = await heard_from(AROUND_A_PRESS)
+    zeros = await heard_from(as_zero_audio(AROUND_A_PRESS))
+    assert held == zeros
+    keys = [key for key, *_ in held]
+    # Silence before the turn, the turn's own audio, and silence after it that closes it.
+    assert keys[0] == "up" and "down" in keys and keys[-1] == "up"
+    assert {rate for _, _, _, rate, _ in held} == {16000}
+    assert all(any(audio) for key, _, _, _, audio in held if key == "down")
+    assert all(not any(audio) for key, _, _, _, audio in held if key == "up")
+    assert [sent for _, sent, _, _, _ in held][-1] == 1
+
+
+@pytest.mark.outside
+async def test_a_call_that_sends_only_quiet_is_not_hung_up_as_silent(call: Call, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(phone_module, "QUIET_SECS", 0.2)
+    # Twice the span a page that sent nothing is let go after.
+    for _ in range(8):
+        call.page.send(quiet_message(1024))
+        await asyncio.sleep(0.05)
+    assert call.key.gate.place == "phone"
+    assert calls(call.recorded) == []
+
+
+LIMIT = int(phone_module.QUIET_SECS * PAGE_RATE)
+UNREADABLE_QUIETS = [
+    json.dumps({"kind": "quiet", "samples": samples})
+    for samples in (0, -1, 1.5, 1024.0, "1024", True, None, [1024], LIMIT + 1)
+] + ['{"kind": "quiet"}', '{"kind": "loud", "samples": 1024}', '{"samples": 1024}', "[1024]", "1024", "quiet", "{"]
+
+
+@pytest.mark.parametrize("said", UNREADABLE_QUIETS)
+def test_a_quiet_that_is_not_a_whole_count_up_to_the_span_of_a_page_gone_is_not_read(said: str) -> None:
+    with pytest.raises(Rejected):
+        parse_said(said, PAGE_RATE)
+
+
+@pytest.mark.parametrize("samples", [1, 1024, LIMIT])
+def test_a_quiet_is_read_from_one_sample_up_to_the_span_of_a_page_gone(samples: int) -> None:
+    assert parse_said(quiet_message(samples), PAGE_RATE) == Quiet(samples)
+
+
+def test_the_span_a_quiet_may_count_is_the_call_rates() -> None:
+    assert parse_said(quiet_message(48000), 16000) == Quiet(48000)
+    with pytest.raises(Rejected):
+        parse_said(quiet_message(48001), 16000)
+
+
+@pytest.mark.outside
+async def test_a_quiet_hands_cannot_read_is_said_and_makes_no_silence(call: Call) -> None:
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
+    try:
+        call.page.send(quiet_message(LIMIT + 1))
+        await call.until(lambda: bool(errors))
+    finally:
+        logger.remove(sink)
+    assert str(LIMIT + 1) in errors[0]
+    assert call.phone.heard.empty()
+    assert call.key.gate.place == "phone"
+    assert calls(call.recorded) == []
+
+
+@pytest.mark.outside
+async def test_a_quiet_hands_cannot_read_leaves_what_is_heard_as_if_it_had_not_been_sent() -> None:
+    readable = [*map(quiet_message, HELD_BACK)]
+    assert await heard_from([quiet_message(LIMIT + 1), *readable]) == await heard_from(readable)
 
 
 Served = tuple[TestClient[web.Request, web.Application], Phone, PushToTalk, list[Entry]]

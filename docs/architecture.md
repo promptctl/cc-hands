@@ -2282,7 +2282,15 @@ offer must carry the phone's key, a secret in the home that travels in the page
 address's fragment, which a browser never sends with the page request. `hands phone`
 prints the addresses with the key, the first as a QR code. aiortc never notices a
 browser closed outright, so a page that sends nothing for `QUIET_SECS` is hung up:
-it sends its microphone every 20 ms for as long as it is open. The page does the same the
+it sends a message every 20 ms for as long as it is open. Those messages are the pipeline's clock, each one a frame, and
+what is in one depends on whether a turn is open: inside a turn, the microphone as 16-bit audio; outside one, a `quiet`,
+`{"kind": "quiet", "samples": N}`, which counts the samples the page held back and carries none of them, and which `Phone`
+hears as that much silence at the call's rate, through the path audio takes. No microphone sample leaves the phone outside
+a turn: a turn's edge ends the message being gathered, so what was gathered before a press goes as a count and what was
+gathered before a release goes as audio, ahead of `release`. A page's message is cut at the first 128-sample block that
+reaches 20 ms, so at 48 kHz it holds 1024 samples; the limit on a count is `QUIET_SECS` of samples at the call's rate,
+and a `quiet` counting anything but a whole number from 1 to that is rejected and logged as a message hands cannot read,
+so a bad page cannot make hands build silence without end. The page does the same the
 other way: hands sends its voice every 20 ms, silence and all, so a page that has received
 none for 3 s, or whose channel closes or connection fails, takes its call as dropped and
 calls again on its own, after 1 s, then doubling to every 8 s, at once when the page is
