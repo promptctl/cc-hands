@@ -152,8 +152,9 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
 
     from hands.tasks import cancel_and_wait
 
-    every = asyncio.ensure_future(asyncio.wait(futures))
+    # The sleep is asked first: a clock that raises as it is asked leaves nothing of the wait begun.
     timer = asyncio.ensure_future(clock.sleep(timeout))
+    every = asyncio.ensure_future(asyncio.wait(futures))
     try:
         await asyncio.wait((every, timer), return_when=asyncio.FIRST_COMPLETED)
     except GeneratorExit:

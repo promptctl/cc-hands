@@ -20,7 +20,8 @@ pytestmark = pytest.mark.outside
 CHILD = Path(__file__).resolve().parent / "fixtures" / "command_imports_child.py"
 
 
-# Each command's code in a home with no daemon: status and check say it is not running, and the rest run whole.
+# Each command's code in a home with no daemon: status and check say it is not running, log ends at the Ctrl-C its first
+# wait is, and phone and login run whole.
 @pytest.mark.parametrize(("command", "code"), [("status", 1), ("check", 1), ("log", 0), ("phone", 0), ("login", 0)])
 def test_the_command_answers_without_loading_pipecat_or_torch(command: str, code: int, tmp_path: Path) -> None:
     out = tmp_path / "modules.json"
