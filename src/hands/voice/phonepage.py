@@ -30,7 +30,7 @@ from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.pinnedfile import Release
 from hands.voice.pagescript import script_route
-from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
+from hands.voice.phone import PAGE_RATES, Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
 from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, server_context
 from hands.voice.phonewake import wake_routes
@@ -48,10 +48,10 @@ ASK_AGAIN_SECONDS = 60.0
 def parse_offer(body: object) -> Offer:
     """A page's offer as hands takes it; raises Rejected naming what is wrong with it."""
     match body:
-        case {"sdp": str(sdp), "type": "offer", "rate": int(rate), "page": str(page), "claim": str(claim)} if rate > 0 and page and claim in ("take", "resume"):
+        case {"sdp": str(sdp), "type": "offer", "rate": int(rate), "page": str(page), "claim": str(claim)} if rate in PAGE_RATES and page and claim in ("take", "resume"):
             return Offer(sdp, "offer", rate, Asked(page, claim))
         case _:
-            raise Rejected("an offer is {sdp, type: offer, rate, page, claim: take or resume}")
+            raise Rejected(f"an offer is {{sdp, type: offer, rate: a whole number from {PAGE_RATES.start} to {PAGE_RATES.stop - 1}, page, claim: take or resume}}")
 
 
 def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[web.RouteDef]:

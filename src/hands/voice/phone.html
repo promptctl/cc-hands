@@ -330,12 +330,17 @@ async function connect(claim) {
   // Each press and release goes out after the one before it has: a press made while a release still waits on its mark
   // is sent after that release, so hands hears them in the order the button made them, and one mark is out at a time.
   let sent = Promise.resolve();
+  // An edge of a turn waits for the mark to come back through the tap, so every block the tap had when the button moved
+  // has been gathered, and it is flushed as the side of the edge it was gathered on: a count before a press, audio before
+  // a release. Then the word goes, and the turn opens or closes.
+  const edge = (word, entering) => { sent = sent.then(() => new Promise((done) => {
+    marked = () => { try { channel.send(word); } finally { inTurn = entering; done(); } };
+    tap.port.postMessage(tag);
+  })); };
   // Each press is numbered in the call, as hands numbers the presses it hears over the ordered channel.
   const made = call = {pc, channel, ended: false, presses: 0,
-    // What was gathered before the press goes as a count: the turn begins with the press.
-    press() { sent = sent.then(() => { flush(); inTurn = true; channel.send("press"); }); return ++this.presses; },
-    // The release waits for the mark to come back through the tap: everything said before it has been sent first, as audio.
-    release() { sent = sent.then(() => new Promise((done) => { marked = () => { channel.send("release"); inTurn = false; done(); }; tap.port.postMessage(tag); })); },
+    press() { edge("press", true); return ++this.presses; },
+    release() { edge("release", false); },
   };
   channel.onopen = () => {
     wanted = true; tries = 0;

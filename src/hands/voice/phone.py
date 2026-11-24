@@ -25,6 +25,7 @@ the phone back and forth between them; only a press takes it from another page.
 import asyncio
 import fractions
 import json
+import math
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from typing import Literal
@@ -37,7 +38,7 @@ from loguru import logger
 
 from hands.clock import Clock
 from hands.sessions.audit import Record
-from hands.sessions.payload import Rejected
+from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import Begun, Fact, continuing, ended, since
 from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
 from hands.voice.ptt import KeyedAudio, PushToTalk
@@ -86,12 +87,15 @@ class CallUnreached:
 @dataclass(frozen=True)
 class CallLeft:
     """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended, its page `told` that many
-    milestones of its turns and that many `lines` of the transcript."""
+    milestones of its turns and that many `lines` of the transcript. The page held back `held_back` samples of its
+    microphone as `quiet` messages, and sent `rejected` messages hands could not read."""
 
     reason: PhoneGone
     arrived_ms: float
     told: int
     lines: int
+    held_back: int
+    rejected: int
 
 
 @dataclass(frozen=True)
@@ -219,16 +223,36 @@ class Offer:
     asked: Asked
 
 
+# The sample rates a page's microphone comes at: the range the Web Audio API runs an AudioContext within.
+PAGE_RATES = range(8000, 192001)
+# The audio worklet's render quantum: the page's microphone arrives in blocks of this many samples.
+BLOCK_SAMPLES = 128
+
+
+def largest_quiet(rate: int) -> int:
+    """The most samples one `quiet` of a correct page counts at `rate`: the page cuts a message at the first block that
+    reaches 20 ms, and a turn's edge only cuts one sooner, so no message holds more."""
+    return math.ceil(math.ceil(rate / 50) / BLOCK_SAMPLES) * BLOCK_SAMPLES
+
+
 @dataclass(frozen=True)
 class Quiet:
-    """The samples of its microphone, at the call's rate, that the page held back because no turn was open: heard as that
-    much silence, so the page's messages stay the pipeline's clock."""
+    """The samples of its microphone, at `rate`, that the page held back because no turn was open: heard as that much
+    silence, so the page's messages stay the pipeline's clock. A count from 1 to what one message of the page holds, so a
+    page cannot make hands build silence faster than the page's microphone makes it."""
 
     samples: int
+    rate: int
+
+    def __post_init__(self) -> None:
+        # [LAW:parse-dont-validate] a Quiet that exists has passed this, whoever built it.
+        if not 1 <= self.samples <= largest_quiet(self.rate):
+            raise Rejected(f"the phone's page held back {self.samples} samples, which is not a count from 1 to {largest_quiet(self.rate)}")
 
 
 def quiet_message(samples: int) -> str:
-    """[LAW:single-enforcer] a `quiet` as the page writes it, for every player of the page, so `parse_said` reads one shape."""
+    """A `quiet` as the Python players of the page write it, the smoke and the tests. The page writes its own in phone.html;
+    `parse_said` decides whether either is read, and the Chrome test in tests/test_pages.py holds the page's to it."""
     return json.dumps({"kind": "quiet", "samples": samples})
 
 
@@ -236,35 +260,26 @@ def quiet_message(samples: int) -> str:
 Said = bytes | Quiet | Move
 
 
-def parse_quiet(message: str, rate: int) -> Quiet:
-    """A `quiet` whose count is a whole number from 1 up to `QUIET_SECS` of samples at `rate`, the span of a page gone, so a
-    page cannot make hands build silence without end; raises Rejected for anything else."""
-    try:
-        said = json.loads(message)
-    except json.JSONDecodeError:
-        said = None
-    limit = int(QUIET_SECS * rate)
-    match said:
-        case {"kind": "quiet", "samples": samples}:
-            if type(samples) is int and 1 <= samples <= limit:
-                return Quiet(samples)
-            raise Rejected(f"the phone's page held back {samples!r} samples, which is not a whole number from 1 to {limit}")
-        case _:
-            raise Rejected(f"the phone's page sent {message!r}, which is neither audio, a quiet, nor a press or a release")
-
-
 def parse_said(message: object, rate: int) -> Said:
-    """One message of the page's: 16-bit mono audio at the offer's rate `rate`, a `quiet`, or the button pressed or released;
-    raises Rejected for anything else."""
+    """One message of the page's: 16-bit mono audio at the offer's rate `rate`, a `quiet`, or the button pressed or
+    released; raises Rejected for anything else."""
     match message:
         case bytes():
+            if not message or len(message) % 2:
+                raise Rejected(f"the phone's page sent audio of {len(message)} bytes, which is not a whole number of 16-bit samples")
             return message
         case "press":
             return "start"
         case "release":
             return "stop"
         case str():
-            return parse_quiet(message, rate)
+            try:
+                said = Payload.parse(message.encode())
+                if said.text("kind") != "quiet":
+                    raise Rejected("its kind is not quiet")
+                return Quiet(said.integer("samples"), rate)
+            except Rejected as error:
+                raise Rejected(f"the phone's page sent {message[:80]!r}, which hands cannot read: {error}") from error
         case _:
             raise Rejected(f"the phone's page sent {message!r}, which is neither audio, a quiet, nor a press or a release")
 
@@ -278,7 +293,7 @@ class _Call:
     remote: str
     asked: Asked
     began: Begun
-    # Set by every message the page sends; the watch hangs up a call that goes QUIET_SECS without one.
+    # Set by every message the page sends that hands reads; the watch hangs up a call that goes QUIET_SECS without one.
     heard: asyncio.Event
     # Set as it arrives: its channel, its watch, and how long after its offer it came.
     channel: RTCDataChannel | None = None
@@ -291,6 +306,9 @@ class _Call:
     # How many milestones of its turns, and lines of the transcript, the page has been told.
     told: int = 0
     lines: int = 0
+    # The samples its page has held back as `quiet` messages, and the messages it sent that hands could not read.
+    held_back: int = 0
+    rejected: int = 0
 
 
 class Phone:
@@ -348,12 +366,17 @@ class Phone:
                 if self._call is not call:
                     # Queued before its call was let go: the call it spoke for is gone, and hands is elsewhere.
                     return
-                call.heard.set()
                 try:
-                    self._hear(call, parse_said(message, call.rate))
+                    said = parse_said(message, call.rate)
                 except Rejected as error:
-                    # [LAW:no-silent-failure] the page and hands disagree about what it sends: said, not guessed at.
+                    # [LAW:no-silent-failure] the page and hands disagree about what it sends: said, not guessed at. It is
+                    # no sign the page is alive: a page that sends only what hands cannot read is hung up as one that
+                    # sends nothing.
+                    call.rejected += 1
                     logger.error(str(error))
+                    return
+                call.heard.set()
+                self._hear(call, said)
 
             if self._offered is call:
                 await self._arrive(call, channel)
@@ -427,6 +450,7 @@ class Phone:
             case bytes():
                 self._heard(call, said)
             case Quiet(samples=samples):
+                call.held_back += samples
                 # [LAW:dataflow-not-control-flow] silence is the audio it stands for: it takes the path audio takes.
                 self._heard(call, bytes(2 * samples))
             case move:
@@ -468,7 +492,7 @@ class Phone:
                 call.outbound.stop()
                 if call.watch is not None and call.watch is not asyncio.current_task():
                     call.watch.cancel()
-                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told, call.lines))
+                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told, call.lines, call.held_back, call.rejected))
                 return call
 
     async def hang_up(self, reason: PhoneGone) -> None:

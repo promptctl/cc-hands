@@ -219,7 +219,7 @@ class Caller:
                 case "press" | "release":
                     # A press or a release goes out with the message after it, as the page's button does.
                     pass
-                case _:
+                case bytes() | str():
                     # Paced by the count sent against the clock at the first, as hands paces what it sends the page.
                     sent += 1
                     await self.clock.sleep(max(0.0, start + sent * FRAME_SECS - self.clock.now()))
