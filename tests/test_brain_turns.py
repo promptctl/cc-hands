@@ -1720,6 +1720,88 @@ async def test_a_halt_that_is_cancelled_holds_no_asker_and_its_event_says_it_was
     assert (halt.outcome, halt.facts["prompts"]) == ("cancelled", ("n1",))
 
 
+async def test_a_halt_with_a_turn_in_flight_that_is_cancelled_ends_that_turn_and_its_event_says_it_was_cancelled(errors: list[str]) -> None:
+    recorded: list[Entry] = []
+    brain, keys = _built(VirtualClock(), recorded.append)
+    await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path(TRANSCRIPT))))  # pyright: ignore[reportPrivateUsage]
+    _took(brain, "n1", NOTICE)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    turn = await _typed_turn(brain, "and now?")
+    gate = threading.Event()
+    keys.before["ctrl_c"] = gate.wait
+    try:
+        # Halted while the words typed behind it are not yet taken: the halt holds for their take, and stops them with it.
+        assert brain.interrupt(notified) is True
+        _took(brain, "n1", "and now?", queued=True)
+        await until(lambda: "ctrl_c" in keys.pressed)
+        # Something cancels the halt as it waits on its Ctrl-C: the asker whose words ran in the halted turn is answered.
+        (halting,) = (task for task in brain._own_work if task.get_name() == "Brain._halt")  # pyright: ignore[reportPrivateUsage]
+        halting.cancel()
+        await asyncio.wait({turn.answered})
+    finally:
+        gate.set()
+    await brain.drained()
+    with pytest.raises(process.WorkCancelled, match="the brain's stop of its turn was cancelled"):
+        turn.answered.result()
+    assert errors == []
+    [halt] = events(recorded, "brain.halt")
+    assert (halt.outcome, halt.facts["with_turn"]) == ("cancelled", True)
+
+
+async def _stopping_late(recorded: list[Entry]) -> tuple[Brain, _Keys, VirtualClock]:
+    """A brain whose untaken turn's words Claude Code took late as p1, which runs, and whose stop has pressed its Escape."""
+    clock = VirtualClock()
+    brain, keys = _built(clock, recorded.append)
+    await _untaken(brain, "hello")
+    await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path(TRANSCRIPT))))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(Prompted(SessionId("b1"), clock.now(), "default", PromptId("p1"), "hello"))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(1000)), clock.now()))  # pyright: ignore[reportPrivateUsage]
+    await until(lambda: "escape" in keys.pressed)
+    return brain, keys, clock
+
+
+async def test_a_late_stop_claude_code_does_not_carry_out_is_said_on_its_event_and_leaves_the_turn_to_its_telling(errors: list[str]) -> None:
+    recorded: list[Entry] = []
+    brain, _keys_, clock = await _stopping_late(recorded)
+    (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    # Claude Code runs on past the stop's time.
+    await clock.sleeping(clock.now() + INTERRUPT_SECONDS)
+    clock.advance_to(clock.now() + INTERRUPT_SECONDS)
+    await brain.drained()
+    assert (late.ended.done(), errors) == (False, [])
+    [decided] = events(recorded, "brain.late")
+    assert (decided.outcome, decided.facts["stopped"]) == ("failed", True)
+    assert decided.error is not None and "did not stop what hands pressed Escape for" in decided.error
+
+
+async def test_a_late_stop_the_brains_end_cuts_short_is_said_on_its_event_and_is_no_failure_of_hands_own(errors: list[str]) -> None:
+    recorded: list[Entry] = []
+    brain, keys, _clock = await _stopping_late(recorded)
+    # The brain's Claude Code exits while the stop waits for it to stop.
+    keys.exit.set_result(0)
+    await brain.drained()
+    assert errors == []
+    [decided] = events(recorded, "brain.late")
+    assert decided.outcome == "failed" and decided.error is not None and "exited while hands stopped what it ran" in decided.error
+
+
+async def test_a_turns_send_that_is_cancelled_leaves_the_turn_behind_it_to_the_model(errors: list[str]) -> None:
+    brain, _keys_ = _built(VirtualClock())
+    _took(brain, "p1", "count to ten")
+    turn = await _typed_turn(brain, "and add 3?")
+    _took(brain, "p1", "and add 3?", queued=True)
+    # p1 told with the asker's words waiting, which run as the turn behind it.
+    _told(brain, "p1", ["p1"], waiting=("and add 3?",))
+    (behind,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    (sending,) = (task for task in brain._own_work if task.get_name() == "Brain._send")  # pyright: ignore[reportPrivateUsage]
+    sending.cancel()
+    await asyncio.wait({turn.answered})
+    await brain.drained()
+    assert isinstance(turn.answered.exception(), process.WorkCancelled)
+    # [LAW:one-source-of-truth] Claude Code still runs the words, so their turn ends only as the model reads it.
+    assert (behind.ended.done(), brain._claude_turns.open, errors) == (False, (behind,), [])  # pyright: ignore[reportPrivateUsage]
+
+
 async def test_a_turns_hook_the_model_could_not_hear_loses_the_order_of_the_brains_turns_as_one_that_did_not_parse(errors: list[str]) -> None:
     recorded: list[Entry] = []
     brain, turn = await _in_turn(recorded.append, unasked)

@@ -1169,10 +1169,10 @@ class Brain:
         """Stops `running`, which the words of an untaken turn run in, taken late under `prompt`, with the input held:
         unless a turn in flight was taken since, which Claude Code, reading its input in order, filed into it. Then the
         asker's words run there too, and the turn runs on to answer them: a stop would end a turn they asked."""
-        async with self._input:
-            # [LAW:nothing-unseen] a stop hands decides itself is one event: the words, the turn they ran in, whether it
-            # was stopped, and what ended the stop short.
-            with unit("brain.late", self._record, begun(self._clock)):
+        # [LAW:nothing-unseen] a stop hands decides itself is one event, from the wait for the input on: the words, the
+        # turn they ran in, whether it was stopped, and what ended the stop short.
+        with unit("brain.late", self._record, begun(self._clock)):
+            async with self._input:
                 turn = self._turn
                 asked = turn is not None and not turn.answered.done() and turn.taken.done()
                 stopped = running in self._claude_turns.open and not asked
@@ -1184,18 +1184,16 @@ class Brain:
         """Stops a turn Claude Code opened itself, with the input held: over once its telling ends it (`_clear`). The input
         is held until the turn in flight is taken, so a turn typed behind `running` is stopped with it, as a turn is
         stopped (`_escape`): its words ran in `running`, or waited behind it, and the Escape stops them either way."""
-        async with self._input:
-            # [LAW:nothing-unseen] one event: the turn halted, whether a turn in flight was stopped with it, and what ended
-            # the stop short.
-            with unit("brain.halt", self._record, begun(self._clock)):
+        # [LAW:nothing-unseen] one event, from the wait for the input on: the turn halted, whether a turn in flight was
+        # stopped with it, and what ended the stop short.
+        with unit("brain.halt", self._record, begun(self._clock)):
+            async with self._input:
                 turn = self._turn
                 with_turn = turn is not None and not turn.answered.done() and turn.taken.done()
                 annotate(prompts=tuple(sorted(running.ids)), opener=running.opener, open=running in self._claude_turns.open, with_turn=with_turn)
                 if running not in self._claude_turns.open:
                     return
-                if turn is not None and with_turn:
-                    await self._stopping(turn)
-                elif (short := await self._clearing()) is not None:
+                if (short := await (self._stopping(turn) if turn is not None and with_turn else self._clearing())) is not None:
                     fail(short)
 
     async def _clearing(self) -> str | None:
@@ -1211,15 +1209,16 @@ class Brain:
             return str(error)
         return None
 
-    async def _stopping(self, turn: _Turn) -> None:
-        """Stops the taken `turn`, with the input held: it ends BrainStopped once Claude Code holds nothing of it."""
+    async def _stopping(self, turn: _Turn) -> str | None:
+        """Stops the taken `turn`, with the input held: it ends BrainStopped once Claude Code holds nothing of it. Says
+        what cut the stop short, as `_clearing` does, where the turn ended with it."""
         # Whatever way Claude Code's turn ends from here, it was stopped: an Escape went for it.
         turn.stopped = True
         try:
             await self._clear(turn)
         except (BrainGone, StopUnrecorded) as error:
             self._over(turn, error)
-            return
+            return str(error)
         except Exception as error:
             # [LAW:single-enforcer] whatever else broke the clear ends the turn it stopped here, on every stop's path (`_stop`,
             # `_halt`), as its turn was stopped; and is raised on, for `_broke` to say.
@@ -1233,6 +1232,7 @@ class Brain:
         # Over now Claude Code holds nothing of it: the turn the Escape stopped told, and the words it put back in the
         # input from Claude Code's queue, which Ctrl-C cleared, taken out of it.
         self._over(turn, BrainStopped())
+        return None
 
     def _keep(self, work: Coroutine[None, None, None], turn: _Turn | None) -> None:
         """Runs on in a task of the brain's own, whoever asked for it, for `turn`, the turn in flight it was begun in."""
@@ -1491,8 +1491,12 @@ class Brain:
             # with nothing waited on between, or once the stop's time has passed, too long after the ESC for any reader
             # still reading to take the two together: a Ctrl-C a busy Claude Code reads in one chunk with the ESC is
             # Alt+Ctrl-C, and neither key does anything.
-            await self._type(lambda typist: typist.press("ctrl_c"))
-            self._cleared = self._clock.now()
+            try:
+                await self._type(lambda typist: typist.press("ctrl_c"))
+            finally:
+                # However the write ends, the key may have gone: a write cut off here still runs to its end in its
+                # thread, so the next stop spaces its Ctrl-C from this one.
+                self._cleared = self._clock.now()
             if unstopped is None:
                 # The Escape put whatever Claude Code queued back in the input and the Ctrl-C cleared it: untaken words
                 # are in neither now, so none can come late.
@@ -1996,10 +2000,6 @@ class Brain:
             return
         if isinstance(outcome, Untaken) and turn.pasted:
             self._untaken = kept(turn.typed)
-        # Words of its waiting to run as the turn behind, which no telling has named, never run now: Ctrl-C cleared them
-        # from the input as its stop went, or nothing is left to run them.
-        if (running := turn.running) is not None and not running.ids and running in self._claude_turns.open:
-            self._claude_turns.fail(running, Unran(f"the turn they were typed for ended ({outcome!r}) before they ran"))
         # A broken turn ends with what broke it, whatever ended it: its Stop, its stop's Escape, or the brain's exit.
         match outcome if turn.broken is None else turn.broken:
             case BrainAnswered() | BrainStopped() as ended:
