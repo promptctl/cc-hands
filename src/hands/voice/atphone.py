@@ -2,7 +2,7 @@
 word turn (`hands.voice.voiceturn`), with the work around the models that goes with them (`hands.voice.turnlife`).
 
 The gate is the one authority on the phone's turn (`hands.voice.ptt`), and this driver follows it. It is told of a turn as
-the gate takes the wake that opens it, hears the phone's audio from then on and no earlier (the second the page sent ahead of
+the gate opens it for a wake, hears the phone's audio from then on and no earlier (the second the page sent ahead of
 the wake is the clip's, never the models'), and is told as the gate ends the turn, whatever ended it: a press, a hand at the
 desk, the level or the call. It ends a turn only through `PushToTalk.end`, which takes the end only while that turn is the
 one the gate is at, so a verdict, a limit or an ask of a turn the gate already ended ends nothing, and the gate's own end
@@ -16,8 +16,7 @@ from collections.abc import Callable
 from hands.clock import Clock
 from hands.sessions.wide import Begun, WideEvent, begun, ended
 from hands.voice import voiceturn
-from hands.voice.phone import WakeOpened
-from hands.voice.ptt import KeyedAudio, PushToTalk, TurnEnded
+from hands.voice.ptt import GateEnded, GateOpened, KeyedAudio, PushToTalk
 from hands.voice.shortcut import Move
 from hands.voice.trigger import PHONE_WAKE
 from hands.voice.turnlife import Ears, Life
@@ -25,16 +24,16 @@ from hands.voice.voiceturn import Ended, Going, How, Judging, Told, Turn, Waitin
 
 # How a turn the driver followed ended: by the rules of a voice turn's end, which the gate took, or by the gate first, which
 # says what ended it.
-End = How | TurnEnded
+End = How | GateEnded
 
 
-async def drive(clock: Clock, key: PushToTalk, turns: asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio], ears: Ears, taken: Callable[[Move | None], None], emit: Callable[[WideEvent], None]) -> None:
+async def drive(clock: Clock, key: PushToTalk, turns: asyncio.Queue[GateOpened | GateEnded | KeyedAudio], ears: Ears, taken: Callable[[Move | None], None], emit: Callable[[WideEvent], None]) -> None:
     """Follow every turn a wake opens until cancelled, handing each end the gate took from it to `taken`.
 
     One task steps the turn, in the order things were heard, so the speech, the deadlines and Smart Turn's verdicts never
     race each other: a verdict is stepped as it is given, before any audio heard while the model thought, so it ends the
     turn it judged and no other."""
-    events: asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio | Told] = asyncio.Queue()
+    events: asyncio.Queue[GateOpened | GateEnded | KeyedAudio | Told] = asyncio.Queue()
     # What has been told and is yet to be stepped, in the order it is stepped.
     heard: deque[Told] = deque()
     life = Life(clock, ears, events.put_nowait, heard.appendleft, emit, "phone")
@@ -57,7 +56,7 @@ async def drive(clock: Clock, key: PushToTalk, turns: asyncio.Queue[WakeOpened |
         """The turn followed is over, `end`ed."""
         life.moved(was, None)
         match end:
-            case TurnEnded(by=by):
+            case GateEnded(by=by):
                 ended("phone.turn", emit, began, None, None, turn=was.id, end="gate", by=by, frames=frames)
             case how:
                 ended("phone.turn", emit, began, None, None, turn=was.id, end=how, frames=frames)
@@ -71,13 +70,16 @@ async def drive(clock: Clock, key: PushToTalk, turns: asyncio.Queue[WakeOpened |
         while True:
             each = heard.popleft() if heard else await events.get()
             match each:
-                case WakeOpened(turn=opened, at=at):
+                case GateOpened(turn=opened, by=by, at=at) if by == PHONE_WAKE:
                     # The gate opens a turn only with none open, and told us as it ended any before.
                     turn = become(turn, Waiting(opened, at))
-                case TurnEnded(turn=gone) if turn is not None and turn.id == gone:
+                case GateOpened():
+                    # A turn a hand opened, the page's button or the desk's: not one a wake word's driver follows.
+                    pass
+                case GateEnded(turn=gone) if turn is not None and turn.id == gone:
                     close(turn, each)
                     turn = None
-                case TurnEnded():
+                case GateEnded():
                     # A turn that was not the one followed: the desk's, or one the driver ended itself.
                     pass
                 case KeyedAudio(audio=audio) if turn is not None:

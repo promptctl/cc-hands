@@ -44,11 +44,10 @@ from hands.sessions.audit import Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import Begun, Fact, begun, continuing, ended, since
 from hands.voice.milestone import ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
-from hands.voice.ptt import KeyedAudio, PushToTalk, Refusal, TurnEnded
-from hands.voice.shortcut import Instant, Move
+from hands.voice.ptt import GateEnded, GateOpened, KeyedAudio, PushToTalk, Refusal
+from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
 from hands.voice.trigger import PHONE_WAKE, PhoneLevel
-from hands.voice.voiceturn import TurnId
 from hands.voice.wakeword import THRESHOLD
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
@@ -311,6 +310,14 @@ class Wake:
 
 
 @dataclass(frozen=True)
+class UnreadableWake:
+    """A wake the page sent whose score is none: `why`. The page numbered it as it numbers every wake, so it is counted and
+    answered as one, and not taken for a message the page never sent."""
+
+    why: str
+
+
+@dataclass(frozen=True)
 class Listening:
     """The page's level, as it stands now, and each time it changes."""
 
@@ -337,7 +344,7 @@ Button = Literal["start", "stop"]
 
 # What the page sends over the call's data channel: its microphone, the samples it held back, its button, and what its
 # detector heard and what level it listens at.
-Said = Pcm | Quiet | Button | Wake | Listening | DetectorLoaded | DetectorFailed
+Said = Pcm | Quiet | Button | Wake | UnreadableWake | Listening | DetectorLoaded | DetectorFailed
 
 
 def parse_said(message: object, rate: int) -> Said:
@@ -364,10 +371,13 @@ def parse_said(message: object, rate: int) -> Said:
                             raise Rejected(f"it counts {samples} samples, and one message may count {most} at most")
                         return Quiet(samples)
                     case "wake":
-                        score = said.number("score")
-                        # A detector's score is a probability; NaN is none.
+                        # A detector's score is a probability; a page's NaN is `null`, and none.
+                        try:
+                            score = said.number("score")
+                        except Rejected as error:
+                            return UnreadableWake(str(error))
                         if not 0.0 <= score <= 1.0:
-                            raise Rejected(f"its score is {score}, which is not a probability")
+                            return UnreadableWake(f"its score is {score}, which is not a probability")
                         return Wake(score)
                     case "level":
                         match said.text("level"):
@@ -390,14 +400,6 @@ def parse_said(message: object, rate: int) -> Said:
                 raise Rejected(f"the phone's page sent {message[:80]!r}, which hands cannot read: {error}") from error
         case _:
             raise Rejected(f"the phone's page sent {message!r}, which is neither audio, a quiet, a press, a release, a wake, a level, nor a detector")
-
-
-@dataclass(frozen=True)
-class WakeOpened:
-    """The gate took the page's wake and opened turn `turn` at `at`, the moment the wake was read off the channel."""
-
-    turn: TurnId
-    at: Instant
 
 
 @dataclass
@@ -460,8 +462,8 @@ class Phone:
         # The phone's microphone as the pipeline hears it: keyed frames at the pipeline's rate, while hands is at the phone.
         self.heard: asyncio.Queue[KeyedAudio] = asyncio.Queue()
         # What the phone's driver follows (`hands.voice.atphone`), in the order the gate moved and the audio was captured: each
-        # wake the gate took, every turn it ended, however, and every frame of the microphone as the gate keyed it.
-        self.turns: asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio] = asyncio.Queue()
+        # turn the gate opened and ended, however, and every frame of the microphone as the gate keyed it.
+        self.turns: asyncio.Queue[GateOpened | GateEnded | KeyedAudio] = asyncio.Queue()
         key.watch(self.turns.put_nowait)
         # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
         self.moves: asyncio.Queue[Move] = asyncio.Queue()
@@ -584,6 +586,8 @@ class Phone:
                 self._heard(call, Pcm(bytes(2 * samples)))
             case Wake(score=score):
                 self._woke(call, score)
+            case UnreadableWake(why=why):
+                self._unreadable(call, why)
             case Listening(level=level):
                 self._listening(level)
             case DetectorLoaded() | DetectorFailed():
@@ -641,22 +645,31 @@ class Phone:
                 self.took(self._key.move("arm", PHONE_WAKE))
                 self.took(self._key.move("start", PHONE_WAKE))
                 self._opened(call, press)
-                self.turns.put_nowait(WakeOpened(self._key.gate.turn, self._clock.now()))
             case refusal:
                 why, failure = _refused(refusal)
                 self.tell(Unopened(press, why))
         # [LAW:nothing-unseen] a mistake of the page's is the wake's failure, which the audit log says at error level.
         ended("phone.wake", self._record, began, None, failure, score=score, threshold=THRESHOLD, while_speaking=speaking, opened=refusal is None)
 
+    def _unreadable(self, call: _Call, why: str) -> None:
+        """A wake whose score is none: counted as the page counts it, and answered `unopened`, since no turn was opened for it."""
+        press = self._press(call)
+        self.tell(Unopened(press, "its score was unreadable"))
+        ended("phone.wake", self._record, begun(self._clock), None, f"the phone's page sent a wake hands cannot read: {why}", opened=False)
+
     def _listening(self, level: PhoneLevel) -> None:
         """The page's level: the gate's listening at the phone follows it. Off, a turn a wake opened is sent first, as the
         desk sends its voice's turn as its level goes off; a turn the button opened is left to end as it ends."""
+        was = self._key.gate.phone_level
         match level:
             case "off":
                 self._end_wake()
                 self.took(self._key.move("deafen", PHONE_WAKE))
             case "wake word":
                 self.took(self._key.move("listen", PHONE_WAKE))
+        # [LAW:nothing-unseen] each change of the phone's level is its own event, as the desk's is: from and to.
+        if was != level:
+            ended("phone.leveled", self._record, begun(self._clock), None, was=was, now=level)
 
     def _detected(self, said: DetectorLoaded | DetectorFailed) -> None:
         """The page's detector loaded, or failed, as one event naming the browser the page is in."""

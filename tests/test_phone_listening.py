@@ -25,7 +25,7 @@ from hands.voice.atphone import drive
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.sessions.payload import Rejected
-from hands.voice.phone import Asked, Phone, _Call, parse_said, quiet_message  # pyright: ignore[reportPrivateUsage]
+from hands.voice.phone import Asked, Phone, UnreadableWake, _Call, parse_said, quiet_message  # pyright: ignore[reportPrivateUsage]
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import PhoneLevel
 from hands.voice.wakeword import THRESHOLD
@@ -349,9 +349,16 @@ async def test_a_release_over_a_wakes_turn_ends_nothing_of_it() -> None:
 
 
 @pytest.mark.parametrize("score", [-0.1, 1.5, float("nan")])
-def test_a_wake_whose_score_is_no_probability_is_refused_as_unreadable(score: float) -> None:
-    with pytest.raises(Rejected, match="not a probability"):
-        parse_said(wake_message(score), RATE)
+def test_a_wake_whose_score_is_no_probability_is_read_as_a_wake_it_cannot_use(score: float) -> None:
+    assert parse_said(wake_message(score), RATE) == UnreadableWake(f"its score is {score}, which is not a probability")
+
+
+async def test_a_wake_with_no_score_is_counted_answered_and_a_failed_event_and_the_next_press_is_numbered_as_the_page_does() -> None:
+    async with up() as page:
+        page.send(level_message("wake word"), json.dumps({"kind": "wake", "score": None}), wake_message(0.9), QUIET, QUIET)
+        assert (await page.told_count(2))[:2] == [{"kind": "unopened", "press": 1, "why": "its score was unreadable"}, {"kind": "opened", "press": 2, "clip": 1}]
+        [bad, good] = events(page.recorded, "phone.wake")
+        assert (bad.outcome, bad.facts["opened"], good.outcome) == ("failed", False, "ok")
 
 
 async def test_hanging_up_over_a_wakes_turn_ends_what_the_driver_followed_with_no_frame_to_say_so() -> None:
@@ -376,3 +383,9 @@ async def test_hanging_up_over_a_wakes_turn_ends_what_the_driver_followed_with_n
 def test_a_level_a_detector_state_or_a_kind_hands_does_not_know_is_refused_as_unreadable(message: dict[str, str], unreadable: str) -> None:
     with pytest.raises(Rejected, match=unreadable):
         parse_said(json.dumps(message), RATE)
+
+
+async def test_each_change_of_the_phones_level_is_one_event_and_a_level_it_already_has_is_none() -> None:
+    async with up() as page:
+        page.send(level_message("wake word"), level_message("wake word"), level_message("off"))
+        assert [(change.facts["was"], change.facts["now"]) for change in events(page.recorded, "phone.leveled")] == [("off", "wake word"), ("wake word", "off")]

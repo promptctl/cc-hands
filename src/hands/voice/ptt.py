@@ -30,7 +30,7 @@ from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
 from hands.voice.clips import Fate, Played
-from hands.voice.shortcut import Move
+from hands.voice.shortcut import Instant, Move
 from hands.voice.trigger import PHONE_WAKE, PhoneLevel, Trigger, by_hand, place_of
 from hands.voice.voiceturn import How, TurnId
 
@@ -49,7 +49,16 @@ Cause = Trigger | Literal["call"]
 
 
 @dataclass(frozen=True)
-class TurnEnded:
+class GateOpened:
+    """The gate opened turn `turn` for `by`, at `at`."""
+
+    turn: TurnId
+    by: Trigger
+    at: Instant
+
+
+@dataclass(frozen=True)
+class GateEnded:
     """The gate ended turn `turn`, as `fate`, because `by` moved it."""
 
     turn: TurnId
@@ -102,6 +111,9 @@ class Gate:
     # [LAW:no-ambient-temporal-coupling] the trigger that opened the last turn travels with the audio, as the key does, so
     # what reads a clip's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
     opened: Trigger = "shortcut"
+    # [LAW:one-source-of-truth] who is arming a turn while the key is arming, so only the trigger that armed it may start it:
+    # a voice cannot start what a hand armed, and a hand's Shift is not a voice's turn.
+    armed: Trigger | None = None
 
     def took(self, move: Move, by: Trigger) -> Move | None:
         """What `move`, made by `by`, did to the turn, as the gate takes it; None where it does nothing to it.
@@ -110,9 +122,9 @@ class Gate:
         the user's hand opening a turn at the other place, or by a call: a voice, which can be anyone's or nobody's, opens
         a turn only where hands is, at a place that listens, with none open (`refusal`), and starts only what it armed, and
         a Shift typed at the desk while the user talks on the phone arms nothing. The hand's move sends the clip open where
-        hands was, as it stands: both are the user's. A clip is ended by the trigger that opened it, once: the end of a clip
-        the gate has already sent, or one another trigger opened, ends nothing. Each place's listening is taken wherever
-        hands is.
+        hands was, as it stands, and a hand's start sends a clip another trigger has open where it already is: both are the
+        user's. A clip is ended by the trigger that opened it, once: the end of a clip the gate has already sent, or one
+        another trigger opened, ends nothing. Each place's listening is taken wherever hands is.
         """
         match place_of(by) == self.place, move, self.key:
             case _, "listen" | "deafen", _:
@@ -123,7 +135,7 @@ class Gate:
                 return None
             case True, "arm", _ if not by_hand(by) and self.refusal(by) is not None:
                 return None
-            case True, "start", key if not by_hand(by) and key != "arming":
+            case True, "start", _ if not by_hand(by) and self.armed != by:
                 return None
             case True, _, _:
                 return move
@@ -146,23 +158,25 @@ class Gate:
                 resting = self.key in ("up", "listening")
                 return replace(self, key=self._rest(self.place, listening) if resting else self.key, listening=listening)
             case "arm":
-                return replace(self, key="arming", place=at)
+                return replace(self, key="arming", place=at, armed=by)
             case "disarm":
-                return replace(self, key=rest, place=at)
+                return replace(self, key=rest, place=at, armed=None)
             case "start":
                 # [LAW:dataflow-not-control-flow] hands goes where the turn opens: a clip open where it was is sent, and
-                # where it already is, the clip open goes on.
-                return replace(self.moved(at), key="down", opened=by)
+                # where it already is, the same trigger's goes on and another's is sent, so no clip is ever two triggers'.
+                there = self.moved(at)
+                sent = (*there.ended, "sent") if there.turn_open and there.opened != by else there.ended
+                return replace(there, key="down", opened=by, ended=sent, armed=None)
             case "stop" | "timeout":
-                return replace(self, key=rest, place=at, ended=(*self.ended, "sent"))
+                return replace(self, key=rest, place=at, ended=(*self.ended, "sent"), armed=None)
             case "drop":
-                return replace(self, key=rest, place=at, ended=(*self.ended, "dropped"))
+                return replace(self, key=rest, place=at, ended=(*self.ended, "dropped"), armed=None)
 
     def moved(self, to: Place) -> "Gate":
         """The gate once hands is at `to`: a clip open at the place it leaves is sent as it stands."""
         if to == self.place:
             return self
-        return replace(self, key=self._rest(to, self.listening), place=to, ended=(*self.ended, "sent") if self.turn_open else self.ended)
+        return replace(self, key=self._rest(to, self.listening), place=to, ended=(*self.ended, "sent") if self.turn_open else self.ended, armed=None)
 
     def called(self, to: Place) -> "Gate":
         """The gate once a call has come, `to` the phone, or gone, `to` the desk.
@@ -170,12 +184,16 @@ class Gate:
         A page can call again by itself, so a call that comes never cuts off a press or a clip at the desk, whoever's:
         hands stays for it, and the phone's first press takes it there. One that goes takes the phone's audio with it,
         so its clip is sent as it stands. The phone's listening is the call's: a call that comes or goes leaves it off."""
-        gate = replace(self, listening=self.listening - {"phone"})
+        listening = self.listening - {"phone"}
         match to, self.key:
             case "phone", "arming" | "down":
-                return gate
+                return replace(self, listening=listening)
             case _:
-                return gate.moved(to)
+                # [LAW:one-source-of-truth] the key at rest follows what listens, so a call that leaves the phone deaf leaves
+                # the key up wherever hands is.
+                gate = replace(self, listening=listening)
+                moved = gate.moved(to)
+                return replace(moved, key=self._rest(moved.place, listening)) if moved.key in ("up", "listening") else moved
 
     @property
     def turn(self) -> TurnId:
@@ -254,11 +272,11 @@ class PushToTalk:
         self._gate = Gate()
         self._modality: Modality = modality_at(self._gate.place)
         self._record = record
-        # Who is told as the gate ends a turn, however it came to end.
-        self._watchers: list[Callable[[TurnEnded], None]] = []
+        # Who is told as the gate opens and ends a turn, however it came to.
+        self._watchers: list[Callable[[GateOpened | GateEnded], None]] = []
 
-    def watch(self, told: Callable[[TurnEnded], None]) -> None:
-        """Have `told` called with each turn the gate ends, as it ends it, in order."""
+    def watch(self, told: Callable[[GateOpened | GateEnded], None]) -> None:
+        """Have `told` called with each turn the gate ends and opens, as it does, in order."""
         self._watchers.append(told)
 
     def move(self, move: Move, by: Trigger) -> Move | None:
@@ -284,11 +302,14 @@ class PushToTalk:
 
     def _become(self, gate: Gate, by: Cause) -> None:
         before, self._gate = self._gate, gate
-        # [LAW:one-source-of-truth] the gate's record of ended turns is the only one: whoever follows a turn is told as the
-        # record grows, and keeps no copy of its own that could outlive it.
-        for turn, fate in enumerate(gate.ended[len(before.ended) :], len(before.ended)):
-            for told in self._watchers:
-                told(TurnEnded(TurnId(turn), fate, by))
+        # [LAW:one-source-of-truth] the gate's record of turns is the only one: whoever follows a turn is told as the record
+        # grows, in the order it did, and keeps no copy of its own that could outlive it.
+        told: list[GateOpened | GateEnded] = [GateEnded(TurnId(turn), fate, by) for turn, fate in enumerate(gate.ended[len(before.ended) :], len(before.ended))]
+        if gate.turn_open and (not before.turn_open or gate.turn != before.turn):
+            told.append(GateOpened(gate.turn, gate.opened, self._clock.now()))
+        for each in told:
+            for watcher in self._watchers:
+                watcher(each)
         # [LAW:nothing-unseen] the one writer of the gate writes each move of the place as one `place.moved` event,
         # whichever trigger made it: from where to where, what made it, and whether a clip open at the place it left was
         # sent.

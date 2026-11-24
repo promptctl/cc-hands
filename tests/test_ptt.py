@@ -7,7 +7,7 @@ from hands.virtualclock import VirtualClock
 from hands.core.place import Place
 from hands.voice.shortcut import Move
 from hands.sessions.audit import Entry
-from hands.voice.ptt import Gate, Key, PushToTalk, TurnEnded
+from hands.voice.ptt import Gate, GateEnded, GateOpened, Key, PushToTalk
 from hands.voice.tools import modality_tool
 from hands.voice.trigger import Trigger, place_of
 from hands.voice.voiceturn import TurnId
@@ -326,11 +326,13 @@ def test_a_clip_is_ended_by_the_trigger_that_opened_it() -> None:
             assert (down.took(end, ender), down.took(end, opened)) == (None, end)
 
 
-def test_the_gate_tells_those_who_watch_each_turn_it_ends_in_order_and_what_ended_it() -> None:
-    key = PushToTalk(VirtualClock(), lambda _: None)
-    told: list[TurnEnded] = []
+def test_the_gate_tells_those_who_watch_each_turn_it_opens_and_ends_in_order_and_what_ended_it() -> None:
+    clock = VirtualClock()
+    key = PushToTalk(clock, lambda _: None)
+    told: list[GateOpened | GateEnded] = []
     key.watch(told.append)
     key.move("start", "shortcut")
+    key.move("start", "shortcut")  # the same trigger's press goes on: one turn
     key.move("stop", "shortcut")
     key.move("start", "shortcut")
     key.move("drop", "shortcut")
@@ -339,11 +341,42 @@ def test_the_gate_tells_those_who_watch_each_turn_it_ends_in_order_and_what_ende
     key.move("start", "phone button")
     key.go("desk")
     assert told == [
-        TurnEnded(TurnId(0), "sent", "shortcut"),
-        TurnEnded(TurnId(1), "dropped", "shortcut"),
-        TurnEnded(TurnId(2), "sent", "phone button"),
-        TurnEnded(TurnId(3), "sent", "call"),
+        GateOpened(TurnId(0), "shortcut", 0.0),
+        GateEnded(TurnId(0), "sent", "shortcut"),
+        GateOpened(TurnId(1), "shortcut", 0.0),
+        GateEnded(TurnId(1), "dropped", "shortcut"),
+        GateOpened(TurnId(2), "shortcut", 0.0),
+        GateEnded(TurnId(2), "sent", "phone button"),
+        GateOpened(TurnId(3), "phone button", 0.0),
+        GateEnded(TurnId(3), "sent", "call"),
     ]
-    # A move that ends nothing tells no one.
+    # A move that opens and ends nothing tells no one.
     key.move("stop", "shortcut")
-    assert len(told) == 4
+    assert len(told) == 8
+
+
+def test_a_voice_cannot_start_what_a_hand_armed_nor_open_a_turn_over_one() -> None:
+    listening = Gate("listening", listening=DESK)
+    # Right Shift is arming a press; the wake word's start is not that press's.
+    armed = listening.after("arm", "shortcut")
+    assert armed.took("start", "wake word") is None and armed.after("start", "wake word") == armed
+    # Nor does the voice's own arming carry to a different voice's start.
+    voiced = listening.after("arm", "wake word")
+    assert voiced.took("start", "engaged conversation") is None
+
+
+@pytest.mark.parametrize(("voice", "hand"), [("wake word", "shortcut"), ("phone wake word", "phone button")])
+def test_a_hands_start_sends_the_clip_another_trigger_has_open_where_it_is_and_opens_its_own(voice: Trigger, hand: Trigger) -> None:
+    place = place_of(voice)
+    wake = Gate("listening", place, listening=frozenset({place})).after("arm", voice).after("start", voice)
+    taken = wake.after("start", hand)
+    assert (taken.turn_open, taken.opened, taken.ended, taken.turn) == (True, hand, ("sent",), wake.turn + 1)
+    # The voice's own end now ends nothing, and the hand's ends its clip.
+    assert (taken.took("stop", voice), taken.took("stop", hand)) == (None, "stop")
+    # The same trigger's start over its own clip goes on with it.
+    assert taken.after("start", hand) == taken
+
+
+def test_a_call_that_comes_at_the_place_hands_is_leaves_the_key_up_where_the_phone_no_longer_listens() -> None:
+    gate = listening_at_the_phone().called("phone")
+    assert (gate.key, gate.listening, gate.refusal("phone wake word")) == ("up", frozenset(), "deaf")

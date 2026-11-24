@@ -15,8 +15,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice import engaged, shortcut, voiceturn
 from hands.voice.atphone import drive
 from hands.voice.engaged import loaded
-from hands.voice.phone import WakeOpened
-from hands.voice.ptt import Gate, KeyedAudio, PushToTalk, TurnEnded
+from hands.voice.ptt import Gate, GateEnded, GateOpened, KeyedAudio, PushToTalk
 from hands.voice.shortcut import Move
 from hands.voice.trigger import PHONE_WAKE
 from hands.voice.voiceturn import TurnId
@@ -32,11 +31,11 @@ class Rig:
     clock: VirtualClock = field(default_factory=VirtualClock)
     taken: list[Move] = field(default_factory=list[Move])
     events: list[WideEvent] = field(default_factory=list[WideEvent])
-    turns: asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio] = field(default_factory=asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio])
+    turns: asyncio.Queue[GateOpened | GateEnded | KeyedAudio] = field(default_factory=asyncio.Queue[GateOpened | GateEnded | KeyedAudio])
 
     def __post_init__(self) -> None:
         self.key = PushToTalk(self.clock, lambda _entry: None)
-        # As the phone does: the driver is told each turn the gate ends.
+        # As the phone does: the driver is told each turn the gate opens and ends.
         self.key.watch(self.turns.put_nowait)
         self.key.go("phone")
         self.key.move("listen", PHONE_WAKE)
@@ -47,11 +46,10 @@ class Rig:
             self.taken.append(moved)
 
     def wake(self) -> TurnId:
-        """The page's wake, as the phone steps it: the gate opens a turn, and the driver is told the number it gives it."""
+        """The page's wake, as the phone steps it: the gate opens a turn, and tells the driver the number it gives it."""
         self.key.move("arm", PHONE_WAKE)
         self.key.move("start", PHONE_WAKE)
         assert self.key.gate.wake_turn is not None
-        self.turns.put_nowait(WakeOpened(self.key.gate.turn, self.clock.now()))
         return self.key.gate.turn
 
     async def hear(self, *audio: bytes, of: Gate | None = None) -> None:
