@@ -2298,8 +2298,8 @@ epics are open is the page's own state, kept across every redraw. An epic with n
 as a finished one is not; the brain's summary still holds it. Every ticket inside an epic has a High, a Normal, and a
 Low button (`Level`, the one vocabulary the buttons, the titles, and the parse derive from), but for one whose epic lit
 ranks inside an epic it archived, where nothing can be made beside it. A press moves the ticket with `lit parent set`,
-keeping its id, into the epic of its epic's topic for that level: the epic, finished or not, inside the same parent as
-the ticket's epic, whose lit topic is that of the ticket's epic and whose title is exactly `<topic> - <level>`, the
+keeping its id, into the epic of its epic's topic for that level: the epic, finished or not, the first ranked where
+there are more, inside the same parent as the ticket's epic, whose lit topic is that of the ticket's epic and whose title is exactly `<topic> - <level>`, the
 topic's hyphens shown as spaces, as in `wake word - high` (`Backlog.level_epics`, the one way it is found; a press never
 makes a second epic for a level lit lists in the frame, and one lit archived is put away and not listed, so a press
 makes another epic for the level). lit holds which epic is which level, in its title and topic, read fresh; hands
