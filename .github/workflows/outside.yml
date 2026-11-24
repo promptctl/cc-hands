@@ -1,0 +1,112 @@
+# The tests marked `outside`, run on master every day, when asked (the Actions tab's "Run workflow"), and on a PR that changes
+# how they are cut or run, so every test the suite has runs on a gated path, and a PR does not wait on them: they are about
+# 35 minutes of test time on a runner, and a Free plan
+# runs 5 macOS jobs at once. Each job here has `timeout-minutes: 5`, as every job in .github/workflows does, so each tier is cut
+# into shards (tests/shards.py) that fit it: the real streaming pair's, every other `outside` test's, fritter's Go tests, and
+# wake-training's suite. The run takes as many waves of five jobs as it has jobs, so it is not one that ends in 5 minutes; no
+# job in it takes longer. The check named `outside` passes when every job did.
+name: outside
+
+on:
+  schedule:
+    # 08:00 UTC, when the night's merges have landed and the runners are idle.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+  # A change to what cuts or runs the shards is proved by the run it changes, before it is master's.
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/outside.yml
+      - .github/actions/**
+      - Makefile
+      - tests/shards.py
+      - tests/shard-costs.json
+
+concurrency:
+  group: outside-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # [LAW:one-source-of-truth] the shards of a tier are its matrix's list, and each takes its number out of the total
+  # (tests/shards.py packs by tests/shard-costs.json): a shard added to the list is a shard of N+1, with nothing else to edit.
+  # fail-fast is off: a red shard must not hide which of the others are red as well.
+  pair:
+    name: pair ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: macos-15
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+        with:
+          fetches: true
+      - name: make check-pair
+        id: check
+        run: make check-pair SHARD=${{ matrix.shard }}/${{ strategy.job-total }}
+      - name: What each test cost
+        if: always() && steps.check.outcome != 'skipped'
+        continue-on-error: true
+        run: uv run --no-sync python tests/costs.py .pytest_cache/check-pair-log.jsonl
+
+  rest:
+    name: rest ${{ matrix.shard }}/${{ strategy.job-total }}
+    runs-on: macos-15
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+        with:
+          fetches: true
+      - name: make check-outside
+        id: check
+        run: make check-outside SHARD=${{ matrix.shard }}/${{ strategy.job-total }}
+      - name: What each test cost
+        if: always() && steps.check.outcome != 'skipped'
+        continue-on-error: true
+        run: uv run --no-sync python tests/costs.py .pytest_cache/check-outside-log.jsonl
+
+  fritter:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - name: make check-fritter
+        run: make check-fritter
+
+  wake-training:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - name: make check-wake-training
+        run: make check-wake-training
+
+  # The verdict of the jobs, on ubuntu for the reason test.yml's is. !cancelled(), not always(): a run a newer one cancelled is
+  # not one this job reports on.
+  outside:
+    needs: [pair, rest, fritter, wake-training]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: for result in $RESULTS; do test "$result" = success || { echo "the jobs' results are $RESULTS, not all success" >&2; exit 1; }; done

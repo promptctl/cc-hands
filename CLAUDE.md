@@ -11,7 +11,7 @@
 
 ## Tests
 
-`make check` runs the unit layer, the tests that pass with everything outside the process refused by the OS, plus the type checks: it is the run to make on every turn, and it takes about a minute. Green on it is not green on CI, which runs it as the `unit` tier beside `pair` (`make check-pair`) and `rest` (`make check-rest`: the other tests that need the outside, fritter's Go tests and wake-training's suite among them). A test that needs a process, a socket or the speech models is marked `@pytest.mark.outside`; docs/testing.md has the layers and where a new test belongs.
+`make check` runs the unit layer, the tests that pass with everything outside the process refused by the OS, plus the type checks: it is the run to make on every turn, and it takes about a minute. Green on it is not green on CI, whose PR run is the unit layer and the type checks in jobs of 5 minutes, and whose `outside` run (daily, outside.yml) runs `pair` (`make check-pair`) and `rest` (`make check-rest`: the other tests that need the outside, fritter's Go tests and wake-training's suite among them) in 5-minute shards. A test that needs a process, a socket or the speech models is marked `@pytest.mark.outside`; docs/testing.md has the layers and where a new test belongs.
 
 <!-- BEGIN LIT INTEGRATION -->
 ## lit Agent-Native Workflow

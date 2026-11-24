@@ -139,7 +139,7 @@ class Pin:
 # [LAW:one-source-of-truth] the pin hands runs: the version, and the SHA-256 Anthropic's manifest for it gives each macOS
 # build (the manifest of the release the version names). Moving the pin is one commit that changes both, after measuring
 # again what docs/claude-code-behavior.md and the comments that name the old version say. CI reads its version as its
-# cache key for the pinned Claude Code the end-to-end tests run (.github/workflows/test.yml).
+# cache key for the pinned Claude Code the end-to-end tests run (.github/actions/prepare/action.yml).
 PIN = Pin(
     version="2.1.308",
     arm64="ca923c86ac84b30574a82331a05b6e066c27477a926ceaffe46a845a33e4dd37",

@@ -1,8 +1,12 @@
-# Every PR into master runs the suite as three tiers in parallel, `unit`, `pair` and `rest` (the Makefile's check, check-pair and
-# check-rest), and the check named `test` passes when they all did and the PR is not built on the line master was rewound
-# away from on 2026-10-15. `test` is the one name that says whether the suite passed: it is what a repository setting would
-# require on the PR and then in master's merge queue, on the commit master will be with the PR merged; none does yet, so a red
-# one blocks nothing GitHub enforces. release.yml publishes only commits on master.
+# Every PR into master, and the merge queue's run of it, runs the unit layer in shards and the type checks, as jobs in parallel,
+# and the check named `test` passes when they all did and the PR is not built on the line master was rewound away from on
+# 2026-10-15. The run ends in 5 minutes: every job here has `timeout-minutes: 5`, as every job in .github/workflows does.
+# The tests marked `outside` (the real speech models, the pinned Claude Code, fritter's Go tests, wake-training's suite) run in
+# outside.yml, on a schedule: the suite is about 40 minutes of test time on a runner, and a Free plan runs 5 macOS jobs at
+# once, shared by every PR, so what a PR waits on is what fits 5 minutes. Where a test runs is docs/testing.md's "CI's tiers".
+# `test` is the one name that says whether a PR's checks passed: it is what a repository setting would require on the PR and
+# then in master's merge queue, on the commit master will be with the PR merged; none does yet, so a red one blocks nothing
+# GitHub enforces. release.yml publishes only commits on master.
 name: test
 
 on:
@@ -19,145 +23,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One matrix is the one list of tiers; the Makefile's targets are what each runs. `fetches` says whether the run fetches what
-  # the caches below keep: the unit layer fetches only the sentence tokenizer (tests/fetches.py), and a leg that fills none of a
-  # cache would save it empty on a miss, under a key the legs that do fill it then cannot save.
-  # The legs are cut by what they cost, not by laws:testing's layers. fail-fast stays on: a red `unit` ends the run in minutes,
-  # where waiting on the pair would take 15.
-  tiers:
-    name: ${{ matrix.tier }}
+  # [LAW:one-source-of-truth] the shards are the matrix's list, and each takes its number out of the total (tests/shards.py
+  # packs by tests/shard-costs.json): a shard added to the list is a shard of N+1, with nothing else to edit. A red shard
+  # ends the run in minutes, so fail-fast stays on.
+  unit:
+    name: unit ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: macos-15
-    # A hung test fails the check instead of holding it for GitHub's 6 hours. The limit is a hung test's bound, set from the
-    # slowest runner seen (pytest's time swings nearly 2x, promptctl-testing-px1f.hel), not a budget: the suite's are its own.
-    timeout-minutes: ${{ matrix.timeout }}
+    # A hung test fails the check instead of holding it for GitHub's 6 hours. Five minutes is the target a run is held to, and
+    # a job that goes past it is a shard too big for it: add one to the list below.
+    timeout-minutes: 5
     strategy:
       matrix:
-        include:
-          - { tier: unit, target: check, timeout: 10, fetches: false }
-          - { tier: pair, target: check-pair, timeout: 40, fetches: true }
-          - { tier: rest, target: check-rest, timeout: 30, fetches: true }
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
         with:
           # hatch-vcs reads the version from the history's tags when `uv sync` installs the checkout.
           fetch-depth: 0
-      - uses: ./.github/actions/setup
-      # The run fetches openWakeWord's models into pytest's cache before its first test; kept across runs, a download outage
-      # cannot fail a PR that never touched the wake word.
-      - uses: actions/cache@v4
-        if: matrix.fetches
+      - uses: ./.github/actions/prepare
         with:
-          path: .pytest_cache/d/wake-word
-          key: wake-word-${{ hashFiles('src/hands/voice/wakemodels.py') }}
-      # The runtime the phone's page runs the wake word on, 15 MB, fetched by the run from a CDN at the version and digests
-      # src/hands/voice/ortweb.py pins; kept the same way, for the same reason.
-      - uses: actions/cache@v4
-        if: matrix.fetches
-        with:
-          path: .pytest_cache/d/onnxruntime-web
-          key: onnxruntime-web-${{ hashFiles('src/hands/voice/ortweb.py') }}
-      # NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, fetched by the run into pytest's cache at the
-      # pin tests/sentences.py holds; kept the same way, for the same reason.
-      - uses: actions/cache@v4
-        with:
-          path: .pytest_cache/d/nltk-data
-          key: nltk-data-${{ hashFiles('tests/sentences.py') }}
-      # The brain's end-to-end tests run the pinned Claude Code, fetched from npm's registry into pytest's cache against its
-      # checksum, and the mock of Anthropic's API at the release they name, installed with go; kept the same way, keyed on the
-      # pin and on the release.
-      - name: The brain's pinned Claude Code and the mock's release
-        if: matrix.fetches
-        id: e2e
-        run: |
-          # PIN's version= literal, as Python parses the module: no import, so nothing is installed for it. Any other shape
-          # prints nothing, which the check below names.
-          claude=$(python3 -I -c 'import ast, sys; print(next((k.value.value for n in ast.parse(open(sys.argv[1]).read()).body if isinstance(n, ast.Assign) and [t.id for t in n.targets if isinstance(t, ast.Name)] == ["PIN"] and isinstance(n.value, ast.Call) for k in n.value.keywords if k.arg == "version" and isinstance(k.value, ast.Constant)), ""))' src/hands/brain/pinned.py)
-          mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/fetches.py)
-          test -n "$claude" || { echo "src/hands/brain/pinned.py pins no version this step can read" >&2; exit 1; }
-          test -n "$mock" || { echo "tests/fetches.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
-          echo "claude=$claude" >> "$GITHUB_OUTPUT"
-          echo "mock=$mock" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        if: matrix.fetches
-        with:
-          path: .pytest_cache/d/claude-code
-          key: claude-code-${{ steps.e2e.outputs.claude }}
-      - uses: actions/cache@v4
-        if: matrix.fetches
-        with:
-          path: .pytest_cache/d/mock-anthropic
-          key: mock-anthropic-${{ steps.e2e.outputs.mock }}
-      # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
-      - name: Install the locked environment
-        run: uv sync --locked
-      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, the engaged tests run
-      # Smart Turn on MLX, the voiceprint tests run ERes2Net, and the Whisper tests Whisper, on real sound, fetched into the
-      # Hugging Face cache at the revisions hands pins; kept across runs, so a download outage cannot fail a PR. The whole hub: a model's
-      # directory holds only links into the hub's shared store of blobs, where its weights are.
-      # [LAW:one-source-of-truth] keyed on tests/fetches.py's WEIGHTS, the list the run fetches, so a weight added to the
-      # fetch is a new key and never a hit on a cache saved without it; an edit to the rest of any file still finds them.
-      - name: The speech models' cache key
-        if: matrix.fetches
-        id: speech
-        # Python writes the output itself: whatever an import prints on stdout cannot become part of the key.
-        run: uv run --locked python -c 'import os, sys; sys.path.insert(0, "tests"); from fetches import hub_key; open(os.environ["GITHUB_OUTPUT"], "a").write(f"key={hub_key()}\n")'
-      - uses: actions/cache@v4
-        if: matrix.fetches
-        with:
-          path: ~/.cache/huggingface/hub
-          key: speech-${{ steps.speech.outputs.key }}
-      # The backlog tests that run lit itself skip without one; the release its own installer hands out is what hands
-      # meets, so a lit release that changes what hands reads fails here, not days later in every brain's audit log.
-      # gh names that release under the job's token, and the installer comes from the same tag as the archive it
-      # installs: the installer's own --latest-release asks api.github.com
-      # unauthenticated, which answers a runner's shared address with a 403 once the hour's quota is spent.
-      # [LAW:no-silent-failure] the installer runs from a file: piped into bash, a failed download is an empty script
-      # that exits 0, and the suite then skips every lit test without a word.
-      - name: Install lit
-        env:
-          GOBIN: ${{ runner.temp }}/lit
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)"
-          curl -fsSL -o "$RUNNER_TEMP/lit-install.sh" https://raw.githubusercontent.com/promptctl/links-issue-tracker/$tag/scripts/install.sh
-          bash "$RUNNER_TEMP/lit-install.sh" --from-release "$tag"
-          # The lit tests skip without a lit on PATH: a lit put anywhere but where the next step looks fails here.
-          "$GOBIN/lit" version
-          echo "$GOBIN" >> "$GITHUB_PATH"
-      # A Claude Code policy in its folder and its plists, as a developer's Mac or a managed one has: the run's sandbox must
-      # keep it from every Claude Code the run starts (tests/offline.sb), and the run stops before any test if it finds it.
-      # [LAW:verifiable-goals] The policy allows the command the terminal contract's pinned case needs a permission dialog for
-      # (tests/test_terminal_contract_pinned.py, a symlink): a Claude Code that applied it would run the command without
-      # asking, and that case would wait for a dialog that never comes.
-      - name: A machine's Claude Code policy
-        run: |
-          policy='{"permissions": {"allow": ["Bash(ln:*)"]}}'
-          settings="/Library/Application Support/ClaudeCode/managed-settings.d"
-          preferences="/Library/Managed Preferences"
-          account="$preferences/$(id -un)"
-          sudo mkdir -p "$settings" "$account"
-          echo "$policy" | sudo tee "$settings/10-machine.json"
-          for plists in "$preferences" "$account"; do
-            echo "$policy" | sudo plutil -convert xml1 -o "$plists/com.anthropic.claudecode.plist" -
-          done
-      # [LAW:one-source-of-truth] what each tier runs is the Makefile's: this leg's target, `make check` for the unit layer under its
-      # hold, `make check-pair` for the real streaming pair, `make check-rest` for every other test that needs the outside.
-      - name: make ${{ matrix.target }}
+          fetches: false
+      # [LAW:one-source-of-truth] what the unit layer runs is the Makefile's, under the OS's hold on anything outside the process.
+      - name: make check-unit
         id: check
-        run: make ${{ matrix.target }}
+        run: make check-unit SHARD=${{ matrix.shard }}/${{ strategy.job-total }}
       # What each test cost, into this job's log, so a cancelled or failed run keeps its numbers: `gh run view --log` reads
-      # them. A log and nothing beyond it: a store that refused an upload would fail a suite that passed. continue-on-error for
-      # the same reason: a report that cannot be read shows red on its own step and does not gate the suite's verdict. --no-sync:
-      # the locked environment is already built, and a sync here would be time the cancelled run does not have.
+      # them, and tests/shards.py reads them into tests/shard-costs.json. A log and nothing beyond it: a store that refused an
+      # upload would fail a suite that passed. continue-on-error for the same reason: a report that cannot be read shows red on
+      # its own step and does not gate the suite's verdict. --no-sync: the locked environment is already built, and a sync here
+      # would be time the cancelled run does not have.
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true
-        run: uv run --no-sync python tests/costs.py .pytest_cache/${{ matrix.target }}-log.jsonl
+        run: uv run --no-sync python tests/costs.py .pytest_cache/check-unit-log.jsonl
 
-  # The verdict of the tiers. On ubuntu: it needs a checkout and nothing else, and a macOS runner is the scarce kind (a Free plan
+  types:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+        with:
+          fetches: false
+      - name: make check-types
+        run: make check-types
+
+  # The verdict of the jobs. On ubuntu: it needs a checkout and nothing else, and a macOS runner is the scarce kind (a Free plan
   # runs 5 at once). !cancelled(), not always(): a run a newer push cancelled is not one this job reports on.
   test:
-    needs: tiers
+    needs: [unit, types]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -170,7 +86,7 @@ jobs:
       # commit is master merged with the PR, so a PR whose branch is on the line is refused too.
       - name: Not built on the rewound line
         run: scripts/not-rewound.sh "$GITHUB_SHA"
-      - name: Every tier passed
+      - name: Every job passed
         env:
-          TIERS: ${{ needs.tiers.result }}
-        run: test "$TIERS" = success || { echo "the tiers' result is $TIERS, not success" >&2; exit 1; }
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: for result in $RESULTS; do test "$result" = success || { echo "the jobs' results are $RESULTS, not all success" >&2; exit 1; }; done

@@ -61,20 +61,38 @@ holds a fetch, or fails one, does it with Playwright's `route`, not a fake in th
 
 ## The commands
 
-- `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.
+- `make check`: the unit layer (`make check-unit`), `pyright`, and wake-training's `pyright` (`make check-types`). Run it on every turn.
 - `make check-pair`: the real pair's cases, the `outside` tests in tests/test_streaming.py, with no hold. They load the speech
   models.
-- `make check-rest`: every other `outside` test with no hold, then fritter's Go tests and wake-training's suite.
+- `make check-rest`: every other `outside` test with no hold (`make check-outside`), then fritter's Go tests (`make check-fritter`)
+  and wake-training's suite (`make check-wake-training`).
+- `SHARD=K/N` on `check-unit`, `check-pair` and `check-outside` runs the Kth of N shards of what the target selects, as `pytest
+  --shard=K/N` does (tests/shards.py). Every shard of one commit takes the same partition, packed by tests/shard-costs.json, so
+  the shards together run each test once. A module is kept whole in a shard, its fixtures set up once, unless it is more than a
+  shard's share. The costs come from the cost reports CI prints (tests/costs.py): after a change that moves a lot of test time,
+  `gh run view <run> --log` of the shards' jobs into a file each and `uv run --no-sync python tests/shards.py FILE... >
+  tests/shard-costs.json` regenerates them. Each shard says at its end what it was packed at and what it cost, so a file gone stale
+  shows in the log before a job passes its 5 minutes.
 - `make audit`: the `outside` tests under the same hold, each expected to be refused. One that is not does not need its
   mark; run it when a test moves down.
 
 ## CI's tiers
 
-`.github/workflows/test.yml` runs `make check`, `make check-pair` and `make check-rest` as the matrix `unit`, `pair` and `rest`, in
-parallel, and the check `test` passes when all three did. Together they are the whole suite: `check` takes the tests not marked
-`outside`, and the other two the ones that are, split by module. The tiers are cut by what a run costs, not by laws:testing's
-layers: the pair has one of its own because it is proven in full every run and is the longest. Green on `make check` is not green
-on CI, which also runs the `outside` tests, fritter's Go tests and wake-training's suite.
+Every job in `.github/workflows` has `timeout-minutes: 5`: a workflow's run is held to the 5 minutes a person waiting on it
+will wait, and a job that goes past it is a shard too big for it. The suite is about 40 minutes of test time on a macOS runner,
+with a Free plan's 5 of them at once for every PR, so it cannot all run in 5 minutes, and is cut by where it runs:
+
+- `.github/workflows/test.yml`, on every PR and in the merge queue: `make check-unit` in shards (the `unit` jobs) and `make
+  check-types` (`types`), and the check `test` passes when they all did. The unit layer is every test not marked `outside`.
+- `.github/workflows/outside.yml`, on master every day, on request, and on a PR that changes how it is cut or run: the tests
+  marked `outside`, in shards (`pair`: tests/test_streaming.py, `rest`: the others), fritter's Go tests and wake-training's
+  suite, as jobs of their own, and the check `outside` passes when they all did. It is more jobs than the runners hold at once,
+  so the run takes several waves of them; no job in it takes more than 5 minutes.
+
+Together they are the whole suite. Green on `make check` is not green on `outside`, which runs what `make check` holds
+nothing of: the real models, the pinned Claude Code, the Go tests. A shard's count is its matrix's list in the workflow; add a
+shard to the list when a job nears its limit, and refresh tests/shard-costs.json when the tests have changed a lot (the
+commands above).
 
 ## Placing a new test
 
