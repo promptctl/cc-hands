@@ -12,9 +12,9 @@ import json
 import sys
 from typing import TYPE_CHECKING
 
+from clocks import Interrupting
 from standins import replace
 
-from hands.clock import SYSTEM, SystemClock
 from hands.daemon import cli
 
 # Only what each command loads itself is loaded here: a stand-in's module is imported where the stand-in is put in place.
@@ -25,11 +25,6 @@ if TYPE_CHECKING:
     from hands.brain import pinned, process
     from hands.sessions.child import Children
     from hands.voice import phoneaddress
-
-
-class Interrupting(SystemClock):
-    def sleep_blocking(self, seconds: float) -> None:
-        raise KeyboardInterrupt
 
 
 async def untailed(children: Children) -> str | phoneaddress.Untailed:
@@ -63,7 +58,9 @@ def main() -> None:
             replace(process.login, logged_in)
         case _:
             pass
-    code = cli.main(["--home", home, command], Interrupting() if command == "log" else SYSTEM)
+    # [LAW:dataflow-not-control-flow] every command on the one clock: `log`, which follows until Ctrl-C, is stopped at
+    # its first wait, and a command that waits where it should not ends with a code that says so.
+    code = cli.main(["--home", home, command], Interrupting())
     with open(out, "w") as file:
         json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch"})}, file)
 

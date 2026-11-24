@@ -16,6 +16,7 @@ from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
 from hands.clock import SYSTEM
+from fixtures.clocks import Interrupting
 from hands.virtualclock import VirtualClock
 from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Submitted, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
@@ -55,13 +56,6 @@ STOP_HEARD = Stamp(1500)
 STOP_REQUEST = RequestId("stop")
 
 AT = datetime(2026, 9, 14, 12, 0, 0, 123000, tzinfo=UTC)
-
-
-class Interrupting(VirtualClock):
-    """A clock whose first blocking sleep is a Ctrl-C, as `hands log` is stopped while it follows."""
-
-    def sleep_blocking(self, seconds: float) -> None:
-        raise KeyboardInterrupt
 
 
 def member() -> Membership:
