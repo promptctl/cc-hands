@@ -1038,6 +1038,11 @@ class Brain:
         """The brain's fritter."""
         return self._fritter
 
+    @property
+    def shell(self) -> int | None:
+        """The pane's shell, which runs fritter and outlives it to write its status into the brain's socket dir."""
+        return self._claude.shell
+
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         """One turn of the brain's, from its typing to its end; `asks` is told of each permission the turn holds for the user."""
         # [LAW:no-ambient-temporal-coupling] one turn in flight at a time: the next is asked once the one before is answered,
