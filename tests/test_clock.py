@@ -3,11 +3,13 @@
 import asyncio
 import queue
 import uuid
+from collections.abc import Callable
 
 import pytest
 
 from conftest import BrokenClock, VirtualClock
-from hands.clock import SYSTEM, dashed, wait
+from fixtures.clocks import Interrupting
+from hands.clock import SYSTEM, Clock, dashed, wait
 
 
 async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_time_has_passed() -> None:
@@ -216,3 +218,29 @@ def test_a_blocking_sleep_on_a_virtual_clock_moves_it_only_forward_and_never_ont
     with pytest.raises(ValueError, match="only forward"):
         clock.advance(float("nan"))
     assert clock.now() == 0.0
+
+
+# Each kind of wait the Clock has, begun on `clock`.
+WAITS: dict[str, Callable[[Clock], object]] = {
+    "sleep": lambda clock: clock.sleep(1),
+    "call_at": lambda clock: clock.call_at(1, lambda: None),
+    "timeout": lambda clock: clock.timeout(1),
+    "sleep_blocking": lambda clock: clock.sleep_blocking(1),
+    "take": lambda clock: clock.take(queue.SimpleQueue[str](), 1),
+}
+
+
+@pytest.mark.parametrize("first", WAITS)
+async def test_an_interrupting_clock_s_first_wait_of_any_kind_is_a_ctrl_c_and_a_wait_after_it_is_the_handed_clock_s(first: str) -> None:
+    virtual = VirtualClock()
+    clock = Interrupting(virtual)
+    with pytest.raises(KeyboardInterrupt):
+        WAITS[first](clock)
+    # The wait the Ctrl-C stopped never began, and Ctrl-C was pressed once.
+    assert (virtual.begun, virtual.now()) == ((), 0)
+    with pytest.raises(queue.Empty):
+        clock.take(queue.SimpleQueue[str](), 1)
+
+
+def test_a_timeout_with_no_deadline_on_an_interrupting_clock_is_no_wait() -> None:
+    assert Interrupting(VirtualClock()).timeout(None).expired() is False

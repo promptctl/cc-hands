@@ -16,6 +16,7 @@ from clocks import Interrupting
 from standins import replace
 
 from hands.daemon import cli
+from hands.virtualclock import VirtualClock
 
 # Only what each command loads itself is loaded here: a stand-in's module is imported where the stand-in is put in place.
 if TYPE_CHECKING:
@@ -58,9 +59,9 @@ def main() -> None:
             replace(process.login, logged_in)
         case _:
             pass
-    # [LAW:dataflow-not-control-flow] every command on the one clock: `log`, which follows until Ctrl-C, is stopped at
-    # its first wait, and a command that waits where it should not ends with a code that says so.
-    code = cli.main(["--home", home, command], Interrupting())
+    # [LAW:dataflow-not-control-flow] every command on the one clock, so `log`, which follows until Ctrl-C, ends where any
+    # command that waits would.
+    code = cli.main(["--home", home, command], Interrupting(VirtualClock()))
     with open(out, "w") as file:
         json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch"})}, file)
 

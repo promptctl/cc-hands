@@ -20,6 +20,7 @@ import pytest
 
 import hands
 from conftest import BrokenClock, VirtualClock, events
+from fixtures.clocks import Interrupting
 from hands.clock import SYSTEM
 from imports import imported, qualified
 from hands.sessions import child, wide
@@ -324,17 +325,11 @@ async def test_a_caller_closed_while_it_waits_kills_its_child_as_it_closes(kerne
 
 
 def test_a_blocking_caller_interrupted_while_it_waits_kills_its_child_and_goes_on(kernel: list[tuple[str, int, signal.Signals]]) -> None:
-    class Interrupting(VirtualClock):
-        def take[T](self, source: "child.queue.SimpleQueue[T] | child.queue.Queue[T]", seconds: float) -> T:
-            if seconds == 5:
-                raise KeyboardInterrupt
-            return super().take(source, seconds)
-
     held, _ = supervised()
     ended: child.queue.SimpleQueue[str] = child.queue.SimpleQueue()
     ended.put("reaped")
     with pytest.raises(KeyboardInterrupt):
-        child._waited(child._bounded(Limit(5)), held, ended, Interrupting())  # pyright: ignore[reportPrivateUsage]
+        child._waited(child._bounded(Limit(5)), held, ended, Interrupting(VirtualClock()))  # pyright: ignore[reportPrivateUsage]
     assert held.sent() == (Kill(Cancelled()),)
 
 
