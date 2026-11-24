@@ -86,15 +86,20 @@ class Levels:
 # What the phone's page listens at, for the call: the phone's own two levels, with the desk's names.
 PhoneLevel = Literal["off", "wake word"]
 
+# The trigger of a turn the wake word its page heard opens at the phone: the one name every reader of it spells.
+PHONE_WAKE: Trigger = "phone wake word"
+# The page's only control of the phone's level, as hands names it to the user at the start of a sentence.
+PHONE_BUTTON = "The page's Phone wake word button"
+
 
 def described_at_phone(level: PhoneLevel, word: Word) -> str:
     """What hands says of the phone's level, `word` being the wake word. The page's own button is what sets it."""
     held = "Hold the page's button to talk, and let go to send."
     match level:
         case "off":
-            return f"The phone's wake word is off. {held} The page's Phone wake word button turns it on."
+            return f"The phone's wake word is off. {held} {PHONE_BUTTON} turns it on."
         case "wake word":
-            return f"The phone listens for the wake word: say {word.phrase}, then what you want; hands answers when you finish. {held} The page's Phone wake word button turns it off."
+            return f"The phone listens for the wake word: say {word.phrase}, then what you want; hands answers when you finish. {held} {PHONE_BUTTON} turns it off."
 
 
 def described(level: Level, word: Word) -> str:

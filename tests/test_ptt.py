@@ -9,7 +9,8 @@ from hands.voice.shortcut import Move
 from hands.sessions.audit import Entry
 from hands.voice.ptt import Gate, Key, PushToTalk
 from hands.voice.tools import modality_tool
-from hands.voice.trigger import Trigger
+from hands.voice.trigger import Trigger, place_of
+from hands.voice.voiceturn import TurnId
 
 LOUD = b"\x7f\x7f" * 160
 QUIET = b"\x00\x00" * 160
@@ -96,7 +97,7 @@ def test_leaving_a_place_mid_clip_sends_the_clip_as_it_stands() -> None:
     assert Gate("down", "phone").moved("phone") == Gate("down", "phone")
 
 
-@pytest.mark.parametrize("held", [Gate("arming", "desk"), Gate().after("start", "shortcut"), Gate().after("start", "wake word")])
+@pytest.mark.parametrize("held", [Gate("arming", "desk"), Gate().after("start", "shortcut"), Gate("listening", listening=DESK).after("arm", "wake word").after("start", "wake word")])
 def test_a_call_that_comes_never_cuts_off_a_press_or_a_clip_at_the_desk(held: Gate) -> None:
     # The page called again by itself while the user talks at the desk: hands stays, and the phone's first press takes it.
     assert held.called("phone") == held
@@ -265,20 +266,58 @@ def test_the_turn_a_wake_opened_is_ended_by_its_own_number_and_by_nothing_stale(
     key.move("arm", "phone wake word")
     key.move("start", "phone wake word")
     assert key.gate.wake_turn == 0
-    # No turn, a turn that is not the one open, and one another trigger opened are none of it to end.
-    assert [key.end(turn, "stop", "phone wake word") for turn in (None, 1)] == [None, None]
-    assert key.end(0, "stop", "phone button") is None and key.gate.wake_turn == 0
-    assert key.end(0, "stop", "phone wake word") == "stop"
+    # A turn that is not the one the gate is at, and a trigger that did not open this one, are none of it to end.
+    assert key.end(TurnId(1), "stop", "phone wake word") is None
+    assert key.end(TurnId(0), "stop", "phone button") is None and key.gate.wake_turn == 0
+    assert key.end(TurnId(0), "stop", "phone wake word") == "stop"
     # The same verdict again, now that the turn is over, ends nothing; and nor does it end the button's turn that took its place.
-    assert key.end(0, "stop", "phone wake word") is None
+    assert key.end(TurnId(0), "stop", "phone wake word") is None
     key.move("start", "phone button")
-    assert (key.end(0, "stop", "phone wake word"), key.gate.turn_open, key.gate.wake_turn) == (None, True, None)
-    assert key.end(1, "stop", "phone button") == "stop"
+    assert (key.end(TurnId(0), "stop", "phone wake word"), key.gate.turn_open, key.gate.wake_turn) == (None, True, None)
+    assert key.end(TurnId(1), "stop", "phone button") == "stop"
 
 
-def test_audio_says_whether_it_is_of_a_wake_turn_by_the_gate_it_was_captured_under() -> None:
+def test_the_gate_names_the_turn_a_wake_has_open_and_no_other() -> None:
     waiting = listening_at_the_phone()
     turn = waiting.after("arm", "phone wake word").after("start", "phone wake word")
-    assert [gate.framed(LOUD, LOUD, None, 16000, 1, "phone").wake_turn for gate in (waiting, turn, turn.after("stop", "phone wake word"))] == [None, 0, None]
-    button = Gate().moved("phone").after("start", "phone button")
-    assert button.framed(LOUD, LOUD, None, 16000, 1, "phone").wake_turn is None
+    assert [gate.wake_turn for gate in (waiting, turn, turn.after("stop", "phone wake word"))] == [None, 0, None]
+    assert Gate().moved("phone").after("start", "phone button").wake_turn is None
+
+
+@pytest.mark.parametrize(
+    ("gate", "refusal"),
+    [
+        (Gate("listening", listening=DESK), None),
+        (Gate("up"), "deaf"),
+        (Gate("arming"), "busy"),
+        (Gate("down", opened="shortcut"), "busy"),
+        (Gate("listening", "desk", listening=DESK | PHONE), None),
+    ],
+)
+def test_a_voice_may_open_a_turn_only_at_the_place_hands_is_at_and_listens(gate: Gate, refusal: str | None) -> None:
+    assert gate.refusal("wake word") == refusal
+    # Where hands is at the other place, the voice of this one opens nothing; the gate says so by saying where.
+    assert gate.refusal("phone wake word") == "elsewhere"
+
+
+@pytest.mark.parametrize("voice", ["wake word", "engaged conversation", "phone wake word"])
+def test_a_voice_arms_a_turn_only_from_where_it_listens(voice: Trigger) -> None:
+    place = place_of(voice)
+    listening = Gate("listening", place, listening=frozenset({place}))
+    armed = listening.after("arm", voice)
+    assert (armed.key, armed.after("start", voice).key) == ("arming", "down")
+    # Deaf, or with a press or a turn open, the voice arms nothing.
+    for refused in (Gate("up", place), Gate("arming", place), Gate("down", place, opened="shortcut")):
+        assert refused.took("arm", voice) is None
+    # A hand opens a turn as it always has.
+    assert Gate("up", "desk").took("start", "shortcut") == "start"
+
+
+def test_a_clip_is_ended_by_the_trigger_that_opened_it() -> None:
+    # Each pair is of one place, so the place is no part of the refusal.
+    cases: tuple[tuple[Trigger, Trigger], ...] = (("phone wake word", "phone button"), ("phone button", "phone wake word"), ("wake word", "shortcut"), ("shortcut", "engaged conversation"))
+    ends: tuple[Move, ...] = ("stop", "drop", "timeout")
+    for opened, ender in cases:
+        down = Gate("down", place_of(opened), opened=opened)
+        for end in ends:
+            assert (down.took(end, ender), down.took(end, opened)) == (None, end)

@@ -30,22 +30,18 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
 from hands.voice.clips import Fate, Played
 from hands.voice.shortcut import Move
-from hands.voice.trigger import PhoneLevel, Trigger, by_hand, place_of
+from hands.voice.trigger import PHONE_WAKE, PhoneLevel, Trigger, by_hand, place_of
+from hands.voice.voiceturn import How, TurnId
 
-# [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
-# opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
-# so the words said before it does are kept; or down, a clip. The edges decide every move, so the gate never sees one
-# that is not a transition.
+# [LAW:types-are-the-program] the key is up; listening, hands is at a place that hears between turns, at the wake word or
+# engaged at the desk, at the wake word at the phone, so a turn the voice opens keeps the words said before the detector was
+# sure of them; arming, pressed but not yet meaning talk, which hears so the words said before it does are kept; or down, a
+# clip. The edges decide every move, so the gate never sees one that is not a transition.
 Key = Literal["up", "listening", "arming", "down"]
 
-
-def wake_turn_of(key: Key, opened: Trigger, turn: int) -> int | None:
-    """The gate's number for the turn a wake heard on the phone has open, as the gate stands at `key`, `opened` and `turn`;
-    None where the turn open is another trigger's, or none is.
-
-    [LAW:one-source-of-truth] the one reading of whether a phone wake's turn is open: the gate, the audio tagged with it,
-    and the phone's driver all ask it."""
-    return turn if key == "down" and opened == "phone wake word" else None
+# Why a voice may not open a turn: hands is at the other place; the place it is at does not listen; or a turn is open or being
+# opened there.
+Refusal = Literal["elsewhere", "deaf", "busy"]
 
 
 @dataclass(kw_only=True)
@@ -70,14 +66,9 @@ class KeyedAudio(InputAudioRawFrame):
     opened: Trigger
 
     @property
-    def turn(self) -> int:
+    def turn(self) -> TurnId:
         """The gate's number for the turn this audio is of, or the next to open (`Gate.turn`)."""
-        return len(self.ended)
-
-    @property
-    def wake_turn(self) -> int | None:
-        """The turn this audio is of, if a wake heard on the phone has it open (`wake_turn_of`)."""
-        return wake_turn_of(self.key, self.opened, self.turn)
+        return TurnId(len(self.ended))
 
 
 @dataclass(frozen=True)
@@ -102,16 +93,21 @@ class Gate:
     def took(self, move: Move, by: Trigger) -> Move | None:
         """What `move`, made by `by`, did to the turn, as the gate takes it; None where it does nothing to it.
 
-        [LAW:one-source-of-truth] hands is moved only by the user's hand opening a turn at the other place, or by a call:
-        a voice, which can be anyone's or nobody's, opens turns only where hands is, and a Shift typed at
-        the desk while the user talks on the phone arms nothing. The hand's move sends the clip open where hands was, as
-        it stands: both are the user's. The end of a clip the gate has already sent ends nothing more. Each place's
-        listening is taken wherever hands is.
+        [LAW:single-enforcer] the one place the rules of who may open and who may end a turn are kept. Hands is moved only by
+        the user's hand opening a turn at the other place, or by a call: a voice, which can be anyone's or nobody's, opens
+        a turn only where hands is, at a place that listens, with none open (`refusal`), and a Shift typed at the desk
+        while the user talks on the phone arms nothing. The hand's move sends the clip open where hands was, as it
+        stands: both are the user's. A clip is ended by the trigger that opened it, once: the end of a clip the gate has
+        already sent, or one another trigger opened, ends nothing. Each place's listening is taken wherever hands is.
         """
         match place_of(by) == self.place, move, self.key:
             case _, "listen" | "deafen", _:
                 return move
             case True, "stop" | "drop" | "timeout", "up" | "listening" | "arming":
+                return None
+            case True, "stop" | "drop" | "timeout", "down" if self.opened != by:
+                return None
+            case True, "arm", _ if not by_hand(by) and self.refusal(by) is not None:
                 return None
             case True, _, _:
                 return move
@@ -129,8 +125,8 @@ class Gate:
                 return self
             case "listen" | "deafen" as listens:
                 # A place's listening moves the key only where it rests: a press or a turn open is left to end as it ends.
-                where = place_of(by)
-                listening = self.listening | frozenset((where,)) if listens == "listen" else self.listening - frozenset((where,))
+                where: frozenset[Place] = frozenset((at,))
+                listening = self.listening | where if listens == "listen" else self.listening - where
                 resting = self.key in ("up", "listening")
                 return replace(self, key=self._rest(self.place, listening) if resting else self.key, listening=listening)
             case "arm":
@@ -158,7 +154,6 @@ class Gate:
         A page can call again by itself, so a call that comes never cuts off a press or a clip at the desk, whoever's:
         hands stays for it, and the phone's first press takes it there. One that goes takes the phone's audio with it,
         so its clip is sent as it stands. The phone's listening is the call's: a call that comes or goes leaves it off."""
-        # [LAW:single-enforcer] the one place the phone's level ends, so no other writer is left to forget it.
         gate = replace(self, listening=self.listening - {"phone"})
         match to, self.key:
             case "phone", "arming" | "down":
@@ -167,10 +162,23 @@ class Gate:
                 return gate.moved(to)
 
     @property
-    def turn(self) -> int:
+    def turn(self) -> TurnId:
         """The gate's number for the turn open, or the next to open: how many turns it has ended. A press learns the turn
         it opens from it, and the clip owner numbers the clip the turn opens with it, so the two are bound exactly."""
-        return len(self.ended)
+        return TurnId(len(self.ended))
+
+    def refusal(self, by: Trigger) -> Refusal | None:
+        """Why a voice, `by`, may not open a turn now, or None where it may. Where the key rests at `listening`, hands is at
+        a place that listens and nothing is open (`_rest`)."""
+        match place_of(by) == self.place, self.key:
+            case False, _:
+                return "elsewhere"
+            case True, "up":
+                return "deaf"
+            case True, "arming" | "down":
+                return "busy"
+            case True, "listening":
+                return None
 
     @staticmethod
     def _rest(place: Place, listening: frozenset[Place]) -> Key:
@@ -187,18 +195,23 @@ class Gate:
         return self.key == "down"
 
     @property
-    def wake_turn(self) -> int | None:
-        """The turn a wake heard on the phone has open, if it has one (`wake_turn_of`)."""
-        return wake_turn_of(self.key, self.opened, self.turn)
+    def wake_turn(self) -> TurnId | None:
+        """The turn a wake heard on the phone has open, if it has one."""
+        return self.turn if self.turn_open and self.opened == PHONE_WAKE else None
 
     @property
     def phone_level(self) -> PhoneLevel:
         """The level the phone's page has it listening at for this call."""
         return "wake word" if "phone" in self.listening else "off"
 
+    @property
+    def at_phone(self) -> PhoneLevel | None:
+        """The phone's level where hands is at the phone; None at the desk, whose level is the desk's own."""
+        return self.phone_level if self.place == "phone" else None
+
     def audible(self, audio: bytes) -> bytes:
-        """The microphone bytes as the pipeline hears them: intact while the key is pressed or the desk listens, silence
-        otherwise."""
+        """The microphone bytes as the pipeline hears them: intact while the key is pressed or hands is at a place that listens,
+        silence otherwise."""
         # [LAW:dataflow-not-control-flow] a frame of the same length always
         # goes out, so the clip owner sees an unbroken stream; the key
         # only decides its content.
@@ -233,16 +246,11 @@ class PushToTalk:
         self._become(self._gate.after(move, by), "turn")
         return taken
 
-    def end(self, turn: int | None, how: Literal["stop", "timeout", "drop"], by: Trigger) -> Move | None:
-        """End turn `turn`, `how`, as its owner `by`, and get back what the gate took it as; None, and nothing moved, where
-        that turn is not the one open or `by` did not open it, as a verdict that came after a press took the turn over. No
-        turn, `turn` None, is not one.
-
-        [LAW:single-enforcer] the one place an owner of a turn that is not the gate's own, the phone's driver, ends it, so a
-        verdict, a limit or an ask of a turn already over can end nothing of the one after it."""
-        gate = self._gate
-        owned = turn is not None and gate.turn_open and gate.turn == turn and gate.opened == by
-        return self.move(how, by) if owned else None
+    def end(self, turn: TurnId, how: How, by: Trigger) -> Move | None:
+        """End turn `turn`, `how`, as `by`, and get back what the gate took it as; None, and nothing moved, where `turn` is
+        not the one the gate is at, or `by` did not open it: a verdict, a limit or an ask is decided while the gate moves on,
+        and one that comes after a press took the turn over ends nothing of the turn after it."""
+        return self.move(how, by) if self._gate.turn == turn else None
 
     def go(self, to: Place) -> None:
         """Report that a call has come, `to` the phone, or gone, `to` the desk."""

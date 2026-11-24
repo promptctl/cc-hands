@@ -21,18 +21,18 @@ OFF = "The microphone is off between turns. Hold Right Shift to talk, and let go
 
 
 async def test_the_level_is_said_and_starts_off() -> None:
-    level, _ = listening_tools(Levels(), Pretrained(), Gate)
+    level, _ = listening_tools(Levels(), Pretrained(), lambda: None)
     assert await level.body() == {"level": "off", "readback": OFF}
 
 
 async def test_a_level_not_built_is_refused() -> None:
-    _, choose = listening_tools(Levels(), Pretrained(), Gate)
+    _, choose = listening_tools(Levels(), Pretrained(), lambda: None)
     assert "error" in await choose.body(level="clap")
 
 
 async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_it() -> None:
     levels = Levels()
-    level, choose = listening_tools(levels, Pretrained(), Gate)
+    level, choose = listening_tools(levels, Pretrained(), lambda: None)
     asked: list[str] = []
 
     async def driver() -> None:
@@ -58,7 +58,7 @@ async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -
     for word, phrase in ((Pretrained("Hey Mycroft"), "Hey Mycroft"), (Trained("Hey Computer", tmp_path / "hey_computer.onnx"), "Hey Computer")):
         levels = Levels()
         levels.leveled(Leveled("off", "wake word", "tap"))
-        level, _ = listening_tools(levels, word, Gate)
+        level, _ = listening_tools(levels, word, lambda: None)
         assert str((await level.body())["readback"]).startswith(f"The wake word: say {phrase}, then what you want;")
 
 
@@ -95,7 +95,7 @@ async def test_at_the_phone_the_phones_level_is_said_and_the_pages_button_is_wha
     levels = Levels()
     levels.leveled(Leveled("off", "engaged", "tap"))
     for listening, level, said in ((True, "wake word", "The phone listens for the wake word: say Hey Jarvis, then what you want;"), (False, "off", "The phone's wake word is off.")):
-        read, _ = listening_tools(levels, Pretrained(), lambda listening=listening: at_the_phone(listening))
+        read, _ = listening_tools(levels, Pretrained(), lambda listening=listening: at_the_phone(listening).at_phone)
         # The desk's level is no part of what is said at the phone.
         assert (await read.body())["level"] == level
         assert str((await read.body())["readback"]).startswith(said)
@@ -104,10 +104,10 @@ async def test_at_the_phone_the_phones_level_is_said_and_the_pages_button_is_wha
 
 async def test_choosing_a_level_at_the_phone_changes_nothing_and_says_the_page_sets_it() -> None:
     levels = Levels()
-    _, choose = listening_tools(levels, Pretrained(), lambda: at_the_phone(True))
+    _, choose = listening_tools(levels, Pretrained(), lambda: at_the_phone(True).at_phone)
     chosen = await choose.body(level="engaged")
     assert chosen["level"] == "wake word"
-    assert str(chosen["readback"]).startswith("The page's Phone wake word button sets the phone's level, so it stays as it is.")
+    assert str(chosen["readback"]).startswith("Nothing changed.")
     # Nothing was asked of the desk's driver, so the desk's level is where it was.
     assert (levels.chosen.empty(), levels.level) == (True, "off")
 

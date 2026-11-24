@@ -50,8 +50,7 @@ from hands.core import playback, status
 from hands.core.playback import as_told
 from hands.core.place import Modality
 from hands.voice.desk import Level
-from hands.voice.ptt import Gate
-from hands.voice.trigger import Levels, described, described_at_phone
+from hands.voice.trigger import Levels, PhoneLevel, described, described_at_phone
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
@@ -122,7 +121,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Levels, wake: Word, gate: Callable[[], Gate], own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Levels, wake: Word, at_phone: Callable[[], PhoneLevel | None], own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act. Every tool reads time on `sessions.clock`, the run's one clock.
@@ -151,7 +150,7 @@ def intermediary_tools(
         catch_up_tool(sessions, home),
         attention_tool(home),
         modality_tool(switch),
-        *listening_tools(levels, wake, gate),
+        *listening_tools(levels, wake, at_phone),
         *voice_tools(voices),
         *model_tools(own, player),
         *playback_tools(player),
@@ -880,9 +879,9 @@ def _modality_readback(modality: Modality) -> str:
             return "Okay, audio only."
 
 
-def listening_tools(levels: Levels, wake: Word, gate: Callable[[], Gate]) -> list[Tool]:
-    """How hands listens between the user's turns at the place it is at, read from `gate`: at the Mac, saying the desk's
-    level and choosing another while hands runs, as a triple tap does; at the phone, saying the phone's, which only the
+def listening_tools(levels: Levels, wake: Word, at_phone: Callable[[], PhoneLevel | None]) -> list[Tool]:
+    """How hands listens between the user's turns at the place it is at: at the Mac, saying the desk's level and choosing
+    another while hands runs, as a triple tap does; at the phone, saying the phone's, which `at_phone` reads and only the
     page's own button sets. `wake` is the wake word."""
 
     async def listening_level() -> Result:
@@ -891,12 +890,11 @@ def listening_tools(levels: Levels, wake: Word, gate: Callable[[], Gate]) -> lis
 
         Call this when the user asks how to talk to hands, or whether the microphone is on. Say the returned readback.
         """
-        here = gate()
-        match here.place:
-            case "desk":
+        match at_phone():
+            case None:
                 return {"level": levels.level, "readback": described(levels.level, wake)}
-            case "phone":
-                return {"level": here.phone_level, "readback": described_at_phone(here.phone_level, wake)}
+            case phone:
+                return {"level": phone, "readback": described_at_phone(phone, wake)}
 
     async def set_listening_level(level: Level) -> Result:
         """Choose how the desk listens between the user's turns; holding Right Shift talks at every level. At the phone it
@@ -909,15 +907,14 @@ def listening_tools(levels: Levels, wake: Word, gate: Callable[[], Gate]) -> lis
             level: "off", the microphone closed between turns; "wake word", listening for the wake word; or "engaged",
                 where speech alone opens each turn.
         """
-        here = gate()
-        match here.place:
-            case "phone":
-                # [LAW:single-enforcer] the page owns the phone's level; nothing here sets it, so the tool says so.
-                return {"level": here.phone_level, "readback": f"The page's Phone wake word button sets the phone's level, so it stays as it is. {described_at_phone(here.phone_level, wake)}"}
-            case "desk":
+        match at_phone():
+            case None:
                 was = await levels.choose(level)
                 # [LAW:nothing-unseen] the level asked from lands on the call's event, so a change and a no-op read apart.
                 return {"level": level, "was": was, "readback": f"{'Already' if was == level else 'Okay'}. {described(level, wake)}"}
+            case phone:
+                # [LAW:single-enforcer] the page owns the phone's level; nothing here sets it, so the tool says so.
+                return {"level": phone, "readback": f"Nothing changed. {described_at_phone(phone, wake)}"}
 
     return [tool(listening_level), tool(set_listening_level)]
 

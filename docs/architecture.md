@@ -2057,12 +2057,11 @@ shortcut's own moves, plus two of their own: `listen` as the desk leaves `off` a
 `deafen` as it returns. While the desk listens, the key rests at `listening`
 between turns rather than `up`: the microphone's bytes reach Whisper, which keeps the last
 second of them as Pipecat keeps audio nobody is speaking in, so the turn the voice opens
-starts with the words said while Silero made sure of them (about 0.2 s). Listening is each place's own
-(`Gate.listening` is the set of places that do): the key rests at `listening` only where hands is
+starts with the words said while Silero made sure of them (about 0.2 s). Listening is each place's own: the key rests at `listening` only where hands is
 and that place listens, so the desk at `wake word` and the phone at `off` leave it at `up` at the phone and at
 `listening` once hands is back at the desk, and the reverse holds. The phone's level is `off` or
 `wake word`, told by the page with `level` as it changes, held for the call, and `off` as each call
-comes or goes (`Gate.called`); the desk's levels and the phone's never move each other. The brain's
+comes or goes; the desk's levels and the phone's never move each other. The brain's
 `listening_level` and `set_listening_level` speak for the place hands is at: at the phone the first says the
 phone's level and that the page's Phone wake word button sets it, and the second says the same and changes
 nothing. Both models hear the desk through the echo canceller; measured on MacBook speakers, a
@@ -2073,20 +2072,21 @@ canceller's life let one through.
 **The phone hears a wake word with a pair of models of its own** (`hands.voice.atphone`).
 The page runs the detector (`hands.voice.phonewake`), and sends the second of its microphone it
 kept from before the detection, then `wake`, then its microphone as it comes. `Phone` reads `wake` as a
-press, in the step that reads it off the channel: the gate takes it only with hands at the phone and the
-key at `listening`, and the page is told `opened`, naming the clip, or `unopened` and why, once. A wake
-with hands at the desk is refused and moves nothing; one with a turn open, or the level `off`, is the
-page's mistake and is logged as one. The gate is the one authority on whether a phone turn is open, and
-which: the key resting at `listening` keeps the second ahead of `wake`, and the clip starts with it. The
-phone's driver follows the gate. It hears only the audio the gate tagged as of a wake's turn
-(`KeyedAudio.wake_turn`), from the wake on, with a second Silero and Smart Turn loaded as hands starts,
-before the phone's page is answered, so ears that cannot load fail the run with the load named
-(`phone.loaded`). It runs the shared life of a voice turn and owns only how the turn ends, and it ends it
-only through `PushToTalk.end`, which takes the end only while that turn is the one open and a wake opened
-it: a verdict, a limit or an ask of a turn a press, a hand at the desk, the level, or the call already
-ended ends nothing of the next. Each `wake` is one `phone.wake` event, its score, the threshold, whether
-hands was speaking and whether it opened a turn, and each `detector` message one `phone.detector`, loaded or
-failed and why, and the browser.
+press, in the step that reads it off the channel, and the gate is the one authority on it: a voice opens a turn
+only where hands is, at a place that listens, with none open, and a clip is ended only by the trigger that
+opened it. The page is told `opened`, naming the clip, or `unopened` and why, once. A wake with hands at the
+desk is refused and moves nothing; one with a turn open, or the level `off`, is the page's mistake, and the
+failure of its `phone.wake` event. The key resting at `listening` keeps the second ahead of `wake`, and the
+clip starts with it.
+
+The phone's driver follows the gate. It is told of a turn as the gate takes the wake, hears the phone's audio
+from then on, and lets the turn go when the audio the gate keyed says the gate ended it, so a turn's ask
+window and limit run from the wake. A second Silero and Smart Turn, loaded as hands starts and before the
+phone's page is answered, are its ears: ears that cannot load fail the run with the load named
+(`phone.loaded`). It runs the shared life of a voice turn and owns only how the turn ends, which the gate
+takes only while that turn is the one it is at, so a verdict, a limit or an ask of a turn a press, a hand at
+the desk, the level, or the call already ended ends nothing of the next. Each turn it follows is one
+`phone.turn`, and each `detector` message one `phone.detector`.
 
 **The phone is a second place, beside the desk.** The desk is the Mac's own mic and
 speakers; the phone is a page hands serves (`hands.voice.phonepage`) that a phone

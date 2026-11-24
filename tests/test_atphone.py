@@ -1,5 +1,5 @@
 """The phone's driver: a turn a wake opened at the phone is heard with the models and ended by the one table of how a voice
-turn ends, through the gate, which takes an end only for the turn it is open for."""
+turn ends, through the gate, which takes an end only for the turn it is at, and followed by the audio the gate keyed."""
 
 import asyncio
 from collections.abc import AsyncGenerator
@@ -13,12 +13,15 @@ from conftest import ScriptedEars
 from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice import engaged, shortcut, voiceturn
-from hands.voice.atphone import TRIGGER, drive
+from hands.voice.atphone import drive
 from hands.voice.engaged import loaded
-from hands.voice.phone import WakeAudio
-from hands.voice.ptt import PushToTalk
+from hands.voice.phone import WakeOpened
+from hands.voice.ptt import Gate, KeyedAudio, PushToTalk
 from hands.voice.shortcut import Move
+from hands.voice.trigger import PHONE_WAKE
 from hands.voice.voiceturn import TurnId
+
+RATE = 16000
 
 
 @dataclass
@@ -29,24 +32,31 @@ class Rig:
     clock: VirtualClock = field(default_factory=VirtualClock)
     taken: list[Move] = field(default_factory=list[Move])
     events: list[WideEvent] = field(default_factory=list[WideEvent])
-    wakes: asyncio.Queue[WakeAudio] = field(default_factory=asyncio.Queue[WakeAudio])
+    turns: asyncio.Queue[WakeOpened | KeyedAudio] = field(default_factory=asyncio.Queue[WakeOpened | KeyedAudio])
 
     def __post_init__(self) -> None:
         self.key = PushToTalk(self.clock, lambda _entry: None)
         self.key.go("phone")
-        self.key.move("listen", TRIGGER)
+        self.key.move("listen", PHONE_WAKE)
 
-    def wake(self) -> int:
-        """The page's wake, as the phone steps it: the gate opens a turn, and the number it gives is the turn's."""
-        self.key.move("arm", TRIGGER)
-        self.key.move("start", TRIGGER)
+    def took(self, moved: Move | None) -> None:
+        """As the phone's own does: a move the gate took as nothing is nothing."""
+        if moved is not None:
+            self.taken.append(moved)
+
+    def wake(self) -> TurnId:
+        """The page's wake, as the phone steps it: the gate opens a turn, and the driver is told the number it gives it."""
+        self.key.move("arm", PHONE_WAKE)
+        self.key.move("start", PHONE_WAKE)
         assert self.key.gate.wake_turn is not None
-        return self.key.gate.wake_turn
+        self.turns.put_nowait(WakeOpened(self.key.gate.turn, self.clock.now()))
+        return self.key.gate.turn
 
-    async def hear(self, turn: int, *audio: bytes) -> None:
-        """The frames the phone queued for `turn`, then the driver's turn at them."""
+    async def hear(self, *audio: bytes, of: Gate | None = None) -> None:
+        """The frames the phone keyed as the gate stood, `of` it if it is a gate from before, then the driver's turn at them."""
+        gate = self.key.gate if of is None else of
         for each in audio:
-            self.wakes.put_nowait(WakeAudio(TurnId(turn), each, self.clock.now()))
+            self.turns.put_nowait(gate.framed(each, each, None, RATE, 1, "phone"))
         await settle()
 
     async def due(self, when: float) -> None:
@@ -66,7 +76,7 @@ async def settle() -> None:
 @asynccontextmanager
 async def driving(ears: ScriptedEars) -> AsyncGenerator[Rig]:
     rig = Rig(ears)
-    task = asyncio.create_task(drive(rig.clock, rig.key, rig.wakes, ears, rig.taken.append, rig.events.append))
+    task = asyncio.create_task(drive(rig.clock, rig.key, rig.turns, ears, rig.took, rig.events.append))
     try:
         yield rig
     finally:
@@ -77,25 +87,29 @@ async def driving(ears: ScriptedEars) -> AsyncGenerator[Rig]:
 async def test_speech_after_the_wake_and_the_quiet_after_it_send_the_turn_through_the_gate() -> None:
     ears = ScriptedEars([True])
     async with driving(ears) as rig:
-        turn = rig.wake()
+        rig.wake()
         # The wake word's own pause ends nothing; what is asked starts the turn's speech, and stopping asks Smart Turn.
-        await rig.hear(turn, b"q", b"s", b"S", b"S")
+        await rig.hear(b"q", b"s", b"S", b"S")
         assert (rig.taken, rig.key.gate.turn_open) == ([], True)
-        await rig.hear(turn, b"q")
+        before = rig.key.gate
+        await rig.hear(b"q")
         assert rig.taken == ["stop"]
         assert (rig.key.gate.turn_open, rig.key.gate.ended, rig.key.gate.key) == (False, ("sent",), "listening")
-        assert [event.event for event in rig.events] == ["phone.judged"]
+        assert [event.event for event in rig.events] == ["phone.judged", "phone.turn"]
         # Heard afresh from the wake, and Smart Turn cleared as the turn went.
         assert (ears.afreshed, ears.cleared) == (1, 1)
         # Audio the phone had queued for the turn before it ended is heard by no one.
-        await rig.hear(turn, b"S")
+        await rig.hear(b"S", of=before)
         assert (ears.afreshed, ears.cleared, rig.taken) == (1, 1, ["stop"])
+        turn = rig.events[-1]
+        assert (turn.facts["end"], turn.facts["frames"], turn.outcome) == ("stop", 5, "ok")
 
 
-async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out() -> None:
+async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out_counted_from_the_wake() -> None:
     async with driving(ScriptedEars([])) as rig:
-        turn = rig.wake()
-        await rig.hear(turn, b"q")
+        # The page's audio never comes: the ask runs from the wake, not from audio.
+        rig.wake()
+        await settle()
         await rig.due(voiceturn.ASK_SECONDS)
         assert rig.taken == ["drop"]
         assert (rig.key.gate.turn_open, rig.key.gate.ended) == (False, ("dropped",))
@@ -103,8 +117,8 @@ async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out() 
 
 async def test_a_turn_open_to_the_limit_is_sent_as_it_stands() -> None:
     async with driving(ScriptedEars([])) as rig:
-        turn = rig.wake()
-        await rig.hear(turn, b"q", b"s", b"S")
+        rig.wake()
+        await rig.hear(b"q", b"s", b"S")
         await rig.due(shortcut.TURN_LIMIT_SECONDS)
         assert rig.taken == ["timeout"]
         assert (rig.key.gate.turn_open, rig.key.gate.ended) == (False, ("sent",))
@@ -115,37 +129,59 @@ async def test_a_verdict_for_a_turn_a_press_took_ends_nothing_of_the_buttons_tur
     ears.thinking = asyncio.Event()
     async with driving(ears) as rig:
         turn = rig.wake()
-        await rig.hear(turn, b"q", b"s", b"S", b"q")
+        await rig.hear(b"q", b"s", b"S", b"q")
         await ears.judging.wait()
         # The press sends the wake's turn at the gate and opens the button's own, while Smart Turn is still thinking.
-        assert rig.key.end(turn, "stop", TRIGGER) == "stop"
+        assert rig.key.end(turn, "stop", PHONE_WAKE) == "stop"
         rig.key.move("arm", "phone button")
         rig.key.move("start", "phone button")
         ears.thinking.set()
         await settle()
         assert rig.taken == []
         assert (rig.key.gate.turn_open, rig.key.gate.opened, rig.key.gate.ended) == (True, "phone button", ("sent",))
+        # What the driver followed was over before its verdict: the gate ended it first.
+        assert [(event.event, event.facts.get("end")) for event in rig.events] == [("phone.judged", None), ("phone.turn", "gate")]
+
+
+async def test_a_turn_the_gate_ended_is_let_go_at_the_next_frame_the_gate_keyed() -> None:
+    ears = ScriptedEars([True])
+    async with driving(ears) as rig:
+        turn = rig.wake()
+        await rig.hear(b"q")
+        # A press, a hand at the desk taking hands there, the level going off, or the call: the gate ends the turn.
+        assert rig.key.end(turn, "stop", PHONE_WAKE) == "stop"
+        assert (ears.afreshed, ears.cleared) == (1, 0)
+        await rig.hear(b"q")
+        # The frame says the gate ended a turn, so the driver's Smart Turn is cleared and the turn is no longer followed.
+        assert (ears.afreshed, ears.cleared) == (1, 1)
+        [event] = rig.events
+        assert (event.event, event.facts["end"], event.facts["frames"]) == ("phone.turn", "gate", 1)
+        # Its deadlines end nothing, and no later frame is heard.
+        await rig.due(shortcut.TURN_LIMIT_SECONDS)
+        await rig.hear(b"S")
+        assert (rig.taken, len(rig.events), ears.cleared) == ([], 1, 1)
 
 
 async def test_the_next_wake_opens_a_turn_after_one_the_gate_ended_and_the_old_ones_deadlines_end_nothing_of_it() -> None:
     ears = ScriptedEars([True])
     async with driving(ears) as rig:
         first = rig.wake()
-        await rig.hear(first, b"q")
+        await rig.hear(b"q")
         # The call's page takes the turn at the gate (a press, a hand at the desk taking hands there, the level going off).
-        assert rig.key.end(first, "stop", TRIGGER) == "stop"
+        assert rig.key.end(first, "stop", PHONE_WAKE) == "stop"
         rig.clock.advance_to(1.0)
         second = rig.wake()
         assert second == first + 1
-        await rig.hear(second, b"q")
+        await rig.hear(b"q")
         # The first's ask runs out while the second waits on its own: it is not the second's to end.
         await rig.due(voiceturn.ASK_SECONDS)
         assert (rig.taken, rig.key.gate.turn_open) == ([], True)
-        await rig.hear(second, b"s", b"S", b"q")
+        await rig.hear(b"s", b"S", b"q")
         assert rig.taken == ["stop"]
         assert (rig.key.gate.turn_open, rig.key.gate.ended) == (False, ("sent", "sent"))
         # Heard afresh for each wake, and each turn gone cleared.
         assert (ears.afreshed, ears.cleared) == (2, 2)
+        assert [event.facts.get("end") for event in rig.events if event.event == "phone.turn"] == ["gate", "stop"]
 
 
 async def test_ears_that_cannot_load_fail_the_phones_load_and_say_which_unit_and_why(monkeypatch: pytest.MonkeyPatch) -> None:

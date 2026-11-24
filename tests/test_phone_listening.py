@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from aiortc import RTCDataChannel
 from av.audio.resampler import AudioResampler
-from conftest import errors as errors, events, running, taken  # noqa: F401  (the fixture is used by name)
+from conftest import errors as errors, events, running  # noqa: F401  (the fixture is used by name)
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -24,8 +24,10 @@ from hands.voice import shortcut, voiceturn
 from hands.voice.atphone import drive
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
-from hands.voice.phone import Asked, Phone, _Call, detector_message, level_message, parse_said, quiet_message, wake_message  # pyright: ignore[reportPrivateUsage]
+from hands.sessions.payload import Rejected
+from hands.voice.phone import Asked, Phone, _Call, parse_said, quiet_message  # pyright: ignore[reportPrivateUsage]
 from hands.voice.ptt import PushToTalk
+from hands.voice.trigger import PhoneLevel
 from hands.voice.wakeword import THRESHOLD
 from test_clipowner import Scripted
 
@@ -35,6 +37,21 @@ RATE = 16000
 # Twenty milliseconds of the page's microphone as one message at `value`, which is how loud the detector below hears it.
 FRAME = RATE // 50
 SECOND = 50
+
+
+def wake_message(score: float) -> str:
+    """A `wake` as the page writes it (phone.html)."""
+    return json.dumps({"kind": "wake", "score": score})
+
+
+def level_message(level: PhoneLevel) -> str:
+    """A `level` as the page writes it (phone.html)."""
+    return json.dumps({"kind": "level", "level": level})
+
+
+def detector_message(browser: str, why: str | None) -> str:
+    """A `detector` as the page writes it (phone.html): loaded, or failed for `why`."""
+    return json.dumps({"kind": "detector", "state": "loaded", "browser": browser} if why is None else {"kind": "detector", "state": "failed", "browser": browser, "why": why})
 
 
 def audio(value: int) -> bytes:
@@ -142,7 +159,7 @@ async def up(clips: int = 3) -> AsyncGenerator[Up]:
                 await run.worker.queue_frame(await phone.heard.get())
 
         feeding = asyncio.create_task(feed())
-        driving = asyncio.create_task(drive(clock, key, phone.wakes, ears, phone.moves.put_nowait, recorded.append))
+        driving = asyncio.create_task(drive(clock, key, phone.turns, ears, phone.took, recorded.append))
         try:
             yield this
         finally:
@@ -197,25 +214,25 @@ async def test_a_wake_while_hands_is_at_the_desk_opens_nothing_moves_hands_nowhe
         page.key.go("desk")
         gate, queued = page.key.gate, page.phone.moves.qsize()
         page.send(wake_message(0.8))
-        # Answered as it was read, with nothing else having run; no turn, and nothing for the driver to hear.
+        # Answered as it was read, with nothing else having run; no turn, and none for the driver to follow.
         assert page.told == [{"kind": "unopened", "press": 1, "why": "hands is at the desk"}]
-        assert (page.key.gate, page.phone.moves.qsize(), page.phone.wakes.empty()) == (gate, queued, True)
+        assert (page.key.gate, page.phone.moves.qsize(), events(page.recorded, "phone.turn")) == (gate, queued, [])
         [woke] = events(page.recorded, "phone.wake")
         assert (woke.facts["opened"], woke.outcome) == (False, "ok")
 
 
-async def test_a_wake_with_a_turn_open_or_the_level_off_opens_nothing_is_answered_and_is_the_pages_mistake(errors: list[str]) -> None:
+async def test_a_wake_with_a_turn_open_or_the_level_off_opens_nothing_is_answered_and_is_the_pages_mistake() -> None:
     async with up() as page:
         # Level off: the page has not told hands it listens.
         page.send(wake_message(0.8))
         assert page.told == [{"kind": "unopened", "press": 1, "why": "the phone is not listening"}]
-        assert "level off" in taken(errors)[0]
         # A turn open: the button's own.
         page.send(level_message("wake word"), "press", SPEECH, wake_message(0.8))
         assert page.told[-1] == {"kind": "unopened", "press": 3, "why": "a turn is open"}
-        assert "a turn open" in taken(errors)[0]
         [first, second] = events(page.recorded, "phone.wake")
         assert (first.outcome, second.outcome) == ("failed", "failed")
+        assert first.error is not None and "level off" in first.error
+        assert second.error is not None and "a turn open" in second.error
         # The next wake, once nothing is in the way, is no mistake and opens a turn: the button's turn goes first.
         page.send("release", QUIET)
         await page.until(lambda: page.key.gate.key == "listening")
@@ -280,11 +297,13 @@ async def test_a_verdict_after_a_press_took_over_ends_nothing_of_the_buttons_tur
     async with up() as page:
         page.send(level_message("wake word"), wake_message(0.9), QUIET, *[SPEECH] * 5, "press", *[SPEECH] * 5)
         await page.told_count(3)
-        # Frames of the button's turn, none of them the wake's, are heard by the driver no more.
-        assert page.phone.wakes.empty()
+        # Frames of the button's turn, none of them the wake's, are heard by the driver no more: it let the wake's go as the
+        # gate ended it, and ended nothing of the button's.
         page.send(QUIET, QUIET)
         await page.until(lambda: page.moves[-2:] == ["stop", "start"] and page.key.gate.turn_open)
         assert (page.key.gate.opened, page.key.gate.ended) == ("phone button", ("sent",))
+        [followed] = events(page.recorded, "phone.turn")
+        assert followed.facts["end"] == "gate"
 
 
 async def test_after_a_refused_wake_or_a_desk_takeover_the_next_wake_opens_a_turn_and_is_no_mistake() -> None:
@@ -309,7 +328,7 @@ async def test_the_detector_loading_or_failing_is_one_event_naming_the_browser()
         page.send(detector_message("Safari 18", None), detector_message("Firefox 130", "no WebAssembly SIMD"))
         loaded, failed = events(page.recorded, "phone.detector")
         assert (loaded.facts["loaded"], loaded.facts["browser"], loaded.outcome) == (True, "Safari 18", "ok")
-        assert (failed.facts["loaded"], failed.facts["browser"], failed.facts["why"]) == (False, "Firefox 130", "no WebAssembly SIMD")
+        assert (failed.facts["loaded"], failed.facts["browser"], failed.outcome, failed.error) == (False, "Firefox 130", "failed", "no WebAssembly SIMD")
 
 
 async def test_a_page_sending_none_of_the_new_messages_gets_what_it_gets_today() -> None:
@@ -317,4 +336,19 @@ async def test_a_page_sending_none_of_the_new_messages_gets_what_it_gets_today()
         page.send(quiet_message(320), "press", SPEECH, SPEECH, "release", QUIET)
         done = await page.told_count(2)
         assert done[:2] == [{"kind": "opened", "press": 1, "clip": 1}, {"kind": "milestone", "milestone": "released", "clip": 1}]
-        assert (events(page.recorded, "phone.wake"), page.phone.wakes.empty()) == ([], True)
+        assert (events(page.recorded, "phone.wake"), events(page.recorded, "phone.turn")) == ([], [])
+
+
+async def test_a_release_over_a_wakes_turn_ends_nothing_of_it() -> None:
+    async with up() as page:
+        page.send(level_message("wake word"), wake_message(0.9), QUIET, *[SPEECH] * 3)
+        await page.told_count(1)
+        # The page's button was never pressed: a release it sends is the page's, and the wake's turn is its wake's to end.
+        page.send("release")
+        assert (page.key.gate.turn_open, page.key.gate.opened, page.key.gate.ended) == (True, "phone wake word", ())
+
+
+@pytest.mark.parametrize("score", [-0.1, 1.5, float("nan")])
+def test_a_wake_whose_score_is_no_probability_is_refused_as_unreadable(score: float) -> None:
+    with pytest.raises(Rejected, match="not a probability"):
+        parse_said(wake_message(score), RATE)

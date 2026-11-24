@@ -98,9 +98,10 @@ def build_voice(
     # there is no wait for the user to "say more".
     params = PipelineParams(enable_metrics=True)
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
-    # [LAW:one-way-deps] the phone is told whether hands is speaking by the speaker that plays to it, which is made after it.
+    # [LAW:one-way-deps] the phone defines what it needs of the speaker that plays to it, whether hands is speaking, and this
+    # root implements it, late: the speaker is made after the phone, since the transport that makes it is built on the phone.
     phone = Phone(clock, key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, speaking=lambda: transport.output().hands_speaking, record=record)
-    transport =KeyedAudioTransport(clock, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record, choices=config.devices)
+    transport = KeyedAudioTransport(clock, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record, choices=config.devices)
     # [LAW:nothing-unseen] the echo canceller's model is fetched, the first time, here and not as the microphone opens, where
     # 41 MB over the network would hold the audio device up; each canceller then reads it from hands' cache.
     with loads.loading(clock, "echo.loaded", record):

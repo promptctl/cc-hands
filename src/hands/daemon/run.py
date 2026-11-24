@@ -323,7 +323,7 @@ async def run(
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
-            tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, lambda: key.gate, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
+            tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, lambda: key.gate.at_phone, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
@@ -495,7 +495,7 @@ async def converse(
             async with ears_loaded(clock, voice.phone.heard_rate, record, "phone") as ears, asyncio.TaskGroup() as phone_tasks:
                 phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery, wake_models, runtime), home, partial(tailnet, Children(clock, record), home), record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
-                phone_tasks.create_task(drive_wakes(clock, voice.key, voice.phone.wakes, ears, voice.phone.moves.put_nowait, record), name="the phone's wake word turns")
+                phone_tasks.create_task(drive_wakes(clock, voice.key, voice.phone.turns, ears, voice.phone.took, record), name="the phone's wake word turns")
         finally:
             await voice.phone.stop()
 
