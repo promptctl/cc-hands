@@ -52,7 +52,7 @@ from pipecat.transports.local.audio import (
 from hands.clock import Clock
 from hands.fanout import Fanout
 from hands.voice import coreaudio
-from hands.voice.handsvoice import HandsQuiet, HandsSpeaking, HandsVoice
+from hands.voice.handsvoice import HandsQuiet, HandsSpeaking, HandsVoice, Spoken
 from hands.voice.devicechoice import Auto, BuiltIns, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, built_in, hears_nothing, lost_microphone, placed
 from hands.voice.clips import Playhead
 from hands.voice.cues import Cue, sound
@@ -570,10 +570,19 @@ class Speaker(LocalAudioOutputTransport):
             case False, True:
                 self._spoken.publish(HandsSpeaking())
             case True, False:
-                self._spoken.publish(HandsQuiet(self._clock.now(), self._key.gate.place, self._deaf()))
+                self._spoken.publish(HandsQuiet(self._clock.now(), self._spoken_to()))
             case _:
                 pass
         await super().push_frame(frame, direction)
+
+    def _spoken_to(self) -> Spoken:
+        """Where hands spoke, as its speech stops: where the gate says hands is, and at the desk, whether a microphone is
+        there to hear an answer."""
+        match self._key.gate.place:
+            case "phone":
+                return "phone"
+            case "desk":
+                return "deaf desk" if self._deaf() else "desk"
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at
@@ -662,8 +671,8 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self._listening: asyncio.Task[None] | None = None
         # What the attached stream was opened on; None until setup opens the first.
         self.opened: Input | None = None
-        # [LAW:no-shared-mutable-globals] who hears the desk whatever the gate says, each with the loop it hears on:
-        # replaced whole on the event loop, read whole on the capture thread.
+        # Who hears the desk whatever the gate says. [LAW:no-shared-mutable-globals] published to on the event loop
+        # alone: the capture thread hands each buffer over to it.
         self._overheard: Fanout[bytes] = Fanout()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:

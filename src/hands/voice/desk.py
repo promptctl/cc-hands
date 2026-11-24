@@ -1,5 +1,5 @@
 """The desk: how a turn of the user's is opened at the Mac, by the talk key at every level, and by the voice at two and in
-the reply window after hands spoke.
+the answer window after hands spoke.
 
 The desk is at one of three levels (`hands.voice.listening`). Off, it is deaf to the room between turns; it is at off
 until the models it hears with are loaded, and then at the level last chosen, first by the run's start: off on a cold
@@ -9,8 +9,8 @@ alone opens each turn. At every level Right Shift held alone opens a turn and it
 conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools and the pages' level
 buttons choose a level as a tap does.
 
-Off and under the wake word, hands falling quiet at the desk, with a microphone there to hear an answer, opens the reply
-window, cued: until `REPLY_WINDOW_SECONDS` have passed, speech alone opens a turn, so the user can answer with no key and
+Off and under the wake word, hands falling quiet at the desk, with a microphone there to hear an answer, opens the answer
+window, cued: until `ANSWER_WINDOW_SECONDS` have passed, speech alone opens a turn, so the user can answer with no key and
 no wake word. Hands speaking again closes it, and so does its time; speech that started in it goes on past either, to the
 turn it opens or to nothing. A turn the voice opened is closed by end-of-turn detection, by the rules of any voice turn's
 end (`hands.voice.voiceturn`).
@@ -36,7 +36,7 @@ from hands.voice.voiceturn import Ended, Going, Judging, NothingAsked, SpeechSta
 Chooser = Literal["start", "tap"] | Asker
 
 # How long after hands falls quiet the user may start to answer with no key and no wake word.
-REPLY_WINDOW_SECONDS = 5.0
+ANSWER_WINDOW_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -63,15 +63,15 @@ class ModelsLoaded:
 
 
 @dataclass(frozen=True)
-class ReplyWindowOver:
-    """The reply window open until `until` is due to close."""
+class AnswerWindowOver:
+    """The answer window open until `until` is due to close."""
 
     until: Instant
 
 
 # What the desk hears and is told beside the key and the levels: the user's speech and the wake word, the deadlines a turn
-# the voice opened set itself, hands' own voice, and the reply window's end.
-Heard = Woken | Told | HandsVoice | ReplyWindowOver
+# the voice opened set itself, hands' own voice, and the answer window's end.
+Heard = Woken | Told | HandsVoice | AnswerWindowOver
 Event = KeyEvent | Heard | Chosen | ModelsLoaded
 
 
@@ -81,13 +81,18 @@ class Resting:
 
     level: Level
 
+    @property
+    def key(self) -> "VoiceKey":
+        """Right Shift, up."""
+        return Idle()
+
 
 # Right Shift under what the voice has open: up, down and not yet held long enough to mean talk, or down as Shift.
 VoiceKey = Idle | KeyArming | Typing
 
 
 @dataclass(frozen=True)
-class ReplyWindow:
+class AnswerWindow:
     """The window after hands fell quiet at the desk, at `level`, where speech alone opens no turn between turns: in it,
     speech alone opens one, until `until`."""
 
@@ -96,30 +101,30 @@ class ReplyWindow:
 
 
 @dataclass(frozen=True)
-class Reply:
-    """The user's reply to hands, at `level`, begun in the reply window: it goes on once the window has closed."""
+class Answer:
+    """The user's answer to hands, at `level`, begun in the answer window: it goes on once the window has closed."""
 
     level: Literal["off", "wake word"]
 
 
-# What lets the voice open a turn: the level's own listening, the reply window while it is open, and the reply begun in it.
-Opener = Listens | ReplyWindow | Reply
+# What lets the voice open a turn: the level's own listening, the answer window while it is open, and the answer begun in it.
+Opener = Listens | AnswerWindow | Answer
 
 
 @dataclass(frozen=True)
 class InWindow:
-    """The reply window, `window`, open with nothing yet said in it."""
+    """The answer window, `window`, open with nothing yet said in it."""
 
-    window: ReplyWindow
+    window: AnswerWindow
     key: VoiceKey = Idle()
 
 
 @dataclass(frozen=True)
 class Starting:
-    """What may be speech has started where speech alone opens a turn, `by` engaged conversation, the reply window, or a
-    reply begun in it: the microphone is armed and the turn is not open."""
+    """What may be speech has started where speech alone opens a turn, `by` engaged conversation, the answer window, or an
+    answer begun in it: the microphone is armed and the turn is not open."""
 
-    by: Literal["engaged"] | ReplyWindow | Reply
+    by: Literal["engaged"] | AnswerWindow | Answer
     key: VoiceKey = Idle()
 
 
@@ -138,9 +143,9 @@ class Woke:
 @dataclass(frozen=True)
 class Voiced:
     """A turn the voice opened, with speech in it, `by` the level's own listening, said after the wake word or opened by
-    speech, engaged, or by the user's reply to hands."""
+    speech, engaged, or by the user's answer to hands."""
 
-    by: Listens | Reply
+    by: Listens | Answer
     turn: Speaking
     key: VoiceKey = Idle()
 
@@ -223,7 +228,7 @@ class Desk:
 
 def level_of(phase: Phase) -> Level:
     match phase:
-        case Resting(level=level) | Keyed(level=level) | InWindow(window=ReplyWindow(level=level)):
+        case Resting(level=level) | Keyed(level=level) | InWindow(window=AnswerWindow(level=level)):
             return level
         case Starting(by=by) | Woke(by=by) | Voiced(by=by):
             return _level(by)
@@ -232,7 +237,7 @@ def level_of(phase: Phase) -> Level:
 def _level(by: Opener) -> Level:
     """The level what the voice has open `by` was opened at, and returns to."""
     match by:
-        case ReplyWindow(level=level) | Reply(level=level):
+        case AnswerWindow(level=level) | Answer(level=level):
             return level
         case "wake word" | "engaged" as level:
             return level
@@ -241,31 +246,31 @@ def _level(by: Opener) -> Level:
 def _trigger(by: Opener) -> Trigger:
     """The trigger what the voice has open `by` is opened by."""
     match by:
-        case ReplyWindow() | Reply():
-            return "reply window"
+        case AnswerWindow() | Answer():
+            return "answer window"
         case "wake word":
             return "wake word"
         case "engaged":
             return "engaged conversation"
 
 
+def listening(phase: Phase) -> Opener | None:
+    """What the desk hears the room for at `phase`, which the gate was told it listens by: its level, where that listens,
+    whatever is open in it; off, the answer window or the answer begun in it; None where it is deaf."""
+    match level_of(phase), phase:
+        case "wake word" | "engaged" as level, _:
+            return level
+        case "off", InWindow(window=window):
+            return window
+        case "off", Starting(by=AnswerWindow() | Answer() as by) | Voiced(by=Answer() as by):
+            return by
+        case "off", _:
+            return None
+
+
 def hears(phase: Phase) -> bool:
-    """Whether the desk hears the room: between turns, at a level that listens; and through all the voice has open, the
-    reply window and what it opened among it."""
-    match phase:
-        case Resting(level=level) | Keyed(level=level):
-            return listens(level)
-        case InWindow() | Starting() | Woke() | Voiced():
-            return True
-
-
-def _hearing(phase: Phase) -> Trigger:
-    """What the desk hears the room for, where it does at `phase`: its level, where that listens, and off, the reply window."""
-    match level_of(phase):
-        case "off":
-            return "reply window"
-        case ("wake word" | "engaged") as level:
-            return _trigger(level)
+    """Whether the desk hears the room at `phase`."""
+    return listening(phase) is not None
 
 
 @dataclass(frozen=True)
@@ -286,21 +291,48 @@ class Leveled:
 
 
 @dataclass(frozen=True)
-class ReplyWindowOpened:
-    """The reply window opened, to close at `until`: its cue plays, and its end is told when it is due."""
+class AnswerWindowOpened:
+    """The answer window opened: its cue plays, and `end` is to be told as it is due."""
 
-    until: Instant
+    end: AnswerWindowOver
 
 
-# What the desk does: a move of the gate, a change of level, opening the reply window, or asking Smart Turn whether the
-# speech that just stopped ends the turn.
-Act = Made | Leveled | ReplyWindowOpened | Judging
+# What closed the answer window: speech in it opening a turn, the wake word said in it, its time, hands speaking again,
+# the key held to talk, or a change of level.
+Closer = Literal["answered", "wake word", "time", "hands", "key", "level"]
+
+
+@dataclass(frozen=True)
+class AnswerWindowClosed:
+    """The answer window closed, `by` what closed it: each window opened closes once."""
+
+    by: Closer
+
+
+# Why hands falling quiet opened no answer window: it spoke at the phone, or at a desk with no microphone; the desk is
+# engaged, where speech opens every turn; something is open already, a turn, the key, or an answer begun; or the models
+# the window is heard with are still loading.
+Unopened = Literal["phone", "deaf desk", "engaged", "busy", "loading"]
+
+
+@dataclass(frozen=True)
+class NoAnswerWindow:
+    """Hands fell quiet and no answer window opened, for `why`."""
+
+    why: Unopened
+
+
+# What the desk does that the one serving it carries out: the gate's moves, a change of level, and the answer window's cue.
+Served = Made | Leveled | AnswerWindowOpened
+# What the desk does: what its server carries out, asking Smart Turn whether the speech that just stopped ends the turn,
+# and what became of each time hands fell quiet.
+Act = Served | Judging | AnswerWindowClosed | NoAnswerWindow
 
 
 def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
     """The desk after `event`, and what it does."""
     stepped, acts = _stepped(desk, event)
-    return stepped, _gated(desk.phase, stepped.phase, acts)
+    return stepped, (*_gated(desk.phase, stepped.phase, acts), *_closed(desk.phase, stepped.phase, event))
 
 
 def _gated(was: Phase, now: Phase, acts: tuple[Act, ...]) -> tuple[Act, ...]:
@@ -308,14 +340,68 @@ def _gated(was: Phase, now: Phase, acts: tuple[Act, ...]) -> tuple[Act, ...]:
     does as it stops, after whatever ended what it heard for.
 
     [LAW:single-enforcer] the one rule that keeps the gate hearing the desk's room exactly while the desk does, however its
-    phase moved: a level chosen, the reply window opening or closing, the key, or a turn's end."""
-    match hears(was), hears(now):
-        case False, True:
-            return (Made("listen", _hearing(now)), *acts)
-        case True, False:
-            return (*acts, Made("deafen", _hearing(was)))
+    phase moved: a level chosen, the answer window opening or closing, the key, or a turn's end."""
+    heard, hearing = listening(was), listening(now)
+    if heard is None and hearing is not None:
+        return (Made("listen", _trigger(hearing)), *acts)
+    if heard is not None and hearing is None:
+        return (*acts, Made("deafen", _trigger(heard)))
+    return acts
+
+
+# How the models are to hear the room, where what the desk hears it for has changed: `afresh`, with nothing of the room
+# before it, where the desk has just begun to hear the room or its level changed; `under way`, with speech already under
+# way starting for the desk, where it heeds speech it was ignoring, as the key comes up or the answer window opens.
+Anew = Literal["afresh", "under way"]
+
+
+def anew(was: Phase, now: Phase) -> Anew | None:
+    """How the models are to hear the room from the next buffer, once the desk has moved from `was` to `now`, if anew.
+
+    [LAW:one-source-of-truth] the desk's own say of when what it hears the room for changed, as `voiceturn.asked` is a
+    turn's of what it is to be told later."""
+    if not hears(now):
+        return None
+    if not hears(was) or level_of(was) != level_of(now):
+        return "afresh"
+    if isinstance(was, Keyed) and not isinstance(now, Keyed) or _window(was) is None and _window(now) is not None:
+        return "under way"
+    return None
+
+
+def _window(phase: Phase) -> AnswerWindow | None:
+    """The answer window open at `phase`, if one is: nothing said in it yet, or what may be speech started."""
+    match phase:
+        case InWindow(window=window) | Starting(by=AnswerWindow() as window):
+            return window
         case _:
-            return acts
+            return None
+
+
+def _closed(was: Phase, now: Phase, event: Event) -> tuple[AnswerWindowClosed, ...]:
+    """What closed the answer window open at `was`, if `event`, moving the desk to `now`, closed it.
+
+    [LAW:nothing-unseen] the one place a window's close is said, however the step closed it, so each window opened is
+    accounted for once, by what closed it."""
+    window = _window(was)
+    if window is None or _window(now) == window:
+        return ()
+    if level_of(now) != level_of(was):
+        return (AnswerWindowClosed("level"),)
+    match event:
+        case SpeechStarted():
+            return (AnswerWindowClosed("answered"),)
+        case Woken():
+            return (AnswerWindowClosed("wake word"),)
+        case AnswerWindowOver():
+            return (AnswerWindowClosed("time"),)
+        case HandsSpeaking():
+            return (AnswerWindowClosed("hands"),)
+        case _ if isinstance(event, KeyEvent):
+            return (AnswerWindowClosed("key"),)
+        case _:
+            # [LAW:no-silent-failure] an event that closes a window by no cause the desk names was stepped wrongly.
+            raise RuntimeError(f"the answer window closed on {event}, which closes none")
 
 
 def _stepped(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
@@ -355,7 +441,7 @@ def _told(desk: Desk, heard: Heard) -> tuple[Desk, tuple[Act, ...]]:
     match desk.models:
         case Loading():
             # At off, as a desk whose models load is, the room opens nothing, and nothing hears an answer to hands.
-            return desk, ()
+            return desk, (NoAnswerWindow("loading"),) if isinstance(heard, HandsQuiet) else ()
         case Loaded(phase=was):
             phase, acts = _heard(was, heard, TurnId(desk.turns + 1))
             # [LAW:one-source-of-truth] the number spent is the one the turn the phase holds now carries, so the count
@@ -434,15 +520,41 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
         case Keyed(shortcut=shortcut):
             return Keyed(now, shortcut), (leveled,)
         # What the voice had open is the level's: leaving it, the window closes, an armed start is disarmed and a turn is sent.
+        case InWindow() | Starting() | Woke() | Voiced():
+            rest, left = _rest(now, phase.key, *_left(phase))
+            return rest, (*left, leveled)
+
+
+def _left(phase: Resting | InWindow | Starting | Woke | Voiced) -> tuple[Act, ...]:
+    """What leaving what the voice has open at `phase` takes back: an armed start's arming, or a turn, sent."""
+    match phase:
+        case Starting(by=by):
+            return (Made("disarm", _trigger(by)),)
+        case Woke() | Voiced():
+            return (Made("stop", _trigger(phase.by)),)
+        case Resting() | InWindow():
+            return ()
+
+
+def _shut(phase: InWindow | Starting, window: AnswerWindow) -> tuple[Phase, tuple[Act, ...]]:
+    """The phase once `window` has closed over `phase`: back at its level, or, where speech had started in it, the answer
+    going on, to the turn it opens or to nothing."""
+    match phase:
         case InWindow(key=key):
-            rest, left = _rest(now, key)
-            return rest, (*left, leveled)
-        case Starting(by=opener, key=key):
-            rest, left = _rest(now, key, Made("disarm", _trigger(opener)))
-            return rest, (*left, leveled)
-        case Woke(key=key) | Voiced(key=key):
-            rest, left = _rest(now, key, Made("stop", _trigger(phase.by)))
-            return rest, (*left, leveled)
+            return _rest(window.level, key)
+        case Starting(key=key):
+            return Starting(Answer(window.level), key), ()
+
+
+def _closes(window: AnswerWindow, heard: Heard) -> bool:
+    """Whether `heard` closes `window`: hands speaking again, or the window's own end, which no other window's is."""
+    match heard:
+        case HandsSpeaking():
+            return True
+        case AnswerWindowOver(until=until):
+            return until == window.until
+        case _:
+            return False
 
 
 def _heard(phase: Phase, heard: Heard, next_turn: TurnId) -> tuple[Phase, tuple[Act, ...]]:
@@ -452,42 +564,37 @@ def _heard(phase: Phase, heard: Heard, next_turn: TurnId) -> tuple[Phase, tuple[
             # Hands' own voice, heard back through the room, may have said it: a turn opened on it would cut the reply off
             # on hands' own word and send the brain hands' voice as the user's.
             return phase, ()
-        case Resting(level="wake word"), Woken(at=at):
-            return Woke(Waiting(next_turn, at)), (Made("arm", "wake word"), Made("start", "wake word"))
-        case InWindow(window=ReplyWindow(level="wake word"), key=key), Woken(at=at):
-            return Woke(Waiting(next_turn, at), key), (Made("arm", "wake word"), Made("start", "wake word"))
-        case Starting(by=ReplyWindow(level="wake word") | Reply(level="wake word"), key=key), Woken(at=at):
-            # What started in the window was the wake word, whose turn it is.
-            return Woke(Waiting(next_turn, at), key), (Made("disarm", "reply window"), Made("arm", "wake word"), Made("start", "wake word"))
+        # Between turns, and in the window or what started in it, which is the wake word's turn once it is said.
+        case Resting() | InWindow() | Starting(by=AnswerWindow() | Answer()) as over, Woken(at=at) if level_of(over) == "wake word":
+            return Woke(Waiting(next_turn, at), over.key), (*_left(over), Made("arm", "wake word"), Made("start", "wake word"))
         case Resting(level="engaged"), SpeechStarting():
             return Starting("engaged"), (Made("arm", "engaged conversation"),)
         case Resting(level="engaged"), SpeechStarted(at=at):
             return Voiced("engaged", Speaking(next_turn, at)), (Made("arm", "engaged conversation"), Made("start", "engaged conversation"))
-        case Resting(level="off" | "wake word" as level), HandsQuiet(at=at, place="desk", deaf=False):
-            window = ReplyWindow(level, at + REPLY_WINDOW_SECONDS)
-            return InWindow(window), (ReplyWindowOpened(window.until),)
+        case _, HandsQuiet(to="phone" | "deaf desk" as to):
+            return phase, (NoAnswerWindow(to),)
+        case Resting(level="off" | "wake word" as level), HandsQuiet(at=at):
+            window = AnswerWindow(level, at + ANSWER_WINDOW_SECONDS)
+            return InWindow(window), (AnswerWindowOpened(AnswerWindowOver(window.until)),)
+        case _, HandsQuiet() if level_of(phase) == "engaged":
+            return phase, (NoAnswerWindow("engaged"),)
+        case _, HandsQuiet():
+            return phase, (NoAnswerWindow("busy"),)
         case InWindow(window=window, key=key), SpeechStarting():
-            return Starting(window, key), (Made("arm", "reply window"),)
-        case InWindow(window=ReplyWindow(level=level), key=key), SpeechStarted(at=at):
-            return Voiced(Reply(level), Speaking(next_turn, at), key), (Made("arm", "reply window"), Made("start", "reply window"))
-        case InWindow(window=window, key=key), HandsSpeaking():
-            return _rest(window.level, key)
-        case InWindow(window=window, key=key), ReplyWindowOver(until=until) if until == window.until:
-            return _rest(window.level, key)
-        # Speech that started in the window goes on once it closes, to the turn it opens or to nothing.
-        case Starting(by=ReplyWindow() as window, key=key), HandsSpeaking():
-            return Starting(Reply(window.level), key), ()
-        case Starting(by=ReplyWindow() as window, key=key), ReplyWindowOver(until=until) if until == window.until:
-            return Starting(Reply(window.level), key), ()
+            return Starting(window, key), (Made("arm", "answer window"),)
+        case InWindow(window=AnswerWindow(level=level), key=key), SpeechStarted(at=at):
+            return Voiced(Answer(level), Speaking(next_turn, at), key), (Made("arm", "answer window"), Made("start", "answer window"))
+        case InWindow(window=window) | Starting(by=AnswerWindow() as window) as over, HandsSpeaking() | AnswerWindowOver() if _closes(window, heard):
+            return _shut(over, window)
         case Starting(by="engaged", key=key), SpeechStarted(at=at):
             return Voiced("engaged", Speaking(next_turn, at), key), (Made("start", "engaged conversation"),)
-        case Starting(by=ReplyWindow(level=level) | Reply(level=level), key=key), SpeechStarted(at=at):
-            return Voiced(Reply(level), Speaking(next_turn, at), key), (Made("start", "reply window"),)
-        case Starting(by=ReplyWindow() as window, key=key), SpeechStopped():
+        case Starting(by=AnswerWindow(level=level) | Answer(level=level), key=key), SpeechStarted(at=at):
+            return Voiced(Answer(level), Speaking(next_turn, at), key), (Made("start", "answer window"),)
+        case Starting(by=AnswerWindow() as window, key=key), SpeechStopped():
             # A start that came to nothing, a cough or the room: the window goes on until it closes.
-            return InWindow(window, key), (Made("disarm", "reply window"),)
-        case Starting(by="engaged" | Reply() as by, key=key), SpeechStopped():
-            return _rest(_level(by), key, Made("disarm", _trigger(by)))
+            return InWindow(window, key), (Made("disarm", "answer window"),)
+        case Starting(by="engaged" | Answer() as by, key=key) as starting, SpeechStopped():
+            return _rest(_level(by), key, *_left(starting))
         case Woke() | Voiced(), SpeechStarting() | SpeechStarted() | SpeechStopped() | TurnEnded() | TurnTooLong() | NothingAsked():
             return _in_turn(phase, heard)
         case _:
@@ -507,7 +614,7 @@ def _in_turn(phase: Woke | Voiced, told: Told) -> tuple[Phase, tuple[Act, ...]]:
             return _rest(level_of(phase), phase.key, Made(how, _trigger(phase.by)))
 
 
-def _holding(by: Listens | Reply, key: VoiceKey, turn: Turn) -> Woke | Voiced:
+def _holding(by: Listens | Answer, key: VoiceKey, turn: Turn) -> Woke | Voiced:
     """The phase of a turn the voice has open: a wake's, waiting for what is asked, or one with speech in it."""
     match turn:
         case Waiting():
@@ -524,7 +631,3 @@ def turn_of(phase: Phase) -> Turn | None:
         case _:
             return None
 
-
-def listens(level: Level) -> bool:
-    """Whether the desk hears the room between turns at `level`."""
-    return level != "off"

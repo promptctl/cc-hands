@@ -48,7 +48,7 @@ SLOT = RATE // 100
 # engaged (`hands.voice.engaged`); the wake word said, at its level (`hands.voice.wake`); and speech in the window after
 # hands spoke, at the other two. The phone's are its page's talk button, there for every call, and the wake word its page's
 # detector heard, at its level (`hands.voice.phone`).
-Trigger = Literal["shortcut", "engaged conversation", "wake word", "reply window", "phone button", "phone wake word"]
+Trigger = Literal["shortcut", "engaged conversation", "wake word", "answer window", "phone button", "phone wake word"]
 # What opens a clip: a trigger of the gate, or words the user typed into the conversation page
 # (`hands.voice.conversationpage`), which move no gate and are heard nowhere, so they are a clip of their own.
 Opener = Trigger | Literal["typed"]

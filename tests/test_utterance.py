@@ -235,7 +235,7 @@ async def test_the_speaker_says_hands_started_speaking_and_once_its_audio_has_pl
                     break
     assert [type(edge) for edge in told] == [HandsSpeaking, HandsQuiet]
     # No microphone was set up beside the speaker, so none is said to be missing.
-    assert isinstance(told[-1], HandsQuiet) and (told[-1].place, told[-1].deaf) == ("desk", False) and speakers.speaker.sounded
+    assert isinstance(told[-1], HandsQuiet) and told[-1].to == "desk" and speakers.speaker.sounded
 
 
 async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_audio_cuts_it_and_its_close_still_arrives() -> None:

@@ -6,9 +6,12 @@ what hands said, played, and not a pause between its sentences.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
-from hands.core.place import Place
 from hands.voice.shortcut import Instant
+
+# Where hands spoke: at the desk, with a microphone there to hear an answer or with none, or at the phone.
+Spoken = Literal["desk", "deaf desk", "phone"]
 
 
 @dataclass(frozen=True)
@@ -18,11 +21,10 @@ class HandsSpeaking:
 
 @dataclass(frozen=True)
 class HandsQuiet:
-    """Hands fell quiet, at `at`, having spoken at `place`; `deaf` where the desk has no microphone to hear an answer."""
+    """Hands fell quiet, at `at`, having spoken `to` the desk or the phone."""
 
     at: Instant
-    place: Place
-    deaf: bool
+    to: Spoken
 
 
 HandsVoice = HandsSpeaking | HandsQuiet

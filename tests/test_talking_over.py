@@ -32,8 +32,7 @@ from hands.voice import engaged, streaming
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import RATE, Clip, Fate, Hearings, Sound
 from hands.fanout import Fanout
-from hands.voice.desk import Made, Woken
-from hands.voice.engaged import Served
+from hands.voice.desk import AnswerWindowOpened, Leveled, Made, Served, Woken
 from hands.voice.handsvoice import HandsVoice
 from hands.voice.turnlife import Ears
 from hands.voice.ptt import PushToTalk
@@ -264,14 +263,18 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
             yield buffers()
 
         async def served(act: Served) -> None:
-            if not isinstance(act, Made):
-                return
-            moves.append((captured, act.move))
-            match act.move:
-                case "stop" | "drop" | "timeout" as how:
-                    gate.end(gate.gate.turn, how, act.by)
-                case move:
-                    gate.move(move, act.by)
+            match act:
+                case Made(move=move, by=by):
+                    moves.append((captured, move))
+                    match move:
+                        case "stop" | "drop" | "timeout" as how:
+                            gate.end(gate.gate.turn, how, by)
+                        case beginning:
+                            gate.move(beginning, by)
+                case Leveled():
+                    pass
+                case AnswerWindowOpened():
+                    raise AssertionError(f"an answer window opened though hands never spoke: {act}")
 
         driving = asyncio.create_task(
             engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), Fanout[HandsVoice]().subscribed, levels, served, record)

@@ -16,7 +16,7 @@ from hands.voice.wakeword import Word
 def place_of(trigger: Trigger) -> Place:
     """Where the user is when `trigger` moves the gate."""
     match trigger:
-        case "shortcut" | "engaged conversation" | "wake word" | "reply window":
+        case "shortcut" | "engaged conversation" | "wake word" | "answer window":
             return "desk"
         case "phone button" | "phone wake word":
             return "phone"
@@ -28,7 +28,7 @@ def by_hand(trigger: Trigger) -> bool:
     match trigger:
         case "shortcut" | "phone button":
             return True
-        case "engaged conversation" | "wake word" | "reply window" | "phone wake word":
+        case "engaged conversation" | "wake word" | "answer window" | "phone wake word":
             return False
 
 

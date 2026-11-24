@@ -16,9 +16,9 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.clock import SYSTEM
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.fanout import Fanout
-from hands.voice.desk import Leveled, Made, Woken
+from hands.voice.desk import AnswerWindowOpened, Leveled, Made, Served, Woken
 from hands.voice.handsvoice import HandsVoice
-from hands.voice.engaged import Served, drive
+from hands.voice.engaged import drive
 from hands.voice.listening import Levels
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
@@ -56,26 +56,33 @@ async def wake_word_level() -> Levels:
     return Levels("wake word")
 
 
-class AtLevel:
-    """The desk's report of each level it arrives at: the audio is heard once it is at the wake word's."""
+class Serving:
+    """What the desk does, served: each move it makes, and each level it arrives at, the audio heard once it is at the
+    wake word's. Hands never speaks here, so no answer window opens."""
 
     def __init__(self) -> None:
         self.reached = asyncio.Event()
+        self.made: list[Move] = []
 
-    async def __call__(self, _leveled: Leveled) -> None:
-        self.reached.set()
+    async def __call__(self, act: Served) -> None:
+        match act:
+            case Made(move=move):
+                self.made.append(move)
+            case Leveled():
+                self.reached.set()
+            case AnswerWindowOpened():
+                raise AssertionError(f"an answer window opened though hands never spoke: {act}")
 
 
 async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_listening() -> None:
     audio: asyncio.Queue[bytes] = asyncio.Queue()
-    level = AtLevel()
-    made: list[Move] = []
+    served = Serving()
     events: list[WideEvent] = []
 
     @asynccontextmanager
     async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:
         async def buffers() -> AsyncIterator[bytes]:
-            await level.reached.wait()
+            await served.reached.wait()
             while True:
                 yield await audio.get()
 
@@ -84,15 +91,6 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
     async def woken(heard: bytes, begun: bool) -> Woken | None:
         return Woken(SYSTEM.now(), over_hands=False, built_in=False) if heard == b"w" else None
 
-    async def served(act: Served) -> None:
-        match act:
-            case Made(move=move):
-                made.append(move)
-            case Leveled():
-                await level(act)
-            case _:
-                pass
-
     levels = await wake_word_level()
     driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ScriptedEars(), woken), Fanout[HandsVoice]().subscribed, levels, served, events.append))
     # Talk in the room opens nothing; the wake word opens a turn, the pause after it ends nothing, and the verdict on
@@ -100,17 +98,17 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
     for each in (b"S", b"q", b"w", b"q", b"S", b"q", b"S", b"q", b"w", b"q", b"S", b"q"):
         audio.put_nowait(each)
     async with asyncio.timeout(1.0):
-        while len(made) < 7:
+        while len(served.made) < 7:
             await asyncio.sleep(0.001)
     deafening = asyncio.create_task(levels.choose("off", "tool"))
     async with asyncio.timeout(1.0):
-        while len(made) < 8:
+        while len(served.made) < 8:
             await asyncio.sleep(0.001)
     assert await deafening == "wake word"
     driving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await driving
-    assert made == ["listen", "arm", "start", "stop", "arm", "start", "stop", "deafen"]
+    assert served.made == ["listen", "arm", "start", "stop", "arm", "start", "stop", "deafen"]
     desk = [event for event in events if event.event == "desk"]
     assert [(event.facts["level"], event.outcome, dict(event.counts)["start"], dict(event.counts)["by_wake_word"]) for event in desk] == [
         ("off", "ok", 0, 1), ("wake word", "ok", 2, 7), ("off", "cancelled", 0, 0),
@@ -227,38 +225,28 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     """Silero, Smart Turn, and the wake word's model, real, on macOS's own voice: Smart Turn's verdict on what was asked
     sends the turn, not the silence after it, and not the pause after the wake word."""
     audio = said(asked) + quiet(4.0)
-    level = AtLevel()
-    made: list[Move] = []
+    served = Serving()
     events: list[WideEvent] = []
 
     @asynccontextmanager
     async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:
         async def buffers() -> AsyncIterator[bytes]:
-            await level.reached.wait()
+            await served.reached.wait()
             for start in range(0, len(audio), 640):
                 yield audio[start : start + 640]
             await asyncio.Event().wait()
 
         yield buffers()
 
-    async def served(act: Served) -> None:
-        match act:
-            case Made(move=move):
-                made.append(move)
-            case Leveled():
-                await level(act)
-            case _:
-                pass
-
     async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append, "desk.loaded") as ears, loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
         driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, lambda: False, events.append)), Fanout[HandsVoice]().subscribed, await wake_word_level(), served, events.append))
         async with asyncio.timeout(60.0):
-            while "stop" not in made:
+            while "stop" not in served.made:
                 await asyncio.sleep(0.01)
         driving.cancel()
         with pytest.raises(asyncio.CancelledError):
             await driving
-    assert made == ["listen", "arm", "start", "stop"]
+    assert served.made == ["listen", "arm", "start", "stop"]
     # The verdict before the silence it spared: a turn that ended on silence was judged incomplete, by the probability
     # its facts carry.
     judged = [event.facts for event in events if event.event == "desk.judged"]

@@ -19,7 +19,7 @@ from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent
 from hands.voice.atdesk import serve_desk
 from hands.fanout import Fanout
-from hands.voice.cues import ENGAGED, OFF, REPLY_WINDOW, WAKE_WORD, Cue
+from hands.voice.cues import ENGAGED, OFF, ANSWER_WINDOW, WAKE_WORD, Cue
 from hands.voice.handsvoice import HandsQuiet, HandsVoice
 from hands.voice.keys import tapped
 from hands.voice.ptt import PushToTalk
@@ -228,8 +228,8 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
 
     # Hands falls quiet at the desk: off, the window's cue plays, the room is heard, and the answer said in it is a turn
     # Smart Turn sends, after which the desk is deaf again.
-    speaker.speech.publish(HandsQuiet(SYSTEM.now(), "desk", deaf=False))
-    await until(lambda: speaker.cues[-1] == REPLY_WINDOW)
+    speaker.speech.publish(HandsQuiet(SYSTEM.now(), "desk"))
+    await until(lambda: speaker.cues[-1] == ANSWER_WINDOW)
     microphone.say(quiet(0.5) + engaged + quiet(4.0))
     await until(lambda: "deafen" in taken)
     assert taken == ["listen", "arm", "start", "stop", "deafen"]

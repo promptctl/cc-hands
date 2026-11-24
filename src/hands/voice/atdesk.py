@@ -12,9 +12,9 @@ from hands.clock import Clock
 from hands.sessions.wide import WideEvent, annotate, begun, unit
 from hands.voice import wake
 from hands.voice.wakemodels import WakeModels
-from hands.voice.cues import REPLY_WINDOW, Cue, Played, level_cue
-from hands.voice.desk import Leveled, Made, ReplyWindowOpened
-from hands.voice.engaged import Hears, Served, drive, loaded
+from hands.voice.cues import ANSWER_WINDOW, Cue, Played, level_cue
+from hands.voice.desk import AnswerWindowOpened, Leveled, Made, Served
+from hands.voice.engaged import Hears, drive, loaded
 from hands.voice.handsvoice import HandsVoice
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
@@ -85,8 +85,8 @@ async def serve_desk(
             case Leveled():
                 cued(level_cue(act))
                 beat()
-            case ReplyWindowOpened():
-                cued(REPLY_WINDOW)
+            case AnswerWindowOpened():
+                cued(ANSWER_WINDOW)
 
     @asynccontextmanager
     async def hearing() -> AsyncGenerator[tuple[Ears, Hears]]:

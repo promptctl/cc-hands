@@ -46,9 +46,9 @@ TIMED_OUT = Cue(f"turn: ended, open {TURN_LIMIT_SECONDS:.0f}s", SENT.glides)
 OFF = Cue("desk: microphone off", ((990.0, 660.0), (990.0, 660.0)))
 WAKE_WORD = Cue("desk: listening for the wake word", ((660.0, 990.0), (660.0, 990.0)))
 ENGAGED = Cue("desk: engaged", ((660.0, 990.0), (660.0, 990.0), (660.0, 990.0)))
-# The reply window opening (`hands.voice.desk`): a dip, one tone falling and one rising, above the key's pitches, so it
+# The answer window opening (`hands.voice.desk`): a dip, one tone falling and one rising, above the key's pitches, so it
 # is taken neither for a turn's edge, one tone, nor for a level, whose tones all go one way.
-REPLY_WINDOW = Cue("desk: the reply window is open", ((1175.0, 880.0), (880.0, 1175.0)))
+ANSWER_WINDOW = Cue("desk: the answer window is open", ((1175.0, 880.0), (880.0, 1175.0)))
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,7 @@ WORKING = QuietCue(Cue("working", ((880.0, 880.0),)), 2.0)
 
 def cues(move: Move) -> tuple[Cue, ...]:
     """What a move shows and plays: the turn's edges; nothing of the microphone arming, which every Shift does; and
-    nothing of the desk's hearing the room, which its level's cue says (`level_cue`), or the reply window's."""
+    nothing of the desk's hearing the room, which its level's cue says (`level_cue`), or the answer window's."""
     match move:
         case "start":
             return (OPENED,)
