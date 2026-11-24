@@ -1429,13 +1429,13 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
         shutil.rmtree(workspace)
 
 
-# How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter.
+# How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter, and the pane's
+# shell, which outlives fritter to write its status and what the pane showed into the brain's socket dir.
 BRAIN = """
 brain = await start(SYSTEM, launch, BrainSession(launch.session), lambda _entry: None)
-print(brain.pid, _child_of(brain.pid), flush=True)
+print(brain._claude.shell, brain.pid, _child_of(brain.pid), flush=True)
 """
 @pytest.mark.outside
-@pytest.mark.quarantined("promptctl-testing-c3u.272", until="2026-11-28")
 @pytest.mark.parametrize("started", [BRAIN], ids=["brain"])
 async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path, started: str) -> None:
     # hands killed outright: no stop, no cleanup, only the kernel's hangup of the terminal it held.
