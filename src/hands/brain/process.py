@@ -987,7 +987,7 @@ def _unsaid(_heard: Heard) -> None:
     """What the brain's session would have said of its progress: the stage says the brain's turn from the wire instead."""
 
 
-class Terminal(Protocol):
+class BrainTerminal(Protocol):
     """The terminal the brain's Claude Code runs in, as the brain reads and ends it: `InTmux`, or a test's."""
 
     @property
@@ -1008,7 +1008,7 @@ class Terminal(Protocol):
         ...
 
 
-class Keyboard(Protocol):
+class BrainKeys(Protocol):
     """The brain's input, as the brain types into it: fritter's `Typist`, or a test's."""
 
     @property
@@ -1021,7 +1021,7 @@ class Keyboard(Protocol):
     def press(self, key: Keystroke) -> None: ...
 
 
-class Listening(Protocol):
+class HookListener(Protocol):
     """Where the brain's hooks are posted, as the brain's stop lets go of it: an aiohttp `AppRunner`, or a test's."""
 
     async def cleanup(self) -> None: ...
@@ -1032,12 +1032,12 @@ class Brain:
 
     def __init__(
         self,
-        claude: Terminal,
+        claude: BrainTerminal,
         fritter: int,
         shell: int,
         session: BrainSession,
-        typist: Keyboard,
-        listener: Listening,
+        typist: BrainKeys,
+        listener: HookListener,
         sockets: Path,
         config_dir: Path,
         cwd: Path,
@@ -1354,7 +1354,7 @@ class Brain:
         (docs/claude-code-behavior.md). Whether they emptied it is the next look's to say."""
         # [LAW:nothing-unseen] on the turn's own event: what the input held that the turn would have joined.
         annotate(emptied=box.rows)
-        def empty(typist: Keyboard) -> None:
+        def empty(typist: BrainKeys) -> None:
             for key in _EMPTY_ROW * box.input:
                 typist.press(key)
 
@@ -1582,7 +1582,7 @@ class Brain:
                     await asyncio.shield(self._exit)
                 annotate(waited_after_exit=await self.drained())
 
-    async def _type(self, typing: Callable[[Keyboard], None]) -> None:
+    async def _type(self, typing: Callable[[BrainKeys], None]) -> None:
         # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, which no turn's end catches: `_broke` says it.
         await asyncio.to_thread(typing, self._typist)
 

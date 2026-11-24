@@ -50,7 +50,7 @@ pytestmark = pytest.mark.usefixtures("errors")
 
 
 async def until(check: Callable[[], bool]) -> None:
-    """Until `check` holds: what a bare brain does next it does in the loop's turns, so a wait that stalls is the failure."""
+    """Until `check` holds: what a brain built of fakes does next it does in the loop's turns, so a wait that stalls is the failure."""
     await patiently(check, lambda: None)
 
 
@@ -239,10 +239,11 @@ async def test_words_filed_under_a_running_turn_are_answered_by_the_turn_that_an
     # Read on its period, as a running brain's model is: a Stop with words waiting is held until the transcript is read
     # through it, and let go unread, the order of the brain's turns is lost (`Brain._ordered`).
     brain, _ = _built(clock, reading=_read_every_hundredth)
-    await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p1", prompt=NOTICE))  # pyright: ignore[reportPrivateUsage]
-    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(2000)), 2.0))  # pyright: ignore[reportPrivateUsage]
-    # Typed while p1, a turn Claude Code opened itself for a task's result, runs: Claude Code files the words under its id.
+    # A person submits at the pane as hands pastes its turn: Claude Code runs the person's words as p1, and files the
+    # turn's words under its id.
     turn = await _typed_turn(brain, "and add 3?")
+    await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p1", prompt="count to ten"))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(2000)), 2.0))  # pyright: ignore[reportPrivateUsage]
     await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p1", prompt="and add 3?"))  # pyright: ignore[reportPrivateUsage]
     assert (turn.taken.done(), turn.taken_under, turn.queued) == (True, "p1", True)
     if delivered:
@@ -273,9 +274,10 @@ async def test_a_permission_of_a_turn_dequeued_under_a_new_id_is_asked_in_it_tho
         held.settle(Allow())
 
     path = str(transcript)
-    await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p1", prompt=NOTICE, transcript_path=path))  # pyright: ignore[reportPrivateUsage]
-    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(2000)), 2.0))  # pyright: ignore[reportPrivateUsage]
+    # A person's words, submitted at the pane as hands pastes its turn, run as p1, and the turn's are filed under it.
     await _typed_turn(brain, "and add 3?", allowed)
+    await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p1", prompt="count to ten", transcript_path=path))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(2000)), 2.0))  # pyright: ignore[reportPrivateUsage]
     await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p1", prompt="and add 3?", transcript_path=path))  # pyright: ignore[reportPrivateUsage]
     await read_through(clock, brain.posted("Stop", _hooked("Stop", "p1", last_assistant_message="Ten.", stop_hook_active=False, transcript_path=path)))  # pyright: ignore[reportPrivateUsage]
     await brain._apply(Unqueued(SessionId("b1"), Dequeued()))  # pyright: ignore[reportPrivateUsage]
@@ -350,8 +352,11 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
     brain._broke(over, RuntimeError("late"))  # pyright: ignore[reportPrivateUsage]
     held = brain._modelled()  # pyright: ignore[reportPrivateUsage]
     assert held is not None
-    await settled()
-    assert (taken(errors), held.ending, current.broken, current.answered.done(), _keys(brain).pressed) == (["the brain's own work failed: RuntimeError('late')"], None, None, False, [" first", " next"])
+    assert (taken(errors), held.ending, current.broken, current.answered.done()) == (["the brain's own work failed: RuntimeError('late')"], None, None, False)
+    # Told, the turn in flight ends as its telling says; drained, no stop was kept for the break, so no key was pressed.
+    _told(brain, "p2", ["p2"])
+    await brain.drained()
+    assert (current.answered.result(), _keys(brain).pressed) == (BrainAnswered("p2", None), [" first", " next"])
 
 
 async def test_a_permission_any_session_posts_to_the_brain_is_the_brains_refused_with_no_turn_to_ask_in_and_is_one_event_naming_that_session() -> None:
@@ -674,10 +679,12 @@ async def test_words_of_an_untaken_turn_a_turn_asked_since_was_filed_into_run_on
     asked = await _typed_turn(brain, "what's the weather")
     _took(brain, "p1", "hello")
     _took(brain, "p1", "what's the weather", queued=True)
-    # A drain would wait on the asked turn's send, which ends only with it: what a stop would press is pressed by now.
-    await settled()
     (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
-    assert (asked.running, asked.answered.done(), keys.pressed) == (late, False, [" hello", " what's the weather"])
+    assert (asked.running, asked.answered.done()) == (late, False)
+    # Told, it answers the turn asked; drained, every stop the brain kept has pressed its keys, and none was kept.
+    _told(brain, "p1", ["p1"])
+    await brain.drained()
+    assert (asked.answered.result(), keys.pressed) == (BrainAnswered("p1", None), [" hello", " what's the weather"])
 
 
 async def test_words_of_an_untaken_turn_taken_after_other_words_are_a_person_s_and_run_on() -> None:
@@ -858,7 +865,7 @@ async def test_a_brain_stop_let_go_undecided_fails_every_turn_open_and_the_turn_
 
 
 def _heard_late(brain: Brain, clock: VirtualClock) -> None:
-    """What the bare brain hears is heard a second past the bound hands has to answer a hook posted now in: its every
+    """What the brain built of fakes hears is heard a second past the bound hands has to answer a hook posted now in: its every
     hearing, however many a hook's answer waits on, at that one time."""
     heard, posted = brain._heard, clock.at  # pyright: ignore[reportPrivateUsage]
 
@@ -1453,9 +1460,8 @@ async def test_a_brain_stop_cancelled_while_it_drains_still_ends_the_terminal_an
 async def test_a_turn_in_flight_as_the_brain_stops_ends_stopped_before_its_terminal_is_ended(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     clock = VirtualClock()
-    _ = _Listener()
     (tmp_path / "sockets").mkdir()
-    brain, keys = _built(clock, recorded.append, listener=_, sockets=tmp_path / "sockets")
+    brain, keys = _built(clock, recorded.append, sockets=tmp_path / "sockets")
     asking = asyncio.ensure_future(brain.ask("hello", unasked))
     await passed(clock, SETTLE_SECONDS)
     await until(lambda: keys.pressed == [" hello"])
@@ -1516,20 +1522,34 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
     assert isinstance(clear.facts["stopped_in"], float)
 
 
+# Claude Code's exit window: a Ctrl-C on an empty input arms its exit, which a second within it takes
+# (docs/claude-code-behavior.md).
+CLAUDE_CODE_EXIT_WINDOW = 0.8
+
+
 async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last() -> None:
-    # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes: a stop straight
-    # after another waits out the window from the last Ctrl-C before it presses its own.
+    # Two turns stopped one straight after the other, each by its Escape and Ctrl-C: the second Ctrl-C waits out Claude
+    # Code's exit window from the first, so it never ends the brain.
     clock = VirtualClock()
     brain, keys = _built(clock)
     cleared: list[float] = []
     keys.before["ctrl_c"] = lambda: cleared.append(clock.now())
-    await brain._clear(None)  # pyright: ignore[reportPrivateUsage]
-    again = asyncio.ensure_future(brain._clear(None))  # pyright: ignore[reportPrivateUsage]
-    await clock.sleeping(EXIT_SECONDS)
-    assert (keys.pressed, cleared) == (["escape", "ctrl_c", "escape"], [0.0])
-    clock.advance_to(EXIT_SECONDS)
-    await again
-    assert cleared == [0.0, EXIT_SECONDS]
+    first = await _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    assert brain.interrupt(brain.answering()) is True
+    await asyncio.wait({first.answered})
+    second = await _typed_turn(brain, "and now?")
+    _took(brain, "p2", "and now?")
+    assert brain.interrupt(brain.answering()) is True
+    await until(lambda: keys.pressed.count("escape") == 2)
+    # The second stop waits on the brain's clock: until the clock is moved, its Ctrl-C is not pressed.
+    await clock.sleeping(cleared[0] + EXIT_SECONDS)
+    assert len(cleared) == 1
+    clock.advance_to(cleared[0] + EXIT_SECONDS)
+    await asyncio.wait({second.answered})
+    await brain.drained()
+    assert (first.answered.result(), second.answered.result()) == (BrainStopped(), BrainStopped())
+    assert cleared[1] - cleared[0] > CLAUDE_CODE_EXIT_WINDOW
 
 
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(errors: list[str]) -> None:
