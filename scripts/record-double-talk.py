@@ -5,7 +5,7 @@ over it, over a reply in a second of its voices, and alone after it; and hands a
 of the speaker, as at the desk (`hands_<what>`), and where a person speaks over hands, out of no speaker, as in headphones
 (`hands_no_echo_<what>`).
 
-hands' sentences are made by hands' own TTS, each in the voice its script gives, and played out of the default speaker, the
+hands' sentences are made by hands' own TTS service (`hands.voice.voices.hands_tts`), each in the voice its script gives, and played out of the default speaker, the
 canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says the person's lines. hands'
 voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The default
 microphone is heard through the canceller as the desk hears it. The .flac holds, at RATE, the audio as heard after the
@@ -22,12 +22,13 @@ hands' nor the person's, where hands is out of the speaker.
     uv run python scripts/record-double-talk.py        # lists the takes
 """
 
+import asyncio
 import json
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,14 +36,25 @@ from pathlib import Path
 import numpy as np
 import pyaudio
 import soundfile
+import soxr
+from pipecat.frames.frames import Frame, TTSAudioRawFrame, TTSUpdateSettingsFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import WorkerRunner
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.pocket_tts.tts import PocketTTSSettings
 
+from hands.clock import SYSTEM
+from hands.core.playback import hands_says
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import RATE, SLOT, Playhead, Synthesis
+from hands.voice.clips import RATE, SLOT, Playhead, Samples, Synthesis, decoded
 from hands.voice.echo import EchoCanceller
+from hands.voice.player import Unsaid, line_frame
 from hands.voice.recorder import track
+from hands.voice.synthesis import Made, SpeakingIn
 from hands.voice.voicechoice import DEFAULT, parse_voice
-from hands.voice.voices import pocket, source
+from hands.voice.voices import hands_tts, source
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
@@ -154,7 +166,64 @@ TAKES = {
     "hands_then_a_person_alone": (ALONE, 1.0),
 }
 LEAD, TAIL = 1.0, 2.0
+SYNTHESIS_TIMEOUT = 120.0
+PERSON = "alba"
 BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
+
+
+class Speech(FrameProcessor):
+    """What hands' TTS made, one synthesis at a time, read as the speaker reads it: the audio between a synthesis's
+    `SpeakingIn` and its `Made`, or the failure it said, or that its line was said as nothing."""
+
+    def __init__(self) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self._audio, self._rate = bytearray(), 0
+        self._made: asyncio.Queue[Samples | RuntimeError] = asyncio.Queue()
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        match frame:
+            case SpeakingIn():
+                self._audio.clear()
+            case TTSAudioRawFrame(audio=audio, sample_rate=rate):
+                self._audio.extend(audio)
+                self._rate = rate
+            case Made(synthesis=synthesis, failure=failure):
+                made = failure is None and len(self._audio) > 0
+                self._made.put_nowait(soxr.resample(decoded(bytes(self._audio)), self._rate, RATE).astype(np.float32) if made else RuntimeError(f"hands' TTS made nothing of {synthesis.text!r} in {synthesis.voice}: {failure}"))
+            case Unsaid(line=line):
+                self._made.put_nowait(RuntimeError(f"hands' TTS said {line.text!r} as nothing"))
+            case _:
+                pass
+        await self.push_frame(frame, direction)
+
+    async def heard(self) -> Samples:
+        """The next synthesis, at RATE, or raises what kept it from being made."""
+        match await asyncio.wait_for(self._made.get(), SYNTHESIS_TIMEOUT):
+            case RuntimeError() as failure:
+                raise failure
+            case made:
+                return made
+
+
+async def synthesized(sayings: Sequence[tuple[str, str]]) -> list[Samples]:
+    """Each (voice, text) said by hands' own TTS service, as the speaker is handed it: the service the pipeline builds, a change
+    of voice and then a line sent through it in order, its text filtered as hands' is. Each is audio at RATE."""
+    speech = Speech()
+    worker = PipelineWorker(Pipeline([hands_tts(SYSTEM, DEFAULT), speech]), idle_timeout_secs=None)
+    runner = WorkerRunner(handle_sigint=False)
+    await runner.add_workers(worker)
+    running = asyncio.create_task(runner.run())
+    made: list[Samples] = []
+    try:
+        for voice, text in sayings:
+            await worker.queue_frame(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=source(parse_voice(voice)))))
+            await worker.queue_frame(line_frame(hands_says(text), append_to_context=False))
+            made.append(await speech.heard())
+    finally:
+        await worker.cancel()
+        await running
+    return made
 
 
 def osascript(line: str) -> str:
@@ -178,10 +247,10 @@ def speaker_up(was_muted: bool) -> Generator[None]:
 
 def main(fixture: Path, script: Script, gain: float) -> None:
     was_muted = speaker_muted()  # before the synthesis, so an output with no mute fails at once
-    say = pocket()
-    made = [say(source(parse_voice(reply.voice)), reply.text) for reply in script.hands]
+    spoken = asyncio.run(synthesized([*((reply.voice, reply.text) for reply in script.hands), *((PERSON, line.text) for line in script.person)]))
+    made = spoken[: len(script.hands)]
     onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + reply.pause for audio, reply in zip(made[:-1], script.hands[1:], strict=True))]))
-    lines = [(line, say(source(parse_voice("alba")), line.text)) for line in script.person]
+    lines = list(zip(script.person, spoken[len(script.hands) :], strict=True))
 
     def begins(line: Said, audio: np.ndarray) -> float:
         match line.placed:

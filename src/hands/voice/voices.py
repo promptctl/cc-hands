@@ -29,6 +29,7 @@ from hands.sessions.wide import begun
 from hands.voice.echo import seconds
 from hands.voice.library import Found, Library, address
 from hands.voice.player import LineFrame, LineText, Lines, Unsaid, line_frame
+from hands.voice.spoken import SpokenForm
 from hands.voice.synthesis import Made, SpeakingIn, Synthesis
 from hands.voice.voicechoice import VOICES, Chosen, LibraryVoice, SampleLine, Saved, keep, spoken
 
@@ -246,3 +247,15 @@ class SaidInTTS(PocketTTSService):
             yield frame
         # [LAW:nothing-unseen] how long the TTS took to make it, beside how long it plays: its real-time factor.
         yield Made(synthesis, self._clock.now() - synthesis.begun.began, made, failure)
+
+
+def hands_tts(clock: Clock, voice: Chosen) -> SaidInTTS:
+    """hands' TTS service in `voice`, as the pipeline speaks with it and as the script that records takes of hands' speech
+    makes them: one construction, so a take is made on the path hands speaks on.
+
+    [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a TTS service's
+    filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's own reply alike, so this is the
+    one place all of them meet before they are heard. It also decides the reply the audit log records, which is built from
+    what a filter returned: what the user heard, never what was sent to the speaker. See voice/spoken.py, which also
+    records what it costs."""
+    return SaidInTTS(clock, settings=SaidInTTS.Settings(voice=source(voice), language=LANGUAGE), text_filters=[SpokenForm()])
