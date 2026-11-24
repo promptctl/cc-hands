@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from hands.sessions.heartbeat import Degradation, Down, NeverRan, Refused, Status, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
+from hands.sessions.heartbeat import Degradation, Down, degradations, NeverRan, Refused, Status, Stopped, Unreadable, Unresponsive, Up, Verdict, describe
 
 # Stopped and never ran are one light: in both, nothing is running and nothing went wrong on the way to that.
 # Up is one light, degraded or not: whether it warns is whether it has any degradation.
@@ -39,15 +39,6 @@ def title(verdict: Verdict, light: Light) -> str:
             return LISTENING
         case _:
             return TITLES[light]
-
-
-def degradations(verdict: Verdict) -> tuple[Degradation, ...]:
-    """What is wrong with a daemon that is up; one that is not up says nothing of itself that holds now."""
-    match verdict:
-        case Up(status=status):
-            return status.degraded
-        case _:
-            return ()
 
 
 def light(verdict: Verdict) -> Light:

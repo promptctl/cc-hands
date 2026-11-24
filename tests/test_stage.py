@@ -73,7 +73,7 @@ from hands.core.wire import (
     UsageLimitReached,
     unstreamed,
 )
-from hands.core.stopfailure import StopFailed
+from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
@@ -1507,10 +1507,15 @@ def unreached(exchange: str, clock: VirtualClock) -> Exchanged:
         # A request whose answer never came, its handler cancelled before the head: an earlier answer is not its reason.
         ([None, "unanswered"], TIMED_OUT := StopFailed("server_error", "API Error: Request timed out."), TIMED_OUT),
         # Failed in Claude Code before any request, as the audit log saw an expired login on 2026-10-24: only the StopFailure says why.
-        ([], EXPIRED := StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile"), EXPIRED),
+        ([], EXPIRED := LoginExpired(StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile")), EXPIRED),
+        # Refused with a 401, and the refresh after it refused too: the expired login is why, over the 401 the wire named.
+        ([401], REFUSED := LoginExpired(StopFailed("authentication_failed", "Login expired · Please run /login")), REFUSED),
+        # Any other cause the wire named is the turn's, whatever Claude Code ended it saying.
+        ([429], REFUSED, UsageLimitReached(RESETS)),
+        ([529], REFUSED, ModelFailed(ErrorCategory.SERVER)),
     ],
 )
-async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None | Literal["unanswered"]], failure: StopFailed, fact: ModelFact) -> None:
+async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None | Literal["unanswered"]], failure: StopFailed | LoginExpired, fact: ModelFact) -> None:
     await rig.say("hello")
     for status in answers:
         exchange, _ = rig.request()

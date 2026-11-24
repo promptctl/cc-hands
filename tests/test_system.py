@@ -24,6 +24,8 @@ from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
 from hands.voice.player import LineFrame, Lines, Player
+from hands.core.spoken import spoken
+from hands.core.stopfailure import LoginExpired
 from hands.voice.system import (
     MicrophoneOff,
     NoMicrophone,
@@ -86,7 +88,9 @@ STAND_INS = Devices(input=Instead("MacBook Pro Microphone", "AirPods"), output=I
         (AudioMoved(Devices(input="MacBook Pro Microphone", output=Off())), "Audio moved: listening on MacBook Pro Microphone, the speaker is off in config.toml."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
-        (StopFailed("invalid_request", "Login expired · Run /login to sign in again"), "The brain failed: Login expired · Run /login to sign in again."),
+        # In hands' words and with hands' fix, never Claude Code's, which names its own /login.
+        (LoginExpired(StopFailed("invalid_request", "Login expired · Run /login to sign in again")), "The brain's login has expired, so every turn fails: `hands login`, then `hands restart`."),
+        (StopFailed("invalid_request", "Prompt is too long"), "The brain failed: Prompt is too long."),
         (StopFailed("server_error", "API Error: Request timed out."), "The brain failed: API Error: Request timed out."),
         (StopFailed("authentication_failed", None), "The brain failed: authentication failed."),
         (StopFailed(None, None), "The brain failed, and Claude Code did not say why."),
@@ -251,11 +255,27 @@ async def test_a_brain_failing_one_way_through_one_burst_is_said_once_however_it
     tts, _, channel = speaking(clock)
     await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_1"))
     await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_2"))
-    await channel.say(StopFailed("invalid_request", "Login expired · Run /login to sign in again"))
+    await channel.say(StopFailed("invalid_request", "Prompt is too long"))
     assert said(tts) == [
         "The brain failed: API Error: Connection lost mid-response. req_1.",
-        "The brain failed: Login expired · Run /login to sign in again.",
+        "The brain failed: Prompt is too long.",
     ]
+
+
+async def test_an_expired_login_is_said_once_through_its_burst_in_either_wording_and_again_once_it_has_passed() -> None:
+    """Every turn fails while the login is expired, each saying so: the burst is the expiry, whichever wording Claude
+    Code ended a turn with."""
+    clock = VirtualClock()
+    tts, _, channel = speaking(clock)
+    for stop in (StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile"), StopFailed("authentication_failed", "Login expired · Please run /login")) * 3:
+        await channel.say(LoginExpired(stop))
+        clock.advance(0.43)
+    assert said(tts) == ["The brain's login has expired, so every turn fails: `hands login`, then `hands restart`."]
+    clock.advance(THROTTLE_SECONDS)
+    await channel.say(LoginExpired(StopFailed("authentication_failed", "Login expired · Please run /login")))
+    assert said(tts) == ["The brain's login has expired, so every turn fails: `hands login`, then `hands restart`."] * 2
+    # Heard as the code spans' words, naming hands' commands and none of Claude Code's.
+    assert spoken(str(said(tts)[0])).text == "The brain's login has expired, so every turn fails: hands login, then hands restart."
 
 
 async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_passed() -> None:

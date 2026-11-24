@@ -57,7 +57,7 @@ from hands.daemon.starting import CannotStart
 from hands.sessions.proxy import Wire
 from hands.sessions.summaries import Summaries
 from hands.sessions.typing import Typist
-from hands.sessions import wrapper
+from hands.sessions import heartbeat, wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
 from hands.voice.modelswitch import Switches
@@ -1798,6 +1798,22 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
     assert asked == [("Sum it up.\n\nthe tests ran", Deadline(0.1))]
     with pytest.raises(SummaryFailed, match="no answer by its deadline"):
         await summarise("fail")
+
+
+@pytest.mark.outside
+async def test_the_run_says_the_brains_login_expired_in_every_beat_once_a_turn_says_so_until_a_later_one_says_otherwise(tmp_path: Path, fake_claude: Path) -> None:
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
+    refocus = Refocus(new_sessions(clock=SYSTEM, record=list[Entry]().append), Home(tmp_path), list[Entry]().append)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
+    async with mind(SYSTEM, claude, [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", list[Entry]().append, os.environ, never_barged_in, Attention) as minded:
+        assert isinstance(minded.llm, BrainStage)
+        brain = minded.llm._brain  # pyright: ignore[reportPrivateUsage]
+        degraded = [minded.degraded()]
+        await brain.ask("fail expired", unasked)
+        degraded.append(minded.degraded())
+        await brain.ask("and now?", unasked)
+        degraded.append(minded.degraded())
+    assert degraded == [(), (heartbeat.LOGIN_EXPIRED,), ()]
 
 
 @pytest.mark.outside

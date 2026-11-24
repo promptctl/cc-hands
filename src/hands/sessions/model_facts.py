@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from pipecat.utils.errors import ErrorCategory
 
-from hands.core.stopfailure import StopFailed
+from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.core.wire import UsageLimitReached
 
 
@@ -36,7 +36,7 @@ class ModelActedUntold:
     went. Whether what it did worked is the model's to know, never this fact's."""
 
 
-ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | StopFailed
+ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | LoginExpired | StopFailed
 
 
 class ModelFault(Exception):

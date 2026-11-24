@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from hands.clock import SYSTEM, Clock
-from hands.core.effects import Fritter, Summarise, Text, Type
+from hands.core.effects import Fritter, Summarise, Text, Type, ToldByStop
 from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
 from hands.daemon.cli import main
@@ -75,7 +75,7 @@ def test_a_clip_whisper_took_no_words_from_is_never_heard_and_says_so() -> None:
 
 
 def utterance(session: SessionId, fate: str, outcome: Outcome = "ok", error: str | None = None) -> Line:
-    heard = Summarise(session, PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c"), "falcon.txt", ids=frozenset({PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c")}))
+    heard = Summarise(session, PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c"), ToldByStop("falcon.txt"), ids=frozenset({PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c")}))
     return event("utterance", outcome=outcome, error=error, session=session, heard=heard, fate=fate)
 
 

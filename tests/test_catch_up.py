@@ -8,7 +8,7 @@ from typing import cast
 from hands.clock import Clock
 from hands.virtualclock import VirtualClock
 from hands.core.summaries import cut
-from hands.core.effects import Effect, SessionGone, Summarise, Tell
+from hands.core.effects import Effect, SessionGone, Summarise, Tell, ToldByRecord, ToldByStop
 from hands.core.occurrences import AutoDenied, Cleared, SubagentStopped
 from hands.core.events import Joined, Tick
 from hands.core.session import Membership, PromptId, SessionId
@@ -35,7 +35,7 @@ def applied(effect: Effect, failed: str | None = None) -> WideEvent:
 
 
 def told(session: str, prompt: str, closing: str | None) -> WideEvent:
-    return applied(Summarise(SessionId(session), PromptId(prompt), closing, ids=frozenset({PromptId(prompt)})))
+    return applied(Summarise(SessionId(session), PromptId(prompt), ToldByStop(closing), ids=frozenset({PromptId(prompt)})))
 
 
 def gone(session: str) -> WideEvent:
@@ -76,7 +76,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
             (LEFT + timedelta(minutes=2), told("parser", "p1", "Parser fixed, tests pass.")),
             (LEFT + timedelta(minutes=3), Announced("hands could not reach the model.", "speech")),
             # A turn whose telling could not be begun still finished.
-            (LEFT + timedelta(minutes=4), applied(Summarise(SessionId("docs"), PromptId("d2"), None, ids=frozenset({PromptId("d2")})), "the model is down")),
+            (LEFT + timedelta(minutes=4), applied(Summarise(SessionId("docs"), PromptId("d2"), ToldByStop(None), ids=frozenset({PromptId("d2")})), "the model is down")),
             (LEFT + timedelta(minutes=5), Announced("hands could not reach the model.", "speech")),
             (LEFT + timedelta(minutes=6), told("deploy", "x1", "Deployed.")),
             (LEFT + timedelta(minutes=8), gone("scratch")),
@@ -146,6 +146,33 @@ async def test_minutes_reaches_back_past_what_the_user_said(tmp_path: Path) -> N
         **NOTHING,
         "since_minutes_ago": 60,
         "finished": [{"session": "docs", "turns": 1, "closing": "Within the hour."}],
+    }
+
+
+async def test_a_turn_only_the_transcripts_record_told_is_counted_with_no_words_of_its_own(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    interrupted = applied(Summarise(SessionId("docs"), PromptId("d2"), ToldByRecord(), ids=frozenset({PromptId("d2")})))
+    written(home, [(LEFT, Transcribed("back soon")), (LEFT, told("docs", "d1", "Fixed the links.")), (LEFT, interrupted), (BACK, Transcribed("what did I miss"))])
+
+    assert await catch_up(await sessions_of(VirtualClock(epoch=BACK), "docs"), home) == {
+        **NOTHING,
+        "since_minutes_ago": 10,
+        "finished": [{"session": "docs", "turns": 2, "closing": "Fixed the links."}],
+    }
+
+
+async def test_a_turn_a_hands_from_before_endings_wrote_is_read_with_its_words(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    written(home, [(LEFT, Transcribed("back soon"))])
+    with (home.audit / "00000000000000000000.jsonl").open("a") as log:
+        # The shape such a hands wrote: the reply on the Summarise itself.
+        log.write(json.dumps({"at": LEFT.isoformat(), "type": "WideEvent", "event": "applied", "facts": {"effects": [{"outcome": "ok", "effect": {"type": "Summarise", "session": "docs", "closing": "Deployed."}}]}}) + "\n")
+    written(home, [(BACK, Transcribed("what did I miss"))])
+
+    assert await catch_up(await sessions_of(VirtualClock(epoch=BACK), "docs"), home) == {
+        **NOTHING,
+        "since_minutes_ago": 10,
+        "finished": [{"session": "docs", "turns": 1, "closing": "Deployed."}],
     }
 
 

@@ -198,6 +198,15 @@ class Refocused:
 
 
 @dataclass(frozen=True)
+class LoginReported:
+    """What the brain reports of its login changed as the turn of Claude Code's that went by `turn` ended: expired, with
+    what its StopFailure said, or no longer reported expired (None)."""
+
+    turn: tuple[str, ...]
+    expired: str | None
+
+
+@dataclass(frozen=True)
 class SettingsEdited:
     """The home's config.toml changed while hands ran: the run restarts on it, or, where it was `refused`, says why
     and runs on the settings it started with."""
@@ -258,6 +267,7 @@ Entry = (
     Typing
     | TypingFailed
     | SettingsEdited
+    | LoginReported
     | CopiesLost
     | Exchanged
     | Transcribed
@@ -300,6 +310,8 @@ def level(entry: Entry) -> Level:
             return "error" if outcome == "failed" else "info"
         case Primed(failed=failed) | SettingsEdited(refused=failed):
             return "info" if failed is None else "error"
+        case LoginReported(expired=expired):
+            return "info" if expired is None else "warning"
         case (
             Typing() | Exported() | CopiesLost()
             | Transcribed() | ClipHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()

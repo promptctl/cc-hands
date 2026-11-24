@@ -29,7 +29,7 @@ NOW = datetime(2026, 9, 14, 12, 0, 0, tzinfo=UTC)
 BEAT = timedelta(seconds=2)
 DEAF = (heartbeat.NO_MICROPHONE,)
 # A second way to be degraded, for as long as the daemon itself has only the one.
-SLOW = heartbeat.Degradation("is slow", "is slow, as something made it so")
+SLOW = heartbeat.Degradation(None, "is slow", "is slow, as something made it so")
 
 
 def beat(**changes: object) -> heartbeat.Status:
@@ -89,10 +89,17 @@ def test_a_heartbeat_from_before_runs_said_where_they_run_from_reads_as_not_sayi
     assert heartbeat.read(tmp_path / "status.json") == beat(runs_from=None)
 
 
-def test_degradations_read_back_in_the_order_they_were_written(tmp_path: Path) -> None:
-    written = beat(degraded=(SLOW, heartbeat.NO_MICROPHONE))
+def test_degradations_read_back_in_the_order_they_were_written_each_with_its_kind(tmp_path: Path) -> None:
+    written = beat(degraded=(SLOW, heartbeat.NO_MICROPHONE, heartbeat.LOGIN_EXPIRED))
     heartbeat.write(tmp_path / "status.json", written)
     assert heartbeat.read(tmp_path / "status.json") == written
+
+
+@pytest.mark.parametrize("named", [{}, {"kind": "too-warm"}], ids=["a hands from before kinds", "a newer hands' kind"])
+def test_a_degradation_of_no_kind_this_hands_knows_is_kept_with_its_words_and_no_kind(tmp_path: Path, named: dict[str, str]) -> None:
+    (tmp_path / "status.json").write_text(json.dumps({**json.loads(heartbeat.encode(beat())), "degraded": [{**named, "brief": "is warm", "said": "is warm, as its fan stopped"}]}))
+    read = heartbeat.read(tmp_path / "status.json")
+    assert read is not None and read.degraded == (heartbeat.Degradation(None, "is warm", "is warm, as its fan stopped"),)
 
 
 @pytest.mark.parametrize("degraded", [[{"brief": "", "said": "is slow"}], [{"brief": "is slow"}], ["is slow"]])
@@ -401,7 +408,7 @@ def test_each_light_is_the_menu_bar_title_in_tmux_coloured_by_its_urgency(tmp_pa
 def test_the_tmux_segment_shows_a_turn_and_a_degradation_as_the_menu_bar_does_and_a_hash_as_itself() -> None:
     assert indicator.segment(heartbeat.Up(beat(listening=True))) == "#[fg=green]✋ 🎙#[default]"
     assert indicator.segment(heartbeat.Up(beat(degraded=DEAF))) == "#[fg=yellow]⚠︎ hands can't hear#[default]"
-    hashed = heartbeat.Degradation("lost #[fg=green]", "lost a hash")
+    hashed = heartbeat.Degradation(None, "lost #[fg=green]", "lost a hash")
     assert indicator.segment(heartbeat.Up(beat(degraded=(hashed,)))) == "#[fg=yellow]⚠︎ hands lost ##[fg=green]#[default]"
 
 
@@ -454,7 +461,7 @@ def test_a_degradation_held_back_by_the_quiet_window_is_dropped_if_it_clears_bef
 
 
 def test_three_degradations_are_said_as_a_list() -> None:
-    third = heartbeat.Degradation("is odd", "is odd")
+    third = heartbeat.Degradation(None, "is odd", "is odd")
     text = indicator.show(None, heartbeat.Up(beat(degraded=(heartbeat.NO_MICROPHONE, SLOW, third))), NOW).text
     assert text.startswith("hands is up but cannot hear, as there is no microphone, is slow, as something made it so, and is odd: pid")
 

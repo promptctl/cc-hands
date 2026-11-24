@@ -11,9 +11,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from hands.clock import Clock
+from hands.core.stopfailure import LOGIN_EXPIRED_SAID
 from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import parse_pid, process_starts, still_running
@@ -36,17 +37,25 @@ MISSED_BEATS = 3
 PERIODS_MS = range(1, 3_600_001)
 
 
+# Every way hands writes that it is running degraded.
+DegradationKind = Literal["no-microphone", "export", "login-expired"]
+KINDS: tuple[DegradationKind, ...] = get_args(DegradationKind)
+
+
 @dataclass(frozen=True)
 class Degradation:
-    """One way an up daemon is running degraded, carrying the words it is said in."""
+    """One way an up daemon is running degraded: what it is, and the words it is said in."""
 
-    # [LAW:one-type-per-behavior] every degradation is only ever said, so each is a value of this type, and the heartbeat
-    # carries its words: a new one is a new value, and no reader of the file learns of it.
+    # [LAW:one-type-per-behavior] each degradation is a value of this type, and the heartbeat carries its words: a reader
+    # says a new one as written, and learns of it no other way. The kind is for a reader that acts on one, as `hands
+    # check` acts on an expired login; None for one whose kind this reader does not know, or that names none.
+    kind: DegradationKind | None
     brief: str  # a few words for the menu bar, after "hands"
     said: str  # the whole of it, after "hands is up but"
 
 
-NO_MICROPHONE = Degradation("can't hear", "cannot hear, as there is no microphone")
+NO_MICROPHONE = Degradation("no-microphone", "can't hear", "cannot hear, as there is no microphone")
+LOGIN_EXPIRED = Degradation("login-expired", "brain's login expired", LOGIN_EXPIRED_SAID)
 
 
 @dataclass(frozen=True)
@@ -76,7 +85,7 @@ def encode(status: Status) -> str:
             "last_audio_out": None if status.last_audio_out is None else status.last_audio_out.isoformat(),
             "live_sessions": status.live_sessions,
             "listening": status.listening,
-            "degraded": [{"brief": each.brief, "said": each.said} for each in status.degraded],
+            "degraded": [{"kind": each.kind, "brief": each.brief, "said": each.said} for each in status.degraded],
             "runs_from": None if status.runs_from is None else str(status.runs_from),
         },
         indent=2,
@@ -186,6 +195,26 @@ class Unreadable:
 Verdict = NeverRan | Up | Unresponsive | Down | Stopped | Refused | Unreadable
 
 
+def degradations(verdict: Verdict) -> tuple[Degradation, ...]:
+    """What is wrong with a daemon that is up, as the menu bar shows it; one that is not up says nothing of itself that
+    holds now."""
+    match verdict:
+        case Up(status=status):
+            return status.degraded
+        case _:
+            return ()
+
+
+def last_said(verdict: Verdict) -> tuple[Degradation, ...]:
+    """What a daemon that still runs last said degraded it, up or not responding: what is true of it until it restarts,
+    as an expired login is (`degradations` is what holds now)."""
+    match verdict:
+        case Up(status=status) | Unresponsive(status=status):
+            return status.degraded
+        case _:
+            return ()
+
+
 def look(path: Path, now: datetime) -> Verdict:
     """What the heartbeat file says of the daemon now: the one way anything outside the daemon learns whether it is up."""
     # [LAW:single-enforcer] `hands status`, the crash check at start, the menu-bar indicator, and the shim all judge through here.
@@ -293,7 +322,9 @@ def _degradations(fields: Payload) -> tuple[Degradation, ...]:
 
 def _degradation(item: object) -> Degradation:
     fields = Payload.of(item, "a degradation")
-    degradation = Degradation(fields.text("brief"), fields.text("said"))
+    kind = fields.optional_text("kind")
+    # A kind this reader does not know is a newer hands', whose words it still says: as one of no kind, nothing it acts on.
+    degradation = Degradation(kind if kind in KINDS else None, fields.text("brief"), fields.text("said"))
     if not (degradation.brief and degradation.said):
         raise Rejected(f"a degradation says what is wrong, in brief and in full: {degradation}")
     return degradation

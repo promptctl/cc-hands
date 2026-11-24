@@ -41,6 +41,7 @@ from hands.sessions.home import Home
 from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
+from hands.core.stopfailure import LoginExpired
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Received, Sent
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
@@ -201,6 +202,9 @@ class Mind:
     watches: Sequence[Watch]
     # A summariser, given what it is for, its instruction, and how long it has.
     summariser: Callable[[AsideKind, str, float], Summariser]
+    # [LAW:dataflow-not-control-flow] how the brain degrades hands now, as the heartbeat says it: its login, where its
+    # turns last said it expired (`Brain.login`).
+    degraded: Callable[[], tuple[heartbeat.Degradation, ...]]
 
 
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
@@ -245,12 +249,21 @@ async def mind(
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                 # A summary is as long as its reply makes it: only its time is the summary's own.
                 # The brain's stage notes each turn of the user's itself, as it types it.
-                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout))
+                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login))
         finally:
             await asides.close()
             await brain.stop()
     finally:
         await server.close()
+
+
+def _login(reported: LoginExpired | None) -> tuple[heartbeat.Degradation, ...]:
+    """What the heartbeat says of the brain's login: that it expired, where its turns last said so."""
+    match reported:
+        case LoginExpired():
+            return (heartbeat.LOGIN_EXPIRED,)
+        case None:
+            return ()
 
 
 async def outlived(brain: Brain) -> None:
@@ -341,10 +354,12 @@ async def run(
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
-                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, home.clips, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
+                # [LAW:one-source-of-truth] one source of what degrades hands, for every beat from here on: the brain's own beside the rest.
+                degrading: Callable[[], tuple[heartbeat.Degradation, ...]] = lambda: (*minded.degraded(), *degraded())
+                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, home.clips, record), "the voice load"), heart, sessions.live_count, degrading, stop, clock)
                 if voice is not None:
                     summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
-                    await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, driving, config.wake, run_start, environment, gallery)
+                    await converse(clock, voice, home, sessions, tails, reader, heart, degrading, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, driving, config.wake, run_start, environment, gallery)
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 

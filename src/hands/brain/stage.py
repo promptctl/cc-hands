@@ -78,7 +78,7 @@ from hands.core.wire import (
     tool_answers,
     tool_input,
 )
-from hands.core.stopfailure import StopFailed
+from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, child, continuing, count, fail, here, root, unit, within
@@ -1135,7 +1135,7 @@ class BrainStage(FrameProcessor):
                 turn.working.set()
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if turn.voicing == (exchange, index):
                 turn.close()
-            # [LAW:one-source-of-truth] why a turn failed is the wire's wherever the wire names it: the head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
+            # [LAW:one-source-of-truth] why a turn failed is the wire's wherever the wire names it (`_why`): the head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
             # told before its 502. Its own requests are held final, so Claude Code asks once; a 401 it asks again after
             # refreshing its login: the latest request's is the turn's. One that failed in Claude Code before any answer came is the
             # StopFailure's to name (`_failed`).
@@ -1145,6 +1145,17 @@ class BrainStage(FrameProcessor):
                 turn.failure = ModelUnreachable()
             case _:
                 pass
+
+
+def _why(wire: ModelUnreachable | UsageLimitReached | ModelFailed | None, ended: StopFailed | LoginExpired) -> ModelFact:
+    """[LAW:single-enforcer] why a turn Claude Code ended failed: the cause the wire named, wherever it named one, but for
+    a refused authentication its StopFailure says was an expired login, the 401 a refresh that failed leaves on the wire.
+    The request was refused, and the expired login is why it could not be recovered, which carries hands' fix."""
+    match (wire, ended):
+        case (ModelFailed(category=ErrorCategory.AUTHENTICATION), LoginExpired()) | (None, _):
+            return ended
+        case (cause, _):
+            return cause
 
 
 def _cause(status: int) -> ModelFailed | None:
@@ -1180,8 +1191,8 @@ def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Voiced]) -> _Fai
     match ended:
         case BrainStopped():
             return None
-        case BrainAnswered(error=StopFailed() as stop):
-            return _Failure(f"the brain's turn ended in error: {stop}", turn.failure or stop, _broken_off("".join(turn.spoken)))
+        case BrainAnswered(error=StopFailed() | LoginExpired() as error):
+            return _Failure(f"the brain's turn ended in error: {error}", _why(turn.failure, error), _broken_off("".join(turn.spoken)))
         case BrainAnswered():
             pass
     if turn.empty():

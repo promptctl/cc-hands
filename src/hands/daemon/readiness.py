@@ -24,6 +24,7 @@ from typing import get_args
 from hands.brain import pinned
 from hands.brain.configdir import Unstartable
 from hands.core.effects import Fritter
+from hands.core.stopfailure import LOGIN_EXPIRY, LOGIN_RENEWAL
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership, Runnable
@@ -161,8 +162,9 @@ def installed(children: Children, path: str) -> Finding:
     return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs its `hands-shim` for the plugin in every session")
 
 
-def configured(children: Children, home: Home, pin: pinned.Pin, environment: Mapping[str, str]) -> Finding:
-    """Whether hands would start on its settings and its home's files, its brain on `pin`, and the brain has the login it reaches its model with."""
+def configured(children: Children, home: Home, pin: pinned.Pin, environment: Mapping[str, str], running: heartbeat.Verdict) -> Finding:
+    """Whether hands would start on its settings and its home's files, its brain on `pin`, and the brain has the login it
+    reaches its model with: as the brain of `running`, hands' heartbeat now, last said of it, where it said it expired."""
     try:
         config = load(home).config
     except Rejected as error:
@@ -180,13 +182,22 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
     if brain is None:
         # The run that asks would load what the brain's own settings keep out.
         return unstartable("; ".join(refusals))
-    match _reached(children, config.llm, home, checked.environment, brain):
+    match _login(children, config.llm, home, checked.environment, brain, running):
         case reached if not refusals:
             return reached
         case Missing(fix=fix):
             return unstartable("; ".join((*refusals, fix)))
         case Ready():
             return unstartable("; ".join(refusals))
+
+
+def _login(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable, running: heartbeat.Verdict) -> Ready | Missing:
+    """The brain's login: expired, where the brain of hands running now last said so, which no Claude Code is started to learn;
+    else as its Claude Code says it. Its `claude auth status` says only that it holds a token, not that the token works,
+    and a brain that has said nothing of its login has shown nothing of it."""
+    if any(each.kind == heartbeat.LOGIN_EXPIRED.kind for each in heartbeat.last_said(running)):
+        return Missing(heartbeat.LOGIN_EXPIRED.brief, LOGIN_EXPIRY, LOGIN_RENEWAL)
+    return _reached(children, llm, home, environment, brain)
 
 
 def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Ready | Missing:
@@ -213,9 +224,8 @@ def unstartable(reason: str) -> Missing:
     return Missing("hands cannot start here", "hands cannot start here", reason)
 
 
-def daemon(home: Home, now: datetime) -> Finding:
-    """Whether hands is running, from its heartbeat."""
-    verdict = heartbeat.look(home.status, now)
+def daemon(verdict: heartbeat.Verdict, now: datetime) -> Finding:
+    """Whether hands is running, from what its heartbeat says of it `now`."""
     said = heartbeat.describe(verdict, now)
     start = "`hands run`, in a terminal that has the Input Monitoring grant"
     match verdict:
