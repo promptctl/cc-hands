@@ -1008,8 +1008,8 @@ class BrainTerminal(Protocol):
         ...
 
 
-class BrainKeys(Protocol):
-    """The brain's input, as the brain types into it: fritter's `Typist`, or a test's."""
+class BrainTypist(Protocol):
+    """What types into the brain's Claude Code: fritter's `Typist`, or a test's."""
 
     @property
     def pid(self) -> int:
@@ -1036,7 +1036,7 @@ class Brain:
         fritter: int,
         shell: int,
         session: BrainSession,
-        typist: BrainKeys,
+        typist: BrainTypist,
         listener: HookListener,
         sockets: Path,
         config_dir: Path,
@@ -1354,7 +1354,7 @@ class Brain:
         (docs/claude-code-behavior.md). Whether they emptied it is the next look's to say."""
         # [LAW:nothing-unseen] on the turn's own event: what the input held that the turn would have joined.
         annotate(emptied=box.rows)
-        def empty(typist: BrainKeys) -> None:
+        def empty(typist: BrainTypist) -> None:
             for key in _EMPTY_ROW * box.input:
                 typist.press(key)
 
@@ -1582,7 +1582,7 @@ class Brain:
                     await asyncio.shield(self._exit)
                 annotate(waited_after_exit=await self.drained())
 
-    async def _type(self, typing: Callable[[BrainKeys], None]) -> None:
+    async def _type(self, typing: Callable[[BrainTypist], None]) -> None:
         # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, which no turn's end catches: `_broke` says it.
         await asyncio.to_thread(typing, self._typist)
 

@@ -134,7 +134,7 @@ def _built(
     launched: Span | None = None,
     reading: Callable[[Reader], Awaitable[None]] = _unread,
 ) -> tuple[Brain, "_Keys"]:
-    """A brain built as `start` builds it, of fakes: its terminal and keyboard the test's, fritter 4241 wrapping Claude
+    """A brain built as `start` builds it, of fakes: its terminal and typist the test's, fritter 4241 wrapping Claude
     Code 4242 in session b1, working in /brain/cwd; read as `reading` reads it, on `clock`, which only the test moves."""
     keys = _Keys()
     brain = Brain(keys, 4241, 4240, BrainSession(SessionId("b1")), keys, _Listener() if listener is None else listener, sockets, config_dir, Path("/brain/cwd"), record, _launch(clock) if launched is None else launched, clock, reading)
@@ -489,7 +489,7 @@ async def _interrupted(brain: Brain, prompt: str) -> None:
 
 
 async def _held_at(count: int, recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, "_Keys", list["asyncio.Task[Mapping[str, object]]"]]:
-    """A brain in a turn Claude Code took as p1, at a keyboard of the test's, holding `count` dialogs Claude Code stacked:
+    """A brain in a turn Claude Code took as p1, at a typist of the test's, holding `count` dialogs Claude Code stacked:
     each posted as its hook, the later beneath the earlier, and each put to `asks`."""
     brain, _ = await _in_turn(recorded.append, asks)
     keys = _keys(brain)
@@ -589,7 +589,7 @@ def _owning(clock: VirtualClock, record: Record = lambda _entry: None, launched:
 
 
 async def _typed_turn(brain: Brain, words: str, asks: Callable[[Asked], None] = unasked) -> _Turn:  # pyright: ignore[reportPrivateUsage]
-    """A turn asked of `brain` built by `_built` and pasted at its keyboard, not yet taken by Claude Code. The test reads
+    """A turn asked of `brain` built by `_built` and pasted by its typist, not yet taken by Claude Code. The test reads
     its end off the turn, so its asker's, which is the same end, is let go."""
     clock, keys = cast(VirtualClock, brain._clock), _keys(brain)  # pyright: ignore[reportPrivateUsage]
     asking = asyncio.ensure_future(brain.ask(words, asks))
@@ -674,14 +674,18 @@ async def test_words_of_an_untaken_turn_taken_after_a_stop_cleared_the_input_are
 async def test_words_of_an_untaken_turn_a_turn_asked_since_was_filed_into_run_on_to_answer_it() -> None:
     # The next turn's words, read after the late ones, run in the same turn of Claude Code's: stopping it would end a turn
     # its asker asked.
-    brain, keys = _built(VirtualClock())
+    recorded: list[Entry] = []
+    brain, keys = _built(VirtualClock(), recorded.append)
     await _untaken(brain, "hello")
     asked = await _typed_turn(brain, "what's the weather")
     _took(brain, "p1", "hello")
     _took(brain, "p1", "what's the weather", queued=True)
     (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
-    assert (asked.running, asked.answered.done()) == (late, False)
-    # Told, it answers the turn asked; drained, every stop the brain kept has pressed its keys, and none was kept.
+    # The stop of the late words is decided while the turn they ran in is still open, and is not made.
+    await until(lambda: len(events(recorded, "brain.late")) == 1)
+    [decided] = events(recorded, "brain.late")
+    assert (decided.facts["stopped"], brain._claude_turns.open, asked.running, asked.answered.done()) == (False, (late,), late, False)  # pyright: ignore[reportPrivateUsage]
+    # Told, it answers the turn asked; drained, no key was pressed for a stop.
     _told(brain, "p1", ["p1"])
     await brain.drained()
     assert (asked.answered.result(), keys.pressed) == (BrainAnswered("p1", None), [" hello", " what's the weather"])
@@ -756,7 +760,7 @@ async def test_a_turn_of_a_kind_added_to_the_openers_opens_and_ends_with_no_othe
 
 
 class _Keys:
-    """The brain's keyboard, as fritter's typist takes keys: each typing and press, in order; and its screen, as tmux
+    """The brain's typist, as fritter's takes keys: each typing and press, in order; and its screen, as tmux
     shows it, which shows the prompt unless the test says else: every capture it was read for is counted. Its screen is the
     fake Claude Code the terminal contract holds to the pinned one on the chord's two claims (tests/claudescreen.py; the rest
     it plays is the docs' and held by nothing yet), and what hands types reaches it as the pin takes it: a paste, then the
@@ -800,7 +804,7 @@ class _Keys:
 
 
 def _keys(brain: Brain) -> _Keys:
-    """The keyboard of the test's that `_built` built `brain` at."""
+    """The typist of the test's that `_built` built `brain` with."""
     return cast(_Keys, brain._typist)  # pyright: ignore[reportPrivateUsage]
 
 
