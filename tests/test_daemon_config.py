@@ -814,11 +814,20 @@ def test_a_line_kept_for_a_voice_replaces_the_line_the_file_keeps_for_it_under_w
     bill = voicechoice.Voice("bill_boerst")
     home.config.write_text('[sample_lines]\n"Bill Boerst" = "Hand-written."\nalba = "Alba here."\n')
     lines = config.SampleLines(home, config.load(home))
-    lines.keep(bill, "Saved from the page.")
+    assert lines.keep(bill, "Saved from the page.") == "Bill Boerst"
     assert home.config.read_text() == '[sample_lines]\n"Bill Boerst" = "Saved from the page."\nalba = "Alba here."\n'
     assert lines.read() == {bill: "Saved from the page.", voicechoice.Voice("alba"): "Alba here."}
     # A blank line takes the line out from under that spelling too, so no key is left for the voice.
-    lines.keep(bill, "")
+    assert lines.keep(bill, "") == "Bill Boerst"
+    assert home.config.read_text() == '[sample_lines]\nalba = "Alba here."\n'
+
+
+def test_a_line_is_never_kept_under_a_key_a_start_would_refuse(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[sample_lines]\nalba = "Alba here."\n')
+    # A voice no crossing made: the file is read back as a start reads it before it is written.
+    with pytest.raises(Rejected, match=r"\[sample_lines\] hands has no voice called 'Zed!'"):
+        config.SampleLines(home, config.load(home)).keep(voicechoice.Voice("Zed!"), "Who?")
     assert home.config.read_text() == '[sample_lines]\nalba = "Alba here."\n'
 
 

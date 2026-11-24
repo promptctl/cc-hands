@@ -26,7 +26,7 @@ from hands.voice.longpoll import version_of, waited
 from hands.voice.modelswitch import Heard, OwnModel, switch_model
 from hands.voice.trigger import described
 from hands.voice.library import Found
-from hands.voice.voicechoice import VOICES, Chosen, Voice, parse_voice
+from hands.voice.voicechoice import VOICES, Chosen, Saved, Voice, parse_voice
 from hands.voice.wakeword import Word
 
 # [LAW:one-source-of-truth] the modalities are the ones Modality names; the page offers and accepts exactly those.
@@ -46,7 +46,7 @@ class Voicing(Protocol):
 
     async def preview(self, voice: Chosen, line: str) -> Chosen: ...
 
-    async def keep_line(self, voice: Chosen, line: str) -> str: ...
+    async def keep_line(self, voice: Chosen, line: str) -> Saved: ...
 
     async def use(self, voice: Chosen) -> None: ...
 
@@ -192,11 +192,12 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
         try:
             body = await request.read()
             voice, line = parse_voice(parse_field(body, "voice")), parse_line(body, "line")
-            saying = await gallery.voices.keep_line(voice, line)
+            saved = await gallery.voices.keep_line(voice, line)
         except (Rejected, OSError) as error:
             return _refusal(error)
-        annotate(voice=str(voice), line_chars=len(line.strip()), default=not line.strip())
-        return web.json_response({"voice": str(voice), "line": saying, "default": not line.strip()})
+        # The key is the file's own spelling of the voice, so an event answers which of the user's keys a save wrote or took out.
+        annotate(voice=str(voice), key=saved.key, line_chars=len(line.strip()), default=not line.strip())
+        return web.json_response({"voice": str(voice), "line": saved.saying, "default": not line.strip()})
 
     @keyed(clock, "gallery.use", record, key)
     async def use_voice(request: web.Request) -> web.Response:

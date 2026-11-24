@@ -20,7 +20,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.library import Found
-from hands.voice.voicechoice import Chosen, LibraryVoice
+from hands.voice.voicechoice import Chosen, LibraryVoice, Saved
 from hands.voice.trigger import described
 from hands.voice.voices import said
 from hands.voice.voicechoice import VOICES, Voice
@@ -59,10 +59,10 @@ class Voicing:
         self.previewed.append((voice, line))
         return self.spoken
 
-    async def keep_line(self, voice: Chosen, line: str) -> str:
+    async def keep_line(self, voice: Chosen, line: str) -> Saved:
         self.written[voice] = line
         [saying] = await self.said_by((voice,))
-        return saying
+        return Saved(str(voice), saying)
 
     async def use(self, voice: Chosen) -> None:
         self.used_asked.append(voice)

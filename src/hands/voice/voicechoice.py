@@ -30,6 +30,15 @@ class LibraryVoice:
 Chosen = Voice | LibraryVoice
 
 
+@dataclass(frozen=True)
+class Saved:
+    """A line kept for a voice: what the voice will say, and the key the file keeps it under, which is the spelling of
+    the voice the file already held where it held one."""
+
+    key: str
+    saying: str
+
+
 def _predefined() -> tuple[Voice, ...]:
     """The names the installed pocket_tts resolves itself, read from its source: importing any of pocket_tts loads torch."""
     # find_spec of the top package imports nothing; of a module inside it, it would import the package.
