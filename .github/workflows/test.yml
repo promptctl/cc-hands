@@ -142,6 +142,13 @@ jobs:
           done
       # [LAW:one-source-of-truth] what each tier runs is the Makefile's: this leg's target, `make check` for the unit layer under its
       # hold, `make check-pair` for the real streaming pair, `make check-rest` for every other test that needs the outside.
+      - name: PROBE 589 devices
+        if: matrix.tier == 'unit'
+        continue-on-error: true
+        run: |
+          sysctl hw.model machdep.cpu.brand_string kern.hv_vmm_present || true
+          system_profiler SPAudioDataType || true
+          uv run --no-sync python scripts/probe_589_devices.py
       - name: make ${{ matrix.target }}
         id: check
         run: make ${{ matrix.target }}
