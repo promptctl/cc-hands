@@ -47,13 +47,6 @@ class Rendered:
     audio: Samples
 
 
-@dataclass(frozen=True)
-class Failed:
-    """What kept a saying from being rendered."""
-
-    reason: str
-
-
 class NotRendered(Exception):
     """hands' TTS did not make `saying`: `reason` is what it, or the pipeline around it, said."""
 
@@ -62,42 +55,47 @@ class NotRendered(Exception):
 
 
 class _Heard(FrameProcessor):
-    """Behind the TTS: each synthesis's sound, from its `SpeakingIn` to its `Made`, as the speaker reads it, or what kept it
-    from being made."""
+    """Behind the TTS: each synthesis's sound, from its `SpeakingIn` to its `Made`, as the speaker reads it, or the reason it
+    was not made."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        self.outcomes = asyncio.Queue[Rendered | Failed]()
+        self.outcomes = asyncio.Queue[Rendered | str]()
+        self._open: Synthesis | None = None
         self._audio = bytearray()
-        self._rates = set[int]()
+        self._formats = set[tuple[int, int]]()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
-            case SpeakingIn():
+            case SpeakingIn(synthesis=synthesis):
+                self._open = synthesis
                 self._audio.clear()
-                self._rates.clear()
-            case TTSAudioRawFrame(audio=audio, sample_rate=rate):
+                self._formats.clear()
+            case TTSAudioRawFrame(audio=audio, sample_rate=rate, num_channels=channels):
                 self._audio.extend(audio)
-                self._rates.add(rate)
+                self._formats.add((rate, channels))
             case Made() as made:
                 self.outcomes.put_nowait(self._rendered(made))
             case Unsaid(line=line):
-                self.outcomes.put_nowait(Failed(f"it said {line.text!r} as nothing"))
+                self.outcomes.put_nowait(f"it said {line.text!r} as nothing")
             case _:
                 pass
         await self.push_frame(frame, direction)
 
-    def _rendered(self, made: Made) -> Rendered | Failed:
+    def _rendered(self, made: Made) -> Rendered | str:
         # [LAW:one-source-of-truth] whether anything was made is what the TTS says it made, not what the bytes add up to.
+        if made.synthesis is not self._open:
+            return f"it closed a synthesis of {made.synthesis.text!r} that it did not open"
         if made.failure is not None:
-            return Failed(made.failure)
+            return made.failure
         if not made.made:
-            return Failed("it made no sound")
-        if len(self._rates) != 1:
-            return Failed(f"its sound came at {sorted(self._rates)} Hz, and is cut at one rate")
-        (rate,) = self._rates
-        return Rendered(made.synthesis, soxr.resample(decoded(bytes(self._audio)), rate, RATE).astype(np.float32))
+            return "it made no sound"
+        match sorted(self._formats):
+            case [(rate, 1)]:
+                return Rendered(made.synthesis, soxr.resample(decoded(bytes(self._audio)), rate, RATE).astype(np.float32))
+            case formats:
+                return f"its sound comes as {formats} (Hz, channels), and is cut as mono at one rate"
 
 
 async def render(clock: Clock, tts: FrameProcessor, sayings: Sequence[Saying], fetch: Fetch = fetched, timeout: float = SENTENCE_TIMEOUT) -> list[Rendered]:
@@ -110,37 +108,37 @@ async def render(clock: Clock, tts: FrameProcessor, sayings: Sequence[Saying], f
 
     @worker.event_handler("on_pipeline_error")
     async def _failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]
-        heard.outcomes.put_nowait(Failed(error.error))
+        heard.outcomes.put_nowait(error.error)
 
     runner = WorkerRunner(handle_sigint=False)
     await runner.add_workers(worker)
     running = asyncio.create_task(runner.run())
-    running.add_done_callback(lambda ended: heard.outcomes.put_nowait(Failed("the pipeline ended" if ended.cancelled() or ended.exception() is None else f"the pipeline ended: {ended.exception()!r}")))
+    running.add_done_callback(lambda ended: heard.outcomes.put_nowait("the pipeline ended" if ended.cancelled() or ended.exception() is None else f"the pipeline ended: {ended.exception()!r}"))
     rendered: list[Rendered] = []
     try:
         for saying in sayings:
             await say(worker.queue_frame, saying.voice, saying.text)
-            rendered.append(_made(saying, await _outcome(clock, heard, saying, timeout)))
+            rendered.append(await _outcome(clock, heard, saying, timeout))
     finally:
         try:
             await worker.cancel()
         finally:
-            await running
+            # [LAW:no-silent-failure] waited for, not awaited: a runner that failed has said so as the outcome of the saying it
+            # failed, and raising it here would replace that with a bare Pipecat error.
+            await asyncio.wait({running})
+    running.result()
     return rendered
 
 
-async def _outcome(clock: Clock, heard: _Heard, saying: Saying, timeout: float) -> Rendered | Failed:
+async def _outcome(clock: Clock, heard: _Heard, saying: Saying, timeout: float) -> Rendered:
+    """What the TTS made of `saying`, which is its words in its voice, or the `NotRendered` it came to."""
     try:
         async with clock.timeout(timeout):
-            return await heard.outcomes.get()
+            outcome = await heard.outcomes.get()
     except TimeoutError:
         raise NotRendered(saying, f"nothing came of it in {timeout:g} s") from None
-
-
-def _made(saying: Saying, outcome: Rendered | Failed) -> Rendered:
-    """The outcome of `saying` as what the TTS made of it, which is its words in its voice, or the failure it came to."""
     match outcome:
-        case Failed(reason=reason):
+        case str(reason):
             raise NotRendered(saying, reason)
         case Rendered(synthesis=synthesis) if (synthesis.voice, synthesis.text) != (source(saying.voice), saying.text):
             # [LAW:no-silent-failure] the filter in front of the TTS changed what was said, so what a take records is no longer

@@ -267,6 +267,5 @@ def hands_tts(clock: Clock, voice: Chosen) -> SaidInTTS:
     [LAW:single-enforcer] every utterance is filtered by the service built here, whichever of them sent it: Pipecat applies a
     TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's own reply alike, so
     this is the one place all of them meet before they are heard. It also decides the reply the audit log records, which is
-    built from what a filter returned: what the user heard, never what was sent to the speaker. See voice/spoken.py, which
-    also records what it costs."""
+    built from what a filter returned: what the user heard, never what was sent to the speaker. See voice/spoken.py."""
     return SaidInTTS(clock, settings=SaidInTTS.Settings(voice=source(voice), language=LANGUAGE), text_filters=[SpokenForm()])
