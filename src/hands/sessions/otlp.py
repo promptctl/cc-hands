@@ -113,7 +113,7 @@ def degradation(collector: str, signal: Signal, streak: Failing | None) -> Degra
     # The words hold nothing a batch would change, neither a count nor an error: the same failure is not news again each
     # time it repeats, however the collector words it. Each error is in its Exported line.
     since = streak.since.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    return Degradation(f"can't export {signal}", f"the collector at {collector} has not taken all of its {signal} since {since}")
+    return Degradation("export", f"can't export {signal}", f"the collector at {collector} has not taken all of its {signal} since {since}")
 
 
 class Exports:

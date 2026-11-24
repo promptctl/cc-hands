@@ -23,7 +23,7 @@ from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.voice.player import Lines, line_frame
 from hands.core.wire import Seconds, UsageLimitReached
-from hands.core.stopfailure import StopFailed
+from hands.core.stopfailure import LOGIN_EXPIRY, LOGIN_RENEWAL, LoginExpired, StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.voice.shortcut import TURN_LIMIT_SECONDS, Move
 
@@ -65,7 +65,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | UsageLimitReached | StopFailed | TranscriptionFailed | NoMicrophone | MicrophoneOff | TurnTimedOut | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | UsageLimitReached | LoginExpired | StopFailed | TranscriptionFailed | NoMicrophone | MicrophoneOff | TurnTimedOut | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -77,6 +77,9 @@ def system_text(fact: SystemFact) -> str:
             return "The language model is unreachable."
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
+        case LoginExpired():
+            # [LAW:one-source-of-truth] in hands' words, never Claude Code's, whose text names its own /login.
+            return f"{_sentence(LOGIN_EXPIRY)}: {LOGIN_RENEWAL}."
         case StopFailed(message=str() as message):
             return f"The brain failed: {message.removesuffix('.')}."
         case StopFailed(kind=str() as kind):

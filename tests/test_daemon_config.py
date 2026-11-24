@@ -390,7 +390,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path) -
 
     run_start = Start(restarted=False, clock=SYSTEM)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
-    exporting_down = heartbeat.Degradation("can't export traces", "the collector has not taken all of its traces")
+    exporting_down = heartbeat.Degradation("export", "can't export traces", "the collector has not taken all of its traces")
     starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, LAID_OUT, {}, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()

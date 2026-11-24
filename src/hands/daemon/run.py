@@ -41,6 +41,7 @@ from hands.sessions.home import Home
 from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
+from hands.core.stopfailure import LoginExpired
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Received, Sent
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
@@ -201,6 +202,8 @@ class Mind:
     watches: Sequence[Watch]
     # A summariser, given what it is for, its instruction, and how long it has.
     summariser: Callable[[AsideKind, str, float], Summariser]
+    # What the brain's turns last said of its login (`Brain.login`).
+    login: Callable[[], LoginExpired | None]
 
 
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
@@ -245,12 +248,21 @@ async def mind(
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                 # A summary is as long as its reply makes it: only its time is the summary's own.
                 # The brain's stage notes each turn of the user's itself, as it types it.
-                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout))
+                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: brain.login)
         finally:
             await asides.close()
             await brain.stop()
     finally:
         await server.close()
+
+
+def _login(reported: LoginExpired | None) -> tuple[heartbeat.Degradation, ...]:
+    """What the heartbeat says of the brain's login: that it expired, where its turns last said so."""
+    match reported:
+        case LoginExpired():
+            return (heartbeat.LOGIN_EXPIRED,)
+        case None:
+            return ()
 
 
 async def outlived(brain: Brain) -> None:
@@ -423,7 +435,7 @@ async def converse(
         # A turn opened with no microphone hears nothing, so it is not listening.
         deaf = voice.audio.deaf
         # [LAW:no-silent-failure] a microphone config.toml turned off is the user's choice, not a degradation.
-        heart.beat(pipeline.state, _wall(clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if voice.audio.microphone_lost else ()), *degraded()))
+        heart.beat(pipeline.state, _wall(clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if voice.audio.microphone_lost else ()), *_login(minded.login()), *degraded()))
 
     # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
     # session stays listed, without the reader no record becomes a step and no status Claude Code sets is heard, without the relay

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, stand_in, SYSTEM_PATH
+from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, stand_in, SYSTEM_PATH, Unstarting
 from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
@@ -870,7 +870,7 @@ def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monk
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(root / "home")
     onboard(home.brain)
-    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), shell_without_hands_settings())
+    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), shell_without_hands_settings(), heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -878,7 +878,7 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
-    reached = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {})
+    reached = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {}, heartbeat.NeverRan(home.status))
     # The refusal, which names the file, is the detail, and the fix names the file without the refusal again.
     assert isinstance(reached, Missing) and reached.fix == f"correct {home.config}"
     assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
@@ -887,7 +887,7 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     laid_out(home)
-    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {"HANDS_DEBUG": "1"})
+    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {"HANDS_DEBUG": "1"}, heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
@@ -901,7 +901,7 @@ def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: P
 def test_a_brain_whose_claude_could_not_be_asked_is_a_start_refused_and_not_a_login_to_make(root: Path, outcome: child.Outcome, said: str) -> None:
     home = Home(root / "home")
     laid_out(home)
-    found = readiness.configured(answering(outcome), home, LAID_OUT, {})
+    found = readiness.configured(answering(outcome), home, LAID_OUT, {}, heartbeat.NeverRan(home.status))
     # The start refuses on it all the same, so the line says so, with the reason the start gives as its fix.
     assert found == readiness.unstartable(f"`{LAID_OUT.claude(home.brain)} auth status` {said}")
 
@@ -924,12 +924,12 @@ def beating(home: Home) -> None:
 def test_hands_up_is_ready(root: Path) -> None:
     home = Home(root / "home")
     beating(home)
-    found = readiness.daemon(home, datetime.now(UTC))
+    found = readiness.daemon(heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC))
     assert isinstance(found, Ready) and found.said.startswith("hands is up")
 
 
 def test_hands_that_never_ran_is_missing_and_says_to_run_it(root: Path) -> None:
-    found = readiness.daemon(Home(root / "home"), datetime.now(UTC))
+    found = readiness.daemon(heartbeat.look(Home(root / "home").status, datetime.now(UTC)), datetime.now(UTC))
     assert isinstance(found, Missing) and "hands has not run" in found.said and "`hands run`" in found.said
 
 
@@ -937,7 +937,7 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.status.write_text("not json")
-    assert isinstance(readiness.daemon(home, datetime.now(UTC)), Unknown)
+    assert isinstance(readiness.daemon(heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC)), Unknown)
 
 
 # hands check
@@ -949,6 +949,57 @@ STEPS = ["claude", "portaudio", "tmux", "hands", "shim", "plugin", "backend", "g
 def logged_in(_children: object, _llm: object, home: Home, _environment: object, brain: Runnable) -> ClaudeCodeBackend:
     """The brain as its login check finds it logged in: that check is the start's, tested beside it."""
     return ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=brain)
+
+
+def expired_beat(home: Home, degraded: tuple[heartbeat.Degradation, ...] = (heartbeat.LOGIN_EXPIRED,)) -> heartbeat.Status:
+    """The heartbeat a running hands writes once its brain's turns said its login expired."""
+    home.root.mkdir(parents=True, exist_ok=True)
+    heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM).beat("running", None, 0, listening=False, degraded=degraded)
+    status = heartbeat.read(home.status)
+    assert status is not None
+    return status
+
+
+@pytest.mark.parametrize("running", [heartbeat.Up, heartbeat.Unresponsive], ids=["up", "not responding"])
+def test_a_login_the_running_brain_said_expired_is_missing_with_hands_fix_and_no_claude_code_is_started(root: Path, running: Callable[[heartbeat.Status], heartbeat.Verdict]) -> None:
+    # A daemon that stopped beating still runs its brain, whose turns said what they said.
+    home = Home(root / "home")
+    laid_out(home)
+    found = readiness.configured(Unstarting(SYSTEM, lambda _: None), home, LAID_OUT, {}, running(expired_beat(home)))
+    assert found == Missing("brain's login expired", "the brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
+    assert found.said == heartbeat.LOGIN_EXPIRED.said
+
+
+def never_ran(home: Home) -> heartbeat.Verdict:
+    return heartbeat.NeverRan(home.status)
+
+
+def a_brain_that_said_nothing_of_its_login(home: Home) -> heartbeat.Verdict:
+    return heartbeat.Up(expired_beat(home, degraded=()))
+
+
+def hands_down(home: Home) -> heartbeat.Verdict:
+    # Its brain is gone with it, and what it said is no longer said by a brain that runs.
+    return heartbeat.Down(expired_beat(home))
+
+
+@pytest.mark.parametrize(
+    "running",
+    [never_ran, a_brain_that_said_nothing_of_its_login, hands_down],
+    ids=["no hands", "a brain that said nothing of its login", "hands down"],
+)
+def test_a_login_no_running_brain_said_expired_is_asked_of_its_claude_code(root: Path, monkeypatch: pytest.MonkeyPatch, running: Callable[[Home], heartbeat.Verdict]) -> None:
+    home = Home(root / "home")
+    laid_out(home)
+    asked: list[Home] = []
+
+    def asking(children: object, llm: object, home: Home, environment: object, brain: Runnable) -> ClaudeCodeBackend:
+        asked.append(home)
+        return logged_in(children, llm, home, environment, brain)
+
+    monkeypatch.setattr(readiness, "resolve", asking)
+    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {}, running(home))
+    assert (asked, found.step) == ([home], "brain logged in as brain@example.com (claude.ai)")
 
 
 def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object) -> Home:

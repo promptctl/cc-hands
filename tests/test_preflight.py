@@ -17,7 +17,7 @@ from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
 from hands.daemon.starting import CannotStart, Start
-from hands.sessions import wrapper
+from hands.sessions import heartbeat, wrapper
 from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -183,7 +183,7 @@ def test_a_start_refused_on_a_hands_setting_in_the_environment_says_it_beside_ev
         run.configured_from(children_on(VirtualClock()), home, config.load(home), checked)
     assert [said for said in (*each, SAID_STRAY) if said not in str(refused.value)] == []
     # The survey says the same refusal.
-    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, STRAY):
+    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, STRAY, heartbeat.NeverRan(home.status)):
         case readiness.Missing(fix=fix):
             assert SAID_STRAY in fix
         case found:
@@ -379,7 +379,7 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
     run_start.ended(events.append, refused.value)
     assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code", "hands_settings")} for event in events] == [preflight(home, LAID_OUT, {}).facts()]
     # The survey.
-    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, shell_without_hands_settings()):
+    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, shell_without_hands_settings(), heartbeat.NeverRan(home.status)):
         case readiness.Missing(detail=detail):
             assert [said for said in each if said not in detail] == []
         case found:
@@ -421,7 +421,7 @@ def test_a_start_refused_on_the_homes_other_files_names_the_brains_lost_login_be
         run.configured_from(children_on(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, {}))
     assert [said for said in each if said not in str(refused.value)] == []
     assert str(refused.value).endswith("; then run hands again")
-    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, {}):
+    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, {}, heartbeat.NeverRan(home.status)):
         case readiness.Missing(fix=fix):
             assert [said for said in each if said not in fix] == []
         case found:
@@ -437,7 +437,7 @@ def test_a_brain_whose_own_config_directory_is_refused_is_asked_no_login(tmp_pat
     asked = _logged_out(monkeypatch)
     with pytest.raises(CannotStart):
         run.configured_from(children_on(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, {}))
-    assert isinstance(readiness.configured(children_on(VirtualClock()), home, LAID_OUT, {}), readiness.Missing)
+    assert isinstance(readiness.configured(children_on(VirtualClock()), home, LAID_OUT, {}, heartbeat.NeverRan(home.status)), readiness.Missing)
     assert asked == []
 
 

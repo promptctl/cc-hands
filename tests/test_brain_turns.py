@@ -3,6 +3,8 @@ Code takes and tells to the turns it asked, and answers the hooks it posts, with
 
 from types import SimpleNamespace
 import asyncio
+import os
+from datetime import UTC, datetime
 import json
 import threading
 import re
@@ -20,10 +22,18 @@ from hands.sessions.tail import Tails
 from hands.brain.session import BrainSession
 from hands.brain.process import ClaudeTurns, BROKEN, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Untaken, _listen, _Turn, model  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, HookReply, Submitted, Summarise
+from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
 from hands.sessions.audit import Entry
-from conftest import events, patiently, settled, taken
+from conftest import Unstarting, events, laid_out, patiently, settled, taken
+from fixtures.pins import LAID_OUT
+from hands.clock import SYSTEM
+from hands.core.session import Runnable
+from hands.daemon import readiness, run
+from hands.sessions import heartbeat
+from hands.sessions.home import Home
+from hands.sessions.payload import Rejected
 from brains import dialogs, permissions, unasked
 
 from hands.core.events import Abandoned, Dequeued, Ending, Interrupted, Located, Prompted, Removed, StatusReported, Stopped, Taken, UnknownSource, Unqueued
@@ -105,7 +115,7 @@ async def test_a_turn_whose_input_keeps_its_words_is_untaken_saying_what_it_show
 def _bare() -> Brain:
     """A Brain no launch built, holding what every turn's take reads from `__init__`: the tests set the rest."""
     brain = object.__new__(Brain)
-    brain._untaken, brain._own_work, brain._shutdown, brain._turn = None, set(), None, None  # pyright: ignore[reportPrivateUsage]
+    brain._untaken, brain._own_work, brain._shutdown, brain._turn, brain._login = None, set(), None, None, None  # pyright: ignore[reportPrivateUsage]
     return brain
 
 
@@ -636,8 +646,8 @@ def _took(brain: Brain, prompt: str, words: str, queued: bool = False) -> None:
     brain._took(Submitted(SessionId("b1"), PromptId(prompt), words, queued))  # pyright: ignore[reportPrivateUsage]
 
 
-def _told(brain: Brain, prompt: str | None, ids: Sequence[str], waiting: tuple[str, ...] = ()) -> None:
-    brain._told(Summarise(SessionId("b1"), None if prompt is None else PromptId(prompt), "Done.", waiting, ids=frozenset(map(PromptId, ids))))  # pyright: ignore[reportPrivateUsage]
+def _told(brain: Brain, prompt: str | None, ids: Sequence[str], waiting: tuple[str, ...] = (), failure: StopFailed | None = None) -> None:
+    brain._told(Summarise(SessionId("b1"), None if prompt is None else PromptId(prompt), "Done.", waiting, failure, ids=frozenset(map(PromptId, ids))))  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_turn_told_under_an_id_its_hook_did_not_name_ends_its_own_turn_by_the_ids_its_telling_carries() -> None:
@@ -998,6 +1008,108 @@ async def test_a_turn_claude_code_opened_itself_is_stopped_when_its_work_is_the_
     _told(brain, "n1", ["n1"])
     await brain.drained()
     assert keys.pressed == ["escape", "ctrl_c"]
+
+
+# The two StopFailures Claude Code 2.1.308 ends a turn with when the brain's login expired (docs/claude-code-behavior.md).
+UNREFRESHED = StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile")
+REFRESH_REFUSED = StopFailed("authentication_failed", "Login expired · Please run /login")
+
+
+@pytest.mark.parametrize("stop", [UNREFRESHED, REFRESH_REFUSED], ids=["no refresh", "refresh refused"])
+async def test_a_turn_told_with_an_expired_login_ends_as_one_and_the_brain_reports_it(stop: StopFailed) -> None:
+    brain = _owning(VirtualClock())
+    turn = _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    _told(brain, "p1", ("p1",), failure=stop)
+    assert (turn.answered.result(), brain.login) == (BrainAnswered(PromptId("p1"), LoginExpired(stop)), LoginExpired(stop))
+
+
+async def test_a_turn_told_with_another_failure_ends_with_it_as_claude_code_said_it() -> None:
+    brain = _owning(VirtualClock())
+    turn = _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    _told(brain, "p1", ("p1",), failure=(lost := StopFailed("server_error", "API Error: Connection lost mid-response.")))
+    assert (turn.answered.result(), brain.login) == (BrainAnswered(PromptId("p1"), lost), None)
+
+
+async def test_the_brain_reports_the_login_as_the_latest_turn_claude_code_ended_said_it() -> None:
+    """A turn Claude Code ended, answered or failed another way, says the login is no longer reported expired; one no
+    telling ended shows nothing of it, so the report before it stands."""
+    brain = _owning(VirtualClock())
+    reports: list[LoginExpired | None] = []
+    _took(brain, "n1", NOTICE)
+    _told(brain, "n1", ("n1",), failure=UNREFRESHED)
+    reports.append(brain.login)
+    _took(brain, "n2", NOTICE)
+    _told(brain, "n2", ("n2",))
+    reports.append(brain.login)
+    _took(brain, "n3", NOTICE)
+    _told(brain, "n3", ("n3",), failure=REFRESH_REFUSED)
+    reports.append(brain.login)
+    # Ended with no telling, as the brain's exit ends every turn open.
+    _took(brain, "n4", NOTICE)
+    brain._claude_turns.failed(BrainGone("the brain exited"))  # pyright: ignore[reportPrivateUsage]
+    reports.append(brain.login)
+    _took(brain, "n5", NOTICE)
+    _told(brain, "n5", ("n5",), failure=StopFailed("server_error", "API Error: 529 Overloaded"))
+    reports.append(brain.login)
+    assert reports == [LoginExpired(UNREFRESHED), None, LoginExpired(REFRESH_REFUSED), LoginExpired(REFRESH_REFUSED), None]
+
+
+async def test_hands_check_says_the_login_the_running_brain_reported_expired_until_a_later_turn_says_otherwise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Through the heartbeat, the one way `hands check` learns of the running daemon: with every child refused, so no
+    Claude Code is started to learn it."""
+    home = Home(tmp_path / "home")
+    laid_out(home)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
+    brain = _owning(VirtualClock())
+
+    def checked() -> readiness.Finding:
+        heart.beat("running", None, 0, listening=False, degraded=run._login(brain.login))  # pyright: ignore[reportPrivateUsage]
+        return readiness.configured(Unstarting(SYSTEM, lambda _: None), home, LAID_OUT, {}, heartbeat.look(home.status, datetime.now(UTC)))
+
+    _took(brain, "n1", NOTICE)
+    _told(brain, "n1", ("n1",), failure=REFRESH_REFUSED)
+    assert checked() == readiness.Missing("brain's login expired", "the brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
+    # Answered since: its Claude Code is asked again, as with no hands running.
+    asked: list[Runnable] = []
+
+    def asking(_children: object, _llm: object, _home: object, _environment: object, brain: Runnable) -> object:
+        asked.append(brain)
+        raise Rejected("asked")
+
+    monkeypatch.setattr(readiness, "resolve", asking)
+    _took(brain, "n2", NOTICE)
+    _told(brain, "n2", ("n2",))
+    assert (checked(), len(asked)) == (readiness.Missing("brain cannot reach its model", "hands has no model to talk with", "asked"), 1)
+
+
+async def test_every_turn_open_as_hands_presses_escape_is_marked_stopped_by_it() -> None:
+    brain = _owning(VirtualClock())
+    keys = _keyed(brain, [])
+    _took(brain, "n1", NOTICE)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    assert notified.escaped is False
+    assert brain.interrupt(notified) is True
+    await until(lambda: "escape" in keys.pressed)
+    assert notified.escaped is True
+    await brain.drained()
+
+
+@pytest.mark.parametrize(
+    ("escaped", "ended", "report"),
+    [
+        (True, BrainAnswered(PromptId("n1"), None), LoginExpired(UNREFRESHED)),
+        (True, BrainAnswered(PromptId("n1"), LoginExpired(REFRESH_REFUSED)), LoginExpired(REFRESH_REFUSED)),
+        (False, BrainAnswered(PromptId("n1"), None), None),
+    ],
+    ids=["stopped, told answered", "stopped, told expired", "told answered"],
+)
+async def test_a_turn_hands_pressed_escape_for_leaves_the_report_unless_it_was_told_expired(escaped: bool, ended: BrainAnswered, report: LoginExpired | None) -> None:
+    # Told as though it answered, a turn the Escape stopped says nothing of how Claude Code would have ended it.
+    running = process.ClaudeTurn(frozenset({PromptId("n1")}), "notified", asyncio.get_running_loop().create_future(), escaped=escaped)
+    running.ended.set_result(ended)
+    assert process.reported(LoginExpired(UNREFRESHED), running) == report
 
 
 async def test_a_task_result_ctrl_c_cleared_from_claude_codes_queue_ends_its_turn_unran_and_holds_no_turn_after_it() -> None:

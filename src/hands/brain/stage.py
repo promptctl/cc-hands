@@ -78,7 +78,7 @@ from hands.core.wire import (
     tool_answers,
     tool_input,
 )
-from hands.core.stopfailure import StopFailed
+from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, child, continuing, count, fail, here, root, unit, within
@@ -1180,6 +1180,10 @@ def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Voiced]) -> _Fai
     match ended:
         case BrainStopped():
             return None
+        # Over the cause the wire named: the 401 a refresh that failed leaves on the wire is the request refused, and the
+        # expired login is why it could not be recovered, which carries hands' fix.
+        case BrainAnswered(error=LoginExpired() as login):
+            return _Failure(f"the brain's turn ended in error: {login}", login, _broken_off("".join(turn.spoken)))
         case BrainAnswered(error=StopFailed() as stop):
             return _Failure(f"the brain's turn ended in error: {stop}", turn.failure or stop, _broken_off("".join(turn.spoken)))
         case BrainAnswered():
