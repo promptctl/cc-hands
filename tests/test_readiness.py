@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on, executable, laid_out, onboard, pin, stand_in, SYSTEM_PATH
+from conftest import answering, children_on, executable, laid_out, onboard, pin, stand_in, SYSTEM_PATH
 from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
@@ -29,7 +29,7 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
 from hands.daemon.cli import VERBOSE_HINT, main
 from hands.daemon.readiness import Missing, Ready, Unknown
-from hands.sessions import audit, heartbeat, liveness, processes, terminals, wrapper
+from hands.sessions import audit, child, heartbeat, liveness, processes, terminals, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
@@ -891,17 +891,20 @@ def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: P
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
-@pytest.mark.outside
-def test_a_brain_whose_claude_could_not_be_started_is_unknown_and_not_a_login_to_make(root: Path) -> None:
+@pytest.mark.parametrize(
+    ("outcome", "said"),
+    [
+        (child.NeverStarted(PermissionError(errno.EACCES, "Permission denied", "claude")), "could not be started: Permission denied"),
+        (child.Ran(child.Killed(child.Kill(child.Limit(5))), child.Captured(b""), child.Captured(b"")), "was killed with SIGKILL"),
+    ],
+)
+def test_a_brain_whose_claude_could_not_be_asked_is_a_start_refused_and_not_a_login_to_make(root: Path, outcome: child.Outcome, said: str) -> None:
     home = Home(root / "home")
-    onboard(home.brain)
-    # The pinned claude is in its place, and is no program the OS will run: its interpreter is not there.
-    claude = root / "claude"
-    claude.write_text("#!/nonexistent/hands-no-such-interpreter\n")
-    claude.chmod(0o755)
-    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, claude), {})
-    assert isinstance(found, Unknown) and "auth status` could not be started: " in found.said
-    assert "hands login" not in found.said
+    laid_out(home)
+    found = readiness.configured(answering(outcome), home, LAID_OUT, {})
+    # The start refuses on it all the same, so the line says so, with the reason the start gives as its fix.
+    assert isinstance(found, Missing) and found.step == "hands cannot start here"
+    assert "auth status` " + said in found.fix and "hands login" not in found.said
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:

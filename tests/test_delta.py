@@ -465,6 +465,20 @@ async def test_a_gh_that_could_not_be_started_is_told_apart_from_a_forge_that_re
 
 
 @pytest.mark.outside
+async def test_a_gh_ended_by_a_signal_gave_no_answer_and_is_not_a_forge_that_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = published(tmp_path)
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    (bin / "gh").write_text("#!/bin/sh\nkill -KILL $$\n")
+    (bin / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
+    record: list[Entry] = []
+    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
+    assert [event.facts["forge"] for event in readings(record)] == ["unanswered"]
+
+
+@pytest.mark.outside
 async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from loguru import logger
 

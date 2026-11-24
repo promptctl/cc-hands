@@ -77,7 +77,6 @@ def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_o
     assert as_from_a_terminal({**inside, **users}) == {**users, "HTTPS_PROXY": "http://proxy.lan:3128"}
 
 
-
 def test_a_session_started_where_no_tmux_is_on_path_answers_that_it_was_not_started(tmp_path: Path) -> None:
     home = home_in(tmp_path)
     folder = tmp_path / "billing"
@@ -104,6 +103,7 @@ def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not_start
     monkeypatch.setenv("PATH", f"{tmux.parent}:{os.environ['PATH']}")
     answer = start(home, folder)
     assert answer.keys() == {"error"} and answer["error"].startswith("tmux new-session could not be started: ")
+
 
 @pytest.mark.outside
 def test_a_session_is_started_trusting_its_projects_mcp_servers_whose_dialog_would_hold_it_unjoined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -182,23 +182,23 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
     match _reached(children, config.llm, home, environment, brain):
         case reached if not refusals:
             return reached
-        case Missing(fix=fix) | Unknown(detail=fix):
+        case Missing(fix=fix):
             return unstartable("; ".join((*refusals, fix)))
         case Ready():
             return unstartable("; ".join(refusals))
 
 
-def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Finding:
+def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Ready | Missing:
     try:
-        reached: Finding = reaching(resolve(children, llm, home, environment, brain))
+        reached: Ready | Missing = reaching(resolve(children, llm, home, environment, brain))
     except Rejected as error:
         # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
-        # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
-        # was refused, which is the most there is to act on.
+        # and the few that name none (a provider other than Anthropic's, a status hands cannot read) say what was
+        # refused, which is the most there is to act on.
         reached = Missing("brain cannot reach its model", "hands has no model to talk with", str(error))
     except Unstartable as error:
-        # The brain's claude could not be asked, which says nothing of whether it holds a login.
-        reached = Unknown("brain's login", f"cannot tell whether the [llm] backend can reach its model: {error}")
+        # The brain's claude could not be asked, which says nothing of its login and is a start refused all the same.
+        reached = unstartable(str(error))
     return reached
 
 

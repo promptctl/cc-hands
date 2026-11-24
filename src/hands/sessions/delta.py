@@ -119,8 +119,8 @@ class Standing:
 
 # Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
 # where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
-# where there is no gh to ask; unstarted where the gh on PATH could not be started; unanswered where it was too slow,
-# and refused where gh would not list or answered in a shape hands does not read.
+# where there is no gh to ask; unstarted where the OS started no gh; unanswered where gh gave no answer, too slow most
+# often; and refused where gh would not list or answered in a shape hands does not read.
 Forge = Literal["unasked", "absent", "unstarted", "answered", "unanswered", "refused"]
 
 # Why a reading has no baseline to read against: none was taken (no repository, one that could not be read, or a turn no prompt
@@ -645,16 +645,17 @@ class Deltas:
         match ran:
             case child.Ran(ending=child.Exited(code=0), out=out):
                 pass
-            case child.Ran(ending=child.Killed(kill=child.Kill(why=child.Limit()))) | child.Unreaped() | child.Lost():
-                return (), Asked("unanswered", took)
             case child.NeverStarted():
-                # A gh on PATH that is no program the OS will run is the machine's fault, not the forge's answer.
+                # The OS gave no gh to ask, so nothing of the forge is known: the error is the OS's, said as the warning.
                 logger.warning(f"gh {child.said(ran)}, so the pull requests of {branch} in {baseline.root} were not asked for")
                 return (), Asked("unstarted", took)
-            case child.Ran():
+            case child.Ran(ending=child.Exited()):
                 # Not a GitHub remote, not signed in, no default repository: gh says which.
                 logger.info(f"gh would not list the pull requests of {branch} in {baseline.root}: gh {child.said(ran)}")
                 return (), Asked("refused", took)
+            case child.Ran() | child.Unreaped() | child.Lost():
+                # Killed at its limit or by a signal, or its answer lost: gh's own event says which.
+                return (), Asked("unanswered", took)
         # The forge stamps to the second, so a pull request opened in the second the baseline was taken is still since it; and
         # on its own clock, so one opened as the turn ended is still before its end on a forge's clock SKEW ahead.
         since = baseline.at.replace(microsecond=0)
