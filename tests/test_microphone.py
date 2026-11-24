@@ -174,7 +174,7 @@ async def test_a_trigger_overhears_the_desk_cleaned_whatever_the_key_says_and_on
         await devices.capture(at=1.0)  # key up: the pipeline hears silence, the trigger hears the room
         devices.key.go("phone")
         await devices.capture(at=1.02)  # hands at the phone: the room at the desk is silence to the trigger
-        assert [(await anext(heard)).heard, (await anext(heard)).heard] == [CLEANED, bytes(len(CLEANED))]
+        assert [await anext(heard), await anext(heard)] == [CLEANED, bytes(len(CLEANED))]
     await devices.capture(at=1.04)
     assert devices.pushed == [QUIET]
 

@@ -13,8 +13,8 @@ of it, are in the turn.
 
 On the Mac's own microphone and speakers, hands' voice left over from the canceller can say the wake word as the user
 would, and a turn opened over it would cut the reply off on hands' own word and send the brain hands' voice as the
-user's. There, a wake with hands' voice in the second the turn would keep is an echo, and opens nothing
-(`hands.voice.desk`): hands said it, or the user said it over hands, and the talk key still cuts in.
+user's. There, a wake with hands' voice in what the turn would keep opens nothing (`hands.voice.desk`): hands said it, or
+the user said it over hands, and the talk key still cuts in.
 """
 
 import asyncio
@@ -87,8 +87,7 @@ def listening(
     clock: Clock, word: WakeWord, over_hands: Callable[[], bool], built_in: Callable[[], bool], emit: Callable[[WideEvent], None]
 ) -> Callable[[bytes, bool], Awaitable[Woken | None]]:
     """The wake word each buffer of the desk's microphone ends with, if it does, heard afresh from a buffer the wake
-    word's level `begun` with, with nothing of the room before it: an echo where `over_hands`, hands' voice may be in the
-    second the turn would keep, and `built_in`, the desk's streams are on the Mac's own microphone and speakers."""
+    word's level `begun` with, with nothing of the room before it, and what `over_hands` and `built_in` say as it is."""
 
     async def woken(audio: bytes, begun: bool) -> Woken | None:
         if begun:
@@ -98,12 +97,14 @@ def listening(
             return None
         # Off the loop as scoring is: forgetting refills the model with seconds of features. CoreAudio is asked off it too.
         await asyncio.to_thread(word.reset)
+        # [LAW:one-source-of-truth] the clip owner's own second, read as the turn is about to open on it: what it holds then
+        # is what the turn keeps, however far behind the microphone the desk is.
         hands, on_built_in = over_hands(), await asyncio.to_thread(built_in)
         count(wake_words=1)
-        # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and both facts that make it an
-        # echo. Whether a wake opened a turn is the desk's to say, as its count of starts.
+        # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and the facts the desk takes it
+        # by. Whether a wake opened a turn is the desk's to say, as its count of starts.
         with unit("desk.wake_word_heard", emit, wide.begun(clock)):
             annotate(score=score, threshold=THRESHOLD, over_hands=hands, built_in=on_built_in)
-        return Woken(clock.now(), echo=hands and on_built_in)
+        return Woken(clock.now(), over_hands=hands, built_in=on_built_in)
 
     return woken

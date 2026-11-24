@@ -105,20 +105,24 @@ def test_a_third_press_held_to_talk_is_a_turn_and_no_tap() -> None:
 
 
 def test_under_the_wake_word_the_word_opens_a_turn_and_end_of_turn_closes_it() -> None:
-    desk, made = run([Woken(1.0, echo=False), SpeechStopped(), SpeechStarted(1.5), SpeechStopped(), TurnEnded("verdict", T1)], at("wake word"))
+    desk, made = run([Woken(1.0, over_hands=False, built_in=False), SpeechStopped(), SpeechStarted(1.5), SpeechStopped(), TurnEnded("verdict", T1)], at("wake word"))
     assert made == [Made("arm", "wake word"), Made("start", "wake word"), Judging(Speaking(T1, 1.0)), Made("stop", "wake word")]
     assert desk.level == "wake word"
 
 
 @pytest.mark.parametrize("level", ["off", "engaged"])
 def test_the_wake_word_opens_nothing_but_under_its_own_level(level: Level) -> None:
-    assert run([Woken(1.0, echo=False)], at(level))[1] == []
+    assert run([Woken(1.0, over_hands=False, built_in=False)], at(level))[1] == []
 
 
-def test_an_echo_of_the_wake_word_opens_nothing_and_the_word_said_after_it_opens_a_turn() -> None:
-    desk, made = run([Woken(1.0, echo=True), Woken(2.0, echo=False)], at("wake word"))
+def test_the_wake_word_over_hands_on_the_macs_own_pair_opens_nothing_and_said_after_it_opens_a_turn() -> None:
+    desk, made = run([Woken(1.0, over_hands=True, built_in=True), Woken(2.0, over_hands=False, built_in=True)], at("wake word"))
     assert made == [Made("arm", "wake word"), Made("start", "wake word")]
     assert desk.turns == 1
+
+
+def test_the_wake_word_over_hands_on_any_other_pair_opens_a_turn() -> None:
+    assert run([Woken(1.0, over_hands=True, built_in=False)], at("wake word"))[1] == [Made("arm", "wake word"), Made("start", "wake word")]
 
 
 @pytest.mark.parametrize("level", ["off", "wake word"])
@@ -131,14 +135,14 @@ def test_engaged_speech_opens_a_turn_and_a_noise_disarms() -> None:
     assert made == [Made("arm", "engaged conversation"), Made("disarm", "engaged conversation"), Made("arm", "engaged conversation"), Made("start", "engaged conversation"), Judging(Speaking(T1, 2.0)), Made("stop", "engaged conversation")]
 
 
-@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0, echo=False)]), ("engaged", [SpeechStarted(1.0)]), ("engaged", [SpeechStarting()])])
+@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0, over_hands=False, built_in=False)]), ("engaged", [SpeechStarted(1.0)]), ("engaged", [SpeechStarting()])])
 def test_a_shortcut_over_what_the_voice_has_open_talks_and_leaves_the_gate_to_send_or_take_what_the_voice_had(level: Level, opening: list[Event]) -> None:
     # [LAW:single-enforcer] the desk ends nothing of the voice's here: the gate sends its turn, or takes its arming, as the shortcut arms.
     _, made = run([*opening, Pressed(2.0), Ripe(2.0), Released()], at(level))
     assert moves(made)[-3:] == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
 
 
-@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0, echo=False)]), ("engaged", [SpeechStarted(1.0)])])
+@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0, over_hands=False, built_in=False)]), ("engaged", [SpeechStarted(1.0)])])
 def test_shift_typed_over_a_voice_turn_leaves_it_open(level: Level, opening: list[Event]) -> None:
     trigger = "wake word" if level == "wake word" else "engaged conversation"
     desk, made = run([*opening, SpeechStarted(1.5), Pressed(2.0), Typed(), Released(), SpeechStopped(), TurnEnded("verdict", T1)], at(level))
@@ -157,11 +161,11 @@ def test_shift_typing_under_a_voice_turn_that_ends_opens_nothing() -> None:
 
 @pytest.mark.parametrize("level", ["wake word", "engaged"])
 def test_the_voice_opens_nothing_while_the_key_is_down(level: Level) -> None:
-    _, made = run([Pressed(1.0), Ripe(1.0), Woken(1.2, echo=False), SpeechStarted(1.2), SpeechStopped(), TurnEnded("verdict", T1), Released()], at(level))
+    _, made = run([Pressed(1.0), Ripe(1.0), Woken(1.2, over_hands=False, built_in=False), SpeechStarted(1.2), SpeechStopped(), TurnEnded("verdict", T1), Released()], at(level))
     assert made == KEY_TURN
 
 
-@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0, echo=False)]), ("engaged", [SpeechStarted(1.0)])])
+@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0, over_hands=False, built_in=False)]), ("engaged", [SpeechStarted(1.0)])])
 def test_a_level_left_with_a_voice_turn_open_sends_it(level: Level, opening: list[Event]) -> None:
     desk, made = run([*opening, Chosen("off", "tool")], at(level))
     trigger = "wake word" if level == "wake word" else "engaged conversation"
@@ -179,7 +183,7 @@ def test_a_level_chosen_again_changes_nothing() -> None:
 
 
 def test_a_voice_turn_open_past_the_limit_is_sent_and_a_stale_limit_is_nothing() -> None:
-    _, made = run([Woken(1.0, echo=False), TurnTooLong(T2), TurnTooLong(T1)], at("wake word"))
+    _, made = run([Woken(1.0, over_hands=False, built_in=False), TurnTooLong(T2), TurnTooLong(T1)], at("wake word"))
     assert moves(made) == [Made("arm", "wake word"), Made("start", "wake word"), Made("timeout", "wake word")]
 
 
@@ -187,9 +191,9 @@ def test_a_voice_turn_open_past_the_limit_is_sent_and_a_stale_limit_is_nothing()
     "events",
     [
         # Before what is asked has started, a stop or silence ends nothing: it is the end of the wake word.
-        [Woken(1.0, echo=False), SpeechStopped(), TurnEnded("silence", T1)],
+        [Woken(1.0, over_hands=False, built_in=False), SpeechStopped(), TurnEnded("silence", T1)],
         # The wake word said again inside a turn is part of the turn.
-        [Woken(1.0, echo=False), SpeechStarted(1.5), Woken(2.0, echo=False)],
+        [Woken(1.0, over_hands=False, built_in=False), SpeechStarted(1.5), Woken(2.0, over_hands=False, built_in=False)],
     ],
 )
 def test_the_wake_words_own_pause_and_its_saying_again_end_nothing(events: list[Event]) -> None:
@@ -202,9 +206,9 @@ def test_each_level_has_its_own_cue() -> None:
 
 def test_a_wake_with_nothing_asked_after_it_is_thrown_away_and_a_stale_one_is_nothing() -> None:
     assert (ASK_SECONDS + 1.0, NothingAsked(T1)) in deadlines(Waiting(T1, 1.0))
-    desk, made = run([Woken(1.0, echo=False), NothingAsked(T2), NothingAsked(T1)], at("wake word"))
+    desk, made = run([Woken(1.0, over_hands=False, built_in=False), NothingAsked(T2), NothingAsked(T1)], at("wake word"))
     assert moves(made) == [Made("arm", "wake word"), Made("start", "wake word"), Made("drop", "wake word")] and desk.level == "wake word"
-    _, asked = run([Woken(1.0, echo=False), SpeechStarted(1.5), NothingAsked(T1)], at("wake word"))
+    _, asked = run([Woken(1.0, over_hands=False, built_in=False), SpeechStarted(1.5), NothingAsked(T1)], at("wake word"))
     assert Made("drop", "wake word") not in asked
 
 

@@ -204,6 +204,23 @@ def test_the_second_a_clip_keeps_from_before_it_keeps_what_was_played_over_that_
     assert recording.sound.played is None
 
 
+async def test_hands_voice_is_held_in_what_a_clip_opened_now_would_keep_until_a_clip_takes_that_away() -> None:
+    async with rigged(Scripted([None])) as rig:
+        listening = rig.gate.after("listen", "wake word")
+        # Hands played over the second the desk heard: a clip opened now would keep hands' voice.
+        await rig.frame(listening, frame_of(1), ("alba",))
+        await rig.until(rig.owner.holds_hands)
+        # The clip opened, kept it, and was sent: what a clip opened after it would keep starts again, without hands.
+        await rig.clip([frame_of(2)], by="wake word")
+        await rig.until(lambda: rig.seen.ends == [("sent", 1)])
+        assert not rig.owner.holds_hands()
+        # Played where it could not reach the microphone, as in headphones, hands' voice is in nothing a clip keeps.
+        await rig.frame(rig.gate, frame_of(3), ("alba",), reached=False)
+        await rig.clip([frame_of(4)], by="wake word", voices=("alba",), reached=False)
+        await rig.until(lambda: rig.seen.ends == [("sent", 1), ("sent", 2)])
+        assert not rig.owner.holds_hands()
+
+
 async def test_the_transcribers_words_go_on_in_the_order_the_clips_ended_and_a_typed_clip_waits_its_turn() -> None:
     go = asyncio.Event()
     async with rigged(Scripted([go, "and the tests"])) as rig:

@@ -361,7 +361,7 @@ async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out(mo
 
     async def woken(audio: bytes, begun: bool) -> Woken | None:
         said, spoke[0] = not spoke[0], True
-        return Woken(rig.clock.now(), echo=False) if said else None
+        return Woken(rig.clock.now(), over_hands=False, built_in=False) if said else None
 
     driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.owner, rig.on_move, rig.on_level, rig.events.append))
     await rig.choose("wake word")

@@ -16,9 +16,8 @@ from speech import quiet, spoken
 
 from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry, Played
-from hands.sessions.wide import WideEvent, begun
+from hands.sessions.wide import WideEvent
 from hands.voice.atdesk import serve_desk
-from hands.voice.clips import Playhead, Reference, Sound, Synthesis
 from hands.voice.cues import ENGAGED, OFF, WAKE_WORD, Cue
 from hands.voice.keys import tapped
 from hands.voice.ptt import PushToTalk
@@ -32,11 +31,8 @@ from hands.voice.wakeword import Pretrained
 
 pytestmark = pytest.mark.outside
 
-# Twenty milliseconds of the desk's microphone, as it hands audio over: two of the echo canceller's frames.
+# Twenty milliseconds of the desk's microphone, as it hands audio over.
 BUFFER = 640
-
-# Ten milliseconds of hands' TTS, as the desk's speaker played it.
-HANDS = Reference(bytes(480), 24_000, 1, (Playhead(Synthesis("alba", "Say Hey Jarvis to talk to me.", begun(SYSTEM)), 0.0),), True)
 
 # The units of work the desk loads its models in, Silero's and Smart Turn's, and the wake word's.
 LOADS = {"desk.loaded", "desk.wake_word_loaded"}
@@ -59,21 +55,19 @@ class Microphone:
     sample_rate = SAMPLE_RATE
 
     def __init__(self) -> None:
-        self.audio: asyncio.Queue[Sound] = asyncio.Queue()
+        self.audio: asyncio.Queue[bytes] = asyncio.Queue()
 
     @asynccontextmanager
-    async def overheard(self) -> AsyncGenerator[AsyncIterator[Sound]]:
-        async def buffers() -> AsyncIterator[Sound]:
+    async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
+        async def buffers() -> AsyncIterator[bytes]:
             while True:
                 yield await self.audio.get()
 
         yield buffers()
 
-    def say(self, audio: bytes, played: Reference | None = None) -> None:
-        """`audio` heard, with `played` the speaker's sound over every 10 ms of it: hands', or nothing."""
+    def say(self, audio: bytes) -> None:
         for start in range(0, len(audio), BUFFER):
-            buffer = audio[start : start + BUFFER].ljust(BUFFER, b"\0")
-            self.audio.put_nowait(Sound(buffer, buffer, (played, played)))
+            self.audio.put_nowait(audio[start : start + BUFFER].ljust(BUFFER, b"\0"))
 
 
 class Keyboard:
@@ -128,8 +122,9 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     off, wake, engaged, deaf = map(spoken, [ask, "Hey Jarvis. What is the status of the build?", ask, ask])
 
     level, choose = listening_tools(levels, lambda: None, Pretrained())
-    own = [False]
-    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, built_in=lambda: own[0], models=WakeModels(models, SYSTEM), word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
+    # Whether hands' voice is in what a turn would keep, and the desk is on the Mac's own microphone and speakers.
+    echoed = [False]
+    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, over_hands=lambda: echoed[0], built_in=lambda: echoed[0], models=WakeModels(models, SYSTEM), word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
 
     async def alongside(waiting: Awaitable[object]) -> None:
         """`waiting`, beside the desk: a desk that ended is the failure itself, raised, never a wait that runs out on it."""
@@ -185,14 +180,14 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     await settled()
     del taken[:]
 
-    # On the Mac's own microphone and speakers, the wake word heard with hands playing may be hands' own: it opens nothing.
-    own[0] = True
-    microphone.say(quiet(0.5) + wake + quiet(1.0), HANDS)
+    # On the Mac's own microphone and speakers, the wake word over hands' voice may be hands' own: it opens nothing.
+    echoed[0] = True
+    microphone.say(quiet(0.5) + wake + quiet(1.0))
     await settled()
     assert taken == []
     hearings = [(event.facts["over_hands"], event.facts["built_in"]) for event in events if event.event == "desk.wake_word_heard"]
     assert hearings == [(True, True)]
-    own[0] = False
+    echoed[0] = False
 
     # Said, the wake word opens a turn, and Smart Turn's verdict on what was asked sends it.
     microphone.say(quiet(0.5) + wake + quiet(4.0))

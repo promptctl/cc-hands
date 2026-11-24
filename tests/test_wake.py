@@ -80,7 +80,7 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
         yield buffers()
 
     async def woken(heard: bytes, begun: bool) -> Woken | None:
-        return Woken(SYSTEM.now(), echo=False) if heard == b"w" else None
+        return Woken(SYSTEM.now(), over_hands=False, built_in=False) if heard == b"w" else None
 
     async def on_move(move: Made) -> None:
         made.append(move.move)
@@ -124,25 +124,24 @@ class FakeWord(WakeWord):
         self.resets += 1
 
 
-def test_the_detector_hears_the_room_while_hands_speaks_and_a_wake_over_hands_on_the_macs_own_pair_is_an_echo() -> None:
+def test_the_detector_hears_the_room_while_hands_speaks_and_each_wake_says_whether_it_was_over_hands_on_the_macs_own_pair() -> None:
     word = FakeWord()
     # Whether hands' voice may be in the second the turn would keep, and whether the desk is on the Mac's own pair.
     now = [(True, False)]
     events: list[WideEvent] = []
     woken = listening(SYSTEM, word, lambda: now[0][0], lambda: now[0][1], events.append)
 
-    async def heard() -> list[bool | None]:
+    async def heard() -> list[tuple[bool, bool] | None]:
         with unit("desk", events.append, begun(SYSTEM), ("wake_words",)):
-            echoes: list[bool | None] = []
+            echoes: list[tuple[bool, bool] | None] = []
             for facts, audio in [((True, False), b"\x01\x02" * 160), ((False, True), b"\x01\x02" * 160), ((True, True), b"\x01\x02" * 160), ((True, True), bytes(320))]:
                 now[0] = facts
                 wake = await woken(audio, False)
-                echoes.append(None if wake is None else wake.echo)
+                echoes.append(None if wake is None else (wake.over_hands, wake.built_in))
             return echoes
 
-    # Over hands anywhere else, or with hands not in the second, a wake; over hands on the Mac's own pair, an echo.
-    # Silence is no wake at all.
-    assert asyncio.run(heard()) == [False, False, True, None]
+    # Each wake says what the two facts were as it was heard, for the desk to take it by; silence is no wake at all.
+    assert asyncio.run(heard()) == [(True, False), (False, True), (True, True), None]
     assert word.resets == 3
     hearings = [event for event in events if event.event == "desk.wake_word_heard"]
     assert [(event.facts["over_hands"], event.facts["built_in"]) for event in hearings] == [(True, False), (False, True), (True, True)]

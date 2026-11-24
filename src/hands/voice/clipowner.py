@@ -27,7 +27,7 @@ from hands.clock import Clock
 from hands.core.place import Place
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
-from hands.voice.clips import LANGUAGE, RATE, Clip, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber
+from hands.voice.clips import LANGUAGE, RATE, Clip, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber, voices
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.trigger import turn_start
 from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
@@ -158,6 +158,10 @@ class ClipOwner(FrameProcessor):
                 await self.push_frame(frame, direction)
             case _:
                 await self.push_frame(frame, direction)
+
+    def holds_hands(self) -> bool:
+        """Whether hands' voice may be in what a clip opened now would keep from before it opened."""
+        return bool(voices(self._recording.sound))
 
     def _stamp(self) -> str:
         """The time a transcript is stamped with, in the form pipecat's own stamps take."""
