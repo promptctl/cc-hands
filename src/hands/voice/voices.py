@@ -30,7 +30,7 @@ from hands.voice.echo import seconds
 from hands.voice.library import Found, Library, address
 from hands.voice.player import LineFrame, LineText, Lines, Unsaid, line_frame
 from hands.voice.synthesis import Made, SpeakingIn, Synthesis
-from hands.voice.voicechoice import VOICES, Chosen, LibraryVoice, keep, parse_voice, spoken
+from hands.voice.voicechoice import VOICES, Chosen, LibraryVoice, keep, spoken
 
 # The language the TTS service speaks, which picks the set of embeddings a voice's name resolves to.
 LANGUAGE = Language.EN
@@ -93,20 +93,12 @@ def said(voice: Chosen, written: str) -> str:
 
 
 class SampleLines(Protocol):
-    """The lines voices say when they are heard, by the voice's name as written (hands.daemon.config.SampleLines)."""
+    """The lines voices say when they are heard, by voice (hands.daemon.config.SampleLines), which refuses a file whose
+    keys name no voice, or one voice twice."""
 
-    def read(self) -> Mapping[str, str]: ...
+    def read(self) -> Mapping[Chosen, str]: ...
 
-    def keep(self, voice: str, line: str) -> None: ...
-
-
-def parse_lines(written: Mapping[str, str]) -> dict[Chosen, str]:
-    """The line each voice says, by the voice each name is; raises Rejected for a name that is no voice, or two names that
-    are one voice, since which of their lines it says would be a guess."""
-    lines = {parse_voice(name): line for name, line in written.items()}
-    if len(lines) != len(written):
-        raise Rejected(f"[sample_lines] names one voice twice, spelled two ways: {', '.join(map(repr, written))}")
-    return lines
+    def keep(self, voice: Chosen, line: str) -> None: ...
 
 
 class Voices:
@@ -142,7 +134,7 @@ class Voices:
 
     async def said_by(self, voices: tuple[Chosen, ...]) -> tuple[str, ...]:
         """What each voice says when it is heard, as the file holds its line now."""
-        written = parse_lines(await asyncio.to_thread(self._samples.read))
+        written = await asyncio.to_thread(self._samples.read)
         return tuple(said(voice, written.get(voice, "")) for voice in voices)
 
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen:
@@ -156,7 +148,7 @@ class Voices:
 
     async def keep_line(self, voice: Chosen, line: str) -> str:
         """From its next hearing on, `voice` says `line`, or hands' own where it is blank; returns what it will say."""
-        await asyncio.to_thread(self._samples.keep, str(voice), line)
+        await asyncio.to_thread(self._samples.keep, voice, line)
         [saying] = await self.said_by((voice,))
         return saying
 

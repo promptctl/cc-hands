@@ -238,6 +238,18 @@ async def test_a_line_kept_is_said_from_the_next_hearing_on_and_a_blank_one_goes
         assert await speaker.until(2) == [("bill_boerst", "Bill, at your service."), ("bill_boerst", sample(Voice("bill_boerst")))]
 
 
+async def test_a_line_kept_over_a_hand_written_key_for_the_voice_is_the_line_it_says_when_heard(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[sample_lines]\n"Bill Boerst" = "Hand-written."\n')
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
+    chosen_voices = Voices(home, lines, ready, unlisted(), DEFAULT, SampleLines(home, _NO_FILE))
+    async with running([lines, speaker]):
+        assert await chosen_voices.keep_line(Voice("bill_boerst"), "Saved from the page.") == "Saved from the page."
+        await chosen_voices.hear((Voice("bill_boerst"),))
+        assert await speaker.until(1) == [("bill_boerst", "Saved from the page.")]
+    assert home.config.read_text() == '[sample_lines]\n"Bill Boerst" = "Saved from the page."\n'
+
+
 async def test_a_line_kept_for_a_name_that_is_no_voice_or_one_voice_named_twice_refuses_the_hearing_naming_it(tmp_path: Path) -> None:
     home = Home(tmp_path)
     chosen_voices = Voices(home, Player(lambda _: None).lines, ready, unlisted(), DEFAULT, SampleLines(home, _NO_FILE))

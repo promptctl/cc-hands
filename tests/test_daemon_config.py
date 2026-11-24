@@ -770,10 +770,10 @@ async def test_a_sample_line_edited_is_no_edit_since_it_is_read_where_it_is_said
     recorded: list[Entry] = []
     watching = asyncio.create_task(_edited_within(home, recorded, seconds=0.2))
     await asyncio.sleep(0.05)
-    config.SampleLines(home, config.load(home)).keep("mary", "Mary here.")
+    config.SampleLines(home, config.load(home)).keep(voicechoice.Voice("mary"), "Mary here.")
     assert await watching is None
     assert recorded == []
-    assert config.SampleLines(home, config.load(home)).read() == {"mary": "Mary here."}
+    assert config.SampleLines(home, config.load(home)).read() == {voicechoice.Voice("mary"): "Mary here."}
 
 
 def test_a_sample_line_kept_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
@@ -781,13 +781,14 @@ def test_a_sample_line_kept_is_an_edit_to_the_file_that_keeps_every_other_line_a
     written = '# hands, by hand\n[llm]\nmodel = "claude-opus-5-5"  # for now\n\n[sample_lines]\nalba = "Alba here."  # hers\n'
     home.config.write_text(written)
     lines = config.SampleLines(home, config.load(home))
-    lines.keep("vctk/p225_023_enhanced", "  From the library.  ")
+    alba, library = voicechoice.Voice("alba"), voicechoice.LibraryVoice("vctk/p225_023_enhanced")
+    lines.keep(library, "  From the library.  ")
     assert home.config.read_text() == written + '"vctk/p225_023_enhanced" = "From the library."\n'
-    lines.keep("alba", "Alba, again.")
-    assert lines.read() == {"alba": "Alba, again.", "vctk/p225_023_enhanced": "From the library."}
+    lines.keep(alba, "Alba, again.")
+    assert lines.read() == {alba: "Alba, again.", library: "From the library."}
     assert home.config.read_text().startswith('# hands, by hand\n[llm]\nmodel = "claude-opus-5-5"  # for now\n\n[sample_lines]\nalba = "Alba, again."')
-    lines.keep("alba", "")
-    lines.keep("vctk/p225_023_enhanced", " ")
+    lines.keep(alba, "")
+    lines.keep(library, " ")
     # The last line taken out takes its table with it: the file is the user's as it was before any line.
     assert home.config.read_text() == '# hands, by hand\n[llm]\nmodel = "claude-opus-5-5"  # for now\n\n'
     assert lines.read() == {}
@@ -801,15 +802,35 @@ def test_sample_lines_are_none_with_no_file_and_one_that_is_not_text_refuses_the
         config.parse('sample_lines = "Mary here."\n')
 
 
+def test_a_sample_line_key_that_names_no_voice_refuses_the_file_naming_the_key_and_so_does_one_voice_named_twice() -> None:
+    with pytest.raises(Rejected, match=r"\[sample_lines\] hands has no voice called 'Zed!'"):
+        config.parse('[sample_lines]\nmary = "Mary here."\n"Zed!" = "Who?"\n')
+    with pytest.raises(Rejected, match=r"\[sample_lines\] names one voice twice, spelled two ways: 'bill_boerst' and 'Bill Boerst'"):
+        config.parse('[sample_lines]\nbill_boerst = "One."\n"Bill Boerst" = "Two."\n')
+
+
+def test_a_line_kept_for_a_voice_replaces_the_line_the_file_keeps_for_it_under_whatever_spelling_it_holds(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    bill = voicechoice.Voice("bill_boerst")
+    home.config.write_text('[sample_lines]\n"Bill Boerst" = "Hand-written."\nalba = "Alba here."\n')
+    lines = config.SampleLines(home, config.load(home))
+    lines.keep(bill, "Saved from the page.")
+    assert home.config.read_text() == '[sample_lines]\n"Bill Boerst" = "Saved from the page."\nalba = "Alba here."\n'
+    assert lines.read() == {bill: "Saved from the page.", voicechoice.Voice("alba"): "Alba here."}
+    # A blank line takes the line out from under that spelling too, so no key is left for the voice.
+    lines.keep(bill, "")
+    assert home.config.read_text() == '[sample_lines]\nalba = "Alba here."\n'
+
+
 def test_a_sample_line_is_never_kept_in_a_file_a_start_would_refuse(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nmodel = "gpt-9"\n')
     with pytest.raises(Rejected, match="not gpt-9"):
-        config.SampleLines(home, _NO_FILE).keep("mary", "Mary here.")
+        config.SampleLines(home, _NO_FILE).keep(voicechoice.Voice("mary"), "Mary here.")
     assert home.config.read_text() == '[llm]\nmodel = "gpt-9"\n'
     # A start on --model never reads the file's model, so a line is kept in a file whose model only it outranks.
-    config.SampleLines(home, config.load(home, "claude-opus-5-5")).keep("mary", "Mary here.")
-    assert config.SampleLines(home, _NO_FILE).read() == {"mary": "Mary here."}
+    config.SampleLines(home, config.load(home, "claude-opus-5-5")).keep(voicechoice.Voice("mary"), "Mary here.")
+    assert config.SampleLines(home, _NO_FILE).read() == {voicechoice.Voice("mary"): "Mary here."}
     assert config.SampleLines(Home(tmp_path / "none"), _NO_FILE).read() == {}
 
 

@@ -51,6 +51,7 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
+from hands.voice.voicechoice import Chosen, parse_voice
 from hands.voice.wakemodels import PRETRAINED
 from hands.voice.wakeword import Pretrained, Trained, Word
 
@@ -274,7 +275,7 @@ def parse(text: str, model: str | None = None) -> Config:
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
     _known(top, "the file", ("llm", "telemetry", "talk", "audio", "sample_lines"))
-    # Checked as the file is read, so a line hands could not say is refused at the start or the edit; read where it is said.
+    # Checked as the file is read, so a key naming no voice, or two naming one, is refused at the start or the edit.
     _sample_lines(top)
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
@@ -286,11 +287,26 @@ def parse(text: str, model: str | None = None) -> Config:
     return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk), devices=devices)
 
 
-def _sample_lines(top: Mapping[str, object]) -> dict[str, str]:
-    """The line each voice named says when it is heard, by the voice's name as written; which voice a name is, is the
-    voices' to say (hands.voice.voices.parse_lines)."""
+def _sample_lines(top: Mapping[str, object]) -> dict[Chosen, str]:
+    """The line each voice says when it is heard. A key is the voice it names, said as a person says it, so a key that
+    names no voice is refused here, where the file is read, and not when a voice is heard."""
     table = _table(top, "sample_lines")
-    return {name: _text(table, "[sample_lines]", name, "") for name in table}
+    return {voice: _text(table, "[sample_lines]", key, "") for voice, key in _spellings(table).items()}
+
+
+def _spellings(table: Mapping[str, object]) -> dict[Chosen, str]:
+    """Each voice `table` names, by the key that spells it; two keys for one voice are refused, since which of their
+    lines it says would be a guess."""
+    spelled: dict[Chosen, str] = {}
+    for key in table:
+        try:
+            voice = parse_voice(key)
+        except Rejected as error:
+            raise Rejected(f"[sample_lines] {error}") from error
+        if voice in spelled:
+            raise Rejected(f"[sample_lines] names one voice twice, spelled two ways: {spelled[voice]!r} and {key!r}")
+        spelled[voice] = key
+    return spelled
 
 
 class SampleLines:
@@ -305,7 +321,7 @@ class SampleLines:
         self._home = home
         self._running = running
 
-    def read(self) -> dict[str, str]:
+    def read(self) -> dict[Chosen, str]:
         held = _readable(self._home, _held(self._home))
         try:
             return _sample_lines(tomllib.loads("" if held is None else held.decode()))
@@ -314,8 +330,9 @@ class SampleLines:
         except Rejected as error:
             raise Rejected(f"{self._home.config}: {error}") from error
 
-    def keep(self, voice: str, line: str) -> None:
-        """`voice` says `line` from its next hearing on; a blank line takes its line out, so it says hands' own again."""
+    def keep(self, voice: Chosen, line: str) -> None:
+        """`voice` says `line` from its next hearing on, replacing the one the file keeps for it under whatever spelling
+        it holds; a blank line takes its line out, so it says hands' own again."""
         held = _readable(self._home, _held(self._home))
         # The file is taken whole first, on the run's --model as a start takes it, so an edit is only ever made to
         # settings a start would take.
@@ -323,15 +340,18 @@ class SampleLines:
         _keep(self._home, held, _with_line(held, voice, line.strip()))
 
 
-def _with_line(held: bytes | None, voice: str, line: str) -> bytes:
-    # Only read once `_settings` has taken the file, so it is TOML and [sample_lines], where there is one, is a table.
+def _with_line(held: bytes | None, voice: Chosen, line: str) -> bytes:
+    # Only read once `_settings` has taken the file, so it is TOML and [sample_lines], where there is one, is a table
+    # whose every key names one voice.
     document = tomlkit.parse(b"" if held is None else held)
     lines = cast(dict[str, object], document.setdefault("sample_lines", tomlkit.table()))
+    # The key the file already spells the voice with, so the file never holds two for one voice.
+    key = _spellings(lines).get(voice, str(voice))
     if line:
         # Set in place, so a line edited keeps its place in the table.
-        lines[voice] = line
+        lines[key] = line
     else:
-        lines.pop(voice, None)
+        lines.pop(key, None)
     if not lines:
         # A table emptied by the last line taken out goes with it, so the file reads as one never given a line.
         del document["sample_lines"]
