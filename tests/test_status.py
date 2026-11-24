@@ -21,6 +21,7 @@ from hands.daemon.cli import Run, launch, main
 from hands.daemon.starting import Ended, QuitKey, Start, Stop, keep_beating
 from hands.voice.listening import Levels
 from hands.threads import off_loop
+from hands.virtualclock import VirtualClock
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -314,11 +315,16 @@ def test_a_heartbeat_whose_pid_went_to_a_later_process_reads_as_down(tmp_path: P
 
 
 async def test_the_heartbeat_is_rewritten_every_period() -> None:
-    beats: list[None] = []
-    beating = asyncio.create_task(keep_beating(lambda: beats.append(None), 0.01, SYSTEM))
-    await asyncio.sleep(0.055)
+    clock = VirtualClock()
+    beats: list[float] = []
+    beating = asyncio.create_task(keep_beating(lambda: beats.append(clock.at), 10, clock))
+    for period in range(1, 4):
+        await clock.sleeping(period * 10)
+        assert beats == [beat * 10 for beat in range(period)]
+        clock.advance(10)
     beating.cancel()
-    assert 3 <= len(beats) <= 6
+    with pytest.raises(asyncio.CancelledError):
+        await beating
 
 
 async def test_work_off_the_loop_returns_its_result_or_raises_its_error() -> None:
