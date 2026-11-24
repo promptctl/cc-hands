@@ -1,23 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
-
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -28,6 +19,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bmf/cc-hands/fritter/intercept"
 )
 
 // A tap: the child's exchanges with one server go through fritter, and a copy of each
@@ -144,22 +137,12 @@ func parseUpstream(raw string) (*url.URL, error) {
 	return &url.URL{Scheme: upstream.Scheme, Host: upstream.Host}, nil
 }
 
-// authorityOf is the host and port a URL reaches, as a CONNECT names it.
-func authorityOf(target *url.URL) string {
-	if target.Port() != "" {
-		return target.Host
-	}
-	port := map[string]string{"http": "80", "https": "443"}[target.Scheme]
-	return net.JoinHostPort(target.Hostname(), port)
-}
-
 // Tap is a running tap: the proxy the child is given, and the count of copies lost.
 type Tap struct {
 	address    string
 	upstream   *url.URL
 	trusted    string // the file of certificates the child is given to trust
-	server     *http.Server
-	opened     *http.Server // serves the child's connections to the upstream, opened
+	door       *intercept.Door
 	lost       atomic.Int64
 	to         string
 	deliveries sync.WaitGroup
@@ -168,12 +151,12 @@ type Tap struct {
 // startTap listens on loopback and serves until closed; dir is where it keeps the file of
 // certificates the child is given.
 func startTap(t tapping, dir string) (*Tap, error) {
-	authority, err := newAuthority(t.upstream.Hostname())
+	authority, err := intercept.NewAuthority(fmt.Sprintf("fritter %d", os.Getpid()), t.upstream.Hostname())
 	if err != nil {
 		return nil, fmt.Errorf("cannot make the certificate the child is answered with for %s: %w", t.upstream.Host, err)
 	}
 	trusted := filepath.Join(dir, "trusted.pem")
-	if err := os.WriteFile(trusted, append(alsoTrusted(t.trust), authority.pem...), 0o600); err != nil {
+	if err := intercept.WriteTrusted(trusted, alsoTrusted(t.trust), authority); err != nil {
 		return nil, fmt.Errorf("cannot write the certificates the child is to trust: %w", err)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -238,30 +221,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	})
 	// What the child asks of anywhere else, in plain HTTP, goes on as it was asked.
 	passing := &httputil.ReverseProxy{Rewrite: func(*httputil.ProxyRequest) {}, Transport: onward, FlushInterval: -1, ErrorLog: quiet}
-	opening := handing(listener.Addr())
-	tap.opened = &http.Server{Handler: copied, ErrorLog: quiet}
-	go tap.opened.Serve(opening)
-	// A host is named in any case, and a client may send it lowered: one host either way.
-	tapped := authorityOf(t.upstream)
-	answer := &tls.Config{Certificates: []tls.Certificate{authority.leaf}, NextProtos: []string{"http/1.1"}}
-	tap.server = &http.Server{
-		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			switch {
-			case request.Method == http.MethodConnect && strings.EqualFold(request.Host, tapped) && t.upstream.Scheme == "https":
-				joined(writer, func(connection net.Conn) { opening.hand(tls.Server(connection, answer)) })
-			case request.Method == http.MethodConnect:
-				tunnel(writer, request.Host)
-			case !request.URL.IsAbs():
-				http.Error(writer, "fritter is a proxy: ask it for an absolute URL, or CONNECT", http.StatusBadRequest)
-			case request.URL.Scheme == t.upstream.Scheme && strings.EqualFold(authorityOf(request.URL), tapped):
-				copied.ServeHTTP(writer, request)
-			default:
-				passing.ServeHTTP(writer, request)
-			}
-		}),
-		ErrorLog: quiet,
-	}
-	go tap.server.Serve(listener)
+	tap.door = intercept.Open(listener, intercept.Opening{Name: "fritter", Tapped: t.upstream, Leaf: authority.Leaf, Opened: copied, Passing: passing, Proxied: http.ProxyFromEnvironment, ErrorLog: quiet})
 	return tap, nil
 }
 
@@ -286,209 +246,19 @@ func (tap *Tap) env(trust string) []string {
 // alsoTrusted is what the file `variable` names holds: the certificates the child trusted
 // besides its own before fritter named another file in its place.
 func alsoTrusted(variable string) []byte {
-	named := os.Getenv(variable)
-	if named == "" {
-		return nil
-	}
-	held, err := os.ReadFile(named)
+	held, err := intercept.AlsoTrusted(variable)
 	if err != nil {
 		// The child would have been told the same, and gone on without them.
 		warn("cannot read the certificates %s names, so the child is not given them: %v", variable, err)
 		return nil
 	}
-	return append(held, '\n')
-}
-
-type authority struct {
-	pem  []byte // the authority's certificate, which the child is given to trust
-	leaf tls.Certificate
-}
-
-// newAuthority makes a certificate authority, and with it a certificate for host. Its
-// key is never written anywhere: it lives and dies with this fritter.
-func newAuthority(host string) (authority, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return authority{}, err
-	}
-	from, until := time.Now().Add(-time.Hour), time.Now().AddDate(1, 0, 0)
-	root := &x509.Certificate{
-		SerialNumber:          serial(),
-		Subject:               pkix.Name{CommonName: fmt.Sprintf("fritter %d", os.Getpid())},
-		NotBefore:             from,
-		NotAfter:              until,
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		MaxPathLenZero:        true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	signed, err := x509.CreateCertificate(rand.Reader, root, root, &key.PublicKey, key)
-	if err != nil {
-		return authority{}, err
-	}
-	root, err = x509.ParseCertificate(signed)
-	if err != nil {
-		return authority{}, err
-	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return authority{}, err
-	}
-	leaf := &x509.Certificate{
-		SerialNumber: serial(),
-		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    from,
-		NotAfter:     until,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		leaf.IPAddresses = []net.IP{ip}
-	} else {
-		leaf.DNSNames = []string{host}
-	}
-	leafSigned, err := x509.CreateCertificate(rand.Reader, leaf, root, &leafKey.PublicKey, key)
-	if err != nil {
-		return authority{}, err
-	}
-	return authority{
-		pem:  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: signed}),
-		leaf: tls.Certificate{Certificate: [][]byte{leafSigned}, PrivateKey: leafKey},
-	}, nil
-}
-
-func serial() *big.Int {
-	n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		// crypto/rand does not fail on any system fritter runs on.
-		panic(fmt.Sprintf("fritter cannot read randomness: %v", err))
-	}
-	return n
-}
-
-// joined answers a CONNECT and gives the connection it opened to then.
-func joined(writer http.ResponseWriter, then func(net.Conn)) {
-	connection, buffered, err := http.NewResponseController(writer).Hijack()
-	if err != nil {
-		http.Error(writer, fmt.Sprintf("fritter cannot take the connection: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if _, err := connection.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		connection.Close()
-		return
-	}
-	then(&read{Conn: connection, from: buffered.Reader})
-}
-
-// read is a connection whose first bytes may already have been read into a buffer.
-type read struct {
-	net.Conn
-	from *bufio.Reader
-}
-
-func (r *read) Read(p []byte) (int, error) {
-	return r.from.Read(p)
-}
-
-// tunnel joins the child to target, through the proxy fritter was given, if any.
-func tunnel(writer http.ResponseWriter, target string) {
-	far, err := dial(target)
-	if err != nil {
-		http.Error(writer, fmt.Sprintf("fritter could not reach %s: %v", target, err), http.StatusBadGateway)
-		return
-	}
-	joined(writer, func(near net.Conn) {
-		go func() {
-			io.Copy(far, near)
-			far.Close()
-		}()
-		io.Copy(near, far)
-		near.Close()
-	})
-}
-
-func dial(target string) (net.Conn, error) {
-	via, err := http.ProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "https", Host: target}})
-	if err != nil {
-		return nil, err
-	}
-	if via == nil {
-		return net.DialTimeout("tcp", target, 10*time.Second)
-	}
-	if via.Scheme != "http" {
-		return nil, fmt.Errorf("fritter tunnels only through an http proxy, and was given %s", via.Redacted())
-	}
-	connection, err := net.DialTimeout("tcp", authorityOf(via), 10*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	asked := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
-	if via.User != nil {
-		password, _ := via.User.Password()
-		asked += "Proxy-Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(via.User.Username()+":"+password)) + "\r\n"
-	}
-	connection.SetDeadline(time.Now().Add(10 * time.Second))
-	reader := bufio.NewReader(connection)
-	_, err = connection.Write([]byte(asked + "\r\n"))
-	var answer *http.Response
-	if err == nil {
-		answer, err = http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
-	}
-	if err == nil && answer.StatusCode != http.StatusOK {
-		err = fmt.Errorf("the proxy %s answered %s", via.Redacted(), answer.Status)
-	}
-	if err != nil {
-		connection.Close()
-		return nil, err
-	}
-	connection.SetDeadline(time.Time{})
-	return &read{Conn: connection, from: reader}, nil
-}
-
-// handed is a listener whose connections are given to it, one at a time, rather than
-// accepted from the network: the child's connections to the upstream, once opened.
-type handed struct {
-	given  chan net.Conn
-	closed chan struct{}
-	once   sync.Once
-	addr   net.Addr
-}
-
-func handing(addr net.Addr) *handed {
-	return &handed{given: make(chan net.Conn), closed: make(chan struct{}), addr: addr}
-}
-
-func (h *handed) hand(connection net.Conn) {
-	select {
-	case h.given <- connection:
-	case <-h.closed:
-		connection.Close()
-	}
-}
-
-func (h *handed) Accept() (net.Conn, error) {
-	select {
-	case connection := <-h.given:
-		return connection, nil
-	case <-h.closed:
-		return nil, net.ErrClosed
-	}
-}
-
-func (h *handed) Close() error {
-	h.once.Do(func() { close(h.closed) })
-	return nil
-}
-
-func (h *handed) Addr() net.Addr {
-	return h.addr
+	return held
 }
 
 // close stops serving, and lets the copies still under way finish, up to drainTimeout: the
 // child has gone, and what they still hold is how its last exchanges ended.
 func (tap *Tap) close() {
-	tap.server.Close()
-	tap.opened.Close()
+	tap.door.Close()
 	drained := make(chan struct{})
 	go func() {
 		tap.deliveries.Wait()

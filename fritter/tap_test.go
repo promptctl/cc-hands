@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bmf/cc-hands/fritter/intercept"
 	"github.com/creack/pty"
 )
 
@@ -491,7 +492,7 @@ func TestTheUpstreamsHostIsOpenedWhateverCaseItIsNamedIn(t *testing.T) {
 	if response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect}); err != nil || response.StatusCode != 200 {
 		t.Fatalf("the CONNECT came back %v, %v", response, err)
 	}
-	opened := tls.Client(&read{Conn: connection, from: reader}, &tls.Config{ServerName: "api.example.com", InsecureSkipVerify: true})
+	opened := tls.Client(&intercept.Read{Conn: connection, From: reader}, &tls.Config{ServerName: "api.example.com", InsecureSkipVerify: true})
 	if err := opened.Handshake(); err != nil {
 		t.Fatalf("the connection was not answered over TLS: %v", err)
 	}
