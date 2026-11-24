@@ -1043,7 +1043,7 @@ def file_tickets(children: Children, home: Home, project: Path, epic: str, recor
             lines=found.lines, unreadable=found.unreadable, unparsed=found.unparsed, retold=found.retold,
             sightings=sum(len(group.sightings) for group in found.groups), groups=len(found.groups),
         )
-        ended = asyncio.run(_filed(children, project, epic, found.groups, filing.where(home.audit, Path.home()), backlog.Lit(os.environ)))
+        ended = asyncio.run(_filed(children, project, epic, found.groups, filing.where(home.audit, Path.home()), backlog.Lit(children, os.environ)))
         if isinstance(ended, exits.Failed):
             wide.fail(ended.why)
     return ended
@@ -1053,7 +1053,7 @@ async def _filed(children: Children, project: Path, epic: str, groups: Sequence[
     """File what `filing` decides for `groups` in `project`'s backlog, one at a time, saying each; the first lit refuses
     stops the pass, and what was filed before it stays filed, which the next pass reads back."""
     try:
-        read = await backlog.read_backlog(children, lit, project)
+        read = await backlog.read_backlog(lit, project)
     except (backlog.LitFailed, Rejected) as failed:
         return refused("hands file-tickets", 1, f"cannot read the backlog: {failed}")
     match read:
@@ -1071,12 +1071,12 @@ async def _filed(children: Children, project: Path, epic: str, groups: Sequence[
         try:
             match each:
                 case filing.New(group=group):
-                    filed = await backlog.file_ticket(children, lit, project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label, backlog.Inherited())
+                    filed = await backlog.file_ticket(lit, project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label, backlog.Inherited())
                     wide.count(filed=1)
                     print(f"filed {filed}: {filing.title(group)}".translate(VISIBLE))
                 case filing.Again(ticket=ticket, group=group):
                     # Signed as the session file-tickets is run from, whose work it is.
-                    await backlog.comment(children, lit, project, ticket, filing.comment(group, logs), backlog.Inherited())
+                    await backlog.comment(lit, project, ticket, filing.comment(group, logs), backlog.Inherited())
                     wide.count(commented=1)
                     print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
         except backlog.LitFailed as failed:

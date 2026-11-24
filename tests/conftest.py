@@ -238,10 +238,10 @@ class Unstarting(Children):
     """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real
     process through a fake that forgot one."""
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
         raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
 
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
         raise AssertionError(f"{type(self).__name__} does not answer a blocking run of {argv[0]}")
 
     def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: child.Stdio) -> child.Running | child.NeverStarted:
@@ -255,10 +255,10 @@ class Answering(Unstarting):
     outcome: child.Outcome
     asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
         return self.run_blocking(*argv, limit=limit, cwd=cwd, env=env)
 
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
         self.asked.append(argv)
         return self.outcome
 
@@ -269,8 +269,9 @@ class Faked(Unstarting):
 
     answer: Callable[..., Awaitable[child.Outcome]]
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
-        return await self.answer(*argv, limit=limit, cwd=cwd, env=env)
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+        # The program a test stands in for is handed the environment a real start hands it.
+        return await self.answer(*argv, limit=limit, cwd=cwd, env=env.handed if isinstance(env, child.Traced) else env)
 
 
 def exited(code: int, out: bytes = b"", err: bytes = b"") -> child.Ran:

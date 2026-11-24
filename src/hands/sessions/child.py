@@ -520,6 +520,29 @@ class _Event(Protocol):
 
 
 @dataclass(frozen=True)
+class Traced:
+    """An environment a child runs in as a span of hands' trace: `began`, the span its `child.run` event is written
+    under, handed to it as W3C Trace Context's TRACEPARENT, so what the child records of its run joins hands' record of
+    the same run. Its caller holds `began` to find that record by."""
+
+    environment: Mapping[str, str]
+    began: wide.Begun
+
+    @property
+    def handed(self) -> Mapping[str, str]:
+        return {**self.environment, "TRACEPARENT": self.began.span.traceparent}
+
+
+def _as(env: Mapping[str, str] | Traced | None, clock: Clock) -> tuple[wide.Begun, Mapping[str, str] | None]:
+    """The span a child runs as, and the environment it is handed: a traced child's own, and any other's begun now."""
+    match env:
+        case Traced(began=began) as traced:
+            return began, traced.handed
+        case _:
+            return wide.begun(clock), env
+
+
+@dataclass(frozen=True)
 class Children:
     """[LAW:effects-at-boundaries] what starts hands' children: a value made from its caller's one clock, which measures
     every child's limit, and the edge its caller's events leave through, which its children's events leave through too."""
@@ -527,22 +550,24 @@ class Children:
     clock: Clock
     emit: Callable[[wide.WideEvent], None]
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None) -> Outcome:
         """Run `argv` to its end, within `limit`, from a coroutine: raises ValueError for a command no OS can be
         handed or a limit that is no time, and what ended the wait early, once it is killed."""
         bound = Limit(limit)
         loop = asyncio.get_running_loop()
         ended: asyncio.Future[Ran | Lost] = loop.create_future()
-        started = self._captured(Command(argv, cwd, env), limit, lambda result: tell(loop, ended.set_result, result))
+        began, handed = _as(env, self.clock)
+        started = self._captured(began, Command(argv, cwd, handed), limit, lambda result: tell(loop, ended.set_result, result))
         if isinstance(started, NeverStarted):
             return started
         return await _awaited(_bounded(bound), started, ended, self.clock)
 
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None) -> Outcome:
         """`run`, waited on by the calling thread, for code that runs off any event loop."""
         bound = Limit(limit)
         ended: queue.SimpleQueue[Ran | Lost] = queue.SimpleQueue()
-        started = self._captured(Command(argv, cwd, env), limit, ended.put)
+        began, handed = _as(env, self.clock)
+        started = self._captured(began, Command(argv, cwd, handed), limit, ended.put)
         if isinstance(started, NeverStarted):
             return started
         return _waited(_bounded(bound), started, ended, self.clock)
@@ -558,9 +583,8 @@ class Children:
         started = self._spawned(Command(tuple(argv), cwd, env), _streams(stdio), wide.begun(self.clock), None, finish, lambda result: tell(loop, ended.set_result, result))
         return started if isinstance(started, NeverStarted) else Running(started.pid, ended, started, self.clock)
 
-    def _captured(self, parsed: Command, limit: float, settle: Callable[[Ran | Lost], None]) -> _Supervised | NeverStarted:
-        """`parsed` started with its outputs to files hands reads once it is reaped, and `settle` given what it wrote."""
-        began = wide.begun(self.clock)
+    def _captured(self, began: wide.Begun, parsed: Command, limit: float, settle: Callable[[Ran | Lost], None]) -> _Supervised | NeverStarted:
+        """`parsed` started as `began` with its outputs to files hands reads once it is reaped, and `settle` given what it wrote."""
         with ExitStack() as unstarted:
             try:
                 out = unstarted.enter_context(tempfile.TemporaryFile())

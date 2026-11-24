@@ -10,6 +10,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from hands.sessions.backlog import events_file
+
 # [LAW:one-source-of-truth] the code lit gives each reason a fake of lit refuses on (docs/cli-reference.md in links,
 # "Every reason"): each of the first two may follow a commit, and code 6 is a write whose asked state already holds.
 CODES = {"command_failed": 1, "workspace_busy": 1, "workspace_not_initialized": 3, "outside_git_workspace": 3, "state_already_holds": 6}
@@ -17,16 +19,18 @@ CODES = {"command_failed": 1, "workspace_busy": 1, "workspace_not_initialized": 
 
 def refused(environment: Mapping[str, str], cwd: Path, command: str, reason: str, *, worker: str | None = None, rotated: bool = False) -> int:
     """Append lit's line for a run of `command` in `cwd` refused on `reason`, under the trace `environment` hands it, to
-    the events file lit keeps there, or to the `.1` it rotated it to; the code lit exits on. With `worker`, the line is
-    instead that of a worker the run spawned, under that span of the run's."""
+    the events file lit keeps there (`backlog.events_file`), or to the `.1` it rotated it to, and none where lit keeps
+    none; the code lit exits on. With `worker`, the line is instead that of a worker the run spawned, under that span."""
     _, trace, span, _ = environment["TRACEPARENT"].split("-")
-    xdg, home = environment.get("XDG_STATE_HOME", ""), environment.get("HOME", "")
-    state = cwd / xdg if xdg else cwd / home / ".local" / "state"
-    events = state / "links-issue-tracker" / f"events.jsonl{'.1' if rotated else ''}"
-    events.parent.mkdir(parents=True, exist_ok=True)
-    line = {"event": command, "trace_id": trace, "parent_span_id": worker or span, "exit_code": CODES[reason], "outcome": "error", "reason": reason}
-    with events.open("a") as lines:
-        lines.write(json.dumps(line) + "\n")
+    match events_file(environment, cwd):
+        case Path() as events:
+            events = events.with_name(f"{events.name}.1") if rotated else events
+            events.parent.mkdir(parents=True, exist_ok=True)
+            line = {"event": command, "trace_id": trace, "parent_span_id": worker or span, "exit_code": CODES[reason], "outcome": "error", "reason": reason}
+            with events.open("a") as lines:
+                lines.write(json.dumps(line) + "\n")
+        case _:
+            pass
     return CODES[reason]
 
 

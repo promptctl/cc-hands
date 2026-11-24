@@ -377,7 +377,7 @@ def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path)
         return exited(0, out=b"\n")
 
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
-        asyncio.run(backlog.file_ticket(Faked(VirtualClock(), lambda _: None, silent), backlog.Lit(os.environ), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab", backlog.Inherited()))
+        asyncio.run(backlog.file_ticket(backlog.Lit(Faked(VirtualClock(), lambda _: None, silent), os.environ), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab", backlog.Inherited()))
 
 
 def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:

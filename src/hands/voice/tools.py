@@ -136,7 +136,7 @@ def intermediary_tools(
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts, refocus),
         expand_tool(sessions, recounts),
-        *backlog_tools(sessions, store, Lit(environment)),
+        *backlog_tools(sessions, store, Lit(sessions.children, environment)),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
         read_screen_tool(sessions, environment),
@@ -582,7 +582,7 @@ async def _backlog(sessions: Sessions, store: SummaryStore, session: str, lit: L
     if member is None:
         return f"there is no session {session}"
     try:
-        read = await sighted(sessions.children, lit, store, member.cwd)
+        read = await sighted(lit, store, member.cwd)
     except (LitFailed, Rejected) as error:
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")

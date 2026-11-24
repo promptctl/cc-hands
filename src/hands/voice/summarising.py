@@ -17,7 +17,6 @@ from hands.clock import Clock
 from hands.core.summaries import Due, Thing, answered, page
 from hands.sessions.audit import Record
 from hands.sessions.backlog import BACKLOG, Lit, LitFailed, Untracked, read_backlog
-from hands.sessions.child import Children
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, WideEvent, annotate, begun, count, fail, unit
 from hands.voice.summaries import Backlog, SummaryStore, Turns
@@ -118,7 +117,7 @@ async def summarise_backlog(clock: Clock, lit: Lit, project: Path, store: Summar
     # backlog's own summary: what the terminal is told of the pass.
     with _pass(clock, BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
-            backlog = await read_backlog(Children(clock, record), lit, project)
+            backlog = await read_backlog(lit, project)
         except (LitFailed, Rejected) as error:
             # [LAW:no-silent-failure] a project hands cannot read fails its pass, saying why.
             fail(f"cannot read the backlog, so none of it is summarised: {error}")

@@ -18,10 +18,10 @@ from hands.core.events import Joined
 from hands.core.summaries import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
-from hands.sessions.child import Outcome as Ended
+from hands.sessions.child import Children, Outcome as Ended
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent
-from hands.sessions.backlog import BACKLOG, LitFailed, LitNotStarted, Untracked, parse_export, read_backlog
+from hands.sessions.backlog import BACKLOG, Lit, LitFailed, LitNotStarted, Reasoned, Unexplained, Untracked, events_file, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.voice.summarising import BACKLOG_PASS, summarise_backlog, told
@@ -30,7 +30,7 @@ from hands.voice.summaries import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
 from conftest import Faked, children_on, events, exited, new_sessions, VirtualClock
 from fixtures.litevents import refused
-from litcontract import HANDS_LIT, refusing
+from litcontract import refusing
 
 SID = SessionId("s1")
 
@@ -243,7 +243,7 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, summarise, records.append, batch=2)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, summarise, records.append, batch=2)
     # Three leaves in two batches, then the epic, then the backlog over the epic and the loose ticket.
     assert [summarise.asked(page) for page in summarise.pages] == [["e1.a", "e1.b"], ["t1"], ["e1"], [BACKLOG]]
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "t1", "e1", BACKLOG}
@@ -259,13 +259,13 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
 @pytest.mark.outside
 async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, Summariser(), lambda _entry: None)
     edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=edited))
     # Numbered on from the first pass, so the edited ticket's summary is new, as a real summariser's would be.
     summarise = Summariser(first=100)
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, summarise, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, summarise, records.append)
     assert [summarise.asked(page) for page in summarise.pages] == [["e1.a"], ["e1"], [BACKLOG]]
     [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.counts["known"], record.counts["said"]) == (2, 3)
@@ -274,11 +274,11 @@ async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project:
 @pytest.mark.outside
 async def test_a_rerank_or_a_status_change_asks_the_summariser_nothing(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, Summariser(), lambda _entry: None)
     moved = [{**issue, "rank": "00"} if issue["id"] == "t1" else {**issue, "status": "open"} if issue["id"] == "e1.b" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=moved))
     summarise = Summariser()
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, summarise, lambda _entry: None)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, summarise, lambda _entry: None)
     assert summarise.pages == []
 
 
@@ -290,7 +290,7 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
         return "\n".join([*(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1"), "t9: Not asked."])
 
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, forgets_t1, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, forgets_t1, records.append)
     # The epic is said; the backlog, keyed by t1's summary too, cannot be.
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "e1"}
     [record] = events(records, BACKLOG_PASS)
@@ -306,16 +306,16 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     records: list[Entry] = []
     # The two tickets, the loose ticket, and the epic: four work items; the backlog's own summary is none of them.
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, Summariser(), records.append)
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, Summariser(), records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, Summariser(), records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, Summariser(), records.append)
     edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=edited))
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, Summariser(first=100), records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, Summariser(first=100), records.append)
 
     async def forgets_t1(page: str) -> str:
         return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
 
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, SummaryStore(Summaries(tmp_path / "other.db")), forgets_t1, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, SummaryStore(Summaries(tmp_path / "other.db")), forgets_t1, records.append)
 
     # A summariser whose summary for an edited ticket comes back word for word: its epic is not asked again.
     async def steady(page: str) -> str:
@@ -323,16 +323,16 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
 
     (project / "export.json").write_bytes(export())
     steadied = SummaryStore(Summaries(tmp_path / "steady.db"))
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, steadied, steady, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, steadied, steady, records.append)
     (project / "export.json").write_bytes(export(issues=edited))
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, steadied, steady, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, steadied, steady, records.append)
 
     # A closed ticket leaves only the backlog's own summary due; a call for it that fails summarises nothing.
     async def fails(page: str) -> str:
         raise SummaryFailed("boom")
 
     (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed", "closed_at": "2026-10-19T10:00:00Z"} if issue["id"] == "t1" else issue for issue in edited]))
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, steadied, fails, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, steadied, fails, records.append)
     passes = events(records, BACKLOG_PASS)
     assert [
         (record.outcome, record.facts["overview"], *(record.counts[name] for name in ("items", "items_said", "items_known", "items_unsaid"))) for record in passes
@@ -360,7 +360,7 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
 async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path, tmp_path: Path) -> None:
     (project / "export.json").unlink()
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
     [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and record.outcome == "failed" and "exited 1" in (record.error or "")
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
@@ -369,7 +369,7 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
 @pytest.mark.outside
 async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_to_do_saying_why(tmp_path: Path) -> None:
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, tmp_path / "removed-worktree", SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), tmp_path / "removed-worktree", SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
     [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["gone"]) == ("ok", True)
 
@@ -378,7 +378,7 @@ async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_
 async def test_a_removed_directory_reads_as_no_backlog_saying_it_is_gone(project: Path) -> None:
     # The spawn's failure names the missing directory, not lit (which the project fixture put on PATH).
     gone = project / "removed-worktree"
-    assert await read_backlog(children_on(SYSTEM), HANDS_LIT, gone) == Untracked(gone, gone=True)
+    assert await read_backlog(Lit(children_on(SYSTEM), os.environ), gone) == Untracked(gone, gone=True)
 
 
 @pytest.mark.outside
@@ -386,7 +386,7 @@ async def test_a_project_path_that_is_a_file_is_a_lit_that_never_started_not_a_r
     file = project / "a-file"
     file.write_text("")
     with pytest.raises(LitNotStarted, match="Not a directory"):
-        await read_backlog(children_on(SYSTEM), HANDS_LIT, file)
+        await read_backlog(Lit(children_on(SYSTEM), os.environ), file)
 
 
 @pytest.mark.outside
@@ -396,7 +396,7 @@ async def test_a_project_hands_cannot_enter_is_a_lit_that_never_started_not_a_re
     locked.chmod(0)
     try:
         with pytest.raises(LitNotStarted, match="Permission denied"):
-            await read_backlog(children_on(SYSTEM), HANDS_LIT, locked / "inside")
+            await read_backlog(Lit(children_on(SYSTEM), os.environ), locked / "inside")
     finally:
         locked.chmod(0o700)
 
@@ -414,7 +414,7 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     fake_lit(NEVER_INITIALIZED)
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
     [record] = events(records, BACKLOG_PASS)
     assert summarise.pages == []
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["tracked"]) == ("ok", False)
@@ -426,7 +426,7 @@ async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project:
     # lit's busy refusal arrives on code 1 (docs/cli-reference.md in links, "Every reason").
     fake_lit(refusing("workspace_busy", "another lit process holds the store"))
     with pytest.raises(LitFailed, match="workspace_busy"):
-        await read_backlog(children_on(SYSTEM), HANDS_LIT, project)
+        await read_backlog(Lit(children_on(SYSTEM), os.environ), project)
 
 
 @pytest.mark.outside
@@ -435,83 +435,114 @@ async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project:
 async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: Path, git: bool) -> None:
     if git:
         subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    assert await read_backlog(children_on(SYSTEM), HANDS_LIT, tmp_path) == Untracked(tmp_path)
+    assert await read_backlog(Lit(children_on(SYSTEM), os.environ), tmp_path) == Untracked(tmp_path)
 
 
-def lit_that(records: Callable[[Mapping[str, str], Path], int]) -> Faked:
-    """Children whose lit writes what `records` writes of its run to its events file, and exits on the code it gives."""
+def lit_that(records: Callable[[Mapping[str, str], Path], int], environment: Mapping[str, str]) -> Lit:
+    """lit run in `environment`, which writes what `records` writes of its run to its events file, and exits on the code
+    it gives."""
 
     async def lit(*argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Ended:
         assert env is not None and cwd is not None
         return exited(records(env, cwd), err=b"lit stopped\n")
 
-    return Faked(VirtualClock(), lambda _: None, lit)
+    return Lit(Faked(VirtualClock(), lambda _: None, lit), environment)
+
+
+def written(env: Mapping[str, str], cwd: Path, line: str) -> None:
+    """`line` appended to the events file lit keeps for a run in `cwd` in `env`, as it was written: whole or torn."""
+    events = events_file(env, cwd)
+    assert isinstance(events, Path)
+    events.parent.mkdir(parents=True, exist_ok=True)
+    with events.open("a") as lines:
+        lines.write(line + "\n")
+
+
+def run_s(env: Mapping[str, str]) -> tuple[str, str]:
+    """The trace and the span of the run `env` was handed."""
+    _, trace, span, _ = env["TRACEPARENT"].split("-")
+    return trace, span
 
 
 @pytest.mark.parametrize("rotated", [False, True], ids=["as written", "rotated since"])
 async def test_a_run_lit_recorded_no_workspace_for_is_untracked_wherever_its_line_is_kept(tmp_path: Path, rotated: bool) -> None:
-    children = lit_that(lambda env, cwd: refused(env, cwd, "lit export", "workspace_not_initialized", rotated=rotated))
-    assert await read_backlog(children, HANDS_LIT, tmp_path) == Untracked(tmp_path)
+    lit = lit_that(lambda env, cwd: refused(env, cwd, "lit export", "workspace_not_initialized", rotated=rotated), {"XDG_STATE_HOME": str(tmp_path / "state")})
+    assert await read_backlog(lit, tmp_path) == Untracked(tmp_path)
 
 
-async def test_the_reason_a_refusal_is_read_by_is_the_run_s_own_never_a_worker_s_or_a_line_that_quotes_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-
+async def test_the_reason_a_refusal_is_read_by_is_the_run_s_own_never_a_worker_s_or_a_line_that_quotes_it(tmp_path: Path) -> None:
     def busy_with_others_after(env: Mapping[str, str], cwd: Path) -> int:
         code = refused(env, cwd, "lit export", "workspace_busy")
         refused(env, cwd, "lit sync push", "workspace_not_initialized", worker="f" * 16)
         # Another trace's line, whose error quotes the run's traceparent as a value it was given.
-        quoting = {"event": "lit show", "trace_id": "0" * 32, "parent_span_id": "1" * 16, "error": f"no issue {env['TRACEPARENT']}", "reason": "workspace_not_initialized"}
-        with (tmp_path / "state" / "links-issue-tracker" / "events.jsonl").open("a") as lines:
-            lines.write(json.dumps(quoting) + "\n")
+        written(env, cwd, json.dumps({"event": "lit show", "trace_id": "0" * 32, "parent_span_id": "1" * 16, "error": f"no issue {env['TRACEPARENT']}", "reason": "workspace_not_initialized"}))
         return code
 
     with pytest.raises(LitFailed, match=r"\(workspace_busy\)") as failed:
-        await read_backlog(lit_that(busy_with_others_after), HANDS_LIT, tmp_path)
-    assert failed.value.reason == "workspace_busy"
+        await read_backlog(lit_that(busy_with_others_after, {"XDG_STATE_HOME": str(tmp_path / "state")}), tmp_path)
+    assert failed.value.failure == Reasoned("workspace_busy")
 
 
-async def test_lit_is_run_as_a_span_of_the_work_it_is_run_for_in_its_trace(tmp_path: Path) -> None:
-    handed: list[str] = []
+async def test_a_reason_on_disk_is_found_past_a_newer_torn_line_or_an_events_file_hands_cannot_read(tmp_path: Path) -> None:
+    def kept_past_what_cannot_be_read(env: Mapping[str, str], cwd: Path) -> int:
+        code = refused(env, cwd, "lit export", "workspace_not_initialized", rotated=True)
+        trace, span = run_s(env)
+        events = events_file(env, cwd)
+        assert isinstance(events, Path)
+        with events.with_name(f"{events.name}.1").open("a") as rotated:
+            rotated.write(f'{{"trace_id": "{trace}", "parent_span_id": "{span}", "rea\n')
+        events.mkdir()
+        return code
 
-    def kept(env: Mapping[str, str], cwd: Path) -> int:
-        handed.append(env["TRACEPARENT"])
-        return refused(env, cwd, "lit export", "workspace_not_initialized")
-
-    clock = VirtualClock()
-    began = wide.begun(clock)
-    with wide.unit("backlog.read", lambda _: None, began):
-        await read_backlog(lit_that(kept), HANDS_LIT, tmp_path)
-    [traceparent] = handed
-    assert traceparent.split("-")[1] == began.span.trace_id and traceparent.split("-")[2] != began.span.span_id
-
-
-def no_file(state: Path) -> None:
-    pass
+    assert await read_backlog(lit_that(kept_past_what_cannot_be_read, {"XDG_STATE_HOME": str(tmp_path / "state")}), tmp_path) == Untracked(tmp_path)
 
 
-def a_directory_for_a_file(state: Path) -> None:
-    (state / "links-issue-tracker" / "events.jsonl").mkdir(parents=True)
+def no_line(env: Mapping[str, str], cwd: Path) -> int:
+    return 3
 
 
-# Why lit's line was not read, for each way a refusal is left of no reason.
+def a_line_of_no_reason(env: Mapping[str, str], cwd: Path) -> int:
+    trace, span = run_s(env)
+    written(env, cwd, json.dumps({"event": "lit export", "trace_id": trace, "parent_span_id": span, "exit_code": 3}))
+    return 3
+
+
+def a_directory_for_each_file(env: Mapping[str, str], cwd: Path) -> int:
+    events = events_file(env, cwd)
+    assert isinstance(events, Path)
+    events.mkdir(parents=True)
+    events.with_name(f"{events.name}.1").mkdir()
+    return 3
+
+
+# Why lit's line gave no reason, for each way a refusal is left of none.
 @pytest.mark.parametrize(
-    ("unset", "lay", "why"),
+    ("records", "state", "why"),
     [
-        ((), no_file, "lit wrote no line for 00-"),
-        ((), a_directory_for_a_file, "events.jsonl could not be read"),
-        (("XDG_STATE_HOME", "HOME"), no_file, "lit had no XDG_STATE_HOME or HOME"),
+        (no_line, True, "events.jsonl holds no line for it; "),
+        (a_line_of_no_reason, True, "events.jsonl names no reason"),
+        (a_directory_for_each_file, True, "events.jsonl.1 could not be read"),
+        (no_line, False, "lit had no XDG_STATE_HOME or HOME"),
     ],
-    ids=["no line", "an unreadable file", "nowhere to keep one"],
+    ids=["no line", "a line of no reason", "no file hands can read", "nowhere to keep one"],
 )
-async def test_a_refusal_whose_reason_lit_s_line_does_not_give_is_a_failure_that_says_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unset: tuple[str, ...], lay: Callable[[Path], None], why: str) -> None:
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    lay(tmp_path / "state")
-    for name in unset:
-        monkeypatch.delenv(name)
+async def test_a_refusal_whose_reason_lit_s_line_does_not_give_is_unexplained_saying_why(tmp_path: Path, records: Callable[[Mapping[str, str], Path], int], state: bool, why: str) -> None:
     with pytest.raises(LitFailed, match=re.escape(why)) as failed:
-        await read_backlog(lit_that(lambda env, cwd: 3), HANDS_LIT, tmp_path)
-    assert failed.value.reason is None
+        await read_backlog(lit_that(records, {"XDG_STATE_HOME": str(tmp_path / "state")} if state else {}), tmp_path)
+    assert isinstance(failed.value.failure, Unexplained) and why in failed.value.failure.why
+
+
+@pytest.mark.outside
+async def test_lit_runs_as_the_span_of_its_own_child_run_event_inside_the_work_it_is_run_for(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    fake_lit(NEVER_INITIALIZED)
+    records: list[Entry] = []
+    began = wide.begun(SYSTEM)
+    with wide.unit("backlog.read", records.append, began):
+        assert await read_backlog(Lit(Children(SYSTEM, records.append), os.environ), project) == Untracked(project)
+    [ran] = events(records, "child.run")
+    [line] = (tmp_path / "state" / "links-issue-tracker" / "events.jsonl").read_text().splitlines()
+    assert (ran.trace_id, ran.span_id, ran.parent_id) == (began.span.trace_id, json.loads(line)["parent_span_id"], began.span.span_id)
 
 
 @pytest.mark.outside
@@ -521,7 +552,7 @@ async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_runnin
     # The deadline is on a clock the test moves, and moved only once lit has written its pid: on the machine's clock a
     # loaded machine can run out the half second before the shell has started.
     clock = VirtualClock()
-    reading = asyncio.create_task(read_backlog(children_on(clock), HANDS_LIT, project))
+    reading = asyncio.create_task(read_backlog(Lit(children_on(clock), os.environ), project))
     await clock.sleeping(0.5)
     # Created before written: the shell opens pid, then writes to it.
     while not (project / "pid").is_file() or not (project / "pid").read_text().strip():
@@ -541,7 +572,7 @@ async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pa
         raise SummaryFailed("the side question had no answer: no Claude Code to ask: claude")
 
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, SummaryStore(Summaries(tmp_path / "summaries.db")), no_claude, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, SummaryStore(Summaries(tmp_path / "summaries.db")), no_claude, records.append)
     [record] = events(records, BACKLOG_PASS)
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["calls"], record.counts["failed_calls"]) == ("failed", 0, 1, 1)
     said = "SummaryFailed: the side question had no answer: no Claude Code to ask: claude"
@@ -554,7 +585,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
     (project / "export.json").write_bytes(export(issues=[ticket("t2", "01", "Old bug", status="closed")], relations=[]))
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
     [record] = events(records, BACKLOG_PASS)
     assert summarise.pages == []
     # [LAW:nothing-unseen] ran and did nothing: every count written, as zero.
@@ -568,7 +599,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
 async def tools(project: Path, store: SummaryStore) -> dict[str, Any]:
     sessions = new_sessions(clock=SYSTEM)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=project, transcript=project / "s1.jsonl"), "startup"))
-    return {tool.name: tool.body for tool in backlog_tools(sessions, store, HANDS_LIT)}
+    return {tool.name: tool.body for tool in backlog_tools(sessions, store, Lit(sessions.children, os.environ))}
 
 
 @pytest.mark.outside
@@ -585,7 +616,7 @@ async def test_read_backlog_serves_titles_until_the_summaries_are_made_and_asks_
     ]
     # The read is a sighting: the backlog is asked for, to be said off the voice path.
     assert await store.wanted() == Backlog(project)
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, Summariser(), lambda _entry: None)
     after = dict(await read_backlog(session="s1"))
     assert after["summary"] == f"said {BACKLOG} 3" and after["unsummarised"] == 0
     assert [item["summary"] for item in after["items"]] == ["said e1 2", "said t1 1"]
@@ -594,7 +625,7 @@ async def test_read_backlog_serves_titles_until_the_summaries_are_made_and_asks_
 @pytest.mark.outside
 async def test_read_ticket_gives_the_summary_and_what_is_open_under_it_and_its_own_words_only_when_asked(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-    await summarise_backlog(SYSTEM, HANDS_LIT, project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, Lit(children_on(SYSTEM), os.environ), project, store, Summariser(), lambda _entry: None)
     read_ticket = (await tools(project, store))["read_ticket"]
     epic = dict(await read_ticket(session="s1", ticket="e1"))
     assert epic["summary"] == "said e1 2" and "description" not in epic
