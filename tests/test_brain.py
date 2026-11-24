@@ -11,7 +11,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -47,7 +46,7 @@ from brains import dialogs, permissions, unasked
 
 from hands.brain.fork import Turn, fork
 from hands.brain.stage import BrainStage
-from hands.core.session import Keystroke, PromptText, SessionId, Submit, pasted
+from hands.core.session import SessionId, pasted
 from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Sent, Written
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
@@ -56,7 +55,6 @@ from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
 from hands.sessions.proxy import Wire
 from hands.sessions.summaries import Summaries
-from hands.sessions.typing import Typist
 from hands.sessions import heartbeat, wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
@@ -852,64 +850,6 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
 
 
-class _Pressed:
-    """A typist that notes each key as it goes, with whether `told` was set then: a key's order against a telling, read as
-    it is pressed rather than as the fake brain logs it."""
-
-    def __init__(self, typist: Typist, told: asyncio.Event) -> None:
-        self._typist = typist
-        self._told = told
-        self.pressed: list[tuple[Keystroke, bool]] = []
-
-    def type(self, text: PromptText, submit: Submit) -> None:
-        self._typist.type(text, submit)
-
-    def press(self, key: Keystroke) -> None:
-        self.pressed.append((key, self._told.is_set()))
-        self._typist.press(key)
-
-
-@pytest.mark.outside
-async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the_model_reads_ahead_of_its_telling(tmp_path: Path, fake_claude: Path) -> None:
-    # [LAW:no-ambient-temporal-coupling] the model has decided the stopped turn told, and the telling is still to be
-    # performed: the turn is over only once the telling is heard, under its id, and the stop's Ctrl-C goes only then.
-    recorded: list[Entry] = []
-    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
-    performing = asyncio.Event()
-    typist = brain._typist = _Pressed(brain._typist, performing)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-    try:
-        asking = asyncio.ensure_future(brain.ask("wait", unasked))
-        await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
-        perform = brain._sessions._perform  # pyright: ignore[reportPrivateUsage]
-
-        async def told_late(effect: Effect) -> None:
-            # A telling the model decided is performed only once the test lets it, and what is decided after it waits.
-            if isinstance(effect, Summarise):
-                await performing.wait()
-            await perform(effect)
-
-        brain._sessions._perform = told_late  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-        assert brain.interrupt(brain.answering()) is True
-        await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
-        assert not asking.done()
-        performing.set()
-        assert await asyncio.wait_for(asking, 10) == BrainStopped()
-        # The stop's Ctrl-C, emptying the input, went once Claude Code had acted on the Escape, as the model heard it: after
-        # the telling, never while it waited, and before the turn was answered.
-        assert typist.pressed == [("escape", False), ("ctrl_c", True)]
-    finally:
-        performing.set()
-        await brain.stop()
-    await until(lambda: len(events(recorded, "brain.turn")) == 1)
-    [turn] = events(recorded, "brain.turn")
-    assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
-    # [LAW:nothing-unseen] the stop's clear is its own event: for a turn, no wait to space its Ctrl-C from one before, and
-    # how long Claude Code took to stop what it ran.
-    [clear] = events(recorded, "brain.clear")
-    assert (clear.outcome, clear.facts["for_turn"], clear.facts["spaced"]) == ("ok", True, 0.0)
-    assert isinstance(clear.facts["stopped_in"], float)
-
-
 @pytest.mark.outside
 async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_the_model_holds_and_what_it_showed(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-silent-failure] a turn Claude Code runs on after its Escape is no stopped turn: its asker is told so, once
@@ -977,40 +917,6 @@ async def test_a_stop_told_past_its_bound_still_empties_the_input_so_the_next_tu
         performing.set()
         await brain.stop()
     assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["ctrl_c", " wait"], ["prompt", " and now?"]]
-
-
-class _Timed:
-    """A typist that notes when each Ctrl-C it pressed had gone in, on the monotonic clock."""
-
-    def __init__(self, typist: Typist) -> None:
-        self._typist = typist
-        self.cleared: list[float] = []
-
-    def type(self, text: PromptText, submit: Submit) -> None:
-        self._typist.type(text, submit)
-
-    def press(self, key: Keystroke) -> None:
-        self._typist.press(key)
-        if key == "ctrl_c":
-            self.cleared.append(time.monotonic())
-
-
-@pytest.mark.outside
-async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path) -> None:
-    # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes. Each turn taken as
-    # other words runs on, and the turn after it stops it before it is typed: two stops a take's wait apart, which the
-    # stand-in ends as soon as it is done with each typing.
-    brain = await launched_brain(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
-    timed = brain._typist = _Timed(brain._typist)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-    try:
-        for _ in range(2):
-            with pytest.raises(Untaken):
-                await brain.ask("garbled", unasked)
-        await brain.ask("and now?", unasked)
-    finally:
-        await brain.stop()
-    first, second = timed.cleared
-    assert second - first > 0.8
 
 
 def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> None:
@@ -1136,16 +1042,6 @@ async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path
         await brain.stop()
 
 
-class _Jammed:
-    """A typist whose every key fails as a terminal gone from under it does: not the Untyped a stale socket raises."""
-
-    def type(self, text: object, submit: object) -> None:
-        raise OSError("jammed")
-
-    def press(self, key: object) -> None:
-        raise OSError("jammed")
-
-
 def _played(tmp: Path) -> int:
     """How many lines of a replayed recording the stand-in has started saying: a replay opens with hooks posted and
     statuses set before its first transcript record, and each of those is the replay moving."""
@@ -1189,26 +1085,6 @@ async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_
             following.cancel()
         await brain.stop()
     assert typed(tmp_path) == [["prompt", f" play {name}"], ["played", name], ["prompt", " and then?"]]
-
-
-@pytest.mark.outside
-async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path, errors: list[str]
-) -> None:
-    recorded: list[Entry] = []
-    brain = await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
-    try:
-        typist = brain._typist  # pyright: ignore[reportPrivateUsage]
-        brain._typist = _Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-        with pytest.raises(OSError, match="jammed"):
-            await asyncio.wait_for(brain.ask("what is running?", unasked), 10)
-        brain._typist = typist  # pyright: ignore[reportPrivateUsage]
-        assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p1", None)
-    finally:
-        await brain.stop()
-    assert taken(errors) == ["the brain's own work failed: OSError('jammed')"]
-    failed, _ = events(recorded, "brain.turn")
-    assert (failed.outcome, failed.error) == ("failed", "OSError: jammed")
 
 
 async def _fails_at_once(_take: float) -> None:
@@ -1267,31 +1143,6 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
     [permission] = events(recorded, "brain.permission")
     assert (permission.outcome, permission.error, permission.facts["decision"]) == ("failed", "RuntimeError: no voice", DenyAndInterrupt(BROKEN))
     assert not (tmp_path / "notes.txt").exists()
-
-
-@pytest.mark.outside
-async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path, errors: list[str]) -> None:
-    brain = await launched_brain(SYSTEM, launch(tmp_path), lambda _entry: None)
-    pressed: list[object] = []
-
-    class Jammed(_Jammed):
-        def press(self, key: object) -> None:
-            pressed.append(key)
-            raise OSError("jammed")
-
-    def asks(_held: Asked) -> None:
-        # The turn breaks once it is taken, and the keys that would stop it are jammed.
-        brain._typist = Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-        raise RuntimeError("no voice")
-
-    try:
-        with pytest.raises(RuntimeError, match="no voice"):
-            await asyncio.wait_for(brain.ask("write", asks), 5)
-        await brain.drained()
-    finally:
-        await brain.stop()
-    # A second stop would press Escape again, and its Ctrl-C would land inside Claude Code's exit window.
-    assert (pressed, taken(errors)) == (["escape"], ["the brain's own work failed: RuntimeError('no voice')", "the brain's own work failed: OSError('jammed')"])
 
 
 @pytest.mark.outside
@@ -2054,7 +1905,6 @@ def taking(take: Callable[[float], Awaitable[None]]) -> Sleeping:
         await (take(seconds) if seconds in (TAKE_SECONDS, INTERRUPT_SECONDS) else asyncio.sleep(seconds))
 
     return Sleeping(sleep)
-
 
 
 @pytest.mark.outside

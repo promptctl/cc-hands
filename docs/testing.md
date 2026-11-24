@@ -37,7 +37,7 @@ pair's code, and commit what it changes; the diff is what the pair now decodes d
 ## The brain's terminal, and its one smoke test
 
 hands' decisions about what Claude Code does (a dialog held, a stop, a turn opened by a background task) are asserted in the
-unit layer: a bare `Brain` and `BrainStage` on a `VirtualClock`, Claude Code's turns played from tests/turns.py. What hands
+unit layer: a `Brain` built of fakes and `BrainStage` on a `VirtualClock`, Claude Code's turns played from tests/turns.py. What hands
 relies on of Claude Code's own terminal is a contract, tests/terminalcontract.py, written once and run by two modules: against
 the fake Claude Code (tests/claudescreen.py) in `make check` (test_terminal_contract.py), and against the pinned Claude Code in
 a terminal of hands' own, with the mock of Anthropic's API as its model, in `make check-rest` (test_terminal_contract_pinned.py).
