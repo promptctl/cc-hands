@@ -593,7 +593,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("layer", None) == "audit":
         config.option.timeout = AUDIT_TIMEOUT
     config.pluginmanager.register(timeouts, "timeouts")
-    config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard")), shards.Costs.load(shards.COSTS)), "shards")
+    config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard")),shards.Costs.load(shards.COSTS)), "shards")
     clockwatch.register(config, clockwatch.UNMOVED)
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")

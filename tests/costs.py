@@ -9,6 +9,7 @@ the Makefile's targets writes its own, which CI's cost report is given.
 """
 
 import json
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -17,6 +18,15 @@ from typing import Any
 
 # [LAW:one-source-of-truth] where the suite writes its log. pyproject's addopts spells this path, and test_costs.py holds the two to each other.
 REPORT_LOG = Path(".pytest_cache/report-log.jsonl")
+
+# A test row of the report, as `row` prints it: total, setup, call and teardown seconds, then the test.
+ROW = re.compile(r"^\s*\d+\.\d{3}\s+(?P<setup>\d+\.\d{3})\s+(?P<call>\d+\.\d{3})\s+(?P<teardown>\d+\.\d{3})\s+(?P<test>tests/.+?)\s*$")
+# What CI puts in front of each line of a job's log.
+STAMP = re.compile(r"^\S+Z ")
+
+
+def module(test: str) -> str:
+    return test.partition("::")[0]
 
 
 @dataclass(frozen=True)
@@ -35,11 +45,21 @@ class Cost:
 
     @property
     def module(self) -> str:
-        return self.test.partition("::")[0]
+        return module(self.test)
 
 
 def seconds(costs: list[Cost]) -> float:
     return sum(cost.total for cost in costs)
+
+
+def row(cost: Cost) -> str:
+    return f"{cost.total:9.3f} {cost.setup:9.3f} {cost.call:9.3f} {cost.teardown:9.3f}  {cost.test}"
+
+
+def costs_in(text: str) -> list[Cost]:
+    """The tests of a report's rows in `text`, which may be a CI job's log: the one reader of what `row` prints."""
+    rows = (ROW.match(STAMP.sub("", line)) for line in text.splitlines())
+    return [Cost(found["test"], float(found["setup"]), float(found["call"]), float(found["teardown"])) for found in rows if found]
 
 
 def report(log: str) -> str:
@@ -57,10 +77,10 @@ def report(log: str) -> str:
     status = next((record["exitstatus"] for record in records if record["$report_type"] == "SessionFinish"), None)
     ended = "the log stops before the run ended" if status is None else f"the run ended with exit status {status}"
     lines = [f"{len(costs)} tests, {seconds(costs):.3f} s: {ended}", "", f"{'seconds':>9} {'share':>5} {'tests':>5}  module"]
-    for module, tests in sorted(modules.items(), key=lambda item: seconds(item[1]), reverse=True):
-        lines.append(f"{seconds(tests):9.3f} {seconds(tests) / seconds(costs):5.0%} {len(tests):5}  {module}")
+    for name, tests in sorted(modules.items(), key=lambda item: seconds(item[1]), reverse=True):
+        lines.append(f"{seconds(tests):9.3f} {seconds(tests) / seconds(costs):5.0%} {len(tests):5}  {name}")
     lines += ["", f"{'total':>9} {'setup':>9} {'call':>9} {'teardown':>9}  test"]
-    lines += [f"{cost.total:9.3f} {cost.setup:9.3f} {cost.call:9.3f} {cost.teardown:9.3f}  {cost.test}" for cost in costs]
+    lines += [row(cost) for cost in costs]
     return "\n".join(lines) + "\n"
 
 

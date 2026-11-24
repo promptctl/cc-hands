@@ -1,0 +1,45 @@
+# What the `outside` tests fetch from outside, kept across runs so a download outage cannot fail a run that never touched what
+# is fetched: the speech models, the wake word's models, the brain's pinned Claude Code and the mock of Anthropic's API. After
+# ./.github/actions/prepare, whose locked environment the keys are read from: each is a value the suite itself pins.
+name: fetch
+description: The caches of what the outside tests fetch, for a job that runs them
+runs:
+  using: composite
+  steps:
+    # [LAW:one-source-of-truth] the versions the suite fetches are tests/fetches.py's: the pinned Claude Code, the mock's
+    # release, and the speech weights the run fetches (a weight added to the fetch is a new key, never a hit on a cache saved
+    # without it; an edit to the rest of any file still finds them). Python writes the outputs itself: whatever an import prints
+    # on stdout cannot become part of a key.
+    - name: The fetched caches' keys
+      id: keys
+      shell: bash
+      run: uv run --no-sync python -c 'import os, sys; sys.path.insert(0, "tests"); import fetches; open(os.environ["GITHUB_OUTPUT"], "a").write(f"claude={fetches.pinned.PIN.version}\nmock={fetches.MOCK_RELEASE}\nspeech={fetches.hub_key()}\n")'
+    # The run fetches openWakeWord's models into pytest's cache before its first test.
+    - uses: actions/cache@v4
+      with:
+        path: .pytest_cache/d/wake-word
+        key: wake-word-${{ hashFiles('src/hands/voice/wakemodels.py') }}
+    # The runtime the phone's page runs the wake word on, 15 MB, fetched by the run from a CDN at the version and digests
+    # src/hands/voice/ortweb.py pins.
+    - uses: actions/cache@v4
+      with:
+        path: .pytest_cache/d/onnxruntime-web
+        key: onnxruntime-web-${{ hashFiles('src/hands/voice/ortweb.py') }}
+    # The brain's end-to-end tests run the pinned Claude Code, fetched from npm's registry into pytest's cache against its
+    # checksum, and the mock of Anthropic's API at the release they name, installed with go.
+    - uses: actions/cache@v4
+      with:
+        path: .pytest_cache/d/claude-code
+        key: claude-code-${{ steps.keys.outputs.claude }}
+    - uses: actions/cache@v4
+      with:
+        path: .pytest_cache/d/mock-anthropic
+        key: mock-anthropic-${{ steps.keys.outputs.mock }}
+    # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, the engaged tests run Smart Turn
+    # on MLX, the voiceprint tests run ERes2Net, and the Whisper tests Whisper, on real sound, fetched into the Hugging Face
+    # cache at the revisions hands pins. The whole hub: a model's directory holds only links into the hub's shared store of
+    # blobs, where its weights are.
+    - uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface/hub
+        key: speech-${{ steps.keys.outputs.speech }}

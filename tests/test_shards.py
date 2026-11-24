@@ -7,7 +7,8 @@ from itertools import chain
 
 import pytest
 
-from shards import COSTS, Costs, Shard, Sharding, costs_from, packed, partition
+from costs import Cost, row
+from shards import COSTS, Costs, Shard, Sharding, costs_from, packed, partition, pieces
 
 TESTS = [f"tests/test_{each}.py::test_{n}" for each in ("a", "b", "c", "d") for n in range(10)]
 COSTS_OF_THESE = Costs({"tests/test_a.py::test_0": 40.0, "tests/test_b.py::test_0": 30.0, "tests/test_c.py::test_0": 20.0}, {"tests/test_d.py": 25.0}, 1.0)
@@ -52,10 +53,29 @@ def test_a_module_that_is_more_than_a_share_is_cut_across_the_shards_and_each_pi
     assert max(packed(shard, costs) for shard in shards) < packed(big, costs)
 
 
+def test_the_shards_of_a_module_whose_setup_is_more_than_a_share_each_cost_about_what_the_others_do() -> None:
+    tests = [f"tests/test_m.py::test_{n}" for n in range(40)]
+    costs = Costs({test: 0.6 if n < 30 else 5.0 for n, test in enumerate(tests)}, {"tests/test_m.py": 60.0}, 1.0)
+    loads = [packed(shard, costs) for shard in partition(tests, costs, 4)]
+    assert max(loads) - min(loads) < 1.0
+
+
+def test_a_module_is_never_cut_into_more_pieces_than_there_are_shards() -> None:
+    tests = [f"tests/test_m.py::test_{n}" for n in range(30)]
+    costs = Costs({}, {"tests/test_m.py": 60.0}, 1.0)
+    assert pieces(tests, costs, packed(tests, costs) / 4, 4) == 4
+
+
 @pytest.mark.parametrize("text", ["0/3", "4/3", "1/0", "2", "a/b", "1/2/3", "-1/2", ""])
 def test_a_shard_is_k_of_n_and_nothing_else(text: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError, match="not a shard"):
         Shard.parse(text)
+
+
+@pytest.mark.parametrize("index, count", [(3, 2), (2, 2), (-1, 2), (0, 0)])
+def test_a_shard_built_by_hand_is_one_of_its_count_too(index: int, count: int) -> None:
+    with pytest.raises(ValueError, match="is not one of"):
+        Shard(index, count)
 
 
 def test_a_shard_reads_as_it_was_written() -> None:
@@ -108,20 +128,59 @@ def test_d(): pass
     assert ran == {"test_a", "test_b"}
 
 
-TABLE = """\
-2026-11-24T18:25:20.5Z 906 tests, 1525.780 s: the run ended with exit status 0
-2026-11-24T18:25:20.5Z
-2026-11-24T18:25:20.5Z     total     setup      call  teardown  test
-2026-11-24T18:25:20.5Z   50.165    24.041    26.106     0.018  tests/test_streaming.py::test_a[real]
-2026-11-24T18:25:20.5Z    5.000     0.003     4.990     0.007  tests/test_streaming.py::test_b[x y]
-2026-11-24T18:25:20.5Z    0.400     0.300     0.050     0.050  tests/test_other.py::test_quick
+def test_a_shard_says_what_it_was_packed_at_before_its_first_test_and_which_tests_the_file_has_no_cost_for(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(test_five=SUITE)
+    # Every call takes the 2 s the file does not know of: the clock is not read, so no test waits for it.
+    pytester.makeconftest(
+        """
+import pytest
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    report.duration = 2.0 if report.when == "call" else 0.0
+    return report
 """
+    )
+    outcome = pytester.runpytest_inprocess("-p", "no:asyncio", "-p", "no:cacheprovider", plugins=[Sharding(Shard(0, 1), Costs({"test_five.py::test_a": 2.0}, {}, 1.0))])
+    outcome.stdout.fnmatch_lines(["shard 1/1 holds 5 tests, packed at 6.0 s", "*shard 1/1: packed at 6.0 s, cost 10.0 s", "shard 1/1: 4 tests cost 0.5 s or more and are not in tests/shard-costs.json: test_five.py::test_b, *"])
+
+
+def test_a_shard_that_holds_no_test_says_why_instead_of_running_none(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(test_five=SUITE)
+    outcome = pytester.runpytest_inprocess("-p", "no:asyncio", "-p", "no:cacheprovider", plugins=[Sharding(Shard(5, 6), Costs({}, {}, 1.0))])
+    assert outcome.ret == pytest.ExitCode.USAGE_ERROR
+    outcome.stderr.fnmatch_lines(["*shard 6/6 holds no test: the 5 tests the run selects are too few for 6 shards"])
+
+
+def table(*costs: Cost) -> str:
+    """A job's log of the cost report, as CI stamps it."""
+    return "\n".join(f"2026-11-24T18:25:20.5Z {row(cost)}" for cost in costs) + "\n"
+
+
+SHARD_ONE = table(
+    Cost("tests/test_streaming.py::test_a[real]", 24.041, 26.1, 0.018),
+    Cost("tests/test_streaming.py::test_b[x y]", 0.003, 4.99, 0.007),
+    Cost("tests/test_other.py::test_quick", 0.3, 0.05, 0.05),
+)
+SHARD_TWO = table(Cost("tests/test_streaming.py::test_c", 24.5, 8.0, 0.0))
 
 
 def test_the_cost_file_is_what_a_job_logs_cost_report_says() -> None:
-    costs = costs_from([TABLE])
+    costs = costs_from({"one": SHARD_ONE})
     assert costs.tests == {"tests/test_streaming.py::test_a[real]": 26.1, "tests/test_streaming.py::test_b[x y]": 5.0}
     assert costs.setups == {"tests/test_streaming.py": 24.0}
+
+
+def test_a_module_cut_across_shards_costs_the_setup_one_shard_paid_not_the_sum_of_what_all_paid() -> None:
+    costs = costs_from({"one": SHARD_ONE, "two": SHARD_TWO})
+    assert costs.setups == {"tests/test_streaming.py": 24.5}
+    assert costs.tests["tests/test_streaming.py::test_c"] == 8.0
+
+
+def test_a_log_with_no_cost_rows_is_refused_by_name() -> None:
+    with pytest.raises(ValueError, match="check-pair-log-3.txt holds no cost report rows"):
+        costs_from({"one": SHARD_ONE, "check-pair-log-3.txt": "no report log at .pytest_cache/check-pair-log.jsonl: the run wrote none\n"})
 
 
 def test_the_costs_the_repository_holds_are_the_ones_the_run_reads() -> None:

@@ -10,7 +10,7 @@ import huggingface_hub.constants
 import pytest
 from huggingface_hub import set_client_factory
 from huggingface_hub.errors import IncompleteSnapshotError
-from huggingface_hub.utils import _http  # pyright: ignore[reportPrivateUsage]  (the hub exports no name for its default client factory)
+from huggingface_hub.utils import _detect_agent, _http  # pyright: ignore[reportPrivateUsage]  (the hub exports no name for its default client factory, nor for the registry of agent harnesses it asks for once a process)
 from huggingface_hub.utils.sha import git_hash
 
 from hands.sessions.wide import chain
@@ -57,6 +57,10 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> Generator[list[str]]:
         return httpx.Response(200, headers=headers, content=b"" if request.method == "HEAD" else content)
 
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    # The hub's client asks for its registry of agent harnesses (`/api/agent-harnesses`) on its first request in a process, unless
+    # one cached for the day is there: whichever test in the process makes that request first is asked about it, and it is not
+    # one of the files fetched. Held as already asked, so what this hub is asked for is the fetch's alone, in any order of tests.
+    monkeypatch.setattr(_detect_agent, "_registry", _detect_agent._EMPTY_REGISTRY)  # pyright: ignore[reportPrivateUsage]
     set_client_factory(lambda: httpx.Client(transport=httpx.MockTransport(serve)))
     yield asked
     set_client_factory(_http.default_client_factory)

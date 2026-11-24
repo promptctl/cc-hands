@@ -505,6 +505,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-reportlog" },
     { name = "pytest-timeout" },
+    { name = "pyyaml" },
     { name = "quickjs" },
     { name = "soundfile" },
 ]
@@ -544,6 +545,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-reportlog", specifier = ">=1" },
     { name = "pytest-timeout", specifier = ">=2.3,<3" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "quickjs", specifier = ">=1.19" },
     { name = "soundfile", specifier = ">=0.13" },
 ]

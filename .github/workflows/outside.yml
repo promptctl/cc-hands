@@ -1,10 +1,9 @@
 # The tests marked `outside`, run on master every day, when asked (the Actions tab's "Run workflow"), and on a PR that changes
-# how they are cut or run, so every test the suite has runs on a gated path, and a PR does not wait on them: they are about
-# 35 minutes of test time on a runner, and a Free plan
-# runs 5 macOS jobs at once. Each job here has `timeout-minutes: 5`, as every job in .github/workflows does, so each tier is cut
-# into shards (tests/shards.py) that fit it: the real streaming pair's, every other `outside` test's, fritter's Go tests, and
-# wake-training's suite. The run takes as many waves of five jobs as it has jobs, so it is not one that ends in 5 minutes; no
-# job in it takes longer. The check named `outside` passes when every job did.
+# how they are cut or run, so every test the suite has runs on a gated path, and a PR does not wait on them: a Free plan runs
+# 5 macOS jobs at once. Each job here has `timeout-minutes: 5`, as every job in .github/workflows does, so what is run is cut
+# into shards (tests/shards.py) that fit it: the real streaming pair's, every other `outside` test's, and the jobs of
+# fritter's Go tests and of wake-training's suite. The run takes as many waves of five jobs as it has jobs, so it is not one
+# that ends in 5 minutes; no job in it takes longer. The check named `outside` passes when every job did.
 name: outside
 
 on:
@@ -27,7 +26,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # [LAW:one-source-of-truth] the shards of a tier are its matrix's list, and each takes its number out of the total
+  # [LAW:one-source-of-truth] the shards of a job are its matrix's list, and each takes its number out of the total
   # (tests/shards.py packs by tests/shard-costs.json): a shard added to the list is a shard of N+1, with nothing else to edit.
   # fail-fast is off: a red shard must not hide which of the others are red as well.
   pair:
@@ -43,15 +42,15 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/prepare
-        with:
-          fetches: true
+      - uses: ./.github/actions/fetch
       - name: make check-pair
         id: check
         run: make check-pair SHARD=${{ matrix.shard }}/${{ strategy.job-total }}
+      # [LAW:no-silent-failure] exception: continue-on-error, for the reason test.yml's cost step has it.
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true
-        run: uv run --no-sync python tests/costs.py .pytest_cache/check-pair-log.jsonl
+        run: make costs-check-pair
 
   rest:
     name: rest ${{ matrix.shard }}/${{ strategy.job-total }}
@@ -66,15 +65,15 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/prepare
-        with:
-          fetches: true
+      - uses: ./.github/actions/fetch
       - name: make check-outside
         id: check
         run: make check-outside SHARD=${{ matrix.shard }}/${{ strategy.job-total }}
+      # [LAW:no-silent-failure] exception: continue-on-error, for the reason test.yml's cost step has it.
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true
-        run: uv run --no-sync python tests/costs.py .pytest_cache/check-outside-log.jsonl
+        run: make costs-check-outside
 
   fritter:
     runs-on: macos-15
@@ -99,7 +98,7 @@ jobs:
         run: make check-wake-training
 
   # The verdict of the jobs, on ubuntu for the reason test.yml's is. !cancelled(), not always(): a run a newer one cancelled is
-  # not one this job reports on.
+  # not one this job reports on. tests/test_workflows.py holds `needs` to every other job of the workflow.
   outside:
     needs: [pair, rest, fritter, wake-training]
     if: ${{ !cancelled() }}

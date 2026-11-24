@@ -16,8 +16,8 @@ or "unknown" on one answers it here, and a test whose verdict holds on that answ
 test. The hold is what makes an unmarked test unit, and it is checked on every `make check`.
 
 Everything else is marked `outside` (a module's `pytestmark` or a test's decorator). The mark names what the test needs,
-not a layer: whether an outside test proves an adapter, a contract or the assembled system is not this mark's to say. CI's
-tiers (below) are cut by what a run costs, not by those layers.
+not a layer: whether an outside test proves an adapter, a contract or the assembled system is not this mark's to say. Where
+CI runs the suite (below) is cut by what a run costs, not by those layers.
 
 A wait the OS cannot refuse, a `time.sleep` or a timer the loop runs out, stays in the unit layer. `tests/clockwatch.py`
 owns it: its `UNMOVED` lists the modules that still reach the machine's time, and a module comes off it by moving onto a
@@ -49,7 +49,7 @@ smoke test, the happy path through hands' proxy, and tests/test_session_contract
 
 tests/test_pages.py runs each phone page's own code in the installed Google Chrome, driven by Playwright, against
 `phonepage.phone_pages`, the routes hands serves the phone, on the route tests' fakes. Chrome must be installed, as it is
-on GitHub's macos-15 runner image, which CI's `rest` tier runs on: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
+on GitHub's macos-15 runner image, which CI's `rest` jobs run on: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
 its pages made, whether the test passed or not.
 
 A page test that needs speech as the microphone is tests/test_phonewakepage.py's kind. The page's `getUserMedia` is replaced by an
@@ -71,12 +71,14 @@ holds a fetch, or fails one, does it with Playwright's `route`, not a fake in th
   the shards together run each test once. A module is kept whole in a shard, its fixtures set up once, unless it is more than a
   shard's share. The costs come from the cost reports CI prints (tests/costs.py): after a change that moves a lot of test time,
   `gh run view <run> --log` of the shards' jobs into a file each and `uv run --no-sync python tests/shards.py FILE... >
-  tests/shard-costs.json` regenerates them. Each shard says at its end what it was packed at and what it cost, so a file gone stale
-  shows in the log before a job passes its 5 minutes.
+  tests/shard-costs.json` regenerates them. A shard says at its start what it was packed at, and at its end what it cost and
+  which tests cost 0.5 s or more and are not in the file, so a file gone stale shows in the log; a job cancelled at its limit
+  still has the first. `make costs-check-unit` (and `-check-pair`, `-check-outside`) prints the cost report of that target's last
+  run, which is what CI's jobs put in their logs.
 - `make audit`: the `outside` tests under the same hold, each expected to be refused. One that is not does not need its
   mark; run it when a test moves down.
 
-## CI's tiers
+## Where CI runs the suite
 
 Every job in `.github/workflows` has `timeout-minutes: 5`: a workflow's run is held to the 5 minutes a person waiting on it
 will wait, and a job that goes past it is a shard too big for it. The suite is about 40 minutes of test time on a macOS runner,

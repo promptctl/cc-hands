@@ -1,84 +1,24 @@
-# [LAW:one-source-of-truth] what a CI job that runs tests has before its first test, for test.yml and outside.yml: the
-# toolchain, what the suite fetches from outside (kept across runs, so a download outage cannot fail a PR that never
-# touched what is fetched), the locked environment, lit, and a machine's Claude Code policy. A checkout with its history comes
-# first, as the local action below is read from it.
+# [LAW:one-source-of-truth] what a CI job that runs the Python suite has before its first test, in test.yml and outside.yml: the
+# toolchain, the sentence tokenizer the unit layer fetches (kept across runs, so a download outage cannot fail a PR that never
+# touched it), the locked environment, lit, and a machine's Claude Code policy. A checkout with its history comes first, as the
+# local action below is read from it. The jobs that run fritter's Go tests and wake-training's suite use ./.github/actions/setup
+# alone; the jobs that run `outside` tests add ./.github/actions/fetch.
 name: prepare
-description: The toolchain, the fetched caches, the locked environment, lit and a Claude Code policy, for a job that runs tests
-inputs:
-  fetches:
-    description: "'true' when the job runs tests that need what the suite fetches (the speech models, the wake word's models, the brain's pinned Claude Code and the mock of Anthropic's API); 'false' for the unit layer, which fetches only the sentence tokenizer, so a job that fills none of a cache never saves one empty under a key the jobs that do fill it then cannot save"
-    required: true
+description: The toolchain, the sentence tokenizer, the locked environment, lit and a Claude Code policy, for a job that runs the Python suite
 runs:
   using: composite
   steps:
     - uses: ./.github/actions/setup
-    # The run fetches openWakeWord's models into pytest's cache before its first test; kept across runs, a download outage
-    # cannot fail a PR that never touched the wake word.
-    - uses: actions/cache@v4
-      if: inputs.fetches == 'true'
-      with:
-        path: .pytest_cache/d/wake-word
-        key: wake-word-${{ hashFiles('src/hands/voice/wakemodels.py') }}
-    # The runtime the phone's page runs the wake word on, 15 MB, fetched by the run from a CDN at the version and digests
-    # src/hands/voice/ortweb.py pins; kept the same way, for the same reason.
-    - uses: actions/cache@v4
-      if: inputs.fetches == 'true'
-      with:
-        path: .pytest_cache/d/onnxruntime-web
-        key: onnxruntime-web-${{ hashFiles('src/hands/voice/ortweb.py') }}
     # NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, fetched by the run into pytest's cache at the
-    # pin tests/sentences.py holds; kept the same way, for the same reason.
+    # pin tests/sentences.py holds; kept across runs for the reason above.
     - uses: actions/cache@v4
       with:
         path: .pytest_cache/d/nltk-data
         key: nltk-data-${{ hashFiles('tests/sentences.py') }}
-    # The brain's end-to-end tests run the pinned Claude Code, fetched from npm's registry into pytest's cache against its
-    # checksum, and the mock of Anthropic's API at the release they name, installed with go; kept the same way, keyed on the
-    # pin and on the release.
-    - name: The brain's pinned Claude Code and the mock's release
-      if: inputs.fetches == 'true'
-      id: e2e
-      shell: bash
-      run: |
-        # PIN's version= literal, as Python parses the module: no import, so nothing is installed for it. Any other shape
-        # prints nothing, which the check below names.
-        claude=$(python3 -I -c 'import ast, sys; print(next((k.value.value for n in ast.parse(open(sys.argv[1]).read()).body if isinstance(n, ast.Assign) and [t.id for t in n.targets if isinstance(t, ast.Name)] == ["PIN"] and isinstance(n.value, ast.Call) for k in n.value.keywords if k.arg == "version" and isinstance(k.value, ast.Constant)), ""))' src/hands/brain/pinned.py)
-        mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/fetches.py)
-        test -n "$claude" || { echo "src/hands/brain/pinned.py pins no version this step can read" >&2; exit 1; }
-        test -n "$mock" || { echo "tests/fetches.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
-        echo "claude=$claude" >> "$GITHUB_OUTPUT"
-        echo "mock=$mock" >> "$GITHUB_OUTPUT"
-    - uses: actions/cache@v4
-      if: inputs.fetches == 'true'
-      with:
-        path: .pytest_cache/d/claude-code
-        key: claude-code-${{ steps.e2e.outputs.claude }}
-    - uses: actions/cache@v4
-      if: inputs.fetches == 'true'
-      with:
-        path: .pytest_cache/d/mock-anthropic
-        key: mock-anthropic-${{ steps.e2e.outputs.mock }}
     # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
     - name: Install the locked environment
       shell: bash
       run: uv sync --locked
-    # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, the engaged tests run
-    # Smart Turn on MLX, the voiceprint tests run ERes2Net, and the Whisper tests Whisper, on real sound, fetched into the
-    # Hugging Face cache at the revisions hands pins; kept across runs, so a download outage cannot fail a PR. The whole hub: a model's
-    # directory holds only links into the hub's shared store of blobs, where its weights are.
-    # [LAW:one-source-of-truth] keyed on tests/fetches.py's WEIGHTS, the list the run fetches, so a weight added to the
-    # fetch is a new key and never a hit on a cache saved without it; an edit to the rest of any file still finds them.
-    - name: The speech models' cache key
-      if: inputs.fetches == 'true'
-      id: speech
-      # Python writes the output itself: whatever an import prints on stdout cannot become part of the key.
-      shell: bash
-      run: uv run --locked python -c 'import os, sys; sys.path.insert(0, "tests"); from fetches import hub_key; open(os.environ["GITHUB_OUTPUT"], "a").write(f"key={hub_key()}\n")'
-    - uses: actions/cache@v4
-      if: inputs.fetches == 'true'
-      with:
-        path: ~/.cache/huggingface/hub
-        key: speech-${{ steps.speech.outputs.key }}
     # The backlog tests that run lit itself skip without one; the release its own installer hands out is what hands
     # meets, so a lit release that changes what hands reads fails here, not days later in every brain's audit log.
     # gh names that release under the job's token, and the installer comes from the same tag as the archive it
@@ -100,7 +40,7 @@ runs:
         echo "$GOBIN" >> "$GITHUB_PATH"
     # A Claude Code policy in its folder and its plists, as a developer's Mac or a managed one has: the run's sandbox must
     # keep it from every Claude Code the run starts (tests/offline.sb), and the run stops before any test if it finds it.
-    # [LAW:verifiable-goals] The policy allows the command the terminal contract's pinned case needs a permission dialog for
+    # The policy allows the command the terminal contract's pinned case needs a permission dialog for
     # (tests/test_terminal_contract_pinned.py, a symlink): a Claude Code that applied it would run the command without
     # asking, and that case would wait for a dialog that never comes.
     - name: A machine's Claude Code policy

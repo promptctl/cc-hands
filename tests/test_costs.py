@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from costs import REPORT_LOG, report
+from costs import REPORT_LOG, Cost, costs_in, report
 
 ROOT = Path(__file__).parents[1]
 
@@ -48,6 +48,12 @@ def test_a_report_gives_the_run_then_each_module_then_each_test_slowest_first() 
         "    2.000     0.500     1.000     0.500  tests/test_a.py::test_slower\n"
         "    1.000     0.500     0.250     0.250  tests/test_a.py::test_quick\n"
     )
+
+
+def test_the_rows_of_a_report_read_back_as_the_costs_they_were_printed_from_through_a_jobs_log_stamps() -> None:
+    log = STARTED + spent("tests/test_a.py::test_quick", 0.5, 0.25, 0.25) + spent("tests/test_b.py::test_slow[x y]", 2, 4, 1) + FINISHED
+    stamped = "".join(f"2026-11-24T18:25:20.5Z {line}\n" for line in report(log).splitlines())
+    assert costs_in(stamped) == [Cost("tests/test_b.py::test_slow[x y]", 2.0, 4.0, 1.0), Cost("tests/test_a.py::test_quick", 0.5, 0.25, 0.25)]
 
 
 def test_a_failed_run_says_how_it_ended() -> None:
