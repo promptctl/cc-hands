@@ -11,12 +11,14 @@ from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.virtualclock import VirtualClock
+from hands.voice import shortcut
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level, Leveled, Made
 from hands.voice.engaged import Hears, drive
 from hands.voice.turnlife import Ears
 from hands.voice.trigger import Choice
 from hands.voice.shortcut import KeyEvent, Move, Pressed, Released, Ripe
+from hands.voice.voiceturn import ASK_SECONDS
 
 # Right Shift's triple tap: what engages, and what disengages.
 TAP: tuple[KeyEvent, ...] = tuple(e for i in range(3) for e in (Pressed(1.0 + i / 10), Released()))
@@ -294,3 +296,36 @@ async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks(
     await stopped(driving)
     # The first verdict sends the first turn; the speech heard while it was given opens the next, which is judged too.
     assert rig.made[:7] == ["listen", "arm", "start", "stop", "arm", "start", "stop"]
+
+
+async def test_a_wake_that_nothing_is_asked_after_is_thrown_away_when_its_ask_comes_due() -> None:
+    rig = Rig(verdicts=[])
+    wakes = iter([True])
+
+    async def woken(audio: bytes, afresh: bool) -> bool:
+        return next(wakes, False)
+
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    await rig.choose("wake word")
+    await rig.hear(b"q")
+    # The wake opened a turn, which set the deadline for what is asked; the clock comes to it.
+    await rig.clock.scheduled(ASK_SECONDS)
+    rig.clock.advance_to(ASK_SECONDS)
+    await rig.until(lambda: "drop" in rig.made)
+    await stopped(driving)
+    assert rig.made == ["listen", "arm", "start", "drop"]
+    # The wake thrown away leaves Smart Turn none of it for the next turn.
+    assert rig.ears.cleared == 1
+
+
+async def test_a_turn_the_voice_opened_is_sent_at_the_limit_when_it_comes_due() -> None:
+    rig = Rig(verdicts=[])
+    driving = rig.start()
+    await rig.choose("engaged")
+    await rig.hear(b"s", b"S")
+    await rig.clock.scheduled(shortcut.TURN_LIMIT_SECONDS)
+    rig.clock.advance_to(shortcut.TURN_LIMIT_SECONDS)
+    await rig.until(lambda: "timeout" in rig.made)
+    await stopped(driving)
+    assert rig.made == ["listen", "arm", "start", "timeout"]
+    assert rig.ears.cleared == 1

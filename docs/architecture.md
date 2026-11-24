@@ -2030,12 +2030,14 @@ the limit, which is the shortcut's own `TURN_LIMIT_SECONDS`), and the deadlines 
 that has just opened asks to be told. The work around the models that goes with it is
 `hands.voice.turnlife.Life`: hearing afresh from a wake, what Smart Turn is fed, judging,
 clearing as a turn ends. It holds no turn. The turn is its runner's: the desk's phase, or
-`turnlife.Runner.turn` for a runner with no desk, and a verdict names the turn it judged
-(`TurnEnded.of`), so one that comes after its turn is over ends nothing of the turn open
-by then. While a judge is in flight `Life` holds off the next buffer and defers any reset
-of the models, so Smart Turn is never cleared under its own judge and nothing of a new
-turn is lost to a stale verdict. The desk's driver (`hands.voice.engaged.drive`) runs it
-on the desk's microphone and keeps the talk key, the taps and the level, which are its own.
+`turnlife.Runner.turn` for a runner with no desk, and the models take one use at a time
+from whoever holds the turn: the desk's loop is one task, and each `Runner` method is one
+critical section under one lock, so a cut, an open or a deadline from another task waits
+behind a judge in flight, and a buffer or a verdict is stepped against the turn it was
+heard or judged in. A verdict also names the turn it judged (`TurnEnded.of`), as a
+deadline does, so one that names a turn that is not the open one ends nothing. The desk's
+driver (`hands.voice.engaged.drive`) runs it on the desk's microphone and keeps the talk
+key, the taps and the level, which are its own.
 
 **The desk is one mode, at one of three levels** (`hands.voice.desk`). The phone's
 button is there for every call. At the desk, one driver (`hands.voice.engaged.drive`)

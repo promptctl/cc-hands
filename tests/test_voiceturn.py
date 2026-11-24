@@ -126,7 +126,7 @@ class Rig:
 async def test_a_turn_handed_open_that_nothing_is_asked_after_is_thrown_away_at_ask_seconds() -> None:
     rig = Rig()
     rig.clock.advance_to(1.0)
-    rig.runner.open(Waiting(1.0))
+    await rig.runner.open(Waiting(1.0))
     assert rig.ears.log == ["afresh"]
     assert await rig.until(1.0 + ASK_SECONDS - 0.1) is None and rig.runner.turn == Waiting(1.0)
     assert await rig.until(1.0 + ASK_SECONDS) == Ended("drop")
@@ -137,7 +137,7 @@ async def test_a_turn_handed_open_that_nothing_is_asked_after_is_thrown_away_at_
 
 async def test_a_turn_handed_open_is_sent_on_smart_turns_verdict_once_speech_has_stopped() -> None:
     rig = Rig(verdicts=[False, True])
-    rig.runner.open(Waiting(0.0))
+    await rig.runner.open(Waiting(0.0))
     # The pause after the wake word, and its silence, are no end: nothing is judged.
     assert await rig.runner.hear(b"s") is None and await rig.runner.hear(b"q") is None
     assert "judge asked" not in rig.ears.log and rig.runner.turn == Waiting(0.0)
@@ -154,7 +154,7 @@ async def test_a_turn_handed_open_is_sent_on_smart_turns_verdict_once_speech_has
 
 async def test_a_turn_handed_open_is_sent_on_the_silence_after_speech_that_smart_turn_held_open() -> None:
     rig = Rig(verdicts=[False])
-    rig.runner.open(Waiting(0.0))
+    await rig.runner.open(Waiting(0.0))
     await rig.runner.hear(b"S")
     await rig.runner.hear(b"q")
     assert await rig.runner.hear(b"x") == Ended("stop")
@@ -162,7 +162,7 @@ async def test_a_turn_handed_open_is_sent_on_the_silence_after_speech_that_smart
 
 async def test_a_turn_handed_open_is_sent_at_the_limit_as_it_stands() -> None:
     rig = Rig()
-    rig.runner.open(Waiting(0.0))
+    await rig.runner.open(Waiting(0.0))
     await rig.runner.hear(b"S")
     assert await rig.until(shortcut.TURN_LIMIT_SECONDS - 1.0) is None
     assert await rig.until(shortcut.TURN_LIMIT_SECONDS) == Ended("timeout")
@@ -172,66 +172,62 @@ async def test_the_limit_and_the_ask_are_the_numbers_the_desk_has_where_they_are
     monkeypatch.setattr("hands.voice.shortcut.TURN_LIMIT_SECONDS", 3.0)
     monkeypatch.setattr("hands.voice.voiceturn.ASK_SECONDS", 2.0)
     rig = Rig()
-    rig.runner.open(Waiting(0.0))
+    await rig.runner.open(Waiting(0.0))
     assert await rig.until(2.0) == Ended("drop")
-    rig.runner.open(Waiting(2.0))
+    await rig.runner.open(Waiting(2.0))
     await rig.runner.hear(b"S")
     assert await rig.until(5.0) == Ended("timeout")
 
 
-@pytest.mark.parametrize(
-    ("next_turn", "reset"),
-    [
-        # A wake's turn is heard afresh from where it opened; one opened by speech has the speech it opened on.
-        (Waiting(2.0), ["afresh", "clear"]),
-        (Speaking(2.0), ["clear"]),
-    ],
-)
-async def test_a_verdict_for_a_turn_that_is_already_over_ends_nothing_and_leaves_the_models_to_the_turn_open_by_then(next_turn: Turn, reset: list[str]) -> None:
+async def test_a_cut_the_next_turn_and_its_words_wait_for_the_judge_and_the_verdict_ends_only_the_turn_it_judged() -> None:
     rig = Rig(verdicts=[True])
-    rig.clock.advance_to(1.0)
-    rig.runner.open(Waiting(1.0))
+    await rig.runner.open(Waiting(1.0))
     await rig.runner.hear(b"S")
     rig.ears.gate = asyncio.Event()
     judging = asyncio.create_task(rig.runner.hear(b"q"))
     await rig.ears.asked.wait()
-    # The turn ends another way while Smart Turn thinks, a gate that took it; the next opens, and its first words come.
-    rig.runner.cut()
-    rig.clock.advance_to(2.0)
-    rig.runner.open(next_turn)
+    # The gate takes the turn, the next opens and its first words come, all while Smart Turn thinks.
+    cutting = asyncio.create_task(rig.runner.cut())
+    opening = asyncio.create_task(rig.runner.open(Waiting(2.0)))
     hearing = asyncio.create_task(rig.runner.hear(b"S"))
-    # One turn of the loop runs the new task as far as it goes: to the models, which the judge holds. Had it not been held
-    # off, it would run through the fake detector and feed, and the log below would show it before the answer.
+    # One turn of the loop runs the three as far as they go: to the lock, which the judge holds. Had one not been held
+    # off, it would have run through the fakes, and the log would show it before the answer.
     await asyncio.sleep(0)
-    assert rig.ears.log[-1] == "judge asked"
+    assert rig.ears.log[-1] == "judge asked" and rig.runner.turn == Speaking(1.0)
     rig.ears.gate.set()
-    assert await judging is None
+    # The verdict is for the turn that was open when it was asked, and sends it.
+    assert await judging == Ended("stop")
+    await asyncio.gather(cutting, opening)
     assert await hearing is None
-    # The stale verdict ended nothing: the turn open now is the new one, which its own speech has started.
+    # The cut found the turn already sent. The next turn was heard afresh, and what it said started it.
     assert rig.runner.turn == Speaking(2.0)
-    # The models were reset for the new turn only after the judge answered, and its audio fed after that.
-    after = rig.ears.log[rig.ears.log.index("judge answered") + 1 :]
-    assert after == [*reset, "detect b'S'", "fed b'S'"]
-    # The first turn's limit, which a clock on its own would still tell, ends the second no more.
-    assert await rig.until(1.0 + shortcut.TURN_LIMIT_SECONDS) is None and rig.runner.turn == Speaking(2.0)
+    assert rig.ears.log[rig.ears.log.index("judge answered") + 1 :] == ["clear", "afresh", "detect b'S'", "fed b'S'"]
 
 
-async def test_what_a_buffer_said_of_a_turn_that_is_over_is_not_said_of_the_turn_open_by_then() -> None:
-    rig = Rig(verdicts=[True])
-    rig.clock.advance_to(1.0)
-    rig.runner.open(Speaking(1.0))
+async def test_a_verdict_that_names_another_turn_ends_nothing() -> None:
+    rig = Rig()
+    await rig.runner.open(Speaking(1.0))
+    assert await rig.runner.advance(TurnEnded("verdict", 0.5)) is None
+    assert rig.runner.turn == Speaking(1.0) and rig.ears.log == []
+
+
+async def test_a_cut_and_the_next_turn_wait_for_the_buffer_being_heard_and_its_stop_is_judged_for_the_turn_it_was_heard_in() -> None:
+    rig = Rig(verdicts=[False])
+    await rig.runner.open(Speaking(1.0))
     await rig.runner.hear(b"S")
-    # The speech stops in a buffer the detector is still thinking about, as a gate takes the turn and opens the next.
+    # The speech stops in a buffer the detector is still thinking about, as the gate takes the turn and opens the next.
     open_gate = rig.ears.hold_detecting()
     hearing = asyncio.create_task(rig.runner.hear(b"q"))
     await rig.ears.detecting.wait()
-    rig.runner.cut()
-    rig.clock.advance_to(2.0)
-    rig.runner.open(Speaking(2.0))
+    cutting = asyncio.create_task(rig.runner.cut())
+    opening = asyncio.create_task(rig.runner.open(Speaking(2.0)))
+    await asyncio.sleep(0)
     open_gate.set()
-    # The stop was the first turn's: nothing is judged for the second, which says nothing yet.
     assert await hearing is None
-    assert "judge asked" not in rig.ears.log and rig.runner.turn == Speaking(2.0)
+    await asyncio.gather(cutting, opening)
+    # Smart Turn judged the stop before it was cleared for the next turn, which has heard nothing.
+    assert rig.ears.log[rig.ears.log.index("detect b'q'") :] == ["detect b'q'", "fed b'q'", "judge asked", "judge answered", "clear"]
+    assert rig.runner.turn == Speaking(2.0)
 
 
 async def test_what_a_buffer_said_before_a_turn_opened_is_no_part_of_it() -> None:
@@ -240,32 +236,19 @@ async def test_what_a_buffer_said_before_a_turn_opened_is_no_part_of_it() -> Non
     open_gate = rig.ears.hold_detecting()
     hearing = asyncio.create_task(rig.runner.hear(b"S"))
     await rig.ears.detecting.wait()
-    rig.runner.open(Waiting(2.0))
+    opening = asyncio.create_task(rig.runner.open(Waiting(2.0)))
+    await asyncio.sleep(0)
     open_gate.set()
     assert await hearing is None
-    # Its speech is not what was asked: the turn still waits for that.
+    await opening
+    # Its speech is not what was asked, and the models were told to hear afresh after it: the turn still waits.
     assert rig.runner.turn == Waiting(2.0)
-
-
-async def test_what_the_models_were_told_to_forget_is_forgotten_before_they_judge_again() -> None:
-    rig = Rig(verdicts=[False])
-    rig.runner.open(Speaking(1.0))
-    open_gate = rig.ears.hold_detecting()
-    hearing = asyncio.create_task(rig.runner.hear(b"S"))
-    await rig.ears.detecting.wait()
-    # The turn ends and the next opens while the models are in use; the speech of the next stops, and is judged.
-    rig.runner.cut()
-    rig.runner.open(Speaking(2.0))
-    judging = asyncio.create_task(rig.runner.advance(SpeechStopped()))
-    open_gate.set()
-    await hearing
-    assert await judging is None
-    assert rig.ears.log.index("clear") < rig.ears.log.index("judge asked")
+    assert rig.ears.log == ["detect b'S'", "fed b'S'", "afresh"]
 
 
 async def test_silence_with_no_turn_open_ends_nothing_and_a_turn_is_not_opened_over_another() -> None:
     rig = Rig()
     assert await rig.runner.hear(b"S") is None and await rig.runner.hear(b"x") is None
-    rig.runner.open(Waiting(0.0))
+    await rig.runner.open(Waiting(0.0))
     with pytest.raises(ValueError, match="is open"):
-        rig.runner.open(Waiting(1.0))
+        await rig.runner.open(Waiting(1.0))
