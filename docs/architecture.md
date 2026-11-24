@@ -2049,7 +2049,7 @@ deadlines of one that opened. The owner of the turn holds which one is open and 
 it in the order things were told: the desk's phase at the Mac, the gate for the phone. `Life`
 holds no turn, so each end, verdict, limit and ask names the number its owner minted as the turn
 opened, and the owner applies it only to that turn; one for a turn that has since been replaced,
-even one opened at the same instant, ends nothing. The models take one use at a time, and `Life` refuses a use begun beside another.
+even one opened at the same instant, ends nothing. A verdict that ends a turn is given to its owner first, ahead of whatever was told while Smart Turn thought, by `Life` for every owner alike. The models take one use at a time, and `Life` refuses a use begun beside another.
 
 **A listening desk listens between turns.** The levels move the gate with the
 shortcut's own moves, plus two of their own: `listen` as the desk leaves `off` and

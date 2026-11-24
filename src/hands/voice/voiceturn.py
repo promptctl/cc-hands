@@ -9,7 +9,7 @@ one only to that turn. The work around the models that goes with the step is `ha
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NewType
 
 from hands.voice import shortcut
 from hands.voice.shortcut import Instant
@@ -37,7 +37,7 @@ class SpeechStopped:
 
 # A turn is named by a number its owner mints as it opens the turn, so what names one is for it and for no turn opened after
 # it, however close in time.
-TurnId = int
+TurnId = NewType("TurnId", int)
 
 
 @dataclass(frozen=True)

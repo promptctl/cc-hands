@@ -824,7 +824,7 @@ def play_out[S, E](
                 heapq.heappush(due, (at, next(arrival), later))
             for act in acts:
                 match act:
-                    case desk.Judge() | desk.Leveled():
+                    case voiceturn.Judging() | desk.Leveled():
                         pass
                     case desk.Made(move=move, by=trigger):
                         moves.append(move)
@@ -864,7 +864,7 @@ async def test_a_shortcut_turn_of_three_minutes_of_speech_reaches_the_brain_whol
 
 async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
     engage = [(1.0, desk.Chosen("engaged"))]
-    timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0)), (182.0, voiceturn.TurnEnded("verdict", 1))], 183.0)
+    timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0)), (182.0, voiceturn.TurnEnded("verdict", voiceturn.TurnId(1)))], 183.0)
     assert timeline.moves == ["listen", "arm", "start", "stop"]
     await rig.play(timeline)
     await rig.texts.put("three minutes of conversation")

@@ -22,7 +22,7 @@ from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, unit
 from hands.voice import voiceturn
-from hands.voice.voiceturn import SpeechStarted, SpeechStarting, SpeechStopped, Told, Turn, TurnEnded
+from hands.voice.voiceturn import Speaking, SpeechStarted, SpeechStarting, SpeechStopped, Told, Turn, TurnEnded
 
 
 class Ears(Protocol):
@@ -50,16 +50,20 @@ class Detected:
 
 
 class Life:
-    """The work around the models for the turns of one stream of audio, with the deadlines each asks of `later`.
+    """The work around the models for the turns of one stream of audio: the deadlines each asks are told to `later`, and a
+    verdict that ends a turn is told to `first`, which puts it before everything its owner was told that it has yet to
+    step. A verdict is stepped as it is given, ahead of what was heard while Smart Turn thought, so it ends the turn it
+    judged and no turn opened since: the rule is here, once, for every owner.
 
     The models take one use at a time: a use begun while another is in flight is refused out loud. The owner of the turn
     orders them, as the desk's loop does by awaiting each use before the next; an owner whose judge runs beside its next
     buffer keeps them apart itself."""
 
-    def __init__(self, clock: Clock, ears: Ears, later: Callable[[Told], None], emit: Callable[[WideEvent], None], name: str) -> None:
+    def __init__(self, clock: Clock, ears: Ears, later: Callable[[Told], None], first: Callable[[Told], None], emit: Callable[[WideEvent], None], name: str) -> None:
         self._clock = clock
         self._ears = ears
         self._later = later
+        self._first = first
         self._emit = emit
         # The unit of work each verdict is: `<name>.judged`.
         self._name = name
@@ -116,14 +120,16 @@ class Life:
         self._detected = state
         return Detected(changes, TurnEnded("silence", turn.id) if silent_too_long and turn is not None else None)
 
-    async def judge(self, turn: Turn) -> TurnEnded | None:
-        """Ask Smart Turn whether the speech that just stopped ends `turn`: its own unit of work, with its verdict. The
-        answer names the turn it was asked for."""
+    async def judge(self, turn: Speaking) -> bool:
+        """Ask Smart Turn whether the speech that just stopped ends `turn`: its own unit of work, with its verdict. Whether
+        it was judged complete; the verdict that ends the turn names it, and is the owner's next to step."""
         with self._using("judge"), unit(f"{self._name}.judged", self._emit, wide.begun(self._clock)):
             complete, metrics = await self._ears.judge()
             # [LAW:nothing-unseen] the verdict, and how sure of it the model was; no metrics is a segment with no audio in it.
             annotate(complete=complete, probability=None if metrics is None else metrics.probability, inference_ms=None if metrics is None else metrics.e2e_processing_time_ms)
-        return TurnEnded("verdict", turn.id) if complete else None
+        if complete:
+            self._first(TurnEnded("verdict", turn.id))
+        return complete
 
 
 def _changed(was: VADState, now: VADState, clock: Clock) -> tuple[Told, ...]:

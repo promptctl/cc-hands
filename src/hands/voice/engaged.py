@@ -36,11 +36,11 @@ from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
-from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Judge, Keyed, Leveled, Made, Woken, listens, step, turn_of
+from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Keyed, Leveled, Made, Woken, listens, step, turn_of
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
 from hands.voice.turnlife import Ears, Life
-from hands.voice.voiceturn import TurnEnded
+from hands.voice.voiceturn import Judging, TurnEnded
 
 
 # The silence that ends speech: a pause between words is shorter, so it is inside the speech. At Pipecat's 0.2 s, tuned
@@ -218,13 +218,15 @@ async def drive(
     drive.
     """
     events: asyncio.Queue[Event | Overheard | Choice] = asyncio.Queue()
+    # What has been told and is yet to be stepped, in the order it is stepped.
+    heard: deque[Event] = deque()
 
     async def overhearing() -> None:
         # [LAW:no-ambient-temporal-coupling] each buffer carries the life of the models it is heard with, so none is heard
         # before they are loaded, and the key never waits on them.
-        async with hearing() as (ears, woken), overheard() as heard:
-            life = Life(clock, ears, events.put_nowait, emit, "desk")
-            async for audio in heard:
+        async with hearing() as (ears, woken), overheard() as room:
+            life = Life(clock, ears, events.put_nowait, heard.appendleft, emit, "desk")
+            async for audio in room:
                 events.put_nowait(Overheard(audio, life, woken))
 
     async def choosing() -> None:
@@ -237,7 +239,6 @@ async def drive(
     # Whether the key has come up since the last buffer was heard: speech the desk ignored while it was down starts for it
     # as the key comes up, so a tap of Shift as the user began does not lose what they say.
     key_came_up = False
-    heard: deque[Event] = deque()
     # The level the last buffer was heard at: off, where nothing has heard it, as the desk starts.
     overheard_at: Level = "off"
     async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
@@ -257,6 +258,7 @@ async def drive(
                             case Overheard() if not listens(desk.level):
                                 overheard_at = desk.level
                             case Overheard(audio=audio, life=life, woken=woken):
+                                count(heard=1)
                                 # Each model hears from where its level started, with nothing of the room before it.
                                 begun = desk.level != overheard_at
                                 overheard_at = desk.level
@@ -291,11 +293,9 @@ async def drive(
                     key_came_up = key_came_up or (isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed))
                     for act in acts:
                         match act:
-                            case Judge(turn=judged):
+                            case Judging(turn=judged):
                                 # Only speech the detector heard is judged, and it is heard with the models.
-                                if (verdict := await _models(life).judge(judged)) is not None:
-                                    heard.appendleft(verdict)
-                                else:
+                                if not await _models(life).judge(judged):
                                     count(held_open=1)
                             case Made(move=move, by=by):
                                 count(**{move: 1, f"by_{by.replace(' ', '_')}": 1})

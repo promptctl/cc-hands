@@ -105,7 +105,7 @@ class Desk:
 
     phase: Phase = Resting("off")
     taps: Taps = Taps()
-    turns: TurnId = 0
+    turns: TurnId = TurnId(0)
 
     @property
     def level(self) -> Level:
@@ -139,16 +139,9 @@ class Leveled:
     by: Chooser
 
 
-@dataclass(frozen=True)
-class Judge:
-    """Smart Turn is to be asked whether the speech that just stopped ends `turn`."""
-
-    turn: Turn
-
-
 # What the desk does: a move of the gate, a change of level, or asking Smart Turn whether the speech that just stopped
 # ends the turn.
-Act = Made | Leveled | Judge
+Act = Made | Leveled | Judging
 
 
 def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
@@ -158,11 +151,11 @@ def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
             phase, acts = _leveled(desk.phase, level, "tool")
             return replace(desk, phase=phase), acts
         case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong() | NothingAsked():
-            phase, acts = _heard(desk.phase, event, desk.turns + 1)
-            # [LAW:one-source-of-truth] a turn opens where the voiceturn rules say it does, and that is the one place a
-            # number is spent on it.
-            minted = voiceturn.opened(turn_of(desk.phase), turn_of(phase)) is not None
-            return replace(desk, phase=phase, turns=desk.turns + 1 if minted else desk.turns), acts
+            phase, acts = _heard(desk.phase, event, TurnId(desk.turns + 1))
+            # [LAW:one-source-of-truth] the number spent is the one the turn the phase holds now carries, so the count
+            # follows the turns and not a second decision of whether one opened.
+            turn = turn_of(phase)
+            return replace(desk, phase=phase, turns=desk.turns if turn is None else turn.id), acts
         case _:
             taps, tapped = counted(desk.taps, event)
             phase, acts = _keyed(desk.phase, event)
@@ -275,8 +268,8 @@ def _in_turn(phase: Woke | Voiced, told: Told) -> tuple[Phase, tuple[Act, ...]]:
     level = _listens(phase)
     match voiceturn.step(phase.turn, told):
         # The phase is the turn the rules made of it, whole.
-        case Judging(turn=speaking):
-            return _holding(level, phase.key, speaking), (Judge(speaking),)
+        case Judging(turn=speaking) as judging:
+            return _holding(level, phase.key, speaking), (judging,)
         case Going(turn=turn):
             return _holding(level, phase.key, turn), ()
         case Ended(how=how):
