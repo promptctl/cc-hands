@@ -9,7 +9,7 @@ import numpy as np
 from conftest import VirtualClock, patiently
 from hands.sessions.audit import Cued, Entry
 from hands.sessions.audit import Played
-from hands.voice.cues import ANSWER, CUE_LEVEL, CUE_SECONDS, DROPPED, ENGAGED, OFF, OPENED, RECEIVED, SENT, WAKE_WORD, WORKING, Cue, QuietCue, QuietCues, cues, sound
+from hands.voice.cues import CUE_LEVEL, CUE_SECONDS, DROPPED, ENGAGED, OFF, OPENED, RECEIVED, SENT, REPLY_WINDOW, WAKE_WORD, WORKING, Cue, QuietCue, QuietCues, cues, sound
 
 RATE = 24000
 
@@ -33,7 +33,7 @@ def pitch(tone: np.ndarray) -> float:
 
 
 def test_each_cue_is_short_soft_and_starts_and_ends_in_silence() -> None:
-    for cue in (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue, ANSWER):
+    for cue in (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue, REPLY_WINDOW):
         audio = samples(cue)
         assert len(audio) == round(RATE * CUE_SECONDS) * 2 * len(cue.glides)
         assert 0.9 * CUE_LEVEL < np.abs(audio).max() <= CUE_LEVEL
@@ -67,7 +67,7 @@ def test_receiving_is_high_and_rising_in_steps_and_working_is_one_steady_tone() 
 
 def test_the_window_after_hands_spoke_dips_and_rises_above_the_keys_pitches_in_a_shape_no_other_cue_has() -> None:
     n = round(RATE * CUE_SECONDS)
-    answer = samples(ANSWER)
+    answer = samples(REPLY_WINDOW)
     falling, rising = answer[:n], answer[2 * n : 3 * n]
     assert pitch(falling[: n // 2]) > pitch(falling[n // 2 :]) and pitch(rising[: n // 2]) < pitch(rising[n // 2 :])
     # Above the key's 660 to 990 Hz, so it is taken for none of a turn's edges.
@@ -77,7 +77,7 @@ def test_the_window_after_hands_spoke_dips_and_rises_above_the_keys_pitches_in_a
         return tuple(int(np.sign(end - start)) for start, end in cue.glides)
 
     others = (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue, OFF, WAKE_WORD, ENGAGED)
-    assert directions(ANSWER) == (-1, 1) and directions(ANSWER) not in {directions(cue) for cue in others}
+    assert directions(REPLY_WINDOW) == (-1, 1) and directions(REPLY_WINDOW) not in {directions(cue) for cue in others}
 
 
 class Quiet(asyncio.Event):

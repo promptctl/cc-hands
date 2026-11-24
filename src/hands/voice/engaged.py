@@ -37,7 +37,8 @@ from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
-from hands.voice.desk import Chosen, Desk, Event, HandsQuiet, HandsSpeaking, Keyed, Leveled, Made, ModelsLoaded, WindowOpened, Woken, hears, step, turn_of
+from hands.voice.desk import Chosen, Desk, Event, Keyed, Leveled, Made, ModelsLoaded, ReplyWindowOpened, ReplyWindowOver, Woken, hears, step, turn_of
+from hands.voice.handsvoice import HandsQuiet, HandsSpeaking, HandsVoice
 from hands.voice.listening import LEVELS, Choice, Driving, Level
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.turnlife import Ears, Life
@@ -169,13 +170,18 @@ async def _let_go(loading: asyncio.Future[Models]) -> None:
 
 
 # [LAW:one-source-of-truth] each move the desk makes is counted on the desk's event, by the move's name and by the trigger
-# that made it, and each change of level by the level it went to.
+# that made it, and each change of level by the level it went to; hands falling quiet, and the reply windows that opened,
+# were answered, ran out, or were cut short by hands speaking again.
 _COUNTED: tuple[str, ...] = (
     *(name for literal in get_args(Move) for name in get_args(literal)),
     *(f"by_{trigger.replace(' ', '_')}" for trigger in get_args(Trigger)),
     *(f"to_{level.replace(' ', '_')}" for level in LEVELS),
-    "held_open", "ended_on_silence", "heard", "wake_words", "windows",
+    "held_open", "ended_on_silence", "heard", "wake_words",
+    "hands_quiet", "windows", "answers", "windows_over", "windows_cut",
 )
+
+# What the desk does that the one serving it carries out: the gate's moves, a change of level, and the reply window's cue.
+Served = Made | Leveled | ReplyWindowOpened
 
 # The wake word a buffer of the desk's microphone ends with, if it does (`hands.voice.wake`), heard afresh from it when
 # its level has just started.
@@ -205,16 +211,14 @@ async def drive(
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
     hearing: Callable[[], AbstractAsyncContextManager[tuple[Ears, Hears]]],
-    spoken: Callable[[], AbstractAsyncContextManager[AsyncIterator[HandsQuiet | HandsSpeaking]]],
+    spoken: Callable[[], AbstractAsyncContextManager[AsyncIterator[HandsVoice]]],
     levels: Driving,
-    on_move: Callable[[Made], Awaitable[None]],
-    on_level: Callable[[Leveled], Awaitable[None]],
-    on_window: Callable[[WindowOpened], Awaitable[None]],
+    served: Callable[[Served], Awaitable[None]],
     emit: Callable[[WideEvent], None],
 ) -> None:
-    """Hand every move the desk makes to `on_move`, every change of level to `on_level`, and every window opened after
-    hands spoke to `on_window`, until cancelled, the desk made at the level `levels` says the run starts at, and `levels`
-    told the desk after every step. `spoken` says each time hands starts and stops speaking.
+    """Hand everything the desk does to `served`, in the order it does it, until cancelled, the desk made at the level
+    `levels` says the run starts at, and `levels` told the desk after every step. `spoken` says each time hands starts
+    and stops speaking.
 
     One task steps the desk, in the order things were heard, so the speech, the key, the taps, the wake word, the
     tools' choices, and Smart Turn's verdicts never race each other: a verdict is stepped as it is given, before any
@@ -251,10 +255,11 @@ async def drive(
     desk = Desk.starting(levels.last_chosen)
     # The life of the models the last buffer was heard with: None until they are loaded, while Smart Turn has heard nothing.
     life: Life | None = None
-    # Whether the key has come up since the last buffer was heard: speech the desk ignored while it was down starts for it
-    # as the key comes up, so a tap of Shift as the user began does not lose what they say.
-    key_came_up = False
-    # The level the last buffer was heard at, None where nothing heard it: at off, until the window after hands spoke.
+    # Whether speech already under way is to start for the desk at the next buffer: speech it ignored while the key was down
+    # starts as the key comes up, so a tap of Shift as the user began does not lose what they say, and speech said over
+    # hands' last words starts as the reply window opens, so an answer begun at once opens the turn.
+    under_way = False
+    # The level the last buffer was heard at, None where the desk was deaf to it.
     overheard_at: Level | None = None
     async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
         group.create_task(overhearing(), name="the desk's microphone, overheard")
@@ -269,21 +274,21 @@ async def drive(
                 while desk.level == level:
                     if not heard:
                         match await events.get():
-                            # [LAW:types-are-the-program] off, the microphone is closed between turns, and nothing
-                            # hears the room but the window after hands spoke.
+                            # [LAW:types-are-the-program] the stream is open whatever the desk hears: what it is deaf
+                            # to, off between turns, its phase says.
                             case Overheard() if not hears(desk.phase):
                                 overheard_at = None
                             case Overheard(audio=audio, life=life, woken=woken):
                                 count(heard=1)
-                                # Each model hears from where its level, or the window off, started, with nothing of the
-                                # room before it.
+                                # Each model hears from where the desk began to hear the room, at a level or off in the
+                                # reply window, with nothing of the room before it.
                                 begun = desk.level != overheard_at
                                 overheard_at = desk.level
                                 if begun:
                                     life.afresh()
-                                if key_came_up:
+                                if under_way:
                                     life.quiet()
-                                key_came_up = False
+                                under_way = False
                                 # Smart Turn hears speech only with no key down, so the room it hears otherwise is
                                 # trimmed as silence is.
                                 detected = await life.hear(audio, not isinstance(desk.phase, Keyed), turn_of(desk.phase))
@@ -307,7 +312,19 @@ async def drive(
                         _models(life).moved(was_turn, turn)
                         if voiceturn.closed(was_turn, turn) is not None and isinstance(each, TurnEnded) and each.by == "silence":
                             count(ended_on_silence=1)
-                    key_came_up = key_came_up or (isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed))
+                    under_way = under_way or (isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed))
+                    # [LAW:nothing-unseen] hands falling quiet is counted whether or not it opened a window, and a
+                    # window's end and hands speaking again by whether they closed one.
+                    moved = desk.phase != was.phase
+                    match each:
+                        case HandsQuiet():
+                            count(hands_quiet=1)
+                        case ReplyWindowOver() if moved:
+                            count(windows_over=1)
+                        case HandsSpeaking() if moved:
+                            count(windows_cut=1)
+                        case _:
+                            pass
                     for act in acts:
                         match act:
                             case Judging(turn=judged):
@@ -316,17 +333,20 @@ async def drive(
                                     count(held_open=1)
                             case Made(move=move, by=by):
                                 count(**{move: 1, f"by_{by.replace(' ', '_')}": 1})
-                                await on_move(act)
-                            case WindowOpened():
+                                if act == Made("start", "reply window"):
+                                    count(answers=1)
+                                await served(act)
+                            case ReplyWindowOpened(until=until):
                                 count(windows=1)
-                                # [LAW:no-ambient-temporal-coupling] the end names the window it is for, so it closes no
-                                # window opened after it.
-                                at, over = act.end()
-                                clock.call_at(at, partial(events.put_nowait, over))
-                                await on_window(act)
+                                # [LAW:no-ambient-temporal-coupling] the end names the window it is for, as a turn's
+                                # deadline names its turn, so it closes no window opened after it.
+                                clock.call_at(until, partial(events.put_nowait, ReplyWindowOver(until)))
+                                # Speech said over hands' last words starts for the window.
+                                under_way = True
+                                await served(act)
                             case Leveled(was=was_level, now=now, by=chooser):
                                 count(**{f"to_{now.replace(' ', '_')}": 1})
                                 # [LAW:nothing-unseen] each change of level is its own event: from, to, and by.
                                 with unit("desk.leveled", emit, wide.begun(clock)):
                                     annotate(was=was_level, now=now, by=chooser)
-                                await on_level(act)
+                                await served(act)

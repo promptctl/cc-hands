@@ -305,13 +305,15 @@ Need 8. Where the microphone is.
   as while it is quiet, except on the Mac's own microphone and speakers, where said over hands it wakes nothing. Done when, with speakers on, a turn completes with no key and
   none of hands' own words in its transcript, and room talk without the wake word
   opens no turn.
-- **The window after hands speaks.** Off and under the wake word, once hands falls quiet at the
-  desk, a short cue, a falling tone and a rising one, says the user may answer for the next five seconds with no key and no
-  wake word: speech said in that time opens a turn, its trigger `reply window`, and end-of-turn
-  detection closes it as in an engaged conversation. Nothing said, the window closes, the
-  desk back at its level; hands speaking again closes it too, and each time hands falls quiet
-  opens one (`voice/desk.py`, `promptctl-voice-oalb.w9n`). Engaged has none: speech already
-  opens every turn there. Neither has the phone: its page listens for its own wake word.
+- **The reply window.** Off and under the wake word, once hands has finished a reply at the
+  desk, a short cue, a falling tone and a rising one, says the user may answer for the next few
+  seconds with no key and no wake word: speech started in that time opens a turn, its trigger
+  `reply window`, and end-of-turn detection closes it as in an engaged conversation. An answer
+  begun just before the window closes, or over hands' last words, still counts. Nothing said,
+  the window closes and the desk is back at its level; hands speaking again closes it too, and
+  each reply opens one. The wake word said in it opens its own turn (`voice/desk.py`,
+  `promptctl-voice-oalb.w9n`). Engaged has none, since speech already opens every turn there;
+  nor does the phone, whose page listens for its own wake word; nor a desk with no microphone.
 - **Phone over WebRTC.** A hold-to-talk page served over HTTPS on the LAN and the
   tailnet, beside the desk for the whole run; the place the last turn opened at is
   where hands hears and speaks. Done when a full turn round-trips from a phone with

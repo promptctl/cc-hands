@@ -14,7 +14,7 @@ import tempfile
 import threading
 import traceback
 import weakref
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -30,7 +30,6 @@ import nltk
 import pytest
 from loguru import logger
 from packaging.specifiers import SpecifierSet
-from hands.voice.desk import HandsQuiet, HandsSpeaking, WindowOpened
 from hands.voice.engaged import Hears
 from hands.voice.turnlife import Ears
 from pipecat.audio.vad.vad_analyzer import VADState
@@ -1238,28 +1237,6 @@ def hearing_with(ears: Ears, woken: Hears) -> Callable[[], AbstractAsyncContextM
         yield ears, woken
 
     return hearing
-
-
-class Speech:
-    """Hands' speech starting and stopping, as the desk's speaker says it: told by the test with `say`."""
-
-    def __init__(self) -> None:
-        self._told: asyncio.Queue[HandsQuiet | HandsSpeaking] = asyncio.Queue()
-
-    def say(self, edge: HandsQuiet | HandsSpeaking) -> None:
-        self._told.put_nowait(edge)
-
-    @asynccontextmanager
-    async def spoken(self) -> AsyncGenerator[AsyncIterator[HandsQuiet | HandsSpeaking]]:
-        async def edges() -> AsyncIterator[HandsQuiet | HandsSpeaking]:
-            while True:
-                yield await self._told.get()
-
-        yield edges()
-
-
-async def no_window(_opened: WindowOpened) -> None:
-    """A window opened after hands spoke, its cue unplayed: a driver whose test hears no window."""
 
 
 class ScriptedEars:

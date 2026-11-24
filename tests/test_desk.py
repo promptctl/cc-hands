@@ -1,11 +1,13 @@
 """The desk: the talk key opens turns at every level, triple taps set the level, and the voice opens turns under two."""
 
 from collections.abc import Sequence
+from typing import Literal
 
 import pytest
 
 from hands.voice.cues import level_cue
-from hands.voice.desk import Act, Chosen, Desk, Event, HandsQuiet, HandsSpeaking, Leveled, Loaded, Made, ModelsLoaded, Resting, Unengaged, Window, WindowOpened, WindowOver, Woken, step
+from hands.voice.desk import REPLY_WINDOW_SECONDS, Act, Chosen, Desk, Event, InWindow, Leveled, Loaded, Made, ModelsLoaded, Reply, ReplyWindow, ReplyWindowOpened, ReplyWindowOver, Resting, Voiced, Woke, Woken, step
+from hands.voice.handsvoice import HandsQuiet, HandsSpeaking
 from hands.voice.listening import Level
 from hands.voice.shortcut import CommandPressed, CommandReleased, Pressed, Released, Ripe, Typed
 from hands.voice.voiceturn import ASK_SECONDS, Judging, NothingAsked, Speaking, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, TurnId, Waiting, deadlines
@@ -80,9 +82,9 @@ def test_the_held_key_opens_a_turn_at_every_level(level: Level) -> None:
     [
         # Right Command's triple tap toggles the wake word, from off and back.
         ("off", taps(1.0, command=True), "wake word", [Made("listen", "wake word"), Leveled("off", "wake word", "tap")]),
-        ("wake word", taps(1.0, command=True), "off", [Made("deafen", "wake word"), Leveled("wake word", "off", "tap")]),
+        ("wake word", taps(1.0, command=True), "off", [Leveled("wake word", "off", "tap"), Made("deafen", "wake word")]),
         # Right Shift's toggles engaged as its third press is let go, known then not to mean talk.
-        ("off", taps(1.0), "engaged", [*TAP_SHIFT, Made("disarm", "shortcut"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tap")]),
+        ("off", taps(1.0), "engaged", [*TAP_SHIFT, Made("listen", "engaged conversation"), Made("disarm", "shortcut"), Leveled("off", "engaged", "tap")]),
         # Either switches straight from the other, with the desk listening throughout.
         ("engaged", taps(1.0, command=True), "wake word", [Leveled("engaged", "wake word", "tap")]),
         # Two taps are nothing, and a key between starts the count again.
@@ -169,7 +171,7 @@ def test_the_voice_opens_nothing_while_the_key_is_down(level: Level) -> None:
 def test_a_level_left_with_a_voice_turn_open_sends_it(level: Level, opening: list[Event]) -> None:
     desk, made = run([*opening, Chosen("off", "tool")], at(level))
     trigger = "wake word" if level == "wake word" else "engaged conversation"
-    assert made[-3:] == [Made("stop", trigger), Made("deafen", trigger), Leveled(level, "off", "tool")]
+    assert made[-3:] == [Made("stop", trigger), Leveled(level, "off", "tool"), Made("deafen", trigger)]
     assert desk.level == "off"
 
 
@@ -223,74 +225,100 @@ def test_each_turn_the_voice_opens_is_named_apart_from_the_last_though_it_opens_
     assert made.count(Judging(Speaking(T2, 1.0))) == 1
 
 
-# The window after hands spoke, its moves all the reply window's.
+# The reply window, its moves all its own.
 LISTEN, DEAFEN, ARM, DISARM, START, STOP = (Made(move, "reply window") for move in ("listen", "deafen", "arm", "disarm", "start", "stop"))
-QUIET = HandsQuiet(1.0, "desk")
+QUIET = HandsQuiet(1.0, "desk", deaf=False)
+UNTIL = 1.0 + REPLY_WINDOW_SECONDS
+OPENED = ReplyWindowOpened(UNTIL)
+# The levels at which speech alone opens no turn between turns.
+Unasked = Literal["off", "wake word"]
+WOKEN = Woken(2.0, over_hands=False, built_in=False)
+WAKE = [Made("arm", "wake word"), Made("start", "wake word")]
 
 
 @pytest.mark.parametrize(("level", "listen"), [("off", [LISTEN]), ("wake word", [])])
-def test_hands_falling_quiet_at_the_desk_opens_the_window_cued_the_gate_told_it_listens_where_it_did_not(level: Unengaged, listen: list[Act]) -> None:
+def test_hands_falling_quiet_at_the_desk_opens_the_window_cued_the_gate_told_it_listens_where_it_did_not(level: Unasked, listen: list[Act]) -> None:
     desk, made = run([QUIET], at(level))
-    assert made == [*listen, WindowOpened(1.0)]
-    assert desk.phase == Window(level, 1.0) and desk.level == level
+    assert made == [*listen, OPENED]
+    assert desk.phase == InWindow(ReplyWindow(level, UNTIL)) and desk.level == level
 
 
 @pytest.mark.parametrize(
     ("desk", "quiet"),
     [
         (at("engaged"), QUIET),  # Engaged, speech already opens every turn.
-        (at("off"), HandsQuiet(1.0, "phone")),  # Hands spoke at the phone, where its own page listens.
+        (at("off"), HandsQuiet(1.0, "phone", deaf=False)),  # Hands spoke at the phone, where its own page listens.
+        (at("off"), HandsQuiet(1.0, "desk", deaf=True)),  # No microphone at the desk could hear an answer.
         (run([Pressed(0.5), Ripe(0.5)], at("off"))[0], QUIET),  # A turn of the user's is open.
         (Desk.starting("off"), QUIET),  # Nothing hears the room until the models are loaded.
     ],
 )
-def test_no_window_opens_where_the_user_can_already_talk_or_hands_is_not_at_the_desk(desk: Desk, quiet: HandsQuiet) -> None:
+def test_no_window_opens_where_the_user_can_already_talk_or_nothing_at_the_desk_could_hear_an_answer(desk: Desk, quiet: HandsQuiet) -> None:
     after, made = run([quiet], desk)
     assert (after, made) == (desk, [])
 
 
 @pytest.mark.parametrize(("level", "listen", "deafen"), [("off", [LISTEN], [DEAFEN]), ("wake word", [], [])])
-def test_speech_in_the_window_opens_a_turn_its_end_closes_and_the_desk_goes_back_to_its_level(level: Unengaged, listen: list[Act], deafen: list[Act]) -> None:
+def test_speech_in_the_window_opens_a_turn_its_end_closes_and_the_desk_goes_back_to_its_level(level: Unasked, listen: list[Act], deafen: list[Act]) -> None:
     desk, made = run([QUIET, SpeechStarting(), SpeechStarted(2.0), SpeechStopped(), TurnEnded("verdict", T1)], at(level))
-    assert made == [*listen, WindowOpened(1.0), ARM, START, Judging(Speaking(T1, 2.0)), STOP, *deafen]
+    assert made == [*listen, OPENED, ARM, START, Judging(Speaking(T1, 2.0)), STOP, *deafen]
     assert desk.phase == Resting(level) and desk.turns == 1
 
 
-def test_a_start_that_came_to_nothing_disarms_and_the_window_goes_on_until_its_time_is_up() -> None:
+def test_a_start_that_came_to_nothing_disarms_and_the_window_goes_on_until_its_own_end() -> None:
     desk, made = run([QUIET, SpeechStarting(), SpeechStopped()], at("off"))
-    assert made == [LISTEN, WindowOpened(1.0), ARM, DISARM] and desk.phase == Window("off", 1.0)
-    # Its end, and only its own: one for a window opened before it closes nothing.
-    assert run([WindowOver(0.5)], desk) == (desk, [])
-    desk, made = run([SpeechStarting(), WindowOver(1.0)], desk)
-    assert made == [ARM, DISARM, DEAFEN] and desk.phase == Resting("off") and desk.turns == 0
+    assert made == [LISTEN, OPENED, ARM, DISARM] and desk.phase == InWindow(ReplyWindow("off", UNTIL))
+    # The end of a window opened before it closes nothing.
+    assert run([ReplyWindowOver(UNTIL - 1.0)], desk) == (desk, [])
+    desk, made = run([ReplyWindowOver(UNTIL)], desk)
+    assert made == [DEAFEN] and desk.phase == Resting("off") and desk.turns == 0
+
+
+@pytest.mark.parametrize("close", [ReplyWindowOver(UNTIL), HandsSpeaking()])
+def test_speech_that_started_in_the_window_goes_on_once_it_closes_to_the_turn_it_opens_or_to_nothing(close: ReplyWindowOver | HandsSpeaking) -> None:
+    desk, made = run([QUIET, SpeechStarting(), close, SpeechStarted(2.0)], at("off"))
+    assert made == [LISTEN, OPENED, ARM, START] and desk.phase == Voiced(Reply("off"), Speaking(T1, 2.0))
+    desk, made = run([QUIET, SpeechStarting(), close, SpeechStopped()], at("off"))
+    assert made == [LISTEN, OPENED, ARM, DISARM, DEAFEN] and desk.phase == Resting("off")
 
 
 @pytest.mark.parametrize(("level", "listen", "deafen"), [("off", [LISTEN], [DEAFEN]), ("wake word", [], [])])
-def test_hands_speaking_again_closes_the_window_and_the_next_quiet_opens_another(level: Unengaged, listen: list[Act], deafen: list[Act]) -> None:
+def test_hands_speaking_again_closes_the_window_and_the_next_quiet_opens_another(level: Unasked, listen: list[Act], deafen: list[Act]) -> None:
     desk, made = run([QUIET, HandsSpeaking()], at(level))
-    assert made == [*listen, WindowOpened(1.0), *deafen] and desk.phase == Resting(level)
-    assert run([HandsQuiet(3.0, "desk")], desk)[0].phase == Window(level, 3.0)
+    assert made == [*listen, OPENED, *deafen] and desk.phase == Resting(level)
+    assert run([HandsQuiet(3.0, "desk", deaf=False)], desk)[0].phase == InWindow(ReplyWindow(level, 3.0 + REPLY_WINDOW_SECONDS))
+
+
+def test_the_wake_word_said_in_the_window_opens_its_own_turn_unless_hands_may_have_said_it() -> None:
+    desk, made = run([QUIET, WOKEN], at("wake word"))
+    assert made == [OPENED, *WAKE] and desk.phase == Woke(Waiting(T1, 2.0))
+    # Said as what started in the window, its start is the wake's.
+    assert run([QUIET, SpeechStarting(), WOKEN], at("wake word"))[1] == [OPENED, ARM, DISARM, *WAKE]
+    desk, made = run([QUIET, Woken(2.0, over_hands=True, built_in=True)], at("wake word"))
+    assert made == [OPENED] and desk.phase == InWindow(ReplyWindow("wake word", UNTIL))
 
 
 def test_the_key_held_in_the_window_takes_the_desk_and_the_gate_stops_hearing_it_off() -> None:
     desk, made = run([QUIET, SpeechStarting(), Pressed(2.0), Ripe(2.0)], at("off"))
-    assert made == [LISTEN, WindowOpened(1.0), ARM, Made("arm", "shortcut"), Made("start", "shortcut"), DEAFEN]
+    assert made == [LISTEN, OPENED, ARM, Made("arm", "shortcut"), Made("start", "shortcut"), DEAFEN]
     assert run([Released()], desk)[1] == [Made("stop", "shortcut")]
 
 
 def test_a_turn_the_window_opened_and_the_key_took_over_leaves_the_gate_deaf_off_once_it_is_sent() -> None:
     desk, made = run([QUIET, SpeechStarted(2.0), *held(3.0)], at("off"))
-    assert made == [LISTEN, WindowOpened(1.0), ARM, START, Made("arm", "shortcut"), Made("start", "shortcut"), DEAFEN, Made("stop", "shortcut")]
+    assert made == [LISTEN, OPENED, ARM, START, Made("arm", "shortcut"), Made("start", "shortcut"), DEAFEN, Made("stop", "shortcut")]
     assert desk.phase == Resting("off")
 
 
 @pytest.mark.parametrize(
     ("level", "now", "made"),
     [
-        ("off", "engaged", [Made("listen", "engaged conversation"), Leveled("off", "engaged", "tool")]),
-        ("wake word", "off", [Made("deafen", "wake word"), Leveled("wake word", "off", "tool")]),
+        # The desk heard the room through the window, and hears it on at a level that listens.
+        ("off", "engaged", [Leveled("off", "engaged", "tool")]),
+        ("off", "wake word", [Leveled("off", "wake word", "tool")]),
+        ("wake word", "off", [Leveled("wake word", "off", "tool"), Made("deafen", "wake word")]),
     ],
 )
-def test_a_change_of_level_ends_the_window(level: Level, now: Level, made: list[Act]) -> None:
+def test_a_change_of_level_ends_the_window(level: Unasked, now: Level, made: list[Act]) -> None:
     desk, acts = run([QUIET, Chosen(now, "tool")], at(level))
     assert acts[-len(made) :] == made and desk.phase == Resting(now)

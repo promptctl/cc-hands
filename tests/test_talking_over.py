@@ -24,14 +24,17 @@ from pipecat.frames.frames import Frame, InputAudioRawFrame
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import PAIRS, Speech, events, hearing_with, no_window, running
+from conftest import PAIRS, events, hearing_with, running
 from test_streaming import NOT_SPEECH, READER, fixture_clips, hearings, pcm
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.voice import engaged, streaming
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import RATE, Clip, Fate, Hearings, Sound
-from hands.voice.desk import Leveled, Made, Woken
+from hands.fanout import Fanout
+from hands.voice.desk import Made, Woken
+from hands.voice.engaged import Served
+from hands.voice.handsvoice import HandsVoice
 from hands.voice.turnlife import Ears
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
@@ -260,19 +263,18 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
 
             yield buffers()
 
-        async def on_move(made: Made) -> None:
-            moves.append((captured, made.move))
-            match made.move:
+        async def served(act: Served) -> None:
+            if not isinstance(act, Made):
+                return
+            moves.append((captured, act.move))
+            match act.move:
                 case "stop" | "drop" | "timeout" as how:
-                    gate.end(gate.gate.turn, how, made.by)
+                    gate.end(gate.gate.turn, how, act.by)
                 case move:
-                    gate.move(move, made.by)
-
-        async def on_level(leveled: Leveled) -> None:
-            pass
+                    gate.move(move, act.by)
 
         driving = asyncio.create_task(
-            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), Speech().spoken, levels, on_move, on_level, no_window, record)
+            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), Fanout[HandsVoice]().subscribed, levels, served, record)
         )
         # Heard to its last frame, past the owner, or the drive failed on the way, which is said; then every hearing the
         # owner was given has its event.

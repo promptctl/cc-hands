@@ -8,15 +8,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from conftest import Speech, hearing_with, model_facts, no_window
+from conftest import hearing_with, model_facts
 from speech import quiet, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.clock import SYSTEM
 from hands.sessions.wide import WideEvent, begun, unit
+from hands.fanout import Fanout
 from hands.voice.desk import Leveled, Made, Woken
-from hands.voice.engaged import drive
+from hands.voice.handsvoice import HandsVoice
+from hands.voice.engaged import Served, drive
 from hands.voice.listening import Levels
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
@@ -82,11 +84,17 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
     async def woken(heard: bytes, begun: bool) -> Woken | None:
         return Woken(SYSTEM.now(), over_hands=False, built_in=False) if heard == b"w" else None
 
-    async def on_move(move: Made) -> None:
-        made.append(move.move)
+    async def served(act: Served) -> None:
+        match act:
+            case Made(move=move):
+                made.append(move)
+            case Leveled():
+                await level(act)
+            case _:
+                pass
 
     levels = await wake_word_level()
-    driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ScriptedEars(), woken), Speech().spoken, levels, on_move, level, no_window, events.append))
+    driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ScriptedEars(), woken), Fanout[HandsVoice]().subscribed, levels, served, events.append))
     # Talk in the room opens nothing; the wake word opens a turn, the pause after it ends nothing, and the verdict on
     # the stop after what was asked sends it; and again.
     for each in (b"S", b"q", b"w", b"q", b"S", b"q", b"S", b"q", b"w", b"q", b"S", b"q"):
@@ -233,11 +241,17 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
 
         yield buffers()
 
-    async def on_move(move: Made) -> None:
-        made.append(move.move)
+    async def served(act: Served) -> None:
+        match act:
+            case Made(move=move):
+                made.append(move)
+            case Leveled():
+                await level(act)
+            case _:
+                pass
 
     async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append, "desk.loaded") as ears, loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
-        driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, lambda: False, events.append)), Speech().spoken, await wake_word_level(), on_move, level, no_window, events.append))
+        driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, lambda: False, events.append)), Fanout[HandsVoice]().subscribed, await wake_word_level(), served, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:
                 await asyncio.sleep(0.01)

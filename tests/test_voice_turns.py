@@ -834,7 +834,7 @@ def play_out[S, E](
                 heapq.heappush(due, (at, next(arrival), later))
             for act in acts:
                 match act:
-                    case voiceturn.Judging() | desk.Leveled() | desk.WindowOpened():
+                    case voiceturn.Judging() | desk.Leveled() | desk.ReplyWindowOpened():
                         pass
                     case desk.Made(move=move, by=trigger):
                         moves.append(move)

@@ -11,15 +11,16 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-from conftest import Speech, patiently
+from conftest import patiently
 from speech import quiet, spoken
 
 from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent
 from hands.voice.atdesk import serve_desk
-from hands.voice.cues import ANSWER, ENGAGED, OFF, WAKE_WORD, Cue
-from hands.voice.desk import HandsQuiet
+from hands.fanout import Fanout
+from hands.voice.cues import ENGAGED, OFF, REPLY_WINDOW, WAKE_WORD, Cue
+from hands.voice.handsvoice import HandsQuiet, HandsVoice
 from hands.voice.keys import tapped
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import SHORTCUT_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
@@ -39,16 +40,19 @@ BUFFER = 640
 LOADS = {"desk.loaded", "desk.wake_word_loaded"}
 
 
-class Speaker(Speech):
-    """The speaker attached: it keeps each cue played, and says hands' speech starting and stopping as the test does."""
+class Speaker:
+    """The speaker attached: it keeps each cue played, and tells hands' speech starting and stopping as the test says it."""
 
     def __init__(self) -> None:
-        super().__init__()
         self.cues: list[Cue] = []
+        self.speech: Fanout[HandsVoice] = Fanout()
 
     def cue(self, cue: Cue) -> Played:
         self.cues.append(cue)
         return "desk"
+
+    def spoken(self) -> AbstractAsyncContextManager[AsyncIterator[HandsVoice]]:
+        return self.speech.subscribed()
 
 
 class Microphone:
@@ -224,8 +228,8 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
 
     # Hands falls quiet at the desk: off, the window's cue plays, the room is heard, and the answer said in it is a turn
     # Smart Turn sends, after which the desk is deaf again.
-    speaker.say(HandsQuiet(SYSTEM.now(), "desk"))
-    await until(lambda: speaker.cues[-1] == ANSWER)
+    speaker.speech.publish(HandsQuiet(SYSTEM.now(), "desk", deaf=False))
+    await until(lambda: speaker.cues[-1] == REPLY_WINDOW)
     microphone.say(quiet(0.5) + engaged + quiet(4.0))
     await until(lambda: "deafen" in taken)
     assert taken == ["listen", "arm", "start", "stop", "deafen"]
