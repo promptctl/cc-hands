@@ -1617,18 +1617,16 @@ async def _halting(recorded: list[Entry]) -> tuple[Brain, _Keys, process.ClaudeT
     return brain, keys, notified, clock
 
 
-async def test_a_halt_claude_code_does_not_carry_out_ends_the_turn_it_halted_saying_so_on_its_event(errors: list[str]) -> None:
+async def test_a_halt_claude_code_does_not_carry_out_is_said_on_its_event_and_leaves_the_turn_to_its_telling(errors: list[str]) -> None:
     recorded: list[Entry] = []
     brain, keys, notified, clock = await _halting(recorded)
     # Claude Code runs on past the stop's time.
     await clock.sleeping(INTERRUPT_SECONDS)
     clock.advance_to(INTERRUPT_SECONDS)
     await brain.drained()
-    # The turn halted ends with it, so no telling is waited on for it; and the stop's own outcome is its event's, not
-    # a failure of hands' own work.
-    with pytest.raises(process.StopUnrecorded, match="did not stop what hands pressed Escape for"):
-        notified.ended.result()
-    assert (keys.pressed, errors) == (["escape", "ctrl_c"], [])
+    # [LAW:one-source-of-truth] Claude Code runs the turn on, so it is still open, to end at its telling as the model
+    # reads it; and the stop's own outcome is its event's, not a failure of hands' own work.
+    assert (notified.ended.done(), brain._claude_turns.opened_itself, keys.pressed, errors) == (False, (notified,), ["escape", "ctrl_c"], [])  # pyright: ignore[reportPrivateUsage]
     [halt] = events(recorded, "brain.halt")
     assert (halt.outcome, halt.facts["prompts"], halt.facts["with_turn"]) == ("failed", ("n1",), False)
     assert halt.error is not None and "did not stop what hands pressed Escape for" in halt.error
@@ -1648,7 +1646,7 @@ async def test_a_halt_the_brains_end_cuts_short_ends_the_turn_it_halted_with_the
     assert halt.error is not None and "exited while hands stopped what it ran" in halt.error
 
 
-async def test_a_late_stop_whose_key_fails_ends_the_turn_the_late_words_ran_in_and_says_so_once(errors: list[str]) -> None:
+async def test_a_late_stop_whose_key_fails_is_said_once_on_its_event_and_leaves_the_turn_to_its_telling(errors: list[str]) -> None:
     recorded: list[Entry] = []
     brain, keys = _built(VirtualClock(), recorded.append)
     await _untaken(brain, "hello")
@@ -1661,7 +1659,8 @@ async def test_a_late_stop_whose_key_fails_ends_the_turn_the_late_words_ran_in_a
     _took(brain, "p1", "hello")
     (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
     await brain.drained()
-    assert (late.ended.exception(), brain._claude_turns.open) == (jammed, ())  # pyright: ignore[reportPrivateUsage]
+    # Never stopped, the late words' turn runs on, to end as the model reads it.
+    assert (late.ended.done(), brain._claude_turns.open) == (False, (late,))  # pyright: ignore[reportPrivateUsage]
     assert taken(errors) == ["the brain's own work failed: OSError('jammed')"]
     [decided] = events(recorded, "brain.late")
     assert (decided.outcome, decided.facts["prompt"], decided.facts["stopped"]) == ("failed", "p1", True)
@@ -1678,18 +1677,47 @@ async def test_a_stop_of_the_brains_own_that_is_cancelled_ends_the_turn_it_stopp
         assert brain.interrupt(brain.answering()) is True
         await until(lambda: "ctrl_c" in keys.pressed)
         # Something cancels the stop as it waits on its Ctrl-C: its asker is answered, never left waiting.
-        (stopping,) = (task for task in brain._own_work if task.get_coro().__qualname__ == "Brain._stop")  # pyright: ignore[reportPrivateUsage, reportOptionalMemberAccess, reportAttributeAccessIssue]
+        (stopping,) = (task for task in brain._own_work if task.get_name() == "Brain._stop")  # pyright: ignore[reportPrivateUsage]
         stopping.cancel()
         await asyncio.wait({turn.answered})
     finally:
         gate.set()
     await brain.drained()
-    with pytest.raises(process.WorkCancelled, match="the brain's own work was cancelled"):
+    with pytest.raises(process.WorkCancelled, match="the brain's stop of its turn was cancelled"):
         turn.answered.result()
     # Said on the turn's own event, and not raised into its asker as a cancel of its own; no stop is pressed again.
     assert (errors, keys.pressed) == ([], [" hello", "escape", "ctrl_c"])
     [ended] = events(recorded, "brain.turn")
-    assert ended.outcome == "failed" and ended.error is not None and "the brain's own work was cancelled" in ended.error
+    assert ended.outcome == "failed" and ended.error is not None and "the brain's stop of its turn was cancelled" in ended.error
+
+
+async def test_a_turns_send_that_is_cancelled_answers_its_asker_and_its_event_says_it_was_cancelled(errors: list[str]) -> None:
+    recorded: list[Entry] = []
+    brain, _keys_ = _built(VirtualClock(), recorded.append)
+    turn = await _typed_turn(brain, "hello")
+    (sending,) = (task for task in brain._own_work if task.get_name() == "Brain._send")  # pyright: ignore[reportPrivateUsage]
+    sending.cancel()
+    await asyncio.wait({turn.answered})
+    await brain.drained()
+    with pytest.raises(process.WorkCancelled, match="the brain's own work was cancelled: Brain._send"):
+        turn.answered.result()
+    assert errors == []
+    [ended] = events(recorded, "brain.turn")
+    assert ended.outcome == "cancelled"
+
+
+async def test_a_halt_that_is_cancelled_holds_no_asker_and_its_event_says_it_was_cancelled(errors: list[str]) -> None:
+    recorded: list[Entry] = []
+    brain, _keys_, notified, clock = await _halting(recorded)
+    # Something cancels the halt as it waits on the brain's clock for Claude Code to stop.
+    await clock.sleeping(INTERRUPT_SECONDS)
+    (halting,) = (task for task in brain._own_work if task.get_name() == "Brain._halt")  # pyright: ignore[reportPrivateUsage]
+    halting.cancel()
+    await brain.drained()
+    # No asker waits on it, and the turn it halted is the model's to end; its event says the halt was cut short.
+    assert (errors, notified.ended.done()) == ([], False)
+    [halt] = events(recorded, "brain.halt")
+    assert (halt.outcome, halt.facts["prompts"]) == ("cancelled", ("n1",))
 
 
 async def test_a_turns_hook_the_model_could_not_hear_loses_the_order_of_the_brains_turns_as_one_that_did_not_parse(errors: list[str]) -> None:
