@@ -37,9 +37,8 @@ from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
 from hands.voice.desk import Chosen, Desk, Event, Keyed, Leveled, Made, Woken, listens, step, turn_of
-from hands.voice.listening import LEVELS, Level
+from hands.voice.listening import LEVELS, Choice, Level, Levels
 from hands.voice.shortcut import KeyEvent, Move
-from hands.voice.trigger import Choice
 from hands.voice.turnlife import Ears, Life
 from hands.voice.voiceturn import Judging, TurnEnded
 
@@ -205,14 +204,13 @@ async def drive(
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
     hearing: Callable[[], AbstractAsyncContextManager[tuple[Ears, Hears]]],
-    level: Level,
-    chosen: asyncio.Queue[Choice],
+    levels: Levels,
     on_move: Callable[[Made], Awaitable[None]],
     on_level: Callable[[Leveled], Awaitable[None]],
     emit: Callable[[WideEvent], None],
 ) -> None:
     """Hand every move the desk makes to `on_move`, and every change of level to `on_level`, until cancelled, the start
-    choosing `level` before anything else is stepped.
+    choosing the level `levels` carries before anything else is stepped, and `levels` told the level after every step.
 
     One task steps the desk, in the order things were heard, so the speech, the key, the taps, the wake word, the
     tools' choices, and Smart Turn's verdicts never race each other: a verdict is stepped as it is given, before any
@@ -224,7 +222,7 @@ async def drive(
     # What has been told and is yet to be stepped, in the order it is stepped: first the level the start chose.
     # [LAW:dataflow-not-control-flow] it is stepped as any choice is, so the gate is told the desk listens, its cue plays,
     # and its change is said, as for a tap; off, a cold start's, is no change at all.
-    heard: deque[Event] = deque([Chosen(level, "start")])
+    heard: deque[Event] = deque([Chosen(levels.carried, "start")])
 
     async def overhearing() -> None:
         # [LAW:no-ambient-temporal-coupling] each buffer carries the life of the models it is heard with, so none is heard
@@ -236,7 +234,7 @@ async def drive(
 
     async def choosing() -> None:
         while True:
-            events.put_nowait(await chosen.get())
+            events.put_nowait(await levels.chosen.get())
 
     desk = Desk()
     # The life of the models the last buffer was heard with: None until they are loaded, while Smart Turn has heard nothing.
@@ -244,7 +242,7 @@ async def drive(
     # Whether the key has come up since the last buffer was heard: speech the desk ignored while it was down starts for it
     # as the key comes up, so a tap of Shift as the user began does not lose what they say.
     key_came_up = False
-    # The level the last buffer was heard at: off, where nothing has heard it, as the desk starts.
+    # The level the last buffer was heard at: off, where nothing has heard it, before the start's level is stepped.
     overheard_at: Level = "off"
     async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
         group.create_task(overhearing(), name="the desk's microphone, overheard")
@@ -278,18 +276,21 @@ async def drive(
                                 # The wake word's model is run only where it can open a turn.
                                 word = desk.level == "wake word" and await woken(audio, begun)
                                 heard.extend(detected.told((Woken(clock.now()),) if word else ()))
-                            case Choice(level=chose, was=was_level):
+                            case Choice(level=chose, by=asker, was=was_level):
                                 # A tool call cancelled while it waited, the user cutting the brain off, is answered by
                                 # no one; its choice is the user's all the same.
                                 if not was_level.cancelled():
                                     was_level.set_result(desk.level)
-                                heard.append(Chosen(chose, "tool"))
+                                heard.append(Chosen(chose, asker))
                             case event:
                                 heard.append(event)
                         continue
                     each = heard.popleft()
                     was = desk
                     desk, acts = step(desk, each)
+                    # [LAW:no-ambient-temporal-coupling] the owner is told before any act is awaited, so a drive cancelled
+                    # inside one leaves the owner at the level the desk is at, which a restart then carries.
+                    levels.stepped(desk.level)
                     was_turn, turn = turn_of(was.phase), turn_of(desk.phase)
                     if was_turn != turn:
                         _models(life).moved(was_turn, turn)

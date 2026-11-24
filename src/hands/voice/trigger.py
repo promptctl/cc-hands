@@ -1,16 +1,12 @@
 """The trigger: the way a turn of the user's is opened, at the desk or the phone, and the level the desk listens at.
 
-The desk's level (`hands.voice.desk`) is the one choice: the talk key opens turns at every level, and the wake word or
-the voice alone at their own.
+The desk's level (`hands.voice.desk`, owned by `hands.voice.listening`) is the one choice: the talk key opens turns at
+every level, and the wake word or the voice alone at their own.
 """
-
-import asyncio
-from dataclasses import dataclass
 
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
 from hands.voice.clips import Opener, Trigger
-from hands.voice.desk import Leveled
 from hands.voice.listening import Level
 from hands.voice.wakeword import Word
 
@@ -48,40 +44,6 @@ def turn_start(opener: Opener) -> TurnStart:
             return "on the clip"
         case trigger:
             return "on the clip" if by_hand(trigger) else "on a person"
-
-
-@dataclass(frozen=True)
-class Choice:
-    """A level the brain's tool chose, and the level the desk was at as the choice was stepped, answered once it is."""
-
-    level: Level
-    was: asyncio.Future[Level]
-
-
-class Levels:
-    """The one owner of the level the desk listens at, as the brain's tools read it and choose it: a choice goes to the
-    desk's driver, which steps it in order with the taps and answers with the level it found. It starts at `level`, the
-    level the desk starts at, and the run ends saying the level it holds then, which a restart starts at."""
-
-    # [LAW:no-shared-mutable-globals] the driver writes the level and the tools read it, both on the event loop; the
-    # tools write only the queue the driver reads.
-    def __init__(self, level: Level) -> None:
-        self._level: Level = level
-        self.chosen: asyncio.Queue[Choice] = asyncio.Queue()
-
-    async def choose(self, level: Level) -> Level:
-        """Ask the desk for `level`, and get back the level it was at as the driver stepped the choice."""
-        was: asyncio.Future[Level] = asyncio.get_running_loop().create_future()
-        self.chosen.put_nowait(Choice(level, was))
-        return await was
-
-    def leveled(self, leveled: Leveled) -> None:
-        """The driver's report of the level the desk is at now."""
-        self._level = leveled.now
-
-    @property
-    def level(self) -> Level:
-        return self._level
 
 
 def described(level: Level, word: Word) -> str:

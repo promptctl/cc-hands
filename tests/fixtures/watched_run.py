@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import NoReturn
+from typing import Literal, NoReturn
 
 from standins import replace
 
@@ -23,7 +23,7 @@ from hands.brain import pinned
 from hands.clock import Clock
 from hands.daemon import cli, watchdog
 from hands.daemon.config import Config, Settings
-from hands.daemon.starting import CannotStart, Ending, Start
+from hands.daemon.starting import CannotStart, Start
 from hands.voice.listening import Level
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
@@ -43,7 +43,7 @@ def stuck() -> NoReturn:
         time.sleep(0.05)
 
 
-def hung(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start, level: Level) -> tuple[Ending, Level, int]:
+def hung(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start, level: Level) -> Literal["quit"] | cli.Restart:
     heart.beat("starting", None, 0, listening=False, degraded=())
     stuck()
 

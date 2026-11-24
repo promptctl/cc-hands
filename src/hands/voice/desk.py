@@ -1,14 +1,15 @@
 """The desk: how a turn of the user's is opened at the Mac, by the talk key at every level, and by the voice at two.
 
-The desk listens at one of three levels (`hands.voice.listening`). Off, where it rests until the start chooses the level
-it listens at, the microphone is closed between turns. Under the wake word,
-saying it opens a turn. Engaged, speech alone opens each turn. At every level Right Shift held alone opens a turn and its
-release sends it (`hands.voice.shortcut`). A triple tap of Right Command toggles the wake word, and one of Right Shift
-toggles engaged conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools choose
-a level as a tap does. A turn the voice opened is closed by end-of-turn detection, by the rules of any voice turn's end
-(`hands.voice.voiceturn`).
+The desk listens at one of three levels (`hands.voice.listening`). Off, the microphone is closed between turns; the desk
+rests there until the run's start names the level it listens at, off on a cold start and, on a restart, the level the run
+before it ended at. Under the wake word, saying it opens a turn. Engaged, speech alone opens each turn. At every level
+Right Shift held alone opens a turn and its release sends it (`hands.voice.shortcut`). A triple tap of Right Command
+toggles the wake word, and one of Right Shift toggles engaged conversation (`hands.voice.taps`); either switches straight
+from the other, and the brain's tools and the pages' level buttons choose a level as a tap does. A turn the voice opened
+is closed by end-of-turn detection, by the rules of any voice turn's end (`hands.voice.voiceturn`).
 
-[LAW:types-are-the-program] the desk is one value whose variants carry the level, so whether it listens, which trigger has
+[LAW:types-are-the-program] the desk is one value whose variants carry the level, in a field or, for the two that exist at
+one level alone (Starting, engaged; Woke, the wake word), in the variant itself, so whether it listens, which trigger has
 the turn, and whether the key is down are each said once: a key turn and a voice turn are never open together, and the
 level never says the desk is deaf while a variant says it listens.
 """
@@ -18,16 +19,14 @@ from typing import Literal
 
 from hands.voice import voiceturn
 from hands.voice.clips import Trigger
-from hands.voice.listening import Level, Listens
+from hands.voice.listening import Asker, Level, Listens
 from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, Typing, step as shortcut_step
 from hands.voice.taps import TapKey, Taps, counted
 from hands.voice.voiceturn import Ended, Going, Judging, NothingAsked, SpeechStarted, SpeechStarting, SpeechStopped, Speaking, Told, Turn, TurnEnded, TurnId, TurnTooLong, Waiting
 
-# Who chose a level by naming it: the brain's tool, asked by voice, or the start, at off or, for a restart, at the level
-# the run before it ended at.
-Namer = Literal["tool", "start"]
-# Who chose a level: a triple tap, toggling it, or whoever named it.
-Chooser = Literal["tap"] | Namer
+# Who chose a level: a triple tap, toggling it; the start, naming the level the run starts at; or whoever asked for it by
+# name.
+Chooser = Literal["tap", "start"] | Asker
 
 
 @dataclass(frozen=True)
@@ -42,7 +41,7 @@ class Chosen:
     """`by` chose `level`."""
 
     level: Level
-    by: Namer
+    by: Literal["start"] | Asker
 
 
 Heard = Woken | Told
@@ -132,7 +131,7 @@ class Made:
 
 @dataclass(frozen=True)
 class Leveled:
-    """The level changed, from `was` to `now`, chosen `by` a tap or the tool."""
+    """The level changed, from `was` to `now`, chosen `by`."""
 
     was: Level
     now: Level

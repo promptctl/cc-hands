@@ -49,8 +49,8 @@ from hands.sessions import attention as settings
 from hands.core import playback, status
 from hands.core.playback import as_told
 from hands.core.place import Modality
-from hands.voice.listening import Level
-from hands.voice.trigger import Levels, described
+from hands.voice.listening import Level, Listening
+from hands.voice.trigger import described
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
@@ -121,7 +121,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Levels, wake: Word, own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Listening, wake: Word, own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act. Every tool reads time on `sessions.clock`, the run's one clock.
@@ -879,7 +879,7 @@ def _modality_readback(modality: Modality) -> str:
             return "Okay, audio only."
 
 
-def listening_tools(levels: Levels, wake: Word) -> list[Tool]:
+def listening_tools(levels: Listening, wake: Word) -> list[Tool]:
     """How the desk listens between the user's turns at the Mac: saying the level it is at, and choosing another while
     hands runs, as a triple tap does; `wake` is the wake word."""
 
@@ -900,7 +900,7 @@ def listening_tools(levels: Levels, wake: Word) -> list[Tool]:
             level: "off", the microphone closed between turns; "wake word", listening for the wake word; or "engaged",
                 where speech alone opens each turn.
         """
-        was = await levels.choose(level)
+        was = await levels.choose(level, "tool")
         # [LAW:nothing-unseen] the level asked from lands on the call's event, so a change and a no-op read apart.
         return {"level": level, "was": was, "readback": f"{'Already' if was == level else 'Okay'}. {described(level, wake)}"}
 

@@ -15,7 +15,7 @@ from hands.daemon.cli import launch
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.run import stopping, until_told
 from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, Failing
-from hands.voice.listening import Level
+from hands.voice.listening import Levels
 from hands.tasks import cancel_and_wait
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import SettingsEdited
@@ -53,7 +53,7 @@ class Launched:
         self.running = asyncio.Event()
         run_start = Start(restarted=False, clock=clock)
 
-        async def run(stop: Stop, level: Level) -> Ended:
+        async def run(stop: Stop) -> Ended:
             if ready:
                 run_start.ended(self.recorded.append, None)
             self.running.set()
@@ -62,9 +62,9 @@ class Launched:
             await stop.wait()
             for step in then:
                 do(step, stop)
-            return Ended(None, 0, level)
+            return Ended(None, 0)
 
-        self.task = asyncio.create_task(launch(lambda: run, "off", self.heart, lambda: (), unedited, self.recorded.append, run_start, clock))
+        self.task = asyncio.create_task(launch(lambda: run, Levels("off"), self.heart, lambda: (), unedited, self.recorded.append, run_start, clock))
 
 
 def do(step: Step, stop: Stop) -> None:
@@ -80,14 +80,14 @@ async def test_each_quit_signal_ends_a_run_as_a_quit_named_by_the_signal(tmp_pat
     launched = Launched(tmp_path, [], [])
     await launched.running.wait()
     os.kill(os.getpid(), number)
-    assert await launched.task == ("quit", "off")
+    assert await launched.task == "quit"
     assert ran(launched.recorded) == [("ok", (number.name,), "quit")]
     assert stopped(launched.heart)
 
 
 async def test_the_q_key_ends_a_run_as_a_quit_named_by_the_key(tmp_path: Path) -> None:
     launched = Launched(tmp_path, [QuitKey()], [])
-    assert await launched.task == ("quit", "off")
+    assert await launched.task == "quit"
     assert ran(launched.recorded) == [("ok", ("q key",), "quit")]
     [event] = events(launched.recorded, "hands.run")
     assert event.facts["pid"] == os.getpid()
@@ -148,11 +148,11 @@ async def test_a_run_that_returns_with_no_cause_told_fails_saying_so(tmp_path: P
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=clock)
     recorded: list[audit.Entry] = []
 
-    async def run(_stop: Stop, level: Level) -> Ended:
-        return Ended(None, 0, level)
+    async def run(_stop: Stop) -> Ended:
+        return Ended(None, 0)
 
     with pytest.raises(LookupError, match="no cause told"):
-        await launch(lambda: run, "off", heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=clock), clock)
+        await launch(lambda: run, Levels("off"), heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=clock), clock)
     assert ran(recorded) == [("failed", ("escaped",), "failed")]
 
 
@@ -222,11 +222,11 @@ async def test_a_settings_watch_that_raises_as_the_run_ends_fails_it_on_its_even
             raise TEARDOWN
         raise AssertionError("an event nothing sets was set")
 
-    async def run(stop: Stop, level: Level) -> Ended:
+    async def run(stop: Stop) -> Ended:
         stop.tell(QuitKey())
-        return Ended(None, 0, level)
+        return Ended(None, 0)
 
     with pytest.raises(ConnectionError, match="the device went away"):
-        await launch(lambda: run, "off", heart, lambda: (), watch_that_closes_badly, recorded.append, Start(restarted=False, clock=clock), clock)
+        await launch(lambda: run, Levels("off"), heart, lambda: (), watch_that_closes_badly, recorded.append, Start(restarted=False, clock=clock), clock)
     assert ran(recorded) == [("failed", ("q key", "settings unreadable"), "failed")]
     assert not stopped(heart)

@@ -18,7 +18,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice.desk import Leveled, Made
 from hands.voice.listening import Level
 from hands.voice.engaged import drive
-from hands.voice.trigger import Choice
+from hands.voice.listening import Choice, Levels
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
 from hands.voice.wake import SAMPLE_RATE, WakeWord, listening, loaded
@@ -51,13 +51,13 @@ async def untapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
 
 
 def choice(level: Level) -> Choice:
-    return Choice(level, asyncio.get_running_loop().create_future())
+    return Choice(level, "tool", asyncio.get_running_loop().create_future())
 
 
-async def wake_word_level() -> asyncio.Queue[Choice]:
-    chosen: asyncio.Queue[Choice] = asyncio.Queue()
-    chosen.put_nowait(choice("wake word"))
-    return chosen
+async def wake_word_level() -> Levels:
+    levels = Levels("off")
+    levels.chosen.put_nowait(choice("wake word"))
+    return levels
 
 
 class AtLevel:
@@ -91,8 +91,8 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
     async def on_move(move: Made) -> None:
         made.append(move.move)
 
-    chosen = await wake_word_level()
-    driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ScriptedEars(), woken), "off", chosen, on_move, level, events.append))
+    levels = await wake_word_level()
+    driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ScriptedEars(), woken), levels, on_move, level, events.append))
     # Talk in the room opens nothing; the wake word opens a turn, the pause after it ends nothing, and the verdict on
     # the stop after what was asked sends it; and again.
     for each in (b"S", b"q", b"w", b"q", b"S", b"q", b"S", b"q", b"w", b"q", b"S", b"q"):
@@ -100,7 +100,7 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
     async with asyncio.timeout(1.0):
         while len(made) < 7:
             await asyncio.sleep(0.001)
-    chosen.put_nowait(choice("off"))
+    levels.chosen.put_nowait(choice("off"))
     async with asyncio.timeout(1.0):
         while len(made) < 8:
             await asyncio.sleep(0.001)
@@ -237,7 +237,7 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
         made.append(move.move)
 
     async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append) as ears, loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
-        driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, events.append)), "off", await wake_word_level(), on_move, level, events.append))
+        driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:
                 await asyncio.sleep(0.01)

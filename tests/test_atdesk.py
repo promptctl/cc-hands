@@ -23,7 +23,7 @@ from hands.voice.keys import tapped
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import SHORTCUT_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
 from hands.voice.tools import listening_tools
-from hands.voice.trigger import Levels
+from hands.voice.listening import Levels
 from hands.voice.wake import SAMPLE_RATE
 from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
@@ -147,7 +147,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
         # The desk steps a choice only once everything queued before it is stepped, so a choice of the level it is at
         # returns once every buffer and key heard so far has been stepped.
         await until(lambda: microphone.audio.empty())
-        assert await levels.choose(levels.level) == levels.level
+        assert await levels.choose(levels.level, "tool") == levels.level
 
     # The desk loads its models as it starts, which moves nothing `until` can watch, the first MLX load in the process
     # longest: so the first wait is for them, bounded by the run's timeout alone.

@@ -6,9 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from hands.voice.desk import Leveled
 from hands.voice.tools import listening_tools
-from hands.voice.trigger import Levels
+from hands.voice.listening import Levels
 from hands.voice.wake import Unheard, WakeWord
 from hands.voice.wakemodels import EMBEDDING, MELSPECTROGRAM, PRETRAINED, Files
 from hands.voice.wakeword import Pretrained, Trained
@@ -22,6 +21,15 @@ OFF = "The microphone is off between turns. Hold Right Shift to talk, and let go
 async def test_the_level_is_said_and_starts_off() -> None:
     level, _ = listening_tools(Levels("off"), Pretrained())
     assert await level.body() == {"level": "off", "readback": OFF}
+
+
+async def test_a_restarts_level_is_not_said_until_the_desk_listens_at_it() -> None:
+    levels = Levels("engaged")
+    level, _ = listening_tools(levels, Pretrained())
+    # The run carried engaged, and its desk is yet to step it: the microphone is closed, and the tool says so.
+    assert await level.body() == {"level": "off", "readback": OFF}
+    levels.stepped("engaged")
+    assert (await level.body())["level"] == "engaged"
 
 
 async def test_a_level_not_built_is_refused() -> None:
@@ -38,10 +46,9 @@ async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_i
         # As the desk's driver does: answers each choice with the level it found, then reports the level it went to.
         while True:
             choice = await levels.chosen.get()
-            asked.append(choice.level)
+            asked.append(f"{choice.level} by {choice.by}")
             choice.was.set_result(levels.level)
-            if choice.level != levels.level:
-                levels.leveled(Leveled(levels.level, choice.level, "tool"))
+            levels.stepped(choice.level)
 
     driving = asyncio.create_task(driver())
     chosen = await choose.body(level="wake word")
@@ -49,14 +56,14 @@ async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_i
     assert str(chosen["readback"]).startswith("Okay. The wake word: say Hey Jarvis, then what you want;")
     assert (await level.body())["level"] == "wake word"
     assert str((await choose.body(level="wake word"))["readback"]).startswith("Already. The wake word")
-    assert asked == ["wake word", "wake word"]
+    assert asked == ["wake word by tool", "wake word by tool"]
     driving.cancel()
 
 
 async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -> None:
     for word, phrase in ((Pretrained("Hey Mycroft"), "Hey Mycroft"), (Trained("Hey Computer", tmp_path / "hey_computer.onnx"), "Hey Computer")):
         levels = Levels("off")
-        levels.leveled(Leveled("off", "wake word", "tap"))
+        levels.stepped("wake word")
         level, _ = listening_tools(levels, word)
         assert str((await level.body())["readback"]).startswith(f"The wake word: say {phrase}, then what you want;")
 

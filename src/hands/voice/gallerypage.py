@@ -20,7 +20,7 @@ from hands.core.place import Modality
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, fail
-from hands.voice.listening import LEVELS, Level
+from hands.voice.listening import LEVELS, Level, Listening, parse_level
 from hands.voice.keyed import keyed
 from hands.voice.longpoll import version_of, waited
 from hands.voice.modelswitch import Heard, OwnModel, switch_model
@@ -52,15 +52,6 @@ class Voicing(Protocol):
     async def use(self, voice: Chosen) -> None: ...
 
     async def search(self, query: str, limit: int) -> Found: ...
-
-
-class Listening(Protocol):
-    """The level the desk listens at: its level now, and a choice of another."""
-
-    @property
-    def level(self) -> Level: ...
-
-    async def choose(self, level: Level) -> Level: ...
 
 
 class Desk(Protocol):
@@ -119,10 +110,6 @@ def parse_line(body: bytes, field: str) -> str:
         if isinstance(named, str):
             return named
     raise Rejected(f"the page sends {{{field}: ...}}")
-
-
-def parse_level(text: str) -> Level:
-    return _one_of(text, LEVELS, "hands listens at")
 
 
 def parse_modality(text: str) -> Modality:
@@ -250,7 +237,7 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
             level = parse_level(parse_field(await request.read(), "level"))
         except Rejected as error:
             return _refusal(error)
-        was = await gallery.levels.choose(level)
+        was = await gallery.levels.choose(level, "page")
         annotate(level=level, was=was)
         return web.json_response({"level": level, "was": was, "readback": described(level, gallery.wake)})
 

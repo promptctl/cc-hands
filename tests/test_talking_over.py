@@ -35,7 +35,7 @@ from hands.voice.desk import Leveled, Made
 from hands.voice.turnlife import Ears
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
-from hands.voice.trigger import Choice
+from hands.voice.listening import Choice, Levels
 from hands.voice.turnstop import SpeechHeard
 
 # The real load, bound before conftest stands a pair that hears nothing in for it.
@@ -245,9 +245,9 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
             await record.until(lambda: len(hearings(record.entries)) == len(listener.returned))
 
         frames = pcm(TIMELINE)
-        chosen: asyncio.Queue[Choice] = asyncio.Queue()
+        levels = Levels("off")
         engaging: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        chosen.put_nowait(Choice("engaged", engaging))
+        levels.chosen.put_nowait(Choice("engaged", "tool", engaging))
 
         @asynccontextmanager
         async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:
@@ -269,7 +269,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
             pass
 
         driving = asyncio.create_task(
-            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), "off", chosen, on_move, on_level, record)
+            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), levels, on_move, on_level, record)
         )
         # Heard to its last frame, past the owner, or the drive failed on the way, which is said; then every hearing the
         # owner was given has its event.

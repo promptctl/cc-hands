@@ -30,7 +30,7 @@ from hands.voice.summaries import SummaryStore
 from hands.daemon.config import Config, OwnModel, SampleLines, Settings
 from hands.voice.ptt import PushToTalk
 from hands.spotify import Catalogue, Missing
-from hands.voice.trigger import Levels
+from hands.voice.listening import Levels
 from hands.voice.wakeword import Pretrained
 from hands.voice.tool import Tool
 from hands.voice.tools import audited, defaulting_to_focus, intermediary_tools, stay_silent_tool

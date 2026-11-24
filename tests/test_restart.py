@@ -6,7 +6,6 @@ import ctypes
 import os
 import select
 import subprocess
-import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -23,7 +22,7 @@ from hands.daemon import cli
 from hands.daemon.cli import launch, retire
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import Ended, QuitKey, Start, Stop
-from hands.voice.listening import Level
+from hands.voice.listening import Levels
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
@@ -142,79 +141,39 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     edit = asyncio.Event()
 
-    async def run(stop: Stop, level: Level) -> Ended:
+    async def run(stop: Stop) -> Ended:
         edit.set()
         await stop.wait()
-        return Ended(None, 0, level)
+        return Ended(None, 0)
 
     async def edited() -> audit.SettingsEdited:
         await edit.wait()
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, "off", heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == ("restart", "off")
+    assert await launch(lambda: run, Levels("off"), heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == "restart"
     # Told to stop before it was ready, the start ends cancelled.
     assert recorded[0] == EDITED and start_outcomes(recorded) == ["cancelled"] and len(recorded) == 3
     assert ran(recorded) == [("ok", ("settings edited",), "restart")]
-
-
-async def test_a_restart_is_told_the_level_the_desk_ended_at_and_the_runs_event_says_it(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
-    edit = asyncio.Event()
-
-    async def run(stop: Stop, level: Level) -> Ended:
-        # Started at off, the user engaged before the edit that restarts it.
-        assert level == "off"
-        edit.set()
-        await stop.wait()
-        return Ended(None, 0, "engaged")
-
-    async def edited() -> audit.SettingsEdited:
-        await edit.wait()
-        return EDITED
-
-    recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, "off", heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == ("restart", "engaged")
-    assert [entry.facts["listening_level"] for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hands.run"] == ["engaged"]
-
-
-async def test_a_restart_told_while_the_run_loads_is_told_the_level_the_run_was_to_start_at(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
-    loading = asyncio.Event()
-    never = threading.Event()
-
-    def load() -> cli.Run:
-        loading.set()
-        never.wait()
-        raise AssertionError("the import never finished")
-
-    async def edited() -> audit.SettingsEdited:
-        await loading.wait()
-        return EDITED
-
-    try:
-        assert await launch(load, "wake word", heart, lambda: (), edited, lambda _entry: None, Start(restarted=True, clock=SYSTEM), SYSTEM) == ("restart", "wake word")
-    finally:
-        never.set()
 
 
 async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_not_said(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     edit = asyncio.Event()
 
-    async def run(stop: Stop, level: Level) -> Ended:
+    async def run(stop: Stop) -> Ended:
         # The q key, then the run winds down while the file is saved.
         stop.tell(QuitKey())
         edit.set()
         await asyncio.sleep(0.05)
-        return Ended(None, 0, level)
+        return Ended(None, 0)
 
     async def edited() -> audit.SettingsEdited:
         await edit.wait()
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, "off", heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == ("quit", "off")
+    assert await launch(lambda: run, Levels("off"), heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == "quit"
     assert start_outcomes(recorded) == ["cancelled"] and len(recorded) == 2
     assert ran(recorded) == [("ok", ("q key",), "quit")]
 
@@ -222,16 +181,16 @@ async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_
 async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
 
-    async def run(stop: Stop, level: Level) -> Ended:
+    async def run(stop: Stop) -> Ended:
         await stop.wait()
-        return Ended(None, 0, level)
+        return Ended(None, 0)
 
     async def edited() -> audit.SettingsEdited:
         raise PermissionError("config.toml")
 
     recorded: list[audit.Entry] = []
     with pytest.raises(PermissionError, match="config.toml"):
-        await launch(lambda: run, "off", heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM)
+        await launch(lambda: run, Levels("off"), heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM)
     # The run and its start, which it ended raising, are failed, with what it raised.
     failed = "PermissionError: config.toml"
     assert [(entry.event, entry.outcome, entry.error) for entry in recorded if isinstance(entry, WideEvent)] == [("hands.run", "failed", failed), ("hands.start", "failed", failed)]
@@ -268,17 +227,17 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     told: list[Stop] = []
 
-    async def run(stop: Stop, level: Level) -> Ended:
+    async def run(stop: Stop) -> Ended:
         told.append(stop)
         await stop.wait()
-        return Ended(NOW, 3, level)
+        return Ended(NOW, 3)
 
     recorded: list[audit.Entry] = []
-    launched = asyncio.create_task(launch(lambda: run, "off", heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
+    launched = asyncio.create_task(launch(lambda: run, Levels("off"), heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
     while not told:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), RESTART_SIGNAL)
-    assert await launched == ("restart", "off")
+    assert await launched == "restart"
     assert ran(recorded) == [("ok", ("SIGUSR1",), "restart")]
     last = heartbeat.read(heart.path)
     # Not stopped: the indicator reads the moment before the next run as starting, and posts nothing.
@@ -289,18 +248,18 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     winding_down = asyncio.Event()
 
-    async def run(stop: Stop, level: Level) -> Ended:
+    async def run(stop: Stop) -> Ended:
         # The q key, with no signal, and the run takes a while to close.
         stop.tell(QuitKey())
         winding_down.set()
         await asyncio.sleep(0.05)
-        return Ended(None, 0, level)
+        return Ended(None, 0)
 
     recorded: list[audit.Entry] = []
-    launched = asyncio.create_task(launch(lambda: run, "off", heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
+    launched = asyncio.create_task(launch(lambda: run, Levels("off"), heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
     await winding_down.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
-    assert await launched == ("quit", "off")
+    assert await launched == "quit"
     # The restart asked is kept beside the quit, which decided.
     assert ran(recorded) == [("ok", ("q key", "SIGUSR1"), "quit")]
     last = heartbeat.read(heart.path)
@@ -401,9 +360,9 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
         pass
 
     def loaded(*_: object) -> cli.Run:
-        async def quits(stop: Stop, level: Level) -> Ended:
+        async def quits(stop: Stop) -> Ended:
             stop.tell(QuitKey())
-            return Ended(None, 0, level)
+            return Ended(None, 0)
 
         return quits
 

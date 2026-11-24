@@ -31,7 +31,7 @@ from hands.voice.player import Player
 from hands.voice.refocus import Refocus
 from hands.daemon.config import Config, OwnModel, SampleLines, Settings
 from hands.voice.ptt import PushToTalk
-from hands.voice.trigger import Levels
+from hands.voice.listening import Levels
 from hands.voice.wakeword import Pretrained
 from hands.voice.tools import intermediary_tools
 from conftest import new_sessions
