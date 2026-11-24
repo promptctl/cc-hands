@@ -77,14 +77,19 @@ if (window.isSecureContext) {
 }
 """
 
-# The screen wake lock the browser gives, counted: `locks` is how many the page holds now.
+# The screen wake lock the browser gives, counted: `locks` is how many the page holds now. `takeBack()` is the browser letting
+# go of the one it gave last, as it does on a low battery, which the lock says as it does: with a `release` event.
 WAKE_LOCK = """
 if (window.isSecureContext) {
   window.locks = 0;
+  let latest = null;
   Object.defineProperty(navigator, "wakeLock", { value: { request: async () => {
     locks += 1;
-    return { release: async () => { locks -= 1; }, addEventListener: () => {} };
+    latest = new EventTarget();
+    latest.release = async () => { locks -= 1; };
+    return latest;
   } } });
+  window.takeBack = () => { locks -= 1; latest.dispatchEvent(new Event("release")); };
 }
 """
 
@@ -362,14 +367,20 @@ async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_th
             refused.append(route.request.url)
             await route.abort()
 
+    models_come_in = asyncio.Event()
     await browser.context.route("**/wake/settings", lose_the_first)
+    await browser.context.route("**/wake/models/melspectrogram", partial(held_open, models_come_in))
     page = await connected(browser, hands)
     await expect(page.locator("#wake-note")).to_contain_text("The wake word is waiting on hands")
-    await expect(page.locator("#state")).to_have_text(LISTENING)
+    # hands answered: the models still coming in is no wait on hands, and the page does not go on saying it is.
     await expect(page.locator("#wake-note")).to_have_text("")
+    await expect(page.locator("#state")).to_have_text(LOADING)
+    models_come_in.set()
+    await expect(page.locator("#state")).to_have_text(LISTENING)
     assert len(refused) == 1
-    # hands' record has the wait as its own fact, once, ahead of the load: a detector waiting is not one that never ran.
-    assert detector_states(hands) == ["waiting", "loaded"]
+    # hands' record has the wait as its own fact, and its end, ahead of the load: a detector waiting is not one that never ran,
+    # and one that hands answered is not waiting still.
+    assert detector_states(hands) == ["waiting", "answered", "loaded"]
 
 
 async def test_a_wake_hands_answers_unopened_at_the_desk_says_so_and_leaves_the_page_waiting_for_the_word(browser: Opened, hands: Hands) -> None:
@@ -387,6 +398,17 @@ async def test_a_wake_hands_answers_unopened_at_the_desk_says_so_and_leaves_the_
     await holds_and_opens(page, hands)
     await speak(page, spoken(PHRASE))
     await until(lambda: hands.gate.gate.turn_open and hands.gate.gate.opened == PHONE_WAKE)
+
+
+async def test_a_wake_hands_refuses_for_a_phone_not_listening_says_hands_opened_no_turn_and_is_the_pages_mistake_in_hands_record(browser: Opened, hands: Hands) -> None:
+    page = await listening(browser, hands)
+    await until(lambda: hands.gate.gate.phone_level == "wake word")
+    # hands has the phone deaf to the wake word, as a page whose detector hears a word it was not to would find it.
+    hands.gate.move("deafen", PHONE_WAKE)
+    await speak(page, spoken(PHRASE))
+    await expect(page.locator("#state")).to_have_text("hands opened no turn for that: the phone is not listening for the wake word.")
+    [refused] = events(hands.recorded, "phone.wake")
+    assert refused.facts["opened"] is False and refused.outcome == "failed" and "not listening for the wake word" in str(refused.error)
 
 
 async def test_a_wakes_turn_hands_threw_away_says_nothing_was_heard_after_the_phrase_and_leaves_the_page_waiting(browser: Opened, hands: Hands) -> None:
@@ -457,6 +479,20 @@ async def test_the_page_holds_a_screen_wake_lock_while_the_wake_word_is_on_and_t
     await page.wait_for_function("locks === 1")
     # Each lock the page got is in hands' record.
     assert {event.facts["state"] for event in events(hands.recorded, "phone.screen")} == {"kept"}
+
+
+async def test_a_screen_lock_the_browser_takes_back_is_said_and_told_to_hands(browser: Opened, hands: Hands) -> None:
+    for script in (SPEECH, WAKE_LOCK):
+        await browser.context.add_init_script(script)
+    page = await browser.open(hands.address("/"))
+    await page.get_by_role("button", name="Connect").click()
+    await page.wait_for_function("locks === 1")
+    await until(lambda: len(events(hands.recorded, "phone.screen")) == 1)
+    await page.evaluate("takeBack()")
+    await expect(page.locator("#wake-note")).to_have_text("The screen may go to sleep, which stops the wake word: the browser let go of it.")
+    await until(lambda: len(events(hands.recorded, "phone.screen")) == 2)
+    kept, unkept = events(hands.recorded, "phone.screen")
+    assert (kept.facts["state"], unkept.facts["state"], unkept.error) == ("kept", "unkept", "the browser let go of it")
 
 
 async def test_a_browser_with_no_screen_wake_lock_says_the_screen_may_sleep_and_tells_hands(browser: Opened, hands: Hands) -> None:

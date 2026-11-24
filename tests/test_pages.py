@@ -25,7 +25,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.clips import KEPT_SECONDS, Clip
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
-from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, TurnUnopened
+from hands.voice.milestone import ClipDiscarded, ClipOpened, TurnUnopened
 from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
@@ -373,7 +373,7 @@ async def test_the_page_says_it_heard_nothing_from_a_press_hands_opened_no_clip_
     # hands numbers the call's presses as the page does: the first press opened the gate's turn 0, and says no clip came of it.
     await page.mouse.down()
     await until_moved(1)
-    hands.phone.tell(TurnUnopened(0, UNHEARD))
+    hands.phone.tell(TurnUnopened(0))
     await expect(page.locator("#state")).to_have_text("Heard nothing from that press.")
     await page.mouse.up()
     await until_moved(2)

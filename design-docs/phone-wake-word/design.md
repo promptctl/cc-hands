@@ -188,9 +188,9 @@ From the page:
 | `press`, `release` | the button | as today |
 | `wake`, with the detector's score | the detector heard the word and no turn is open | new |
 | `level`, `wake word` or `off` | once the wake word is on and the detector is ready, and on each change after; a call starts at `off` | new |
-| `detector`, loaded, waiting on hands, or failed, and why for the last two, and the browser the page is in | loaded or failed once for each call that loads the detector; waiting the first time hands gave it no answer | new |
-| `ignored`, with the detector's score | the detector heard the word and a turn was open, so no wake was sent | new |
-| `screen`, kept, or unkept and why | each time the page asked the browser to keep the screen on | new |
+| `detector`, loaded, waiting on hands, answered, or failed, and why for waiting and failed, and the browser the page is in | loaded or failed once for each call that loads the detector; waiting as hands first gave it no answer, and answered as hands did | new |
+| `ignored`, with the detector's score | the detector heard the word and a turn of the page's was open or its edge on the way, so no wake was sent | new |
+| `screen`, kept, or unkept and why | each time the page asked the browser to keep the screen on, and when the browser took the lock back | new |
 
 From hands:
 

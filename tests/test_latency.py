@@ -17,7 +17,7 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import Clip
 from hands.voice.latency import LatencyObserver
-from hands.voice.milestone import UNHEARD, ClipDiscarded as Discarded, ClipOpened, ClipReleased, Told, TurnUnopened
+from hands.voice.milestone import ClipDiscarded as Discarded, ClipOpened, ClipReleased, Told, TurnUnopened
 from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, TurnOpened, TurnResolved, TurnUnheard, Words
 
 # The clip owner, and the boundary after it: a frame is pushed first by the processor that made it, and every push of
@@ -111,7 +111,7 @@ async def test_a_clip_thrown_away_is_told_once_as_discarded_naming_it_and_never_
 
 async def test_a_turn_the_clip_owner_never_heard_open_is_told_once_as_unopened_with_why_and_opens_no_window() -> None:
     unheard = TurnUnheard(turn=4)
-    assert await told(unheard, unheard, BotStartedSpeakingFrame()) == [TurnUnopened(4, UNHEARD)]
+    assert await told(unheard, unheard, BotStartedSpeakingFrame()) == [TurnUnopened(4)]
     assert await logged(unheard, BotStartedSpeakingFrame()) == ["latency: first audio, answering no user turn"]
 
 

@@ -20,7 +20,7 @@ from hands.voice.clips import Clip, Sound
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import ClipOpened
-from hands.voice.phone import DetectorFailed, DetectorLoaded, DetectorWaiting, Ignored, Level, ScreenKept, ScreenUnkept, Unreadable, Wake, parse_said
+from hands.voice.phone import DetectorAnswered, DetectorFailed, DetectorLoaded, DetectorWaiting, Ignored, Level, ScreenKept, ScreenUnkept, Unreadable, Wake, parse_said
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.trigger import PHONE_WAKE
 from hands.voice.wakeword import THRESHOLD
@@ -54,6 +54,7 @@ def detector_message(state: str, why: str | None = None) -> str:
         (level_message("off"), Level("off")),
         (detector_message("loaded"), DetectorLoaded("Safari 26")),
         (detector_message("waiting", "hands did not answer within 60 s"), DetectorWaiting("Safari 26", "hands did not answer within 60 s")),
+        (detector_message("answered"), DetectorAnswered("Safari 26")),
         (detector_message("failed", "out of memory"), DetectorFailed("Safari 26", "out of memory")),
         (json.dumps({"kind": "ignored", "score": 0.8}), Ignored(0.8)),
         (json.dumps({"kind": "screen", "state": "kept"}), ScreenKept()),
@@ -308,11 +309,12 @@ async def test_the_call_ending_during_a_wakes_turn_sends_it_and_tells_the_page_n
 @pytest.mark.outside
 async def test_what_became_of_a_detector_is_an_event_with_the_browser_the_page_is_in_and_a_waiting_one_is_not_a_failed_one() -> None:
     async with calling() as call:
-        for said in [detector_message("waiting", "hands did not answer within 60 s"), detector_message("loaded"), detector_message("failed", "out of memory")]:
+        for said in [detector_message("waiting", "hands did not answer within 60 s"), detector_message("answered"), detector_message("loaded"), detector_message("failed", "out of memory")]:
             call.page.send(said)
-        await call.until(lambda: len(events(call.recorded, "phone.detector")) == 3)
-        waiting, loaded, failed = events(call.recorded, "phone.detector")
+        await call.until(lambda: len(events(call.recorded, "phone.detector")) == 4)
+        waiting, answered, loaded, failed = events(call.recorded, "phone.detector")
         assert (waiting.outcome, waiting.facts) == ("ok", {"browser": "Safari 26", "state": "waiting", "why": "hands did not answer within 60 s"})
+        assert (answered.outcome, answered.facts) == ("ok", {"browser": "Safari 26", "state": "answered"})
         assert (loaded.outcome, loaded.facts) == ("ok", {"browser": "Safari 26", "state": "loaded"})
         assert (failed.outcome, failed.error, failed.facts) == ("failed", "out of memory", {"browser": "Safari 26", "state": "failed"})
 

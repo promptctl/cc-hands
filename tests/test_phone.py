@@ -284,12 +284,12 @@ async def test_each_press_is_answered_once_under_its_own_number_as_opened_or_as_
     for said in ["press", "release", "press"]:
         call.page.send(said)
     await call.until(lambda: call.key.gate.turn == 1 and call.key.gate.key == "down")
-    unopened = TurnUnopened(0, UNHEARD)
-    for told in [unopened, unopened, ClipOpened(Clip(5, "phone button"), 1), ClipOpened(Clip(5, "phone button"), 1), TurnUnopened(1, UNHEARD)]:
+    unopened = TurnUnopened(0)
+    for told in [unopened, unopened, ClipOpened(Clip(5, "phone button"), 1), ClipOpened(Clip(5, "phone button"), 1), TurnUnopened(1)]:
         call.phone.tell(told)
     await call.until(lambda: len(call.page.told) == 2)
     # A turn that is not one of the page's presses, the desk's, is nothing of the page's.
-    call.phone.tell(TurnUnopened(7, UNHEARD))
+    call.phone.tell(TurnUnopened(7))
     await call.phone.hang_up("stopped")
     assert [json.loads(cast(str, told)) for told in call.page.told] == [
         {"kind": "unopened", "press": 1, "reason": "unheard", "why": UNHEARD},
@@ -354,7 +354,7 @@ async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:
 
 def test_a_press_is_answered_with_the_clip_its_turn_opened_or_with_why_it_opened_none() -> None:
     assert answer(2, ClipOpened(Clip(5, "phone button"), 1)) == Opened(2, 5)
-    assert answer(1, TurnUnopened(0, UNHEARD)) == Unopened(1, "unheard")
+    assert answer(1, TurnUnopened(0)) == Unopened(1, "unheard")
 
 
 def test_the_page_knows_every_milestone_hands_tells_it() -> None:
