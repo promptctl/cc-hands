@@ -658,19 +658,25 @@ def test_a_note_the_page_sends_is_its_project_resolved_its_ticket_and_its_words_
 
 
 @pytest.fixture
-def environment() -> Mapping[str, str]:
-    """The environment hands was started in, which the page's lit runs in: this process's, unless a test names another
-    by parametrizing this fixture."""
-    return os.environ
+def session() -> str | None:
+    """The Claude Code session hands was started inside: none, unless a test names one (`INSIDE_A_SESSION`)."""
+    return None
 
 
 # hands started from inside a Claude Code session: its environment carries the session's id, which lit would take for
 # who acts before any `--by`.
-INSIDE_A_SESSION = pytest.mark.parametrize("environment", [{**os.environ, "CLAUDE_CODE_SESSION_ID": "a-session"}], ids=["inside a session"])
+INSIDE_A_SESSION = pytest.mark.parametrize("session", ["a-session"], ids=["inside a session"])
 
 
 @pytest.fixture
-async def page(tmp_path: Path, environment: Mapping[str, str]) -> AsyncGenerator[Page]:
+def started_in(environment: dict[str, str], session: str | None) -> Mapping[str, str]:
+    """The environment hands was started in, which the page's lit runs in: the test's own (conftest's `environment`),
+    inside `session` where there is one."""
+    return environment if session is None else {**environment, "CLAUDE_CODE_SESSION_ID": session}
+
+
+@pytest.fixture
+async def page(tmp_path: Path, started_in: Mapping[str, str]) -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     app = web.Application()
@@ -679,7 +685,7 @@ async def page(tmp_path: Path, environment: Mapping[str, str]) -> AsyncGenerator
     # The page's lit is the one in the test's own bin, lit itself until a test stubs it (`stub_lit`), and none once a
     # stub removes itself: no other lit is on the page's PATH.
     unstub_lit(tmp_path)
-    app.add_routes(backlog_routes(Lit(Children(clock, recorded.append), {**environment, "PATH": f"{tmp_path / 'bin'}:{SYSTEM_PATH}"}), store, KEY, recorded.append))
+    app.add_routes(backlog_routes(Lit(Children(clock, recorded.append), {**started_in, "PATH": f"{tmp_path / 'bin'}:{SYSTEM_PATH}"}), store, KEY, recorded.append))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded, clock)
