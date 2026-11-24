@@ -351,7 +351,8 @@ def _gated(was: Phase, now: Phase, acts: tuple[Act, ...]) -> tuple[Act, ...]:
 
 # How the models are to hear the room, where what the desk hears it for has changed: `afresh`, with nothing of the room
 # before it, where the desk has just begun to hear the room or its level changed; `under way`, with speech already under
-# way starting for the desk, where it heeds speech it was ignoring, as the key comes up or the answer window opens.
+# way starting for the desk, where it heeds speech it was ignoring at a level that listens, as the key comes up or the
+# answer window opens.
 Anew = Literal["afresh", "under way"]
 
 

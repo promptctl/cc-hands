@@ -53,9 +53,9 @@ def described(level: Level, word: Word) -> str:
     held = "Hold Right Shift to talk, and let go to send."
     match level:
         case "off":
-            return f"The microphone is off between turns. {held} Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
+            return f"The microphone is off between turns, but for a few seconds after each reply, so you can answer. {held} Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
         case "wake word":
-            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish. {held} Triple tap Right Command to turn the microphone off."
+            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish, and just after a reply you can answer without it. {held} Triple tap Right Command to turn the microphone off."
         case "engaged":
             return f"Engaged conversation: just talk; hands answers when you finish, and listens again. {held} Triple tap Right Shift to turn the microphone off."
 

@@ -40,9 +40,9 @@ SENT = Cue("turn: ended", ((990.0, 660.0),))
 DROPPED = Cue("turn: dropped", ((330.0, 330.0), (330.0, 330.0)))
 # Sent, as a release sends: the line alone says the limit ended it, with the key perhaps still down.
 TIMED_OUT = Cue(f"turn: ended, open {TURN_LIMIT_SECONDS:.0f}s", SENT.glides)
-# The desk's level changing (`hands.voice.desk`): two falling tones as the microphone goes off between turns, two
-# rising as it listens for the wake word, and three rising as it is engaged. Two tones or more, so none is taken for a
-# turn opening or ending, and the wake word's and engagement's told apart by count.
+# The desk's level changing (`hands.voice.desk`): two falling tones as the microphone goes off between turns, but for the
+# answer window, two rising as it listens for the wake word, and three rising as it is engaged. Two tones or more, so none
+# is taken for a turn opening or ending, and the wake word's and engagement's told apart by count.
 OFF = Cue("desk: microphone off", ((990.0, 660.0), (990.0, 660.0)))
 WAKE_WORD = Cue("desk: listening for the wake word", ((660.0, 990.0), (660.0, 990.0)))
 ENGAGED = Cue("desk: engaged", ((660.0, 990.0), (660.0, 990.0), (660.0, 990.0)))

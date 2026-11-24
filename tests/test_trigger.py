@@ -24,7 +24,7 @@ def listening_at(level: Level) -> Desk:
     return Desk(Loaded(Resting(level)))
 
 
-OFF = "The microphone is off between turns. Hold Right Shift to talk, and let go to send. Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
+OFF = "The microphone is off between turns, but for a few seconds after each reply, so you can answer. Hold Right Shift to talk, and let go to send. Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
 
 
 async def test_the_level_is_said_and_starts_off() -> None:

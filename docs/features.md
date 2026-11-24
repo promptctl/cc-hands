@@ -289,7 +289,8 @@ Need 8. Where the microphone is.
   besides the shortcut. The `shortcut` trigger is a macOS event tap that reports real key-down and
   key-up. Done when holding the key in another app drives a turn and releasing ends it.
 - **One desk mode, off by default.** Right Shift held alone talks at every level.
-  The microphone is off between turns until a triple tap of Right Command turns on
+  The microphone is off between turns, but for the answer window after each reply, until a
+  triple tap of Right Command turns on
   the wake word, or one of Right Shift turns on engaged conversation; the same tap
   turns it off again, and the other switches across. Each change is cued, and the
   brain can set the level by voice (`promptctl-voice-oalb.6xh`).

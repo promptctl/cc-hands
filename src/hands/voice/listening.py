@@ -8,7 +8,8 @@ from typing import Literal, Protocol, get_args
 
 from hands.sessions.payload import one_of
 
-# The levels the desk listens at between turns; it is deaf under "off" alone.
+# The levels the desk listens at between turns; under "off" it is deaf but for the answer window after hands speaks
+# (`hands.voice.desk`).
 Listens = Literal["wake word", "engaged"]
 # One flat Literal, so a tool argument of it has a schema: "off" and every level of Listens.
 Level = Literal["off", "wake word", "engaged"]
