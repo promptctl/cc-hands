@@ -10,7 +10,9 @@ from conftest import ScriptedEars, hearing_with
 
 from hands.virtualclock import VirtualClock
 from hands.sessions.wide import WideEvent
-from hands.voice.desk import Level, Leveled, Made
+from hands.voice.desk import Leveled, Made
+from hands.voice.listening import Level
+from hands.voice.clips import Trigger
 from hands.voice.engaged import Hears, drive
 from hands.voice.turnlife import Ears
 from hands.voice.trigger import Choice
@@ -70,8 +72,8 @@ class Rig:
     async def on_level(self, leveled: Leveled) -> None:
         self.levels.append(leveled)
 
-    def start(self, ears: Ears | None = None) -> asyncio.Task[None]:
-        return asyncio.create_task(drive(self.clock, self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), self.chosen, self.on_move, self.on_level, self.events.append))
+    def start(self, ears: Ears | None = None, level: Level = "off") -> asyncio.Task[None]:
+        return asyncio.create_task(drive(self.clock, self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), level, self.chosen, self.on_move, self.on_level, self.events.append))
 
     async def tap(self) -> None:
         while not self.keys:
@@ -170,6 +172,26 @@ async def test_a_level_the_tool_chose_is_stepped_as_a_tap_is() -> None:
     assert [(leveled.was, leveled.now, leveled.by) for leveled in rig.levels] == [("off", "engaged", "tool"), ("engaged", "off", "tool")]
 
 
+@pytest.mark.parametrize(("level", "voice"), [("engaged", "engaged conversation"), ("wake word", "wake word")])
+async def test_a_restart_listens_at_the_level_it_carried_as_a_tap_to_it_would_from_its_first_step(level: Level, voice: Trigger) -> None:
+    rig = Rig(verdicts=[])
+    driving = rig.start(level=level)
+    # Stepped before anything heard or chosen after it: the gate is told the desk listens, and the change is said, as for
+    # a tap or the tool's choice.
+    assert await rig.choose(level) == level
+    await stopped(driving)
+    assert rig.made_by == [Made("listen", voice)]
+    assert [(leveled.was, leveled.now, leveled.by) for leveled in rig.levels] == [("off", level, "start")]
+
+
+async def test_a_start_at_off_moves_nothing_and_says_no_change() -> None:
+    rig = Rig(verdicts=[])
+    driving = rig.start(level="off")
+    assert await rig.choose("off") == "off"
+    await stopped(driving)
+    assert (rig.made_by, rig.levels) == ([], [])
+
+
 async def test_the_key_talks_and_a_choice_is_stepped_while_the_models_load() -> None:
     rig = Rig(verdicts=[])
 
@@ -178,7 +200,7 @@ async def test_the_key_talks_and_a_choice_is_stepped_while_the_models_load() -> 
         await asyncio.Event().wait()
         yield rig.ears, unwoken
 
-    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, loading, rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, loading, "off", rig.chosen, rig.on_move, rig.on_level, rig.events.append))
     while not rig.keys:
         await asyncio.sleep(0)
     for event in (Pressed(1.0), Ripe(1.0), Released()):
@@ -198,7 +220,7 @@ async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:
         yield rig.ears, unwoken
 
     with pytest.raises(ExceptionGroup) as failed:
-        await drive(rig.clock, rig.tapped, rig.overheard, unloadable, rig.chosen, rig.on_move, rig.on_level, rig.events.append)
+        await drive(rig.clock, rig.tapped, rig.overheard, unloadable, "off", rig.chosen, rig.on_move, rig.on_level, rig.events.append)
     assert failed.group_contains(OSError, match="no network")
 
 
@@ -221,7 +243,7 @@ async def test_each_level_hears_from_where_it_started() -> None:
         begun.append(afresh)
         return False
 
-    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), "off", rig.chosen, rig.on_move, rig.on_level, rig.events.append))
     # Off, nothing hears the room; the wake word's model hears from its level's first buffer, afresh each time it starts.
     await rig.hear(b"q")
     for level in ("wake word", "off", "wake word"):
@@ -276,7 +298,7 @@ async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out(mo
         said, spoke[0] = not spoke[0], True
         return said
 
-    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), "off", rig.chosen, rig.on_move, rig.on_level, rig.events.append))
     await rig.choose("wake word")
     await rig.hear(b"q")
     # The wake word's deadlines are set as it opens the turn, from the instant it was heard.

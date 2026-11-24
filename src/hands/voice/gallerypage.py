@@ -20,7 +20,7 @@ from hands.core.place import Modality
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, fail
-from hands.voice.desk import LEVELS, Level
+from hands.voice.listening import LEVELS, Level
 from hands.voice.keyed import keyed
 from hands.voice.longpoll import version_of, waited
 from hands.voice.modelswitch import Heard, OwnModel, switch_model

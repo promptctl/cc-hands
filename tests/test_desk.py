@@ -5,7 +5,8 @@ from collections.abc import Sequence
 import pytest
 
 from hands.voice.cues import level_cue
-from hands.voice.desk import Act, Chosen, Desk, Event, Level, Leveled, Made, Woken, step
+from hands.voice.desk import Act, Chosen, Desk, Event, Leveled, Made, Woken, step
+from hands.voice.listening import Level
 from hands.voice.shortcut import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
 from hands.voice.voiceturn import ASK_SECONDS, Judging, NothingAsked, Speaking, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, TurnId, Waiting, deadlines
 
@@ -22,7 +23,7 @@ def run(events: Sequence[Event], desk: Desk = Desk()) -> tuple[Desk, list[Act]]:
 
 
 def at(level: Level) -> Desk:
-    return run([Chosen(level)])[0]
+    return run([Chosen(level, "tool")])[0]
 
 
 def held(t: float) -> list[Event]:
@@ -134,19 +135,19 @@ def test_the_voice_opens_nothing_while_the_key_is_down(level: Level) -> None:
 
 @pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])
 def test_a_level_left_with_a_voice_turn_open_sends_it(level: Level, opening: list[Event]) -> None:
-    desk, made = run([*opening, Chosen("off")], at(level))
+    desk, made = run([*opening, Chosen("off", "tool")], at(level))
     trigger = "wake word" if level == "wake word" else "engaged conversation"
     assert made[-3:] == [Made("stop", trigger), Made("deafen", trigger), Leveled(level, "off", "tool")]
     assert desk.level == "off"
 
 
 def test_a_key_turn_goes_on_across_a_change_of_level() -> None:
-    _, made = run([Pressed(1.0), Ripe(1.0), Chosen("engaged"), Released()])
+    _, made = run([Pressed(1.0), Ripe(1.0), Chosen("engaged", "tool"), Released()])
     assert made == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tool"), Made("stop", "shortcut")]
 
 
 def test_a_level_chosen_again_changes_nothing() -> None:
-    assert run([Chosen("off")])[1] == []
+    assert run([Chosen("off", "tool")])[1] == []
 
 
 def test_a_voice_turn_open_past_the_limit_is_sent_and_a_stale_limit_is_nothing() -> None:

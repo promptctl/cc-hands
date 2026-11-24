@@ -18,6 +18,7 @@ from hands.clock import SYSTEM
 from hands.daemon.cli import launch
 from hands.daemon.config import edited, load
 from hands.daemon.starting import Ended, Start, Stop, execv, keep_beating
+from hands.voice.listening import Level
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog
 from hands.sessions.home import Home
@@ -34,7 +35,7 @@ def main() -> None:
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     settings = load(home)
 
-    async def run(stop: Stop) -> Ended:
+    async def run(stop: Stop, level: Level) -> Ended:
         sessions = Sessions(clock=SYSTEM, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
@@ -43,12 +44,12 @@ def main() -> None:
         run_start.ended(audit.record, None)
         await stop.wait()
         beating.cancel()
-        return Ended(None, sessions.live_count())
+        return Ended(None, sessions.live_count(), level)
 
-    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, pins.LAID_OUT, audit.record, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
-        case "quit":
+    match asyncio.run(launch(lambda: run, "off", heart, lambda: (), lambda: edited(home, pins.LAID_OUT, audit.record, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
+        case ("quit", _):
             return
-        case "restart":
+        case ("restart", _):
             execv([sys.executable, __file__, sys.argv[1], "--restarted"])
 
 

@@ -36,7 +36,8 @@ from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
-from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Keyed, Leveled, Made, Woken, listens, step, turn_of
+from hands.voice.desk import Chosen, Desk, Event, Keyed, Leveled, Made, Woken, listens, step, turn_of
+from hands.voice.listening import LEVELS, Level
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
 from hands.voice.turnlife import Ears, Life
@@ -204,12 +205,14 @@ async def drive(
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
     hearing: Callable[[], AbstractAsyncContextManager[tuple[Ears, Hears]]],
+    level: Level,
     chosen: asyncio.Queue[Choice],
     on_move: Callable[[Made], Awaitable[None]],
     on_level: Callable[[Leveled], Awaitable[None]],
     emit: Callable[[WideEvent], None],
 ) -> None:
-    """Hand every move the desk makes to `on_move`, and every change of level to `on_level`, until cancelled.
+    """Hand every move the desk makes to `on_move`, and every change of level to `on_level`, until cancelled, the start
+    choosing `level` before anything else is stepped.
 
     One task steps the desk, in the order things were heard, so the speech, the key, the taps, the wake word, the
     tools' choices, and Smart Turn's verdicts never race each other: a verdict is stepped as it is given, before any
@@ -218,8 +221,10 @@ async def drive(
     drive.
     """
     events: asyncio.Queue[Event | Overheard | Choice] = asyncio.Queue()
-    # What has been told and is yet to be stepped, in the order it is stepped.
-    heard: deque[Event] = deque()
+    # What has been told and is yet to be stepped, in the order it is stepped: first the level the start chose.
+    # [LAW:dataflow-not-control-flow] it is stepped as any choice is, so the gate is told the desk listens, its cue plays,
+    # and its change is said, as for a tap; off, a cold start's, is no change at all.
+    heard: deque[Event] = deque([Chosen(level, "start")])
 
     async def overhearing() -> None:
         # [LAW:no-ambient-temporal-coupling] each buffer carries the life of the models it is heard with, so none is heard
@@ -278,7 +283,7 @@ async def drive(
                                 # no one; its choice is the user's all the same.
                                 if not was_level.cancelled():
                                     was_level.set_result(desk.level)
-                                heard.append(Chosen(chose))
+                                heard.append(Chosen(chose, "tool"))
                             case event:
                                 heard.append(event)
                         continue

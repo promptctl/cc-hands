@@ -87,4 +87,5 @@ async def serve_desk(
         async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
 
-    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels.chosen, at_desk, at_level, record)
+    # [LAW:one-source-of-truth] the start chooses the level its owner holds: off, or the one a restart carried.
+    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels.level, levels.chosen, at_desk, at_level, record)

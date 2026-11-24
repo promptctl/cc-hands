@@ -20,6 +20,7 @@ from hands.sessions.home import Home
 from hands.sessions import wide
 from hands.sessions.wide import Fact, WideEvent, begun
 from hands import footprint
+from hands.voice.listening import Level
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -210,10 +211,12 @@ def refuse(cannot: CannotStart, held: heartbeat.Heart | None) -> None:
 
 @dataclass(frozen=True)
 class Ended:
-    """What a run that was told to stop knew last, which its last heartbeat says beside the pipeline's state."""
+    """What a run that was told to stop knew last: what its last heartbeat says beside the pipeline's state, and the level
+    the desk listened at, which a restart starts at."""
 
     last_audio_out: datetime | None
     live_sessions: int
+    level: Level
 
 
 def invocation(home: Home, *arguments: str) -> list[str]:

@@ -64,6 +64,7 @@ from hands.voice.clips import Trigger
 from hands.voice.atdesk import serve_desk
 from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Trained, Word
+from hands.voice.listening import Level
 from hands.voice.keys import drive_quit, tapped
 from hands.voice.pinnedfile import Release
 from hands.voice.phonepage import phone_pages, serve_phone
@@ -262,9 +263,14 @@ async def run(
     run_start: Start,
     own: OwnModel,
     clock: Clock,
+    level: Level,
 ) -> Ended:
-    """[LAW:effects-at-boundaries] `clock` is the one clock every part of the run reads time, ids, and randomness from."""
+    """[LAW:effects-at-boundaries] `clock` is the one clock every part of the run reads time, ids, and randomness from.
+    The desk starts listening at `level`, and the run ends saying the level it listened at last."""
     voice: Voice | None = None
+    # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple tap
+    # or set_listening_level's choice, and the tools read it, as does the restart this run may end in.
+    levels = Levels(level)
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
     # that raised still lets go of the socket and of every permission hook waiting on it.
     async with AsyncExitStack() as held:
@@ -308,9 +314,6 @@ async def run(
         # [LAW:one-source-of-truth] one owner of where the user is: the voice's triggers move it, set_modality switches it,
         # and the brain's stage reads it.
         key = PushToTalk(clock, record)
-        # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple
-        # tap or set_listening_level's choice, and the tools read it.
-        levels = Levels()
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
@@ -340,7 +343,7 @@ async def run(
                 if voice is not None:
                     summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
                     await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
-    return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
+    return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count(), levels.level)
 
 
 async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, pin: pinned.Pin, sessions: Sessions, run_start: Start) -> Configured:

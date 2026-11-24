@@ -1,6 +1,7 @@
 """The desk: how a turn of the user's is opened at the Mac, by the talk key at every level, and by the voice at two.
 
-The desk listens at one of three levels. Off, the start's, the microphone is closed between turns. Under the wake word,
+The desk listens at one of three levels (`hands.voice.listening`). Off, where it rests until the start chooses the level
+it listens at, the microphone is closed between turns. Under the wake word,
 saying it opens a turn. Engaged, speech alone opens each turn. At every level Right Shift held alone opens a turn and its
 release sends it (`hands.voice.shortcut`). A triple tap of Right Command toggles the wake word, and one of Right Shift
 toggles engaged conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools choose
@@ -17,18 +18,16 @@ from typing import Literal
 
 from hands.voice import voiceturn
 from hands.voice.clips import Trigger
+from hands.voice.listening import Level, Listens
 from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, Typing, step as shortcut_step
 from hands.voice.taps import TapKey, Taps, counted
 from hands.voice.voiceturn import Ended, Going, Judging, NothingAsked, SpeechStarted, SpeechStarting, SpeechStopped, Speaking, Told, Turn, TurnEnded, TurnId, TurnTooLong, Waiting
 
-# The levels the desk listens at between turns; it is deaf under "off" alone.
-Listens = Literal["wake word", "engaged"]
-# One flat Literal, so a tool argument of it has a schema: "off" and every level of Listens.
-Level = Literal["off", "wake word", "engaged"]
-LEVELS: tuple[Level, ...] = ("off", "wake word", "engaged")
-
-# Who chose a level: a triple tap, or the brain's tool, asked by voice.
-Chooser = Literal["tap", "tool"]
+# Who chose a level by naming it: the brain's tool, asked by voice, or the start, at off or, for a restart, at the level
+# the run before it ended at.
+Namer = Literal["tool", "start"]
+# Who chose a level: a triple tap, toggling it, or whoever named it.
+Chooser = Literal["tap"] | Namer
 
 
 @dataclass(frozen=True)
@@ -40,9 +39,10 @@ class Woken:
 
 @dataclass(frozen=True)
 class Chosen:
-    """The brain's tool chose `level`."""
+    """`by` chose `level`."""
 
     level: Level
+    by: Namer
 
 
 Heard = Woken | Told
@@ -147,8 +147,8 @@ Act = Made | Leveled | Judging
 def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
     """The desk after `event`, and what it does."""
     match event:
-        case Chosen(level=level):
-            phase, acts = _leveled(desk.phase, level, "tool")
+        case Chosen(level=level, by=by):
+            phase, acts = _leveled(desk.phase, level, by)
             return replace(desk, phase=phase), acts
         case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong() | NothingAsked():
             phase, acts = _heard(desk.phase, event, TurnId(desk.turns + 1))

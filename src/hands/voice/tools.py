@@ -49,7 +49,7 @@ from hands.sessions import attention as settings
 from hands.core import playback, status
 from hands.core.playback import as_told
 from hands.core.place import Modality
-from hands.voice.desk import Level
+from hands.voice.listening import Level
 from hands.voice.trigger import Levels, described
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to

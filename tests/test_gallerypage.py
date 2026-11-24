@@ -15,7 +15,7 @@ from hands.core.playback import Labelled
 from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
-from hands.voice.desk import Level
+from hands.voice.listening import Level
 from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
 from hands.voice.gallerypage import Gallery, gallery_routes

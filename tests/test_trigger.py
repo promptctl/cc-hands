@@ -20,17 +20,17 @@ OFF = "The microphone is off between turns. Hold Right Shift to talk, and let go
 
 
 async def test_the_level_is_said_and_starts_off() -> None:
-    level, _ = listening_tools(Levels(), Pretrained())
+    level, _ = listening_tools(Levels("off"), Pretrained())
     assert await level.body() == {"level": "off", "readback": OFF}
 
 
 async def test_a_level_not_built_is_refused() -> None:
-    _, choose = listening_tools(Levels(), Pretrained())
+    _, choose = listening_tools(Levels("off"), Pretrained())
     assert "error" in await choose.body(level="clap")
 
 
 async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_it() -> None:
-    levels = Levels()
+    levels = Levels("off")
     level, choose = listening_tools(levels, Pretrained())
     asked: list[str] = []
 
@@ -55,7 +55,7 @@ async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_i
 
 async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -> None:
     for word, phrase in ((Pretrained("Hey Mycroft"), "Hey Mycroft"), (Trained("Hey Computer", tmp_path / "hey_computer.onnx"), "Hey Computer")):
-        levels = Levels()
+        levels = Levels("off")
         levels.leveled(Leveled("off", "wake word", "tap"))
         level, _ = listening_tools(levels, word)
         assert str((await level.body())["readback"]).startswith(f"The wake word: say {phrase}, then what you want;")

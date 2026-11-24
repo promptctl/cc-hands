@@ -36,6 +36,7 @@ from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice import summarising
+from hands.voice.listening import LEVELS, Level
 from hands.voice.portaudio import Listed, Lists, default_input, default_output, listing
 
 
@@ -216,6 +217,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
+    running.add_argument("--level", choices=LEVELS, default="off", help="the level the desk listens at as the run starts, which only hands passes: a restart starts at the one the run before it ended at")
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     checking = commands.add_parser("check", help="list each step of the README's install, ✓ done, ✗ missing with the command that fixes it, or ? when it could not be looked at: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the brain's login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
@@ -258,7 +260,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
 
                 if (token := hub_token(Children(clock, audit_log.record), os.environ)) is not None:
                     os.environ["HF_TOKEN"] = token
-                return run_daemon(clock, home, pin, audit_log, arguments.restarted, arguments.model)
+                return run_daemon(clock, home, pin, audit_log, arguments.restarted, arguments.model, arguments.level)
             case "tmux-status":
                 return show_segment(clock, home)
             case _:
@@ -272,7 +274,7 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
+def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.AuditLog, restarted: int | None, model: str | None, level: Level) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -287,8 +289,9 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
         case None:
             pass
     run_start = Start(restarted is not None, clock)
-    # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, said by a start refused first.
-    run_start.heard(model_flag=model)
+    # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, and the level the desk starts
+    # listening at, said by a start refused first.
+    run_start.heard(model_flag=model, listening_level=level)
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
     # or a crash the next run must read. A restart's run holds it already, since it holds the home: the run before it
     # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
@@ -309,7 +312,7 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
                 refuse(cannot, held)
                 return 1
             try:
-                ran: tuple[Ending, int] | CannotStart = run_here(clock, home, pin, restarted, after_crash, settings, heart, audit_log, run_start)
+                ran: tuple[Ending, Level, int] | CannotStart = run_here(clock, home, pin, restarted, after_crash, settings, heart, audit_log, run_start, level)
             except* CannotStart as cannot:
                 # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
                 # refused once, and said so even where another error raised with it is raised on past this block.
@@ -322,12 +325,13 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
             match ran:
                 case CannotStart():
                     return 1
-                case ("quit", _):
+                case ("quit", _, _):
                     return 0
-                case ("restart", shown):
-                    # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
-                    # one argument, so an id that begins with a dash is never read as an option.
-                    execv(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
+                case ("restart", ended_at, shown):
+                    # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold,
+                    # listening at the level this one ended at; each one argument, so an id that begins with a dash is never
+                    # read as an option.
+                    execv(invocation(home, "run", "--restarted", str(shown), f"--level={ended_at}", *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
 def commanded(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
@@ -514,8 +518,9 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-def run_here(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
-    """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
+def run_here(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start, level: Level) -> tuple[Ending, Level, int]:
+    """hands run in this process, the desk starting at `level`, until it is told to stop: how it was, the level the desk
+    ended at, and the pid of the menu-bar indicator beside it.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
@@ -529,19 +534,21 @@ def run_here(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, a
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, pin, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, pin, record, settings, clock), record, run_start, clock))
-    return ending, shown
+        ending, ended_at = asyncio.run(launch(lambda: loaded(clock, home, pin, settings, heart, record, exports.degraded, after_crash, run_start), level, heart, exports.degraded, lambda: edited(home, pin, record, settings, clock), record, run_start, clock))
+    return ending, ended_at, shown
 
 
-# hands' run, given the Stop that every cause of its end is told to; it ends saying what it knew last.
-type Run = Callable[[Stop], Coroutine[object, object, Ended]]
+# hands' run, given the Stop that every cause of its end is told to and the level the desk starts at; it ends saying what
+# it knew last.
+type Run = Callable[[Stop, Level], Coroutine[object, object, Ended]]
 
 
 async def launch(
-    load: Callable[[], Run], heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start, clock: Clock
-) -> Ending:
-    """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told
-    to end, or, where it failed, every failing cause's error raised together as one group.
+    load: Callable[[], Run], level: Level, heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start, clock: Clock
+) -> tuple[Ending, Level]:
+    """The run `load` makes, the desk starting at `level`, with that load, which imports Pipecat, as the first step of its
+    start; then how it was told to end and the level the desk ended at, or, where it failed, every failing cause's error
+    raised together as one group.
     A run that ends before it was ready ends its start here: failed with what it raised, or cancelled, told to stop first.
 
     [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the restart signal, the q key,
@@ -553,6 +560,8 @@ async def launch(
     """
     began = wide.begun(clock)
     stop = Stop()
+    # What the run knew last: one stopped before it was loaded knows the level it was to start at, and nothing more.
+    last = Ended(None, 0, level)
 
     def heard(watch: asyncio.Task[audit.SettingsEdited]) -> None:
         if watch.cancelled():
@@ -578,7 +587,7 @@ async def launch(
                 try:
                     # No session has joined before the hooks are served, which is after the import.
                     run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop, clock)
-                    last = Ended(None, 0) if run is None else await run(stop)
+                    last = last if run is None else await run(stop, level)
                 finally:
                     # [LAW:no-ambient-temporal-coupling] the watch ends, and what it heard is told, before the end is read
                     # off the stop, however the run went.
@@ -602,8 +611,9 @@ async def launch(
                     # Raised inside the start's end, so a start the run never readied ends failed with it.
                     raise raised
                 case ending:
-                    wide.ended("hands.run", record, began, None, stopped_by=stop.named, ending=ending, pid=os.getpid())
-                    return ending
+                    # [LAW:nothing-unseen] the level the desk ended at, which a restart starts at, lands on the run's event.
+                    wide.ended("hands.run", record, began, None, stopped_by=stop.named, ending=ending, pid=os.getpid(), listening_level=last.level)
+                    return ending, last.level
     finally:
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in STOP_SIGNALS:
@@ -633,7 +643,7 @@ def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart:
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, pin, run_start, OwnModel(home, pin, settings), clock)
+    return lambda stop, level: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, pin, run_start, OwnModel(home, pin, settings), clock, level)
 
 
 def start_indicator(home: Home) -> int:

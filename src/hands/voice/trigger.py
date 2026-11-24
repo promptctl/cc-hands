@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
 from hands.voice.clips import Opener, Trigger
-from hands.voice.desk import Level, Leveled
+from hands.voice.desk import Leveled
+from hands.voice.listening import Level
 from hands.voice.wakeword import Word
 
 
@@ -59,12 +60,13 @@ class Choice:
 
 class Levels:
     """The one owner of the level the desk listens at, as the brain's tools read it and choose it: a choice goes to the
-    desk's driver, which steps it in order with the taps and answers with the level it found."""
+    desk's driver, which steps it in order with the taps and answers with the level it found. It starts at `level`, the
+    level the desk starts at, and the run ends saying the level it holds then, which a restart starts at."""
 
     # [LAW:no-shared-mutable-globals] the driver writes the level and the tools read it, both on the event loop; the
     # tools write only the queue the driver reads.
-    def __init__(self) -> None:
-        self._level: Level = "off"
+    def __init__(self, level: Level) -> None:
+        self._level: Level = level
         self.chosen: asyncio.Queue[Choice] = asyncio.Queue()
 
     async def choose(self, level: Level) -> Level:

@@ -863,7 +863,7 @@ async def test_a_shortcut_turn_of_three_minutes_of_speech_reaches_the_brain_whol
 
 
 async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
-    engage = [(1.0, desk.Chosen("engaged"))]
+    engage = [(1.0, desk.Chosen("engaged", "tool"))]
     timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0)), (182.0, voiceturn.TurnEnded("verdict", voiceturn.TurnId(1)))], 183.0)
     assert timeline.moves == ["listen", "arm", "start", "stop"]
     await rig.play(timeline)
@@ -890,7 +890,7 @@ async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it
 
 async def test_an_engaged_turn_that_never_ends_is_sent_at_the_limit_with_all_it_recorded(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("hands.voice.shortcut.TURN_LIMIT_SECONDS", 3.0)
-    engage = [(1.0, desk.Chosen("engaged"))]
+    engage = [(1.0, desk.Chosen("engaged", "tool"))]
     # Speech that never stops and is never judged ended.
     timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0))], 6.0)
     assert timeline.moves == ["listen", "arm", "start", "timeout"]

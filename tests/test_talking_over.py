@@ -269,7 +269,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
             pass
 
         driving = asyncio.create_task(
-            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), chosen, on_move, on_level, record)
+            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), "off", chosen, on_move, on_level, record)
         )
         # Heard to its last frame, past the owner, or the drive failed on the way, which is said; then every hearing the
         # owner was given has its event.

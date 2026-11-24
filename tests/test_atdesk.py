@@ -107,7 +107,7 @@ class Keyboard:
 async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_hears_each_level(models: Path) -> None:
     events: list[WideEvent] = []
     entries: list[Entry] = []
-    key, levels, speaker, microphone, keyboard = PushToTalk(SYSTEM, entries.append), Levels(), Speaker(), Microphone(), Keyboard()
+    key, levels, speaker, microphone, keyboard = PushToTalk(SYSTEM, entries.append), Levels("off"), Speaker(), Microphone(), Keyboard()
     taken: list[Move] = []
     beats: list[None] = []
 

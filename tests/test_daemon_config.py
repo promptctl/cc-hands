@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -23,6 +24,7 @@ from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, preflight, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
+from hands.voice.listening import Level
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import Entry, SettingsEdited
@@ -252,9 +254,11 @@ def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path
 
 
 @pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
-def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, ...], loads: str | None, carried: tuple[str, ...]) -> None:
+def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_the_level_it_ended_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, ...], loads: str | None, carried: tuple[str, ...]) -> None:
     home = Home(tmp_path)
     loaded: list[str | None] = []
+    # The level each run started at, and the one each ended at: a start's is off, and the user engaged before the restart.
+    started_at: list[Level] = []
 
     def door(_home: Home, _pin: pinned.Pin, model: str | None, _run_start: Start) -> config.Settings:
         # Only what the restart is given is weighed here: an id that begins with a dash is no model hands offers.
@@ -270,8 +274,9 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
-    def run_here(*_arguments: object) -> tuple[str, int]:
-        return "restart", 42
+    def run_here(*arguments: object) -> tuple[str, Level, int]:
+        started_at.append(cast(Level, arguments[-1]))
+        return "restart", "engaged", 42
 
     monkeypatch.setattr(cli, "hold", hold)
     monkeypatch.setattr(cli, "door", door)
@@ -279,12 +284,14 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     monkeypatch.setattr(cli, "execv", execv)
     with pytest.raises(Execed) as restarted:
         cli.main(["--home", str(home.root), "run", *given])
-    assert loaded == [loads]
-    assert restarted.value.args[0][-2 - len(carried):] == ["--restarted", "42", *carried]
-    # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all.
+    assert (loaded, started_at) == ([loads], ["off"])
+    again = restarted.value.args[0][-3 - len(carried):]
+    assert again == ["--restarted", "42", "--level=engaged", *carried]
+    # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all, listening
+    # at the level the run before it ended at.
     with pytest.raises(Execed):
-        cli.main(["--home", str(home.root), "run", *restarted.value.args[0][-2 - len(carried):]])
-    assert loaded == [loads, loads]
+        cli.main(["--home", str(home.root), "run", *again])
+    assert (loaded, started_at) == ([loads, loads], ["off", "engaged"])
 
 
 async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks_it_and_one_to_anything_else_is(tmp_path: Path) -> None:
@@ -429,7 +436,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, _NO_FILE), SYSTEM)
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, _NO_FILE), SYSTEM, "off")
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -462,7 +469,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
-        async def refused(stop: Stop) -> Ended:
+        async def refused(stop: Stop, level: Level) -> Ended:
             configure = partial(run.configured_from, children_on(clock), home, settings, {"HANDS_LLM": "claude"})
             await start(lambda: run.configured(configure, lambda _: None, home, pin, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
@@ -497,7 +504,7 @@ def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tm
     monkeypatch.setattr(cli, "reap", kept)
 
     def loaded(*_: object) -> cli.Run:
-        async def refused(stop: Stop) -> Ended:
+        async def refused(stop: Stop, level: Level) -> Ended:
             stop.tell(Failing("the namer", OSError("the disk is gone")))
             raise CannotStart("no key")
 
