@@ -1,8 +1,8 @@
 """Where a setting meets its login: the backend config.toml names, with the login it reaches its model on.
 
 Read by `hands run` before the voice loads, and by `hands check`, which loads the voice's pipeline for neither, each on
-what the start's preflight passed, an environment that names no setting among it. The login is the one refusal the
-preflight leaves out: only a Claude Code can say it.
+what the start's preflight weighed, and by a start the preflight refused, which asks the login beside its refusals. The
+login is the one refusal the preflight leaves out: only a Claude Code can say it.
 """
 
 from collections.abc import Mapping

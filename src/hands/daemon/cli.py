@@ -11,7 +11,6 @@ import sys
 import tempfile
 import queue
 import threading
-from types import MappingProxyType
 from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -253,9 +252,9 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
 
                 if (token := hub_token(Children(clock, audit_log.record), os.environ)) is not None:
                     os.environ["HF_TOKEN"] = token
-                # [LAW:one-source-of-truth] the one environment the run is started in, read once, after the last write the
-                # daemon makes to it: its start, every weigh of an edit, and every process it starts take this.
-                return run_daemon(clock, home, pin, MappingProxyType(dict(os.environ)), audit_log, handover, arguments.model, arguments.level)
+                # [LAW:one-source-of-truth] the live environment, not a copy of it: a restart is execv in this process, so
+                # what the start and every weigh of an edit judge is what the restart runs in.
+                return run_daemon(clock, home, pin, os.environ, audit_log, handover, arguments.model, arguments.level)
             case "tmux-status":
                 return show_segment(clock, home)
             case _:
@@ -464,7 +463,7 @@ def door(home: Home, pin: pinned.Pin, environment: Mapping[str, str], model: str
     except Rejected as error:
         checked = preflight.preflight(home, pin, environment)
         run_start.heard(**checked.facts())
-        raise CannotStart("; ".join(preflight.beside(checked, error))) from error
+        raise CannotStart(preflight.start_refusal(preflight.beside(checked, error))) from error
 
 
 @dataclass(frozen=True)

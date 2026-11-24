@@ -138,13 +138,13 @@ def test_a_start_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path,
     each = _faulted(home, monkeypatch)
     checked = preflight(home, LAID_OUT, {})
     with pytest.raises(CannotStart) as refused:
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), os.environ, checked)
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), checked)
     assert [said for said in each if said not in str(refused.value)] == []
     # Said once, after them all: the fix of each is made before hands is run again.
     assert str(refused.value).endswith("; then run hands again")
     # An unreadable settings.json is its own refusal, never also a first screen unanswered.
     assert "first screens" not in str(refused.value)
-    assert checked.facts() == {"fritter": "absent", "shim": "stale", "claude_code": LAID_OUT.version}
+    assert checked.facts() == {"fritter": "absent", "shim": "stale", "claude_code": LAID_OUT.version, "hands_settings": "none"}
 
 
 async def test_the_start_records_what_its_preflight_found_before_its_configuration_is_read(tmp_path: Path) -> None:
@@ -164,7 +164,7 @@ async def test_the_start_records_what_its_preflight_found_before_its_configurati
 
 
 STRAY = {"HANDS_HOME": "/elsewhere", "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}
-SAID_STRAY = "HANDS_LLM, HANDS_WHISPER_MODEL set, and hands reads no setting from the environment; settings go in "
+SAID_STRAY = "HANDS_LLM, HANDS_WHISPER_MODEL set, and hands reads no setting from the environment: unset HANDS_LLM, HANDS_WHISPER_MODEL, and put the setting in "
 
 
 def test_a_start_refused_on_a_hands_setting_in_the_environment_says_it_beside_every_refusal_on_the_homes_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,6 +172,8 @@ def test_a_start_refused_on_a_hands_setting_in_the_environment_says_it_beside_ev
     laid_out(home)
     each = _faulted(home, monkeypatch)
     checked = preflight(home, LAID_OUT, STRAY)
+    # The start's event names the settings it refused, the one a person asks "which?" of.
+    assert checked.facts()["hands_settings"] == "HANDS_LLM, HANDS_WHISPER_MODEL"
     # The brain's own settings are among the refused, and the environment is still said.
     match checked.verdict:
         case Refused(refusals=refusals):
@@ -179,7 +181,7 @@ def test_a_start_refused_on_a_hands_setting_in_the_environment_says_it_beside_ev
         case passed:
             raise AssertionError(f"{passed} passed the preflight")
     with pytest.raises(CannotStart) as refused:
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), STRAY, checked)
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), checked)
     assert [said for said in (*each, SAID_STRAY) if said not in str(refused.value)] == []
     # The survey says the same refusal.
     match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, STRAY):
@@ -311,7 +313,7 @@ def test_a_home_with_the_fritter_and_shim_this_hands_installs_passes(tmp_path: P
     wrapper.install(home)
     checked = preflight(home, LAID_OUT, {})
     assert isinstance(checked.verdict, Startable)
-    assert checked.facts() == {"fritter": "current", "shim": "current", "claude_code": LAID_OUT.version}
+    assert checked.facts() == {"fritter": "current", "shim": "current", "claude_code": LAID_OUT.version, "hands_settings": "none"}
 
 
 def test_two_starts_in_one_process_each_weigh_the_brain_against_the_pin_they_are_handed(tmp_path: Path) -> None:
@@ -372,9 +374,11 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
     with pytest.raises(CannotStart) as refused:
         cli.door(home, LAID_OUT, {}, None, run_start)
     assert [said for said in each if said not in str(refused.value)] == []
+    # Said as the start's other refusals are, ending in the one sentence they end in.
+    assert str(refused.value).endswith("; then run hands again")
     events: list[WideEvent] = []
     run_start.ended(events.append, refused.value)
-    assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code")} for event in events] == [preflight(home, LAID_OUT, {}).facts()]
+    assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code", "hands_settings")} for event in events] == [preflight(home, LAID_OUT, {}).facts()]
     # The survey.
     match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, os.environ):
         case readiness.Missing(detail=detail):
@@ -415,7 +419,7 @@ def test_a_start_refused_on_the_homes_other_files_names_the_brains_lost_login_be
     asked = _logged_out(monkeypatch)
     each = ("is not the shim this hands writes", "the brain holds no login: run `hands login`")
     with pytest.raises(CannotStart) as refused:
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), {}, preflight(home, LAID_OUT, {}))
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, {}))
     assert [said for said in each if said not in str(refused.value)] == []
     assert str(refused.value).endswith("; then run hands again")
     match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, {}):
@@ -433,7 +437,7 @@ def test_a_brain_whose_own_config_directory_is_refused_is_asked_no_login(tmp_pat
     (home.brain / "settings.json").write_text("{}")
     asked = _logged_out(monkeypatch)
     with pytest.raises(CannotStart):
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), {}, preflight(home, LAID_OUT, {}))
+        run.configured_from(children_on(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, {}))
     assert isinstance(readiness.configured(children_on(VirtualClock()), home, LAID_OUT, {}), readiness.Missing)
     assert asked == []
 

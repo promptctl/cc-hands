@@ -64,7 +64,7 @@ def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: P
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home, brain, {})).voice.personality == "Dry and wry."
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, os.environ)).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -95,7 +95,7 @@ def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home, brain, {})).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, os.environ)).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
 
 
 @pytest.mark.parametrize(
@@ -172,7 +172,7 @@ def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), os.environ, preflight.preflight(home, brain, {}))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, os.environ))
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
@@ -180,8 +180,8 @@ def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file
     home = Home(tmp_path)
     laid_out(home)
     environment = {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}
-    with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* settings go in {home.config}"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), environment, preflight.preflight(home, LAID_OUT, environment))
+    with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* put the setting in {home.config}"):
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, LAID_OUT, environment))
 
 
 @pytest.mark.outside
@@ -475,7 +475,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     monkeypatch.setattr(run, "DISPLAY_PORT", 0)
     heart = heartbeat.Heart(root / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
 
-    def refused(_environment: Mapping[str, str], _checked: preflight.Preflight) -> run.Configured:
+    def refused(_checked: preflight.Preflight) -> run.Configured:
         raise CannotStart("no key")
 
     run_start = Start(restarted=False, clock=SYSTEM)
@@ -523,7 +523,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
 
         async def refused(stop: Stop) -> Ended:
             environment = {"HANDS_LLM": "claude"}
-            configure = partial(run.configured_from, children_on(clock), home, settings, environment)
+            configure = partial(run.configured_from, children_on(clock), home, settings)
             await start(lambda: run.configured(configure, lambda _: None, home, pin, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
@@ -531,7 +531,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
 
     monkeypatch.setattr(cli, "loaded", loaded)
     assert cli.main(["--home", str(home.root), "run"], pin=LAID_OUT) == 1
-    reason = f"HANDS_LLM set, and hands reads no setting from the environment; settings go in {home.config}; then run hands again"
+    reason = f"HANDS_LLM set, and hands reads no setting from the environment: unset HANDS_LLM, and put the setting in {home.config}; then run hands again"
     assert capsys.readouterr().err == f"hands: {reason}\n"
     # The start's one event is failed with the reason, and says which run it was.
     [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
@@ -628,19 +628,19 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain, {})).voice.voice == "charles"
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in)).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voicechoice.keep(home, voicechoice.parse_voice("Bill Boerst"))
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain, {})).voice.voice == "bill_boerst"
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in)).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain, {}))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in))
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), logged_in, preflight.preflight(home, brain, {}))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in))
 
 
 # The settings of a run started with no file: every default.

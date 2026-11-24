@@ -133,18 +133,17 @@ class Configured:
     settings: Settings
 
 
-def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str], checked: preflight.Preflight) -> Configured:
-    """The process boundary: the settings the run started on, what the start's preflight found in the home's files, and
-    the environment's secrets in, typed configuration out; CannotStart where hands cannot run on them, naming every
-    refusal of the home's files and the environment at once."""
+def configured_from(children: Children, home: Home, settings: Settings, checked: preflight.Preflight) -> Configured:
+    """The process boundary: the settings the run started on, and what the start's preflight found in the home's files and
+    the environment it weighed, which the login is asked in, typed configuration out; CannotStart where hands cannot run
+    on them, naming every refusal of the home's files and the environment at once."""
     match checked.verdict:
         case preflight.Refused(refusals=refusals, brain=brain):
-            # Said once, after them all: the fix of each is made before hands is run again.
-            raise CannotStart("; ".join((*refusals, *_unlogged(children, settings, home, environment, brain), "then run hands again")))
+            raise CannotStart(preflight.start_refusal((*refusals, *_unlogged(children, settings, home, checked.environment, brain))))
         case preflight.Startable(brain=brain, voice=kept):
             pass
     try:
-        llm = backend(children, settings.config.llm, home, environment, brain)
+        llm = backend(children, settings.config.llm, home, checked.environment, brain)
     except (Rejected, Unstartable) as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_fetched(kept), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
@@ -258,7 +257,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[Mapping[str, str], preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
+    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     pin: pinned.Pin,
@@ -323,7 +322,7 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        read = await start(lambda: configured(partial(configure, environment), survey, home, pin, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        read = await start(lambda: configured(configure, survey, home, pin, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if read is not None:
             config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a

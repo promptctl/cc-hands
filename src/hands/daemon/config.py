@@ -123,6 +123,7 @@ async def edited(home: Home, pin: pinned.Pin, environment: Mapping[str, str], re
     # The bytes whose verdict holds whatever the home holds: the run's own, or settings that are the run's.
     settled = seen
     said: tuple[str, ...] = ()
+    weigh = partial(preflight, home, pin, environment)
     while True:
         await clock.sleep(period)
         if (now := _held(home)) != seen:
@@ -135,12 +136,12 @@ async def edited(home: Home, pin: pinned.Pin, environment: Mapping[str, str], re
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
         except Rejected as error:
-            refusals = beside(await off_loop(partial(preflight, home, pin, environment), "weighing a settings edit"), error)
+            refusals = beside(await off_loop(weigh, "weighing a settings edit"), error)
         else:
             if settings == running.config:
                 settled = now
                 continue
-            match (await off_loop(partial(preflight, home, pin, environment), "weighing a settings edit")).verdict:
+            match (await off_loop(weigh, "weighing a settings edit")).verdict:
                 # [LAW:escape-local-minima] exception: a login lost since the start passes here, until
                 # promptctl-phone-app-9d9y.h4s (blocked by promptctl-brain-uoz0.quv) weighs it with no Claude Code started.
                 case Startable():
@@ -179,8 +180,8 @@ class OwnModel:
 
     def weigh(self, model: str) -> Callable[[], None]:
         """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
-        the start's preflight refuses the home or the environment: weighed here as `edited` weighs an edit by hand, so a
-        choice refused on the home's files, or on a `HANDS_*` setting, is refused while the user is there to hear why. A login lost since the start is not weighed
+        the start's preflight refuses: weighed here as `edited` weighs an edit by hand, so a choice a restart would
+        refuse is refused while the user is there to hear why. A login lost since the start is not weighed
         (promptctl-phone-app-9d9y.h4s): a choice made then is said, written, and its restart refused. Hashes a pinned
         claude this process has not hashed since it changed, so it is called off the loop."""
         if self._running.model is not None:
