@@ -214,6 +214,20 @@ def test_a_level_is_the_open_epic_of_that_topic_titled_exactly_so_or_one_made_be
             backlog.leveling(ticket, level)
 
 
+def test_a_level_epic_lit_archived_is_put_away_and_a_press_makes_the_level_another_epic() -> None:
+    issues = [
+        issue("w", "01", "Train a new wake word", status=None, kind="epic", topic="wake-word"),
+        issue("w.a", "02", "Hey hands", topic="wake-word"),
+        issue("wh", "03", "wake word - high", status=None, kind="epic", topic="wake-word", archived_at="2026-10-18T00:00:00Z"),
+        issue("wh.a", "04", "A wake word", topic="wake-word"),
+    ]
+    backlog = parse_export(export(issues, [inside("w", "w.a"), inside("wh", "wh.a")]))
+    assert backlog.level_epics("wake-word", None) == {}
+    assert backlog.leveling("w.a", "high").epic == NewEpic("wake-word", "wake word - high", None, Place("above", "w"))
+    # A ticket inside the archived epic stands inside no epic lit lists.
+    assert backlog.standing("wh.a") is None
+
+
 def test_a_level_epic_made_is_placed_so_its_topics_levels_stay_high_over_normal_over_low() -> None:
     issues = [
         issue("w", "01", "Train a new wake word", status=None, kind="epic", topic="wake-word"),
@@ -1158,6 +1172,26 @@ async def test_a_level_epic_whose_every_ticket_is_closed_is_used_again_and_never
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     assert [entry["id"] for entry in exported["issues"] if entry["title"] == "wake word - high"] == [high]
     assert page.events("backlog.leveled")[1].facts["created"] == "unneeded"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_level_epic_lit_archived_is_put_away_and_the_next_press_makes_the_level_another(page: Page, workspace: Workspace) -> None:
+    _, hey, custom = epic(workspace, "Train a new wake word", "Hey hands", "Custom wake word", topic="wake-word")
+    items = await level(page, workspace, hey, "high")
+    shelved = next(node["id"] for node in items if node["title"] == "wake word - high")
+    workspace.lit("archive", shelved, "--reason", "Put away.")
+    items = await level(page, workspace, custom, "high")
+    # A ticket inside an archived epic is a root of the tree, as the epic lit lists no longer holds it.
+    assert titled(items) == [("wake word - high", [custom]), ("Hey hands", [])]
+    [made] = [node["id"] for node in items if node["title"] == "wake word - high"]
+    assert made != shelved
+    exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
+    # The archived epic is kept as lit archived it, holding what it held, and nothing is moved into it.
+    [kept] = [entry for entry in exported["issues"] if entry["id"] == shelved]
+    assert kept["archived_at"] is not None
+    assert {relation["src_id"] for relation in exported["relations"] if relation["type"] == "parent-child" and relation["dst_id"] == shelved} == {hey}
+    assert page.events("backlog.leveled")[1].facts["created"] == "yes"
 
 
 def exported_epics(workspace: Workspace) -> list[dict[str, Any]]:
