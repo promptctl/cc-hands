@@ -3,25 +3,28 @@ transcriber's words in clip order, a listener's words cutting hands off only whi
 every clip and every hearing however it ends."""
 
 import asyncio
+import threading
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+import numpy as np
 import pytest
 from pipecat.frames.frames import Frame, InputAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import Running, running
+from conftest import Running, running, unprimed
 from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry, Levels
 from hands.sessions.wide import WideEvent, begun
 from hands.virtualclock import VirtualClock
-from hands.voice import clipowner
+from hands.voice import clipowner, transcription
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip, Fate, Heard, Hearing, Hearings, Recording, Reference, Sound, Playhead, Synthesis, Transcriber, voices
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
+from hands.voice.whisper import Whisper
 
 
 @dataclass
@@ -493,6 +496,35 @@ async def test_a_clip_the_voice_opened_whose_transcription_does_not_return_is_gi
         # [LAW:no-silent-failure] the owner says it, as the error the system speaks.
         [failed] = rig.run.errors
         assert failed.processor is rig.owner and failed.error == f"Clip 1 could not be transcribed: nothing after {bound:g} s"
+
+
+async def test_a_transcription_given_up_on_is_not_run_beside_the_next(monkeypatch: pytest.MonkeyPatch) -> None:
+    returns, begun = threading.Event(), list[None]()
+
+    def stuck(samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
+        begun.append(None)
+        returns.wait()
+        return []
+
+    # Whisper as it is, down to the model, whose one thread the first clip's run holds.
+    monkeypatch.setattr(transcription, "segments", stuck)
+    clock, bound = VirtualClock(), clipowner.TRANSCRIBING_SECONDS
+    try:
+        async with rigged(Whisper(clock=clock, prompt=unprimed, record=lambda _: None), (), clock) as rig:
+            await rig.clip([frame_of(3)])
+            # The model is inside the first clip before its bound is spent.
+            await rig.until(lambda: len(begun) == 1)
+            clock.advance(bound)
+            await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+            await rig.clip([frame_of(4)])
+            await clock.scheduled(clock.at + bound)
+            clock.advance(bound)
+            await rig.until(lambda: ("resolved", 2) in rig.seen.seen)
+            assert [event.facts["transcript"] for event in rig.events("clip")] == ["failed", "failed"]
+            # The second clip's turn failed in its own time without the model being run on it beside the first.
+            assert len(begun) == 1
+    finally:
+        returns.set()
 
 
 async def test_a_clip_the_hand_opened_was_cut_as_it_opened_so_its_close_cuts_nothing_whoever_it_heard() -> None:

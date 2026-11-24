@@ -18,7 +18,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-import numpy as np
 import pytest
 from pipecat.frames.frames import (
     Frame,
@@ -42,7 +41,6 @@ from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, UserTurn
-from hands.voice import transcription
 from hands.voice import voicechoice
 from hands.sessions.wide import Fact, WideEvent, begun
 from hands.voice import pipeline as built
@@ -72,9 +70,6 @@ from test_playback import ended, spoken
 from hands.voice import voices
 
 CLOSING = "that is all"
-
-# Whisper's own transcribing of a clip, which the rig stands in for.
-WHISPER_HEARD: object = vars(Whisper)["_heard"]
 
 class Recorded(FrameProcessor):
     """What leaves the user aggregator for the model, the turns it ended, and the clips Whisper opened."""
@@ -1000,30 +995,6 @@ async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, mon
     await asyncio.sleep(0.5)
     await rig.texts.put("three minutes of dictation")
     assert await rig.everything_sent(clips=1) == ["three minutes of dictation"]
-
-
-async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    returns, begun = threading.Event(), list[None]()
-
-    def stuck(samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
-        begun.append(None)
-        returns.wait()
-        return []
-
-    # Whisper as it is, down to the model: the rig's stand-in is put aside.
-    monkeypatch.setattr(Whisper, "_heard", WHISPER_HEARD)
-    monkeypatch.setattr(transcription, "segments", stuck)
-    monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
-    try:
-        await by_hand(rig, 1)
-        await rig.until(lambda: rig.out.stopped == 1)
-        await by_hand(rig, 2)
-        await rig.until(lambda: rig.out.stopped == 2)
-        assert rig.told == [*by_the_key(1), "failed", *by_the_key(2), "failed"]
-        # The second clip's turn failed in its own time without the model being run on it beside the first.
-        assert len(begun) == 1
-    finally:
-        returns.set()
 
 
 API, WEB = SessionId("api"), SessionId("web")
