@@ -147,11 +147,6 @@ class Gate:
                 return self.moved(to)
 
     @property
-    def sent(self) -> int:
-        """How many turns the gate has sent."""
-        return self.ended.count("sent")
-
-    @property
     def turn(self) -> int:
         """The gate's number for the turn open, or the next to open: how many turns it has ended. A press learns the turn
         it opens from it, and the clip owner numbers the clip the turn opens with it, so the two are bound exactly."""
@@ -224,7 +219,7 @@ class PushToTalk:
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
             self._modality = modality_at(gate.place)
-            ended("place.moved", self._record, begun(self._clock), None, before=before.place, after=gate.place, by=by, sent=gate.sent != before.sent)
+            ended("place.moved", self._record, begun(self._clock), None, before=before.place, after=gate.place, by=by, sent="sent" in gate.ended[len(before.ended) :])
 
     @property
     def gate(self) -> Gate:

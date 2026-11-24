@@ -515,7 +515,7 @@ async def test_a_turn_that_opens_and_ends_between_two_frames_is_said_unheard_onc
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
     assert rig.seen.ends == [("unheard", 0), ("sent", 1)]
     # Each is an event of its own, so a turn nothing was heard in is never mistaken for one that never ran.
-    assert [event.facts["turn"] for event in rig.events("turn.unheard")] == [0]
+    assert [(event.facts["turn"], event.facts["fate"]) for event in rig.events("turn.unheard")] == [(0, "sent")]
 
 
 async def test_every_turn_the_gate_ended_between_two_frames_is_said_unheard_in_the_order_it_ended() -> None:

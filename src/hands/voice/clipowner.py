@@ -220,17 +220,17 @@ class ClipOwner(FrameProcessor):
             raise ValueError(f"a frame came as {frame.num_channels} channel(s) at {frame.sample_rate} Hz; every clip is mono at {RATE} Hz")
         # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's record of ended turns grows, not as its key is next
         # seen at rest: several can end between two frames, with no frame captured at rest between them. The clip open, if
-        # there is one, is the first to end, and it ends over its own audio before a move between places clears it: `_end`
-        # leaves the key up, so each other was over before any of it was heard.
+        # there is one, is the first to end, and it ends over its own audio before a move between places clears it; each
+        # other was over before any of it was heard.
         ending = frame.ended[self._accounted :]
-        for turn, fate in enumerate(ending, start=self._accounted):
-            match self._key:
-                case "down":
-                    await self._end(fate)
-                case _:
-                    # [LAW:nothing-unseen] a turn no clip was opened for is still one event, and told, so nothing waits on it.
-                    ended("turn.unheard", self._record, begun(self._clock), None, turn=turn)
-                    await self.push_frame(TurnUnheard(turn=turn))
+        closing, unheard = (ending[:1], ending[1:]) if self._key == "down" else ((), ending)
+        for fate in closing:
+            await self._end(fate)
+        for turn, fate in enumerate(unheard, start=self._accounted + len(closing)):
+            # [LAW:nothing-unseen] a turn no clip was opened for is still one event, with how it ended, and told, so nothing
+            # waits on it.
+            ended("turn.unheard", self._record, begun(self._clock), None, turn=turn, fate=fate)
+            await self.push_frame(TurnUnheard(turn=turn))
         self._accounted += len(ending)
         if frame.place != self._place:
             # A turn is heard at one place: what the other's microphone heard before it is no part of it.
@@ -248,7 +248,7 @@ class ClipOwner(FrameProcessor):
                 before = self._recording.sound
                 self._tell(self._latest, lambda listener: listener.opened(self._latest, before))
             case "down", "up" | "listening" | "arming":
-                # [LAW:no-silent-failure] the gate counts every end of a turn, so a key leaving down uncounted is a gate
+                # [LAW:no-silent-failure] the gate records every end of a turn, so a key leaving down unrecorded is a gate
                 # that lies.
                 raise RuntimeError(f"the key went from down to {frame.key} with no turn sent or thrown away")
             case _:

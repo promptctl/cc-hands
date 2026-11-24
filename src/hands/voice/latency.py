@@ -76,8 +76,8 @@ class Turn:
 
 
 class LatencyObserver(BaseObserver):
-    """Log each milestone's distance from the key release, per turn, and tell `told` each clip `clips` opens and sends, and
-    each milestone of a turn, as it lands."""
+    """Log each milestone's distance from the key release, per turn, and tell `told` each clip `clips` opens, sends or
+    discards, each turn it never heard, and each milestone of a turn, as it lands."""
 
     def __init__(self, clock: Clock, clips: FrameProcessor, told: Callable[[Told], None]) -> None:
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
