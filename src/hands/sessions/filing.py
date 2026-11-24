@@ -21,6 +21,7 @@ from pathlib import Path
 from hands.sessions.audit import SEGMENT_GLOB
 from hands.sessions.backlog import Backlog, Ticket
 from hands.sessions.grouping import Group
+from hands.visible import VISIBLE
 
 # How long a ticket's title is: where its group came from and its cause, cut.
 TITLE_CHARS = 120
@@ -94,7 +95,7 @@ def _told(group: Group, ticket: Ticket, backlog: Backlog) -> Iterable[datetime]:
 
 def title(group: Group) -> str:
     """Where the group came from, as a ticket names it, and its cause, on one line, cut to TITLE_CHARS."""
-    whole = " ".join(f"{group.named}: {group.cause}".split())
+    whole = " ".join(f"{group.named}: {group.cause}".translate(VISIBLE).split())
     return whole if len(whole) <= TITLE_CHARS else f"{whole[: TITLE_CHARS - 1]}…"
 
 
@@ -112,14 +113,15 @@ def description(group: Group, logs: str) -> str:
     repository, and the log's lines hold what the user said and what each session did, which is the user's alone
     (audit.AuditLog keeps it so). A ticket carries only where the group came from, no finer than a file, and its cause,
     whose ids, paths, and quoted text are normalised away, and the command that reads its lines where they are, in
-    `logs`.
+    `logs`. What the log said is written with its controls as their escapes (hands.visible), which lit can be handed and
+    a terminal shows as written.
     """
     return f"""hands logged this {_times(group)}, from {group.first.stamp} to {group.last.stamp}, in its audit log. Filed by \
 `hands file-tickets`, which groups the log's warnings and errors by cause: where each came from and what it said, with \
 ids, paths, times, numbers, and quoted text normalised.
 
-Origin: {group.named}
-Cause: {group.cause}
+Origin: {group.named.translate(VISIBLE)}
+Cause: {group.cause.translate(VISIBLE)}
 
 {_lines(group, logs)}
 
