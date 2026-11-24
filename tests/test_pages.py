@@ -1,11 +1,12 @@
 """The phone's pages, each its own code run in the installed Google Chrome against the routes hands serves the phone, on
 the route tests' fakes: a choice made on each page as a person makes it, and what the page shows of it."""
 
+import asyncio
 import base64
 import os
 import subprocess
 import threading
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,18 +17,19 @@ from aiohttp.test_utils import BaseTestServer, TestServer
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
 from hands.clock import SYSTEM
-from hands.sessions.audit import AuditLog, Replied, Transcribed
+from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed
 from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
+from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import KEPT_SECONDS
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
-from hands.voice.phone import Phone
+from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
 from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
-from hands.voice.ptt import PushToTalk
+from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.tool import tool
 from hands.voice.tools import audited
@@ -68,6 +70,8 @@ class Hands:
     voices: Voicing
     # The path of every request hands took, in the order it took them.
     requests: list[str]
+    # What the phone recorded, as its calls end.
+    recorded: list[Entry]
 
     def address(self, path: str, **query: str) -> str:
         """`path` on this server, carrying the phone's key as `hands phone` prints it."""
@@ -86,7 +90,8 @@ def wake_models(request: pytest.FixtureRequest, models: Path, tmp_path: Path) ->
 async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> AsyncGenerator[Hands]:
     home = Home(tmp_path / "hands")
     key = phone_key(SYSTEM, home)
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
+    recorded = list[Entry]()
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
     brain, typed, voices = Brain(), list[str](), Voicing()
 
     async def typing(text: str) -> None:
@@ -104,7 +109,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
 
     pages.middlewares.append(taken)
     async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, recorded)
         await phone.stop()
 
 
@@ -218,6 +223,125 @@ async def test_a_second_page_takes_the_phone_and_the_first_says_so(browser: Open
     # The first calls again on its own, and hands declines it: the second is the page in the user's hand.
     await expect(first.locator("#state")).to_have_text("Another page has hands' phone. Press Connect to take it here.")
     await expect(first.locator("#talk")).to_have_text("Connect")
+
+
+# A microphone that is never silent, and a record, in the order the page lived it, of the buttons it sent and the messages
+# of its microphone. Each block the tap posts reaches the page as one number, its own, so a message of audio says which
+# blocks it holds, and a mark says how many the tap had posted before it. While `holding`, what the tap posts waits in the
+# order it came, as it does for a main thread that is busy, until `drain` hands it to the page.
+NEVER_SILENT = """
+if (window.isSecureContext) {
+  window.timeline = [];
+  window.arrived = 0;
+  window.holding = false;
+  const backlog = [];
+  let deliver = null;
+  window.drain = () => { holding = false; while (backlog.length) deliver(backlog.shift()); };
+  navigator.mediaDevices.getUserMedia = async () => {
+    const context = new AudioContext();
+    await context.resume();
+    const tone = context.createOscillator(), level = context.createGain(), out = context.createMediaStreamDestination();
+    level.gain.value = 0.5;
+    tone.connect(level).connect(out);
+    tone.start();
+    return out.stream;
+  };
+  const NativeNode = AudioWorkletNode;
+  window.AudioWorkletNode = class extends NativeNode {
+    constructor(...made) {
+      super(...made);
+      let handler = null;
+      deliver = (data) => handler({ data });
+      Object.defineProperty(this.port, "onmessage", { set(each) { handler = each; } });
+      this.port.addEventListener("message", ({ data }) => {
+        if (typeof data === "number") timeline.push({ mark: data, after: arrived });
+        else data = new Float32Array(data.length).fill(++arrived / 32767);
+        if (holding || backlog.length) backlog.push(data); else deliver(data);
+      });
+      this.port.start();
+    }
+  };
+  const sendOnChannel = RTCDataChannel.prototype.send;
+  RTCDataChannel.prototype.send = function (message) {
+    if (typeof message !== "string") {
+      const blocks = new Int16Array(message);
+      timeline.push({ audio: blocks.length, first: blocks[0], last: blocks[blocks.length - 1] });
+    } else if (message === "press" || message === "release") timeline.push({ button: message });
+    else { const { kind, samples } = JSON.parse(message); timeline.push({ [kind]: samples }); }
+    return sendOnChannel.call(this, message);
+  };
+}
+"""
+
+
+async def until_sent(page: Page, kind: str, more: int) -> None:
+    """Until the page has sent `more` messages of `kind` beyond those it had when this was called."""
+    seen = await page.evaluate("timeline.length")
+    await page.wait_for_function("([seen, kind, more]) => timeline.slice(seen).filter(each => kind in each).length >= more", arg=[seen, kind, more])
+
+
+async def at_the_edge(page: Page, act: Callable[[], Awaitable[None]]) -> None:
+    """`act`, a press or a release at the button, while the page's main thread is busy: blocks the tap posted before it are
+    still on their way, and the mark the edge posts comes behind them."""
+    await page.evaluate("holding = true")
+    posted = await page.evaluate("arrived")
+    await page.wait_for_function("posted => arrived >= posted + 3", arg=posted)
+    seen = await page.evaluate("timeline.length")
+    await act()
+    await page.wait_for_function("seen => timeline.slice(seen).some(each => 'mark' in each)", arg=seen)
+    await page.evaluate("drain()")
+
+
+async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_it_held_back_outside_one(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(NEVER_SILENT)
+    page = await browser.open(hands.address("/"))
+    await page.get_by_role("button", name="Connect").click()
+    await expect(page.locator("#state")).to_have_text("Connected. Hold the button and speak.")
+    talk = (await page.locator("#talk").bounding_box()) or {}
+    await page.mouse.move(talk["x"] + talk["width"] / 2, talk["y"] + talk["height"] / 2)
+    for _ in range(2):
+        await until_sent(page, "quiet", 3)
+        await at_the_edge(page, page.mouse.down)
+        await until_sent(page, "audio", 3)
+        await at_the_edge(page, page.mouse.up)
+    await until_sent(page, "quiet", 3)
+    timeline: list[dict[str, int | str]] = await page.evaluate("timeline")
+    # Each button's mark says how many blocks the tap had posted when the button moved. A turn holds exactly the blocks after
+    # its press's mark, through its release's: none posted before the press rides in it, and none after the release.
+    after_mark, opened, carried = 0, 0, list[dict[str, int | str]]()
+    inside = False
+    for each in timeline:
+        match each:
+            case {"mark": _, "after": int(after)}:
+                after_mark = after
+            case {"button": "press"}:
+                opened, carried, inside = after_mark, [], True
+            case {"button": "release"}:
+                assert carried and all(int(sent["first"]) > opened for sent in carried), "a block posted before the press went in the turn"
+                assert max(int(sent["last"]) for sent in carried) == after_mark, "a block posted before the release was held back from the turn"
+                inside = False
+            case {"quiet": _}:
+                assert not inside, "a count was sent inside a turn"
+            case {"audio": _}:
+                assert inside, "microphone audio was sent outside a turn"
+                carried.append(each)
+            case unknown:
+                pytest.fail(f"the page sent what this test does not know: {unknown}")
+    assert [each["button"] for each in timeline if "button" in each] == ["press", "release"] * 2
+    # What hands heard: the tone inside the turns, and the second clip ended by the silence that follows it.
+    frames: list[KeyedAudio] = []
+    async with asyncio.timeout(10):
+        while not frames or frames[-1].sent < 2:
+            await asyncio.sleep(0.05)
+            while not hands.phone.heard.empty():
+                frames.append(hands.phone.heard.get_nowait())
+    assert any(any(frame.audio) for frame in frames if frame.key == "down")
+    # And hands could read every message the page sent: it counted what the page held back and rejected nothing.
+    await hands.phone.stop()
+    [event] = [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "phone.call"]
+    ended = event.facts["ended"]
+    assert isinstance(ended, CallLeft) and ended.rejected == 0 and ended.held_back > 0
+
 
 
 async def test_stop_stops_the_turn_the_page_shows_and_says_what_came_of_it(browser: Opened, hands: Hands) -> None:
