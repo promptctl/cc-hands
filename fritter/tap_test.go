@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -569,5 +570,20 @@ func TestAChildThatRefusesTheTapsCertificateIsSaidToHaveRefusedIt(t *testing.T) 
 	said.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if warned, err := reader.ReadString('\n'); err != nil || !strings.HasPrefix(warned, "fritter: the child refused fritter's answer for api.example.com:443: ") {
 		t.Errorf("fritter said %q, %v, want the child's refusal", warned, err)
+	}
+}
+
+func TestADoorThatStoppedServingIsSaidToHaveStoppedTakingTheChildsRequests(t *testing.T) {
+	said, written, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = written
+	t.Cleanup(func() { os.Stderr = stderr })
+	told(intercept.Stopped{Err: errors.New("the socket is lost")})
+	written.Close()
+	if warned, err := io.ReadAll(said); err != nil || string(warned) != "fritter: stopped taking the child's requests: the socket is lost\r\n" {
+		t.Errorf("fritter said %q, %v, want the door's stop", warned, err)
 	}
 }

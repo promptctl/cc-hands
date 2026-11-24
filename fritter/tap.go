@@ -141,7 +141,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot make the certificate the child is answered with for %s: %w", t.upstream, err)
 	}
-	trusted, err := interception.Trust(t.trust, filepath.Join(dir, "trusted.pem"), func(unread error) { warn("%v", unread) })
+	trusted, err := interception.Trust(t.trust, os.Getenv, filepath.Join(dir, "trusted.pem"), func(unread error) { warn("%v", unread) })
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	})
 	// What the child asks of anywhere else, in plain HTTP, goes on as it was asked.
 	passing := &httputil.ReverseProxy{Rewrite: func(*httputil.ProxyRequest) {}, Transport: onward, FlushInterval: -1, ErrorLog: quiet}
-	tap.door, err = intercept.Open(listener, intercept.Opening{Interception: interception, Intercepted: copied, Forwarded: passing, Proxy: outer, Seen: told})
+	tap.door, err = intercept.Open(listener, intercept.Opening{Trusted: trusted, Intercepted: copied, Forwarded: passing, Proxy: outer, Seen: told})
 	if err != nil {
 		listener.Close()
 		return nil, err
@@ -225,7 +225,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 // trust, and what each of those variables held before, so what it runs can put that back.
 func (tap *Tap) env() []string {
 	given := []string{"FRITTER_TAP=" + tap.door.Address()}
-	for _, variable := range tap.door.Environment(tap.trusted) {
+	for _, variable := range tap.door.Environment() {
 		given = append(given, variable.String())
 		if outer, found := os.LookupEnv(variable.Name); found {
 			given = append(given, "FRITTER_OUTER_"+variable.Name+"="+outer)
@@ -236,7 +236,8 @@ func (tap *Tap) env() []string {
 
 // told is what fritter says of what its door did. The child refusing fritter's TLS leaves
 // its every request to the upstream failing, and nothing answers the child that, so
-// fritter says it; and so it does of what its servers logged, a fault of fritter's own.
+// fritter says it; and so it does of what its servers logged, and of a server that stopped
+// and leaves the child's every request refused, faults of fritter's own.
 // Everything else the child was answered with, or did itself: a 502, a 400, a reply cut
 // short, a connection it hung up. [LAW:nothing-unseen]
 func told(event intercept.Event) {
@@ -245,6 +246,8 @@ func told(event intercept.Event) {
 		warn("the child refused fritter's answer for %s: %v", event.Target, event.Alert)
 	case intercept.Logged:
 		warn("%s", event.Line)
+	case intercept.Stopped:
+		warn("stopped taking the child's requests: %v", event.Err)
 	}
 }
 
