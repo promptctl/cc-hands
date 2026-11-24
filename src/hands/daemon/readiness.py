@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import get_args
 
 from hands.brain import pinned
+from hands.brain.configdir import Unstartable
 from hands.core.effects import Fritter
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
@@ -195,7 +196,7 @@ def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[s
         # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
         # was refused, which is the most there is to act on.
         reached = Missing("brain cannot reach its model", "hands has no model to talk with", str(error))
-    except OSError as error:
+    except Unstartable as error:
         # The brain's claude could not be asked, which says nothing of whether it holds a login.
         reached = Unknown("brain's login", f"cannot tell whether the [llm] backend can reach its model: {error}")
     return reached

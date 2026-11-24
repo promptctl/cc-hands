@@ -145,21 +145,21 @@ def configured_from(children: Children, home: Home, settings: Settings, environm
             pass
     try:
         llm = backend(children, settings.config.llm, home, environment, brain)
-    except Rejected as error:
+    except (Rejected, Unstartable) as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_fetched(kept), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)
 
 
 def _unlogged(children: Children, settings: Settings, home: Home, environment: Mapping[str, str], brain: Runnable | None) -> tuple[str, ...]:
-    """Why the brain of a refused start has no login, asked wherever its own config directory runs one, so a start
-    refused on the home's other files names it too: none where it has one."""
+    """Why the brain of a refused start has no login, or that its Claude Code could not be asked, asked wherever its own
+    config directory runs one, so a start refused on the home's other files names it too: none where it has one."""
     # [LAW:dataflow-not-control-flow] a stale fritter or shim hides no login lost; a brain whose own settings refuse it
     # is asked nothing, since the run that asks would load what they keep out.
     if brain is None:
         return ()
     try:
         backend(children, settings.config.llm, home, environment, brain)
-    except Rejected as error:
+    except (Rejected, Unstartable) as error:
         return (str(error),)
     return ()
 

@@ -442,6 +442,29 @@ async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_fa
 
 
 @pytest.mark.outside
+async def test_a_gh_that_could_not_be_started_is_told_apart_from_a_forge_that_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from loguru import logger
+
+    root = published(tmp_path)
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    # Found on PATH, and no program the OS will run: its interpreter is not there.
+    (bin / "gh").write_text("#!/nonexistent/hands-no-such-shell\n")
+    (bin / "gh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING")
+    record: list[Entry] = []
+    try:
+        delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+    finally:
+        logger.remove(sink)
+    assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
+    assert [event.facts["forge"] for event in readings(record)] == ["unstarted"]
+    assert any(line.startswith("gh could not be started: ") for line in warnings)
+
+
+@pytest.mark.outside
 async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from loguru import logger
 

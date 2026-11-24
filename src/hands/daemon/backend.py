@@ -7,7 +7,6 @@ what the start's preflight passed. The login is the one refusal the preflight le
 
 from collections.abc import Mapping
 
-from hands.brain.configdir import Unstartable
 from hands.core.session import Runnable
 from hands.core.wire import UPSTREAM
 from hands.daemon.config import Claude
@@ -19,7 +18,8 @@ from hands.voice.backends import ClaudeCodeBackend
 
 def backend(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> ClaudeCodeBackend:
     """The brain on the model the settings name, run with what the start's preflight passed, given the login it reaches
-    its model with; raises Rejected naming what it cannot have."""
+    its model with; raises Rejected naming what it cannot have, and Unstartable where its Claude Code could not be asked,
+    which says nothing of its login."""
     # [LAW:single-enforcer] where a setting meets its login: the brain's login is checked here, once, before the voice
     # loads, rather than once every turn has failed.
     # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
@@ -31,6 +31,6 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
 
     try:
         account = logged_in(children, brain.claude.path, home.brain, UPSTREAM, environment)
-    except (NotLoggedIn, Unstartable) as error:
+    except NotLoggedIn as error:
         raise Rejected(str(error)) from error
     return ClaudeCodeBackend(model=llm.model, config_dir=home.brain, account=account, brain=brain)

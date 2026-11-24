@@ -891,16 +891,17 @@ def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: P
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
-def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.outside
+def test_a_brain_whose_claude_could_not_be_started_is_unknown_and_not_a_login_to_make(root: Path) -> None:
     home = Home(root / "home")
-    laid_out(home)
-
-    def unspawnable(*_: object) -> object:
-        raise PermissionError("claude is not executable")
-
-    monkeypatch.setattr(readiness, "resolve", unspawnable)
-    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {})
-    assert isinstance(found, Unknown) and "claude is not executable" in found.said
+    onboard(home.brain)
+    # The pinned claude is in its place, and is no program the OS will run: its interpreter is not there.
+    claude = root / "claude"
+    claude.write_text("#!/nonexistent/hands-no-such-interpreter\n")
+    claude.chmod(0o755)
+    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, claude), {})
+    assert isinstance(found, Unknown) and "auth status` could not be started: " in found.said
+    assert "hands login" not in found.said
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:

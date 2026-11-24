@@ -119,9 +119,9 @@ class Standing:
 
 # Whether the forge was asked about the pull requests of the branch a turn pushed, and what came of it: not asked
 # where the turn pushed nothing or pushed its remote's default branch, which no pull request is opened from; absent
-# where there is no gh to ask; unanswered where it was too slow, and refused where gh would not list or answered in
-# a shape hands does not read.
-Forge = Literal["unasked", "absent", "answered", "unanswered", "refused"]
+# where there is no gh to ask; unstarted where the gh on PATH could not be started; unanswered where it was too slow,
+# and refused where gh would not list or answered in a shape hands does not read.
+Forge = Literal["unasked", "absent", "unstarted", "answered", "unanswered", "refused"]
 
 # Why a reading has no baseline to read against: none was taken (no repository, one that could not be read, or a turn no prompt
 # baselined), or the start it was to be read against is a capture the next turn's start overtook.
@@ -647,7 +647,11 @@ class Deltas:
                 pass
             case child.Ran(ending=child.Killed(kill=child.Kill(why=child.Limit()))) | child.Unreaped() | child.Lost():
                 return (), Asked("unanswered", took)
-            case child.Ran() | child.NeverStarted():
+            case child.NeverStarted():
+                # A gh on PATH that is no program the OS will run is the machine's fault, not the forge's answer.
+                logger.warning(f"gh {child.said(ran)}, so the pull requests of {branch} in {baseline.root} were not asked for")
+                return (), Asked("unstarted", took)
+            case child.Ran():
                 # Not a GitHub remote, not signed in, no default repository: gh says which.
                 logger.info(f"gh would not list the pull requests of {branch} in {baseline.root}: gh {child.said(ran)}")
                 return (), Asked("refused", took)
