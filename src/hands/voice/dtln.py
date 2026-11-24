@@ -15,9 +15,6 @@ The model is not told the room, only the reference, so how it is lined up with i
 Cost, one thread: 0.38 ms of inference per 8 ms hop. Latency: `Dtln.LATENCY`, 32 ms.
 """
 
-import hashlib
-import os
-import urllib.request
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,6 +24,8 @@ from typing import Any
 
 import numpy as np
 from ai_edge_litert.interpreter import Interpreter
+
+from hands.voice import pinnedfile
 
 SAMPLE_RATE = 16000
 BLOCK, SHIFT = 512, 128
@@ -52,9 +51,6 @@ _SETTLED = 16
 # first word where, having read the 128 ms before, it took out 40 dB (hands_cancelled_and_another.flac, the 0.25 s after
 # its echo path was read), and Whisper heard "hey" of the first 8 s of hands alone (tests/test_whisper_recorded.py).
 _REPLAYED = 16
-
-# How long a read of the model's repository may wait for bytes, in seconds, before the fetch fails.
-_FETCH_TIMEOUT = 30
 
 REPOSITORY = "breizhn/DTLN-aec"
 REVISION = "9d24e128b4f409db18227b8babb343016625921f"
@@ -88,10 +84,6 @@ class Stages:
 CACHE = Path.home() / ".cache" / "hands" / "dtln-aec" / REVISION
 
 
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 @cache
 def weights() -> tuple[Path, Path]:
     """The two parts' files in `CACHE`, fetched if they are not there."""
@@ -101,24 +93,13 @@ def weights() -> tuple[Path, Path]:
 def fetched(directory: Path) -> tuple[Path, Path]:
     """The two parts' files, fetched from the model's repository at REVISION into `directory` unless they are there, each held to its digest.
 
-    [LAW:no-silent-failure] a file that is not the one pinned raises naming it: a canceller that cancels with other weights
-    would leak hands' voice or eat a person's with nothing to say why. A file is fetched whole and held to its digest
-    before it is written beside its place, by a name of this process's own, and moved to it: a fetch cut short leaves none
-    to be taken for the file, and two processes fetching at once do not write the same one."""
+    A canceller that cancels with other weights would leak hands' voice or eat a person's with nothing to say why, so a
+    file that is not the one pinned is refused by name (`hands.voice.pinnedfile`)."""
     directory.mkdir(parents=True, exist_ok=True)
-    paths = list[Path]()
-    for name, digest in PARTS:
-        path = directory / name
-        if not (path.is_file() and _digest(path) == digest):
-            with urllib.request.urlopen(f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", timeout=_FETCH_TIMEOUT) as response:  # noqa: S310
-                body = response.read()
-            if (found := hashlib.sha256(body).hexdigest()) != digest:
-                raise ValueError(f"{name} at {REVISION} is {found}, not the {digest} pinned")
-            beside = path.with_suffix(f".{os.getpid()}.part")
-            beside.write_bytes(body)
-            beside.replace(path)
-        paths.append(path)
-    first, second = paths
+    first, second = (
+        pinnedfile.fetched(directory, name, f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", digest, REVISION)
+        for name, digest in PARTS
+    )
     return first, second
 
 

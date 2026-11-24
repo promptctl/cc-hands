@@ -24,7 +24,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import SHORTCUT_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
 from hands.voice.tools import listening_tools
 from hands.voice.trigger import Levels
-from hands.voice.wake import SAMPLE_RATE
+from hands.voice.wake import SAMPLE_RATE, Models
 from hands.voice.wakeword import Pretrained
 
 
@@ -125,7 +125,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     off, wake, engaged, deaf = map(spoken, [ask, "Hey Jarvis. What is the status of the build?", ask, ask])
 
     level, choose = listening_tools(levels, Pretrained())
-    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
+    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=Models(models), word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
 
     async def alongside(waiting: Awaitable[object]) -> None:
         """`waiting`, beside the desk: a desk that ended is the failure itself, raised, never a wait that runs out on it."""

@@ -533,6 +533,13 @@ def models(pytestconfig: pytest.Config) -> Path:
     return pytestconfig.stash[RUN].wake_word
 
 
+@pytest.fixture(scope="session")
+def onnx_runtime(pytestconfig: pytest.Config) -> Path:
+    """ONNX Runtime Web's two files, as the run fetched them into pytest's cache: what the phone's page runs the wake word
+    on, served to it by the test's hands."""
+    return pytestconfig.stash[RUN].runtime
+
+
 @pytest.fixture
 def dead_pid() -> Callable[[], int]:
     """Makes the pid of a process that has just exited, which no process holds for now, fresh at each call."""
@@ -643,6 +650,7 @@ class Run:
     wake_word: Path
     claude_code: Path
     mock: Path
+    runtime: Path
 
 
 RUN = pytest.StashKey[Run]()
@@ -702,7 +710,8 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     # The echo canceller's model is read by the unit layer's tests, from a directory of the run's, not each test's own HOME.
     dtln_models = config.cache.mkdir("dtln-aec")
     monkeypatch.setattr(dtln, "CACHE", dtln_models)
-    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), dtln_models, machine, unit=held(config))
+    runtime = config.cache.mkdir("onnxruntime-web")
+    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), dtln_models, runtime, machine, unit=held(config))
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)
@@ -712,7 +721,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
         hold = offline.hold(offline.Unit((Path(huggingface_hub.constants.HF_HUB_CACHE), Path(huggingface_hub.constants.HF_XET_CACHE), wake_word)))
         write(f"unit layer ({layer}): nothing outside the process, no fetched weight read and no Claude Code policy from here ({hold})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
-    config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
+    config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary(), runtime)
 
 
 @pytest.fixture(scope="session")

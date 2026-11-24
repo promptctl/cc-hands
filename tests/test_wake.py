@@ -25,7 +25,7 @@ from hands.voice.engaged import drive
 from hands.voice.trigger import Choice
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
-from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, THRESHOLD, WakeWord, fetched, listening, loaded
+from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, THRESHOLD, Models, WakeWord, fetched, listening, loaded
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained
 
 
@@ -298,6 +298,31 @@ async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_pa
         (tmp_path / JARVIS).write_bytes(b"word")
         assert await fetched(tmp_path, Pretrained(), address) == ()
         assert served == [MELSPECTROGRAM, EMBEDDING, JARVIS]
+
+
+@pytest.mark.outside
+async def test_asks_for_the_models_that_arrive_while_they_are_being_fetched_wait_for_that_fetch(tmp_path: Path) -> None:
+    served: list[str] = []
+    begun, open_gate = asyncio.Event(), asyncio.Event()
+
+    async def model(request: web.Request) -> web.StreamResponse:
+        served.append(request.match_info["name"])
+        begun.set()
+        # The release holds its first answer until the test lets it go, so the second ask arrives while it is fetching.
+        await open_gate.wait()
+        return web.Response(body=b"features")
+
+    async with release(model) as address:
+        models = Models(tmp_path, address)
+        first = asyncio.create_task(models.ensured(Pretrained()))
+        await begun.wait()
+        second = asyncio.create_task(models.ensured(Pretrained()))
+        await asyncio.sleep(0)
+        assert not second.done()
+        open_gate.set()
+        assert (await first, await second) == ((MELSPECTROGRAM, EMBEDDING, JARVIS), ())
+    assert sorted(served) == sorted((MELSPECTROGRAM, EMBEDDING, JARVIS))
+    assert sorted(path.name for path in tmp_path.iterdir()) == sorted((MELSPECTROGRAM, EMBEDDING, JARVIS))
 
 
 @pytest.mark.outside

@@ -64,6 +64,26 @@ async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str
     return missing
 
 
+class Models:
+    """The directory the wake word's models are in, and the one owner of fetching them: the desk fetches them as it starts
+    and the phone's page asks for them (`hands.voice.phonewake`), and what they ask for together is fetched once.
+
+    [LAW:no-ambient-temporal-coupling] `fetched` writes each file beside its place and moves it there, so two fetches
+    into one directory at once would move one partial file twice; every caller awaits `ensured`, which is one fetch at a
+    time.
+    """
+
+    def __init__(self, directory: Path, release: str = RELEASE) -> None:
+        self.directory = directory
+        self._release = release
+        self._lock = asyncio.Lock()
+
+    async def ensured(self, word: Word) -> tuple[str, ...]:
+        """`word`'s models in the directory, fetched if they are not there: the names of those this call fetched."""
+        async with self._lock:
+            return await fetched(self.directory, word, self._release)
+
+
 class Unheard(Exception):
     """A model the wake word cannot be heard with, and why."""
 

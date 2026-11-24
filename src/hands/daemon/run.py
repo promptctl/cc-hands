@@ -62,8 +62,10 @@ from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.shortcut import Move
 from hands.voice.clips import Trigger
 from hands.voice.atdesk import serve_desk
+from hands.voice.wake import Models
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
+from hands.voice.ortweb import Runtime
 from hands.voice.phonepage import phone_pages, serve_phone
 from hands.voice.phoneaddress import phone_key, tailnet
 from hands.voice.turnstop import Typed
@@ -405,6 +407,10 @@ async def converse(
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
+    # [LAW:single-enforcer] one owner of the wake word's models and one of the runtime the phone runs them on: the desk and
+    # the phone's page ask the same ones, and what they ask for together is fetched once.
+    wake_models = Models(home.wake_word)
+    runtime = Runtime()
 
     def beat() -> None:
         # A turn opened with no microphone hears nothing, so it is not listening.
@@ -466,7 +472,7 @@ async def converse(
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the desk is driven from then on.
         await pipeline.started.wait()
-        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, models=home.wake_word, word=wake_word, taken=taken_at_desk, beat=beat, record=record, clock=clock)
+        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, models=wake_models, word=wake_word, taken=taken_at_desk, beat=beat, record=record, clock=clock)
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.
@@ -481,7 +487,7 @@ async def converse(
             key = phone_key(clock, home)
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery), home, partial(tailnet, Children(clock, record), home), record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery, wake_models, runtime), home, partial(tailnet, Children(clock, record), home), record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

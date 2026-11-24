@@ -28,10 +28,13 @@ from hands.sessions.wide import annotate, begun, continuing, fail, unit
 from hands.voice.backlogpage import backlog_routes
 from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
+from hands.voice.ortweb import Runtime
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
 from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, server_context
+from hands.voice.phonewake import wake_routes
 from hands.voice.summaries import SummaryStore
+from hands.voice.wake import Models
 
 # How often the page asks Tailscale for the tailnet's certificate again: Tailscale renews one a month before its 90
 # days are out, so a day is far inside the time a renewed one has before the old one ends.
@@ -86,11 +89,12 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
     return [web.get("/", shown), web.get("/hands.js", scripted), web.post("/offer", offered)]
 
 
-def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery) -> web.Application:
+def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: Models, runtime: Runtime) -> web.Application:
     """Every page the phone opens, under the phone's `key`. The phone's page reads and stops `brain`. The conversation
     page reads the audit log at `audit` and hands `typed` what is typed into it; the backlog page reads its summaries
     from `store` and runs its writes in `environment`, the one hands was started in; the gallery page sets hands'
-    voices, level, modality, and model through `gallery`.
+    voices, level, modality, and model through `gallery`; the wake word page's detector runs the word `gallery` names, on the
+    models `models` fetches and the runtime `runtime` serves (`hands.voice.phonewake`).
 
     [LAW:one-source-of-truth] the one composition of the phone's routes: hands serves it, and so do the tests of the phone's
     route and of the pages in a browser.
@@ -102,6 +106,7 @@ def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str
     # What runs lit for the page: on the phone's clock, each lit's event recorded with the page's.
     app.add_routes(backlog_routes(Children(clock, record), store, key, record, environment))
     app.add_routes(gallery_routes(clock, gallery, key, record))
+    app.add_routes(wake_routes(clock, gallery.wake, models, runtime, key, record))
     return app
 
 

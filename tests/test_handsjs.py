@@ -25,6 +25,12 @@ var AbortSignal = {timeout: ms => ({bound: ms})};
 function answer(status, text) {
   requests.shift().resolve({ok: status >= 200 && status < 300, status, text: async () => text});
 }
+function answerBytes(status, bytes) {
+  requests.shift().resolve({ok: status >= 200 && status < 300, status, text: async () => "refused in words", arrayBuffer: async () => new Uint8Array(bytes).buffer});
+}
+function cutOffBytes(message) {
+  requests.shift().resolve({ok: true, status: 200, arrayBuffer: async () => { throw new Error(message); }});
+}
 function cutOff(message) {
   requests.shift().resolve({ok: true, status: 200, text: async () => { throw new Error(message); }});
 }
@@ -54,7 +60,7 @@ class Page:
         # QuickJS here loads no module a module imports, so what the module exports is handed to the test as a page's
         # import would be.
         module = resources.files("hands.voice").joinpath("hands.js").read_text()
-        self._js.module(f"{module}\nObject.assign(globalThis, {{asked, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS}});")
+        self._js.module(f"{module}\nObject.assign(globalThis, {{asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS}});")
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
         self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
 
@@ -111,6 +117,25 @@ def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: P
 ])
 def test_what_came_of_a_request_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
     page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
+    page.run(settled)
+    assert page.seen("outcome") == outcome
+
+
+def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) -> None:
+    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
+    assert page.asking() == [Asked("GET", "/wake/models/word.onnx", "Bearer the key", None, page.answer_ms)]
+    page.run("answerBytes(200, [1, 2, 255])")
+    page.run("outcome.body = Array.from(outcome.body)")
+    assert page.seen("outcome") == {"kind": "answered", "body": [1, 2, 255]}
+
+
+@pytest.mark.parametrize(("settled", "outcome"), [
+    ("answerBytes(503, [1, 2])", {"kind": "refused", "status": 503, "text": "refused in words"}),
+    ('cutOffBytes("network reset")', {"kind": "lost", "why": "hands' answer was cut off: network reset"}),
+    ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
+])
+def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
+    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
     page.run(settled)
     assert page.seen("outcome") == outcome
 
