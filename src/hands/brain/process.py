@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, 
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from aiohttp import web
 from loguru import logger
@@ -45,7 +45,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
-from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PinnedClaude, PromptId, PromptText, RequestId, Runnable, Session, SessionId, all_told, holds, ids, pasted
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PinnedClaude, PromptId, PromptText, RequestId, Runnable, Session, SessionId, Submit, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import LoginExpired, StopFailed, expired
@@ -987,23 +987,64 @@ def _unsaid(_heard: Heard) -> None:
     """What the brain's session would have said of its progress: the stage says the brain's turn from the wire instead."""
 
 
+class Terminal(Protocol):
+    """The terminal the brain's Claude Code runs in, as the brain reads and ends it: `InTmux`, or a test's."""
+
+    @property
+    def exit(self) -> "asyncio.Future[int]":
+        """Its process's exit code, once it has ended."""
+        ...
+
+    async def screen(self) -> str:
+        """What it shows now, its attributes kept as SGR."""
+        ...
+
+    def shown(self) -> str:
+        """The last lines it showed."""
+        ...
+
+    async def stop(self) -> None:
+        """Ends it, and returns once its process has."""
+        ...
+
+
+class Keyboard(Protocol):
+    """The brain's input, as the brain types into it: fritter's `Typist`, or a test's."""
+
+    @property
+    def pid(self) -> int:
+        """The Claude Code it types into."""
+        ...
+
+    def type(self, text: PromptText, submit: Submit) -> None: ...
+
+    def press(self, key: Keystroke) -> None: ...
+
+
+class Listening(Protocol):
+    """Where the brain's hooks are posted, as the brain's stop lets go of it: an aiohttp `AppRunner`, or a test's."""
+
+    async def cleanup(self) -> None: ...
+
+
 class Brain:
     """A running brain: a turn is asked with `ask`, which returns once the brain has said the turn is over."""
 
     def __init__(
         self,
-        claude: InTmux,
+        claude: Terminal,
         fritter: int,
         shell: int,
         session: BrainSession,
-        typist: Typist,
-        listener: web.AppRunner,
+        typist: Keyboard,
+        listener: Listening,
         sockets: Path,
         config_dir: Path,
         cwd: Path,
         record: Record,
         launched: Span,
         clock: Clock,
+        reading: Callable[[Reader], Awaitable[None]],
     ) -> None:
         self._claude = claude
         self._fritter = fritter
@@ -1057,7 +1098,8 @@ class Brain:
         # the next prompt Claude Code takes: it reads its input in order, so only that one can be them, taken late.
         self._untaken: str | None = None
         with continuing(launched):
-            self._reading = asyncio.ensure_future(self._reader.keep_reading(READ_SECONDS))
+            # Claude Code's status and transcript, read for as long as `reading` reads them (`_read_on_its_period`).
+            self._reading = asyncio.ensure_future(reading(self._reader))
             self._exit = asyncio.ensure_future(self._run_out(begun(self._clock)))
 
     @property
@@ -1312,7 +1354,7 @@ class Brain:
         (docs/claude-code-behavior.md). Whether they emptied it is the next look's to say."""
         # [LAW:nothing-unseen] on the turn's own event: what the input held that the turn would have joined.
         annotate(emptied=box.rows)
-        def empty(typist: Typist) -> None:
+        def empty(typist: Keyboard) -> None:
             for key in _EMPTY_ROW * box.input:
                 typist.press(key)
 
@@ -1540,7 +1582,7 @@ class Brain:
                     await asyncio.shield(self._exit)
                 annotate(waited_after_exit=await self.drained())
 
-    async def _type(self, typing: Callable[[Typist], None]) -> None:
+    async def _type(self, typing: Callable[[Keyboard], None]) -> None:
         # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, which no turn's end catches: `_broke` says it.
         await asyncio.to_thread(typing, self._typist)
 
@@ -1959,7 +2001,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper, shell = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)
-            brain = Brain(running, wrapper, shell, session, typist, listener, sockets, station.config_dir, station.cwd, record, here(), clock)
+            brain = Brain(running, wrapper, shell, session, typist, listener, sockets, station.config_dir, station.cwd, record, here(), clock, _read_on_its_period)
             posting.set_result(brain.posted)
             # [LAW:no-ambient-temporal-coupling] up once its input is and its own start is applied, the conversation it
             # launched in held, so the next start resumes what this one says. The brain answers every hook from here,
@@ -1985,6 +2027,11 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
                 annotate(let_go=let_go(station.config_dir))
             raise
     return brain
+
+
+def _read_on_its_period(reader: Reader) -> Awaitable[None]:
+    """The brain's Claude Code read as every working session's is: its status and transcript, once each READ_SECONDS."""
+    return reader.keep_reading(READ_SECONDS)
 
 
 async def _listen(posting: "asyncio.Future[Callable[[str, bytes], Awaitable[Mapping[str, object]]]]") -> tuple[web.AppRunner, str]:

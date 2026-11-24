@@ -1,4 +1,4 @@
-"""What the brain's tests read a turn, a permission, or a failure by, whether the brain is a launched one or built bare."""
+"""What the brain's tests read a turn, a permission, or a failure by, whether the brain is a launched one or built of fakes."""
 
 from collections.abc import Sequence
 
