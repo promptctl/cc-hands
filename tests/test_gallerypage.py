@@ -20,7 +20,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.library import Found
-from hands.voice.voicechoice import Chosen, LibraryVoice
+from hands.voice.voicechoice import Chosen, LibraryVoice, Saved
 from hands.voice.trigger import described
 from hands.voice.voices import said
 from hands.voice.voicechoice import VOICES, Voice
@@ -59,10 +59,10 @@ class Voicing:
         self.previewed.append((voice, line))
         return self.spoken
 
-    async def keep_line(self, voice: Chosen, line: str) -> str:
+    async def keep_line(self, voice: Chosen, line: str) -> Saved:
         self.written[voice] = line
         [saying] = await self.said_by((voice,))
-        return saying
+        return Saved(str(voice), saying)
 
     async def use(self, voice: Chosen) -> None:
         self.used_asked.append(voice)
@@ -296,7 +296,7 @@ async def test_a_line_saved_is_kept_for_its_voice_and_a_blank_one_is_hands_own_a
     assert await response.json() == {"voice": "bill_boerst", "line": said(Voice("bill_boerst"), ""), "default": True}
     refused = await page.client.post("/gallery/line", headers=KEYED, json={"voice": "bill_boerst"})
     assert refused.status == 400 and "{line: ...}" in await refused.text()
-    assert [(event.outcome, event.facts.get("default")) for event in page.events("gallery.line")] == [("ok", False), ("ok", True), ("failed", None)]
+    assert [(event.outcome, event.facts.get("default"), event.facts.get("key")) for event in page.events("gallery.line")] == [("ok", False, "bill_boerst"), ("ok", True, "bill_boerst"), ("failed", None, None)]
 
 
 @pytest.mark.outside

@@ -24,7 +24,7 @@ from hands.voice.player import Player
 from hands.voice.tools import audited, voice_tools
 from hands.voice.library import Library
 from hands.voice.voices import Voices, sample
-from hands.voice.voicechoice import DEFAULT, VOICES, Chosen, LibraryVoice, Voice, chosen, parse_voice
+from hands.voice.voicechoice import DEFAULT, VOICES, Chosen, LibraryVoice, Saved, Voice, chosen, parse_voice
 
 
 class Speaker(TTSService):
@@ -231,14 +231,26 @@ async def test_a_line_kept_is_said_from_the_next_hearing_on_and_a_blank_one_goes
     lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     chosen_voices = Voices(home, lines, ready, unlisted(), DEFAULT, SampleLines(home, _NO_FILE))
     async with running([lines, speaker]):
-        assert await chosen_voices.keep_line(Voice("bill_boerst"), " Bill, at your service. ") == "Bill, at your service."
+        assert await chosen_voices.keep_line(Voice("bill_boerst"), " Bill, at your service. ") == Saved("bill_boerst", "Bill, at your service.")
         await chosen_voices.hear((Voice("bill_boerst"),))
-        assert await chosen_voices.keep_line(Voice("bill_boerst"), "") == sample(Voice("bill_boerst"))
+        assert await chosen_voices.keep_line(Voice("bill_boerst"), "") == Saved("bill_boerst", sample(Voice("bill_boerst")))
         await chosen_voices.hear((Voice("bill_boerst"),))
         assert await speaker.until(2) == [("bill_boerst", "Bill, at your service."), ("bill_boerst", sample(Voice("bill_boerst")))]
 
 
-async def test_a_line_kept_for_a_name_that_is_no_voice_or_one_voice_named_twice_refuses_the_hearing_naming_it(tmp_path: Path) -> None:
+async def test_a_line_kept_over_a_hand_written_key_for_the_voice_is_the_line_it_says_when_heard(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text('[sample_lines]\n"Bill Boerst" = "Hand-written."\n')
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
+    chosen_voices = Voices(home, lines, ready, unlisted(), DEFAULT, SampleLines(home, _NO_FILE))
+    async with running([lines, speaker]):
+        assert await chosen_voices.keep_line(Voice("bill_boerst"), "Saved from the page.") == Saved("Bill Boerst", "Saved from the page.")
+        await chosen_voices.hear((Voice("bill_boerst"),))
+        assert await speaker.until(1) == [("bill_boerst", "Saved from the page.")]
+    assert home.config.read_text() == '[sample_lines]\n"Bill Boerst" = "Saved from the page."\n'
+
+
+async def test_a_file_whose_sample_line_key_names_no_voice_or_one_voice_twice_refuses_the_hearing_naming_it(tmp_path: Path) -> None:
     home = Home(tmp_path)
     chosen_voices = Voices(home, Player(lambda _: None).lines, ready, unlisted(), DEFAULT, SampleLines(home, _NO_FILE))
     home.config.write_text('[sample_lines]\n"Zed!" = "Who?"\n')
