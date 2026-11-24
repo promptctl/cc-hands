@@ -148,7 +148,7 @@ async def test_a_wake_while_hands_is_at_the_desk_opens_nothing_and_the_next_one_
         call.key.end(call.key.gate.turn, "stop", "shortcut")
         call.page.send(wake_message())
         await call.until(lambda: len(call.page.told) == 1)
-        assert told(call) == [{"kind": "unopened", "press": 1, "why": "hands is at the desk"}]
+        assert told(call) == [{"kind": "unopened", "press": 1, "why": "hands is at the desk", "at_desk": True}]
         assert (call.key.gate.place, call.key.gate.turn_open, call.key.gate.ended) == ("desk", False, ("sent",))
         # Hands being at the desk is no mistake of the page's, for the page cannot know it.
         [refused] = wakes(call)
@@ -167,7 +167,7 @@ async def test_a_wake_at_off_or_over_an_open_turn_opens_nothing_and_is_the_pages
     async with calling() as call:
         call.page.send(wake_message())
         await call.until(lambda: len(call.page.told) == 1)
-        assert told(call) == [{"kind": "unopened", "press": 1, "why": "the phone is not listening for the wake word"}]
+        assert told(call) == [{"kind": "unopened", "press": 1, "why": "the phone is not listening for the wake word", "at_desk": False}]
         call.page.send(level_message("wake word"))
         call.page.send("press")
         await call.until(lambda: call.key.gate.key == "down")

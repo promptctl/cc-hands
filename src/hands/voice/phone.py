@@ -153,6 +153,9 @@ class Unopened:
 
     press: int
     why: str
+    # Whether the reason is that hands is at the desk, which the page says in words of its own; hands says it, so the page never
+    # reads it out of `why`.
+    at_desk: bool = False
 
 
 def answer(press: int, told: ClipOpened | TurnUnopened) -> Opened | Unopened:
@@ -169,8 +172,8 @@ def wire(told: Opened | Unopened | ClipReleased | ClipDiscarded | Milestone | Li
     match told:
         case Opened(press=press, clip=clip):
             return json.dumps({"kind": "opened", "press": press, "clip": clip})
-        case Unopened(press=press, why=why):
-            return json.dumps({"kind": "unopened", "press": press, "why": why})
+        case Unopened(press=press, why=why, at_desk=at_desk):
+            return json.dumps({"kind": "unopened", "press": press, "why": why, "at_desk": at_desk})
         case ClipReleased(clip=clip):
             return json.dumps({"kind": "milestone", "milestone": "released", "clip": clip.number})
         case ClipDiscarded(clip=clip):
@@ -610,24 +613,24 @@ class Phone:
         match wake:
             case Wake():
                 refusal = self._key.gate.refusal(PHONE_WAKE)
-                why, mistake = (None, False) if refusal is None else (_why(refusal), refusal != "elsewhere")
+                why, mistake, at_desk = (None, False, False) if refusal is None else (_why(refusal), refusal != "elsewhere", refusal == "elsewhere")
             case Unreadable(why=unreadable):
-                why, mistake = unreadable, True
+                why, mistake, at_desk = unreadable, True, False
         match why:
             case None:
                 self.took(self._key.move("arm", PHONE_WAKE))
                 self._open(call, press, PHONE_WAKE)
             case _:
-                self._unopened(call, press, why)
+                self._unopened(call, press, why, at_desk)
         score = wake.score if isinstance(wake, Wake) else None
         failure = f"the page's wake opened nothing: {why}" if mistake else None
         ended("phone.wake", self._record, begun(self._clock), None, failure, score=score, threshold=THRESHOLD, while_speaking=self._speaking(), opened=why is None, press=press)
 
-    def _unopened(self, call: Call, press: int, why: str) -> None:
+    def _unopened(self, call: Call, press: int, why: str, at_desk: bool) -> None:
         """A press of the page's that hands answers at once, for it opened no clip."""
         match call.channel:
             case RTCDataChannel(readyState="open") as channel:
-                channel.send(wire(Unopened(press, why)))
+                channel.send(wire(Unopened(press, why, at_desk)))
                 call.told += 1
             case _:
                 pass
@@ -661,7 +664,7 @@ class Phone:
             # clip exactly, however late either reaches it.
             call.pressing[self._key.gate.turn] = press
         else:
-            self._unopened(call, press, _why("busy"))
+            self._unopened(call, press, _why("busy"), False)
         self.took(taken)
 
     def _heard(self, call: Call, audio: Pcm) -> None:

@@ -1,7 +1,8 @@
 // The wake word's models, run on the phone in a worker (hands.voice.phonewake serves it at /detector-worker.js): the Mac's own
 // three, on ONNX Runtime Web's WebAssembly build, one thread. detector.js starts it with the rate of the audio it will be
 // given; it answers `ready` with the word it listens for, `heard` with a score each time it hears it and how many seconds of
-// audio it had been given by then, and `failed` with why when it cannot listen. Nothing it loads comes from any site but hands.
+// audio it had been given by then, `waiting` with why each time hands gave it no answer and it asks again, and `failed` with
+// why when it cannot listen. Nothing it loads comes from any site but hands.
 //
 // The phone's key reaches it in its address's fragment, as it reaches a page, so it asks hands through hands.js as a page does.
 
@@ -25,14 +26,29 @@ function settingsOf(body) {
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
 
+// How long a hands that gave no answer is waited on before it is asked again.
+const AGAIN_MS = 2000;
+
+// hands that did not answer, or could not be reached, is waited for and never given up on: on a cold first run `/wake/settings`
+// waits on the models' fetch for longer than any one request is given, and a `failed` is final, so a page that gave up there
+// could only be recovered by reloading it. A refusal is hands' word and fails as it is.
+async function patiently(ask) {
+  for (;;) {
+    const outcome = await ask();
+    if (outcome.kind !== "lost") return outcome;
+    postMessage({ kind: "waiting", why: outcome.why });
+    await new Promise(resolve => setTimeout(resolve, AGAIN_MS));
+  }
+}
+
 async function fileOf(path) {
-  const outcome = await askedForBytes(path);
+  const outcome = await patiently(() => askedForBytes(path));
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   return outcome.body;
 }
 
 async function load() {
-  const outcome = await asked("GET", "/wake/settings");
+  const outcome = await patiently(() => asked("GET", "/wake/settings"));
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   const settings = settingsOf(outcome.body);
   const ort = await import(settings.runtime);

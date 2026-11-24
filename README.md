@@ -88,6 +88,18 @@ is not, what does it; it exits 0 only when every step is done.
    hands check        # in another terminal: every line ✓
    ```
 
+   The phone's talk page listens for the wake word by default, the Hey Jarvis phrase, with
+   one small button in its corner to turn that off and on; the choice stays in that
+   browser. The phrase is heard on the phone itself, by the same three openWakeWord
+   models running in the page, which hands serves to it on the first Connect with the
+   wake word on (about 3 MB); with it off, none are fetched. Until the phrase is said,
+   no microphone audio leaves the phone: hands is sent only a count of the silence. When
+   it is said, the phone sends the second before it, then the rest as it comes, and
+   hands ends the turn as it ends any other. Holding the button still talks, whether or
+   not the wake word is loaded, off, or has failed; the page says when it is not
+   listening and why. The phone keeps its screen awake while the wake word is on and the
+   call is up, since a locked phone stops listening.
+
 9. The smoke test, in another terminal while hands runs. It calls hands as the phone's
    page does and takes three spoken turns in macOS's voice: it asks hands to have a
    session it starts in `~/.hands/smoke` name the one file there, sends the draft, and

@@ -292,7 +292,7 @@ async def test_each_press_is_answered_once_under_its_own_number_as_opened_or_as_
     call.phone.tell(TurnUnopened(7, UNHEARD))
     await call.phone.hang_up("stopped")
     assert [json.loads(cast(str, told)) for told in call.page.told] == [
-        {"kind": "unopened", "press": 1, "why": UNHEARD},
+        {"kind": "unopened", "press": 1, "why": UNHEARD, "at_desk": False},
         {"kind": "opened", "press": 2, "clip": 5},
     ]
 
@@ -325,7 +325,7 @@ async def test_a_press_and_release_with_no_audio_between_them_are_answered_unope
             call.page.send(said)
         await call.until(lambda: len(call.page.told) == 3)
     assert [json.loads(cast(str, told)) for told in call.page.told] == [
-        {"kind": "unopened", "press": 1, "why": UNHEARD},
+        {"kind": "unopened", "press": 1, "why": UNHEARD, "at_desk": False},
         {"kind": "opened", "press": 2, "clip": 1},
         {"kind": "milestone", "milestone": "released", "clip": 1},
     ]

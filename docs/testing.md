@@ -52,6 +52,13 @@ tests/test_pages.py runs each phone page's own code in the installed Google Chro
 on GitHub's macos-15 runner image, which CI's `rest` tier runs on: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
 its pages made, whether the test passed or not.
 
+A page test that needs speech as the microphone is tests/test_phonewakepage.py's kind. The page's `getUserMedia` is replaced by an
+init script that hands it a Web Audio destination, and the test plays a recording of speech into it (`tests/speech.py`'s
+`spoken(text)`, 16 kHz, the same synthesis the wake word's other tests use) when it means the page to hear it, and silence
+otherwise. What the page sends is written down where it leaves, on the call's data channel. The Mac's half is the real clip owner
+and `LatencyObserver` fed from the phone's audio, so what the page is told of a turn is what hands says of it. A page test that
+holds a fetch, or fails one, does it with Playwright's `route`, not a fake in the page.
+
 ## The commands
 
 - `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.
