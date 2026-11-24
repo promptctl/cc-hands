@@ -130,6 +130,21 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
 
 
 @pytest.mark.outside
+async def test_a_client_is_agreed_its_protocol_version_only_where_the_server_speaks_it() -> None:
+    recorded: list[Entry] = []
+    server = await serve_mcp(SYSTEM, [], recorded.append, CallSpans())
+    try:
+        agreed: list[object] = []
+        for asked in ("2025-06-18", "2025-03-26", None):
+            _, opened = await rpc(server, {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": asked}})
+            agreed.append(cast(dict[str, dict[str, object]], opened)["result"]["protocolVersion"])
+        # 2025-03-26 takes JSON-RPC batches, which this server refuses: it is answered with the newest the server speaks.
+        assert agreed == ["2025-06-18", "2025-11-25", "2025-11-25"]
+    finally:
+        await server.close()
+
+
+@pytest.mark.outside
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error(errors: list[str]) -> None:
     recorded: list[Entry] = []
     server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append), audited(SYSTEM, tool(broken), recorded.append)], recorded.append, CallSpans())
@@ -155,7 +170,10 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
             assert (await garbled.json())["error"]["code"] == -32700
         # A request JSON-RPC takes no id of is answered refused, never left waiting on a 202, and so is what is no message.
         _, nameless = await rpc(server, {"jsonrpc": "2.0", "id": None, "method": "tools/list"})
-        assert nameless == {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "a request's id is a string or an integer, never None"}}
+        assert nameless == {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "a request's id is a string or an integer, never null"}}
+        # JSON's true is no integer, though Python's int pattern would take it: the tool is never run.
+        _, boolean = await rpc(server, {"jsonrpc": "2.0", "id": True, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}}})
+        assert boolean == {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "a request's id is a string or an integer, never true"}}
         async with aiohttp.ClientSession() as client, client.post(server.url, json=[{"jsonrpc": "2.0", "id": 7, "method": "ping"}], headers={"Authorization": f"Bearer {server.token}"}) as batched:
             assert (await batched.json())["error"]["code"] == -32600
         async with aiohttp.ClientSession() as client, client.get(server.url, headers={"Authorization": f"Bearer {server.token}"}) as stream:
@@ -168,11 +186,12 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
             ("mcp.request", "failed", "resources/list"),
             ("mcp.request", "ok", "server/discover"),
             ("mcp.request", "failed", None),
-            ("mcp.request", "failed", None),
+            ("mcp.request", "failed", "tools/list"),
+            ("mcp.request", "failed", "tools/call"),
             ("mcp.request", "failed", None),
         ]
-        [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent)][-3:-2]
-        assert garbled_event.error is not None and garbled_event.error.startswith("not JSON: ")
+        [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.error is not None and entry.error.startswith("not JSON: ")]
+        assert garbled_event.event == "mcp.request"
     finally:
         await server.close()
 
