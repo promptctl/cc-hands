@@ -26,7 +26,7 @@ from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, preflight, readiness, update, watchdog
 from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, Handover, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start, starts_at
 from hands.tasks import cancel_and_wait
 from hands.core.tmux import Keyboard
 from hands.sessions.child import Children
@@ -217,7 +217,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
-    running.add_argument("--level", type=listening_level, default="off", metavar="{" + ",".join(LEVELS) + "}", help="the level the desk listens at as a restart starts, which only hands passes, beside --restarted: the one the run before it ended at; a start that is no restart listens at off")
+    running.add_argument("--level", type=listening_level, metavar="{" + ",".join(LEVELS) + "}", help="the level the desk listens at as a restart starts, which only hands passes, beside --restarted: the one the run before's desk was at; a start that is no restart listens at off")
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     checking = commands.add_parser("check", help="list each step of the README's install, ✓ done, ✗ missing with the command that fixes it, or ? when it could not be looked at: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the brain's login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
@@ -253,8 +253,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
     with logging_to(clock, home) as audit_log:
         match arguments.command:
             case "run":
-                if arguments.restarted is None and arguments.level != "off":
-                    parser.error("--level is a restart's, passed beside --restarted: a start that is no restart listens at off")
+                handover = handed_over(parser, arguments.restarted, arguments.level)
                 # [LAW:no-ambient-temporal-coupling] before the run reads its configuration, which may fetch a library
                 # voice: the token is in the process's environment by then. The run's alone, as the one command that
                 # fetches a voice, so no other starts the keychain's reader; once there is a log, which tells of it.
@@ -262,11 +261,28 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
 
                 if (token := hub_token(Children(clock, audit_log.record), os.environ)) is not None:
                     os.environ["HF_TOKEN"] = token
-                return run_daemon(clock, home, pin, audit_log, arguments.restarted, arguments.model, arguments.level)
+                return run_daemon(clock, home, pin, audit_log, handover, arguments.model, arguments.level)
             case "tmux-status":
                 return show_segment(clock, home)
             case _:
                 return commanded(clock, home, pin, release, audit_log.record, arguments)
+
+
+def handed_over(parser: argparse.ArgumentParser, indicator: int | None, level: Level | None) -> Handover | None:
+    """[LAW:parse-dont-validate] `hands run`'s --restarted and --level as the handover from the run before: none on a
+    start that is no restart, which listens at off. Exits 2 for a level with no restart."""
+    match indicator, level:
+        case None, None:
+            return None
+        case None, str():
+            parser.error("--level is a restart's, passed beside --restarted: a start that is no restart listens at off")
+        case int() as shown, None:
+            # [LAW:no-mode-explosion] exception: a restart exec'd by a hands from before the level was carried names none,
+            # and comes back at off, as every restart did then; its start says level_flag None. promptctl-voice-oalb.5p3
+            # deletes this arm.
+            return Handover(shown, "off")
+        case int() as shown, str() as named:
+            return Handover(shown, named)
 
 
 def listening_level(text: str) -> Level:
@@ -284,13 +300,13 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.AuditLog, restarted: int | None, model: str | None, level: Level) -> int:
+def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
-    match hold(clock, home, audit_log.record, restarted=restarted is not None):
+    match hold(clock, home, audit_log.record, restarted=handover is not None):
         case Running(pid=pid):
             # Told where it was run, and nothing of the home touched: the heartbeat, the sockets, and the indicator
             # are the running daemon's. A run that never held the home was never a start, so it writes no hands.start.
@@ -298,10 +314,10 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
             return 1
         case None:
             pass
-    run_start = Start(restarted is not None, clock)
-    # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, and the level the desk starts
-    # listening at, said by a start refused first.
-    run_start.heard(model_flag=model, listening_level=level)
+    run_start = Start(handover is not None, clock)
+    # [LAW:nothing-unseen] the --model that outranks the file's, and the --level, None where there was none, and the level
+    # the desk starts at, said by a start refused first.
+    run_start.heard(model_flag=model, level_flag=level_flag, listening_level=starts_at(handover))
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
     # or a crash the next run must read. A restart's run holds it already, since it holds the home: the run before it
     # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
@@ -311,10 +327,10 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
         with watchdog.watching(home.hang, watchdog.HUNG) as watched:
             heart = heartbeat.Heart(home.status, os.getpid(), clock.wall(), heartbeat.HEARTBEAT, watched.kick, clock)
             try:
-                held = None if restarted is None else heart
+                held = None if handover is None else heart
                 # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
                 # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
-                after_crash = restarted is None and crashed_before(clock, home)
+                after_crash = handover is None and crashed_before(clock, home)
                 run_start.heard(after_crash=after_crash)
                 settings = door(home, pin, model, run_start)
             except CannotStart as cannot:
@@ -322,7 +338,7 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
                 refuse(cannot, held)
                 return 1
             try:
-                ran: Literal["quit"] | Restart | CannotStart = run_here(clock, home, pin, restarted, after_crash, settings, heart, audit_log, run_start, level)
+                ran: Literal["quit"] | Handover | CannotStart = run_here(clock, home, pin, handover, after_crash, settings, heart, audit_log, run_start)
             except* CannotStart as cannot:
                 # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
                 # refused once, and said so even where another error raised with it is raised on past this block.
@@ -337,11 +353,11 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
                     return 1
                 case "quit":
                     return 0
-                case Restart(indicator=shown, level=carried):
-                    # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold,
-                    # listening at the level this one's desk was at; each one argument, so an id that begins with a dash is
-                    # never read as an option.
-                    execv(invocation(home, "run", "--restarted", str(shown), f"--level={carried}", *(() if settings.model is None else (f"--model={settings.model}",))))
+                case Handover() as next_run:
+                    # [LAW:one-source-of-truth] the run after a restart is this one again, on what this one hands over and
+                    # the --model its settings hold; each one argument, so an id that begins with a dash is never read as an
+                    # option.
+                    execv(invocation(home, "run", *next_run.arguments(), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
 def commanded(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
@@ -528,31 +544,23 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-@dataclass(frozen=True)
-class Restart:
-    """A run told to restart: the menu-bar indicator it showed, which the next run ends for one of its own, and the level
-    the next run's desk starts at."""
-
-    indicator: int
-    level: Level
-
-
-def run_here(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start, level: Level) -> Literal["quit"] | Restart:
-    """hands run in this process, the desk starting at `level`, until it is told to stop: a quit, or a restart.
+def run_here(clock: Clock, home: Home, pin: pinned.Pin, handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
+    """hands run in this process, on what the run before handed over if it was one, until it is told to stop: a quit, or
+    a restart and what it hands the next run.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
     heart.beat("starting", None, 0, listening=False, degraded=())
     # [LAW:dataflow-not-control-flow] every run shows itself through an indicator it started, on the code it runs: one
     # kept across a restart would judge this run's heartbeat by the code the run before had.
-    run_start.heard(previous_indicator=None if restarted is None else retire(restarted, clock))
+    run_start.heard(previous_indicator=None if handover is None else retire(handover.indicator, clock))
     shown = start_indicator(home)
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, clock)
     # [LAW:one-source-of-truth] the one owner of the level the desk listens at, made before the run and read after it, so a
     # restart carries the level the desk was at, or, where the run never stepped it, the one it was to start at.
-    levels = Levels(level)
+    levels = Levels(starts_at(handover))
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
         ending = asyncio.run(launch(lambda: loaded(clock, home, pin, settings, heart, record, exports.degraded, after_crash, run_start, levels), levels, heart, exports.degraded, lambda: edited(home, pin, record, settings, clock), record, run_start, clock))
@@ -560,7 +568,7 @@ def run_here(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, a
         case "quit":
             return "quit"
         case "restart":
-            return Restart(shown, levels.carried)
+            return Handover(shown, levels.last_chosen)
 
 
 # hands' run, given the Stop that every cause of its end is told to; it ends saying what it knew last.
@@ -626,9 +634,9 @@ async def launch(
                         heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, degraded=())
             except BaseException as error:
                 stop.tell(Failing("escaped", error))
-            # [LAW:nothing-unseen] the level the desk was at, which a restart starts at, and whether the desk reached it or
-            # was yet to step the one the run started at, however the run ended.
-            listened: dict[str, wide.Fact] = {"listening_level": levels.carried, "level_reached": levels.reached}
+            # [LAW:nothing-unseen] the level the desk listened at, the one last chosen, which a restart starts at, and the
+            # choices asked for that it never took, however the run ended.
+            listened: dict[str, wide.Fact] = {"listening_level": levels.level, "level_chosen": levels.last_chosen, "choices_untaken": levels.unanswered}
             match stop.end:
                 case Failed() as failed:
                     raised = failed.raised()

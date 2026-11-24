@@ -11,14 +11,14 @@ the same change.
 import json
 from dataclasses import dataclass
 from importlib import resources
-from typing import Protocol, TypeVar, TypedDict, cast, get_args
+from typing import Protocol, TypedDict, cast, get_args
 
 from aiohttp import web
 
 from hands.clock import Clock
 from hands.core.place import Modality
 from hands.sessions.audit import Record
-from hands.sessions.payload import Rejected
+from hands.sessions.payload import Rejected, one_of
 from hands.sessions.wide import annotate, fail
 from hands.voice.listening import LEVELS, Level, Listening, parse_level
 from hands.voice.keyed import keyed
@@ -32,7 +32,6 @@ from hands.voice.wakeword import Word
 # [LAW:one-source-of-truth] the modalities are the ones Modality names; the page offers and accepts exactly those.
 MODALITIES: tuple[Modality, ...] = get_args(Modality)
 
-T = TypeVar("T", bound=str)
 
 
 class Voicing(Protocol):
@@ -113,15 +112,7 @@ def parse_line(body: bytes, field: str) -> str:
 
 
 def parse_modality(text: str) -> Modality:
-    return _one_of(text, MODALITIES, "hands takes you as")
-
-
-def _one_of(text: str, names: tuple[T, ...], offered: str) -> T:
-    """The one name in `names` that `text` is, or a refusal naming what is offered."""
-    for name in names:
-        if text == name:
-            return name
-    raise Rejected(f"{offered} {', '.join(names)}, not {text!r}")
+    return one_of(text, MODALITIES, "hands takes you as")
 
 
 def _refusal(error: Exception) -> web.Response:

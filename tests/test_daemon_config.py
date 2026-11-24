@@ -1,5 +1,6 @@
 """The process boundary: the settings file, parsed once, and the secret each backend it names reaches its model with."""
 
+import argparse
 import asyncio
 import json
 import os
@@ -23,7 +24,8 @@ from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, preflight, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.restart import RESTART_SIGNAL
-from hands.daemon.starting import CannotStart, Ended, QuitKey, Signalled, Start, Stop, Failing, start
+from hands.daemon.starting import CannotStart, Ended, Handover, QuitKey, Signalled, Start, Stop, Failing, start
+from hands.voice.desk import Desk, Loaded, Resting
 from hands.voice.listening import Level, Levels
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat
@@ -278,11 +280,11 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
 
     def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, levels: Levels) -> cli.Run:
         loaded_on.append(settings.model)
-        started.append((levels.level, levels.carried))
+        started.append((levels.level, levels.last_chosen))
 
         async def restarted(stop: Stop) -> Ended:
             for level in stepped.pop(0):
-                levels.stepped(level)
+                levels.stepped(Desk(Resting(level), models=Loaded()))
             stop.tell(Signalled(RESTART_SIGNAL))
             return Ended(None, 0)
 
@@ -316,9 +318,10 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     assert second.value.args[0][-3 - len(carried):] == again
     assert (loaded_on, started) == ([loads, loads], [("off", "off"), ("off", "engaged")])
     lines = list(map(json.loads, audit.tail(home.audit, 100)[0]))
-    # Each start says the level its desk starts at, and each run the level its desk was at and whether it got there.
-    assert [line["facts"]["listening_level"] for line in lines if line.get("event") == "hands.start"] == ["off", "engaged"]
-    assert [(line["facts"]["listening_level"], line["facts"]["level_reached"]) for line in lines if line.get("event") == "hands.run"] == [("engaged", True), ("engaged", False)]
+    # Each start says the --level it was given and the level its desk starts at, and each run the level its desk listened
+    # at and the one last chosen.
+    assert [(line["facts"]["level_flag"], line["facts"]["listening_level"]) for line in lines if line.get("event") == "hands.start"] == [(None, "off"), ("engaged", "engaged")]
+    assert [(line["facts"]["listening_level"], line["facts"]["level_chosen"]) for line in lines if line.get("event") == "hands.run"] == [("engaged", "engaged"), ("off", "engaged")]
 
 
 def test_a_level_given_to_a_start_that_is_no_restart_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -327,6 +330,13 @@ def test_a_level_given_to_a_start_that_is_no_restart_is_refused_as_the_command_l
             cli.main(["--home", str(tmp_path), "run", *given])
         assert exited.value.code == 2
         assert refused in capsys.readouterr().err
+
+
+def test_a_restart_that_names_no_level_comes_back_at_off_as_one_exec_d_by_a_hands_from_before_the_level_was_carried() -> None:
+    # The first restart onto this hands is exec'd by the one before it, which passed no --level: neither refused, which
+    # would leave hands down, nor taken for a level given, since its start says level_flag None.
+    assert cli.handed_over(argparse.ArgumentParser(), 42, None) == Handover(42, "off")
+    assert cli.handed_over(argparse.ArgumentParser(), None, None) is None
 
 
 async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks_it_and_one_to_anything_else_is(tmp_path: Path) -> None:

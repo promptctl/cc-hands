@@ -40,6 +40,8 @@ class Rig:
         self.clock = VirtualClock()
         # Told each time the driver makes a move or takes a buffer, so a test waits on what it did, not on time passing.
         self.changed = asyncio.Condition()
+        # Set as the driver begins to load the models held, and by a test to have them loaded.
+        self.loading, self.loaded = asyncio.Event(), asyncio.Event()
 
     async def _told(self) -> None:
         async with self.changed:
@@ -72,8 +74,22 @@ class Rig:
     async def on_level(self, leveled: Leveled) -> None:
         self.levels.append(leveled)
 
+    @asynccontextmanager
+    async def held(self) -> AsyncGenerator[tuple[Ears, Hears]]:
+        """The models, loaded once the test sets `loaded`."""
+        self.loading.set()
+        await self.loaded.wait()
+        yield self.ears, unwoken
+
     def start(self, ears: Ears | None = None) -> asyncio.Task[None]:
         return asyncio.create_task(drive(self.clock, self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), self.owner, self.on_move, self.on_level, self.events.append))
+
+    async def start_loading(self) -> asyncio.Task[None]:
+        """The driver, its models loading until the test sets `loaded`, once it has stepped the start's level."""
+        driving = asyncio.create_task(drive(self.clock, self.tapped, self.overheard, self.held, self.owner, self.on_move, self.on_level, self.events.append))
+        # The start's level is stepped before the driver first waits, and so before the models begin to load.
+        await self.loading.wait()
+        return driving
 
     async def tap(self) -> None:
         while not self.keys:
@@ -171,18 +187,35 @@ async def test_a_level_the_tool_chose_is_stepped_as_a_tap_is() -> None:
 
 
 @pytest.mark.parametrize(("level", "voice"), [("engaged", "engaged conversation"), ("wake word", "wake word")])
-async def test_a_restart_listens_at_the_level_it_carried_as_a_tap_to_it_would_from_its_first_step(level: Level, voice: Trigger) -> None:
+async def test_a_restart_listens_at_the_level_it_carried_as_a_tap_to_it_would_once_its_models_are_loaded(level: Level, voice: Trigger) -> None:
     rig = Rig(verdicts=[], level=level)
-    # Until the driver steps it, nothing listens, and the level a restart would carry is still the one this run started at.
-    assert (rig.owner.level, rig.owner.carried, rig.owner.reached) == ("off", level, False)
-    driving = rig.start()
-    # Stepped before anything heard or chosen after it: the gate is told the desk listens, and the change is said, as for
-    # a tap or the tool's choice.
-    assert await rig.choose(level) == level
+    driving = await rig.start_loading()
+    # While the models load nothing hears the room: the desk listens at off, holding the level the restart carried, which
+    # a restart now would carry on, and makes nothing of it, no listen move and no cue.
+    assert (rig.made_by, rig.levels) == ([], [])
+    assert (rig.owner.level, rig.owner.last_chosen) == ("off", level)
+    rig.loaded.set()
+    # Loaded, the gate is told the desk listens, and the change is said, as for a tap or the tool's choice.
+    await rig.until(lambda: bool(rig.made))
     await stopped(driving)
     assert rig.made_by == [Made("listen", voice)]
     assert [(leveled.was, leveled.now, leveled.by) for leveled in rig.levels] == [("off", level, "start")]
-    assert (rig.owner.level, rig.owner.carried, rig.owner.reached) == (level, level, True)
+    assert (rig.owner.level, rig.owner.last_chosen) == (level, level)
+
+
+async def test_a_triple_tap_while_the_models_load_toggles_the_level_chosen_not_the_off_the_desk_listens_at() -> None:
+    rig = Rig(verdicts=[], level="engaged")
+    driving = await rig.start_loading()
+    # Right Shift's triple tap from engaged, the level the restart carried: off, though the desk has listened at nothing.
+    await rig.tap()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert (rig.owner.level, rig.owner.last_chosen) == ("off", "off")
+    rig.loaded.set()
+    # Loaded at off, as chosen: nothing to listen for, and no change to say.
+    assert await rig.choose("off") == "off"
+    await stopped(driving)
+    assert (rig.made, rig.levels) == ([*TAPPED, "disarm"], [])
 
 
 async def test_a_start_at_off_moves_nothing_and_says_no_change() -> None:
@@ -191,7 +224,7 @@ async def test_a_start_at_off_moves_nothing_and_says_no_change() -> None:
     assert await rig.choose("off") == "off"
     await stopped(driving)
     assert (rig.made_by, rig.levels) == ([], [])
-    assert (rig.owner.level, rig.owner.reached) == ("off", True)
+    assert (rig.owner.level, rig.owner.last_chosen) == ("off", "off")
 
 
 async def test_a_level_a_page_chose_is_said_to_be_the_pages() -> None:
@@ -218,26 +251,26 @@ async def test_a_drive_cancelled_while_a_move_is_handed_on_leaves_the_owner_at_t
     # A restart lands here, cancelling the drive inside the move: the level the desk moved to is the one it carries.
     await stopped(driving)
     assert rig.levels == []
-    assert rig.owner.carried == "engaged"
+    assert (rig.owner.level, rig.owner.last_chosen) == ("engaged", "engaged")
 
 
-async def test_the_key_talks_and_a_choice_is_stepped_while_the_models_load() -> None:
+async def test_the_key_talks_while_the_models_load_and_a_level_chosen_then_is_listened_at_once_they_are() -> None:
     rig = Rig(verdicts=[])
-
-    @asynccontextmanager
-    async def loading() -> AsyncGenerator[tuple[Ears, Hears]]:
-        await asyncio.Event().wait()
-        yield rig.ears, unwoken
-
-    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, loading, rig.owner, rig.on_move, rig.on_level, rig.events.append))
+    driving = await rig.start_loading()
     while not rig.keys:
         await asyncio.sleep(0)
     for event in (Pressed(1.0), Ripe(1.0), Released()):
         rig.keys[0](event)
     await rig.settle(3)
+    # Chosen while nothing hears the room: the desk listens at off, and its listen move and cue wait for the models.
     assert await rig.choose("engaged") == "off"
+    assert (rig.owner.level, rig.owner.last_chosen) == ("off", "engaged")
+    assert rig.made_by == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
+    rig.loaded.set()
+    await rig.settle(4)
     await stopped(driving)
-    assert rig.made_by == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut"), Made("listen", "engaged conversation")]
+    assert rig.made_by[3:] == [Made("listen", "engaged conversation")]
+    assert [(leveled.was, leveled.now, leveled.by) for leveled in rig.levels] == [("off", "engaged", "tool")]
 
 
 async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:

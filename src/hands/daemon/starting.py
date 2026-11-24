@@ -20,6 +20,7 @@ from hands.sessions.home import Home
 from hands.sessions import wide
 from hands.sessions.wide import Fact, WideEvent, begun
 from hands import footprint
+from hands.voice.listening import Level
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -31,6 +32,25 @@ STOP_SIGNALS: dict[signal.Signals, Ending] = {**{number: "quit" for number in QU
 # What the last heartbeat of a run says its pipeline is, by how the run ended: a restart is the next run starting, so
 # the indicator never reads the moment between the two as hands having stopped, and posts nothing.
 LAST_BEAT: dict[Ending, heartbeat.PipelineState] = {"quit": "stopped", "restart": "starting"}
+
+
+@dataclass(frozen=True)
+class Handover:
+    """What a run that restarts hands the next across the exec: the menu-bar indicator it showed, which the next ends for
+    one of its own, and the level its desk was at, which the next one's starts at."""
+
+    indicator: int
+    level: Level
+
+    def arguments(self) -> tuple[str, ...]:
+        """The handover as `hands run` reads it back, each one argument (`hands.daemon.cli`)."""
+        return ("--restarted", str(self.indicator), f"--level={self.level}")
+
+
+def starts_at(handover: Handover | None) -> Level:
+    """[LAW:one-source-of-truth] the level a run's desk starts at: off on a start that is no restart, and on a restart the
+    level its handover names."""
+    return "off" if handover is None else handover.level
 
 
 class CannotStart(Exception):

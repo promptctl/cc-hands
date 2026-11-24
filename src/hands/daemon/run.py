@@ -267,8 +267,8 @@ async def run(
     """[LAW:effects-at-boundaries] `clock` is the one clock every part of the run reads time, ids, and randomness from.
 
     [LAW:one-source-of-truth] `levels` is the one owner of the level the desk listens at, made before the run so a restart
-    reads it whatever the run reached: the desk's driver steps the level it starts at and every one after, from a triple
-    tap, set_listening_level's choice, or a page's, and the tools and the pages read it.
+    reads the level last chosen whatever the run reached: the desk's driver steps the level it starts at and every one
+    after, from a triple tap, set_listening_level's choice, or a page's, and the tools and the pages read it.
     """
     voice: Voice | None = None
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run

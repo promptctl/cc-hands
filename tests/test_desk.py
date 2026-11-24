@@ -5,16 +5,18 @@ from collections.abc import Sequence
 import pytest
 
 from hands.voice.cues import level_cue
-from hands.voice.desk import Act, Chosen, Desk, Event, Leveled, Made, Woken, step
+from hands.voice.desk import Act, Chosen, Desk, Event, Leveled, Loaded, Made, ModelsLoaded, Woken, step
 from hands.voice.listening import Level
 from hands.voice.shortcut import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
 from hands.voice.voiceturn import ASK_SECONDS, Judging, NothingAsked, Speaking, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, TurnId, Waiting, deadlines
 
 
 T1, T2 = TurnId(1), TurnId(2)
+# The desk once the models it hears with are loaded, as every test but the load's starts.
+LOADED = Desk(models=Loaded())
 
 
-def run(events: Sequence[Event], desk: Desk = Desk()) -> tuple[Desk, list[Act]]:
+def run(events: Sequence[Event], desk: Desk = LOADED) -> tuple[Desk, list[Act]]:
     made: list[Act] = []
     for event in events:
         desk, acts = step(desk, event)
@@ -44,7 +46,26 @@ def moves(acts: list[Act]) -> list[Act]:
 
 def test_the_desk_starts_off_and_deaf_and_the_held_key_talks() -> None:
     assert Desk().level == "off"
-    assert run(held(1.0))[1] == KEY_TURN
+    assert run(held(1.0), Desk())[1] == KEY_TURN
+
+
+def test_a_level_chosen_while_the_models_load_is_listened_at_once_they_are_and_not_before() -> None:
+    loading, made = run([Chosen("engaged", "start"), *held(1.0)], Desk())
+    # Nothing hears the room yet: the desk listens at off, holding the level chosen, and only the key moves the gate.
+    assert (loading.level, loading.chosen, made) == ("off", "engaged", KEY_TURN)
+    loaded, made = run([ModelsLoaded()], loading)
+    assert (loaded.level, made) == ("engaged", [Made("listen", "engaged conversation"), Leveled("off", "engaged", "start")])
+    # Loaded once is loaded: told again, the desk does nothing.
+    assert run([ModelsLoaded()], loaded) == (loaded, [])
+
+
+def test_the_last_level_chosen_while_the_models_load_is_the_one_listened_at_and_said_by_its_chooser() -> None:
+    # Right Shift's triple tap from the engaged the start chose is off, and the tool then chose the wake word.
+    loading, made = run([Chosen("engaged", "start"), *taps(1.0), Chosen("wake word", "tool")], Desk())
+    assert (loading.level, loading.chosen, made) == ("off", "wake word", [*TAP_SHIFT, Made("disarm", "shortcut")])
+    assert run([ModelsLoaded()], loading)[1] == [Made("listen", "wake word"), Leveled("off", "wake word", "tool")]
+    # Loaded at off, as chosen, there is nothing to listen for and no change to say.
+    assert run([Chosen("engaged", "start"), *taps(1.0), ModelsLoaded()], Desk())[1] == [*TAP_SHIFT, Made("disarm", "shortcut")]
 
 
 @pytest.mark.parametrize("level", ["off", "wake word", "engaged"])
