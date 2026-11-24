@@ -203,12 +203,17 @@ func (i *Interception) Trust(variable TrustVariable, client func(name string) st
 
 // alsoTrusted is what the file `named` holds: the certificates a client trusts besides its
 // own before it is given another file in its place. Nothing where it is named none; an
-// error where the file cannot be read.
+// error, and nothing, where the file cannot be read: a read that fails part way has read a
+// certificate cut short, which the client is not given.
 func alsoTrusted(named string) ([]byte, error) {
 	if named == "" {
 		return nil, nil
 	}
-	return os.ReadFile(named)
+	held, err := os.ReadFile(named)
+	if err != nil {
+		return nil, err
+	}
+	return held, nil
 }
 
 // The variables HTTP clients read their proxy from, each spelling.
