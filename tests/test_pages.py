@@ -207,6 +207,7 @@ async def test_a_fault_in_a_pages_own_code_is_caught_by_the_check(chrome: Browse
     assert any("uncaught" in fault and "a fault of the page" in fault for fault in faults)
 
 
+@pytest.mark.quarantined("promptctl-phone-app-9d9y.yrr", until="2026-11-29")
 async def test_connect_calls_hands_and_the_page_says_it_is_on_the_call(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
     await page.get_by_role("button", name="Connect").click()
