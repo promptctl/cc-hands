@@ -2,7 +2,6 @@
 an edit or a model chosen by voice, starting no Claude Code."""
 
 import json
-import os
 import platform
 from collections.abc import Callable
 from pathlib import Path
@@ -10,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from conftest import children_on, laid_out, new_sessions
+from conftest import children_on, laid_out, new_sessions, shell_without_hands_settings
 from fixtures import pins
 from fixtures.pins import LAID_OUT
 from hands.brain import process
@@ -380,7 +379,7 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
     run_start.ended(events.append, refused.value)
     assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code", "hands_settings")} for event in events] == [preflight(home, LAID_OUT, {}).facts()]
     # The survey.
-    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, os.environ):
+    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, shell_without_hands_settings()):
         case readiness.Missing(detail=detail):
             assert [said for said in each if said not in detail] == []
         case found:

@@ -171,7 +171,8 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
         return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(preflight(home, pin, environment), error))}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse is said here in its words, every
     # refusal at once, and the login beside them wherever the brain's own config directory runs one.
-    match preflight(home, pin, environment).verdict:
+    checked = preflight(home, pin, environment)
+    match checked.verdict:
         case Startable(brain=brain):
             refusals: tuple[str, ...] = ()
         case Refused(refusals=refusals, brain=brain):
@@ -179,7 +180,7 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
     if brain is None:
         # The run that asks would load what the brain's own settings keep out.
         return unstartable("; ".join(refusals))
-    match _reached(children, config.llm, home, environment, brain):
+    match _reached(children, config.llm, home, checked.environment, brain):
         case reached if not refusals:
             return reached
         case Missing(fix=fix):

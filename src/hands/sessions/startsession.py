@@ -19,7 +19,7 @@ from hands.core.tmux import Unanswered
 from hands.sessions import audit, wide
 from hands.sessions import child
 from hands.sessions.child import Children
-from hands.sessions.home import Home
+from hands.sessions.home import HOME_VARIABLE, Home
 from hands.sessions.terminals import Process, process_table
 from hands.sessions.tmux import TmuxExit, ran_at, shown
 from hands.sessions.untap import untap_script, untapped
@@ -121,7 +121,7 @@ async def start(home: Home, children: Children, record: audit.Record, folder: Pa
         # their own. hands' own `claude`, its shim, whatever comes first on the window's PATH: the session runs under
         # fritter, so hands can type into it.
         claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", "--settings", SETTINGS, *(() if model is None else (f"--model={model}",))]
-        made, window = await _opened(children, tmux, terminal, name, where, ("-e", f"HANDS_HOME={home.root}", "--", *claude))
+        made, window = await _opened(children, tmux, terminal, name, where, ("-e", f"{HOME_VARIABLE}={home.root}", "--", *claude))
         wide.annotate(tmux_session=name, made_tmux_session=made, pane=window.pane, tmux_socket=window.socket)
         member = await _joined(children, members, where, tmux, terminal, window)
         wide.annotate(session=member.id, under_fritter=member.fritter is not None)

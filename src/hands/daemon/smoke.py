@@ -42,7 +42,7 @@ from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
 from hands.sessions import child
 from hands.sessions.child import Children, NeverStarted
-from hands.sessions.home import Home
+from hands.sessions.home import HOME_VARIABLE, Home
 from hands.sessions.liveness import live
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
@@ -351,7 +351,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     # The claude on PATH, the shim or not, is started as hands starts every claude: its auto-updater off.
-    match await on_terminal(smoked.children, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)}):
+    match await on_terminal(smoked.children, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, HOME_VARIABLE: str(home.root)}):
         case ClaudeCode() as session:
             pass
         case NeverStarted(error=error):

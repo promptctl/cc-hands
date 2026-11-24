@@ -9,7 +9,7 @@ start is the brain's own API answers' to say (promptctl-phone-app-9d9y.h4s).
 """
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from hands.brain import configdir, pinned
@@ -53,12 +53,15 @@ class Preflight:
     fritter: FritterState
     shim: ShimState
     claude_code: str
-    environment: Mapping[str, str]
+    # The `HANDS_*` settings the environment held when it was weighed, which refuse the start.
+    stray: tuple[str, ...]
+    # Holds the process's secrets: left out of the repr and the comparison, as the brain's launch leaves its keys.
+    environment: Mapping[str, str] = field(repr=False, compare=False)
     verdict: Startable | Refused
 
     def facts(self) -> dict[str, str]:
         """What the start's event records of them: the settings it refused are named, and none is said as none."""
-        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim), "claude_code": self.claude_code, "hands_settings": ", ".join(_stray(self.environment)) or "none"}
+        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim), "claude_code": self.claude_code, "hands_settings": ", ".join(self.stray) or "none"}
 
 
 def _fact(state: FritterState | ShimState) -> str:
@@ -71,13 +74,14 @@ def _fact(state: FritterState | ShimState) -> str:
 
 def preflight(home: Home, pin: pinned.Pin, environment: Mapping[str, str]) -> Preflight:
     """Every refusal a start whose brain runs `pin` would make on `home`'s files and in `environment`, the one the run was
-    started in and a restart runs in. Hashes a pinned claude this process has not hashed since it changed, about 230 MB, so it is called off
-    the loop."""
+    started in and a restart runs in. Hashes a pinned claude this process has not hashed since it changed, about 230 MB,
+    so it is called off the loop."""
     config = configdir.read(home.brain, pin)
     fritter = _fritter(home)
     shim = _shim(home)
     brain = configdir.runnable(config)
     voice = _voice(home)
+    stray = _stray(environment)
     # [LAW:dataflow-not-control-flow] every file and the environment are weighed every time: one refused hides none after it.
     refusals = (
         # First: `hands install-fritter`, the fix of the two after it, cannot run until hands is rebuilt.
@@ -87,13 +91,13 @@ def preflight(home: Home, pin: pinned.Pin, environment: Mapping[str, str]) -> Pr
         *(() if isinstance(brain, Runnable) else brain),
         *configdir.first_screens(config),
         *((voice.reason,) if isinstance(voice, Unread) else ()),
-        *_environment_refusals(home, environment),
+        *_environment_refusals(home, stray),
     )
     match brain, voice:
         case Runnable(), (str() | voicechoice.LibraryVoice()) as kept if not refusals:
-            return Preflight(fritter, shim, pin.version, environment, Startable(brain, kept))
+            return Preflight(fritter, shim, pin.version, stray, environment, Startable(brain, kept))
         case _:
-            return Preflight(fritter, shim, pin.version, environment, Refused(refusals, brain if isinstance(brain, Runnable) else None))
+            return Preflight(fritter, shim, pin.version, stray, environment, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
 def beside(checked: Preflight, unread: Rejected) -> tuple[str, ...]:
@@ -108,7 +112,7 @@ def beside(checked: Preflight, unread: Rejected) -> tuple[str, ...]:
 
 def start_refusal(refusals: Iterable[str]) -> str:
     """The start's refusals as one sentence, said once after them all: the fix of each is made before hands is run again."""
-    # [LAW:single-enforcer] the one place a refused start's sentence ends, whichever step of the start refused it.
+    # [LAW:single-enforcer] the one place the preflight's refusals end, whichever step of the start says them.
     return "; ".join((*refusals, "then run hands again"))
 
 
@@ -117,11 +121,11 @@ def _stray(environment: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(sorted(name for name in environment if name.startswith("HANDS_") and name != HOME_VARIABLE))
 
 
-def _environment_refusals(home: Home, environment: Mapping[str, str]) -> tuple[str, ...]:
+def _environment_refusals(home: Home, stray: tuple[str, ...]) -> tuple[str, ...]:
     # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
     # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own that is read.
-    if stray := ", ".join(_stray(environment)):
-        return (f"{stray} set, and hands reads no setting from the environment: unset {stray}, and put the setting in {home.config}",)
+    if names := ", ".join(stray):
+        return (f"{names} set, and hands reads no setting from the environment: unset {names}, and put the setting in {home.config}",)
     return ()
 
 

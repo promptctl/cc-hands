@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin
+from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
 from fixtures.pins import LAID_OUT
 from hands.brain import pinned, process
 from hands.core.session import PinnedClaude, Runnable
@@ -64,7 +64,7 @@ def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: P
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, os.environ)).voice.personality == "Dry and wry."
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, shell_without_hands_settings())).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -95,7 +95,7 @@ def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, os.environ)).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, shell_without_hands_settings())).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
 
 
 @pytest.mark.parametrize(
@@ -172,7 +172,7 @@ def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, os.environ))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, shell_without_hands_settings()))
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
@@ -279,7 +279,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
-    def loaded(clock: Clock, home: Home, pin: pinned.Pin, _environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
         loaded_on.append(settings.model)
         started.append((listening.level, driving.last_chosen))
 
@@ -517,12 +517,13 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
         return Account("claude.ai", "brain@example.com")
 
     monkeypatch.setattr(process, "logged_in", logged_in)
+    # Exported in the process, so the refusal is of what `main` hands down to the run, not of an environment the test makes up.
+    monkeypatch.setenv("HANDS_LLM", "claude")
 
-    def loaded(clock: Clock, home: Home, pin: pinned.Pin, _environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:
-            environment = {"HANDS_LLM": "claude"}
             configure = partial(run.configured_from, children_on(clock), home, settings)
             await start(lambda: run.configured(configure, lambda _: None, home, pin, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
@@ -624,7 +625,7 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     """
     from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 
-    logged_in = os.environ
+    logged_in = shell_without_hands_settings()
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
