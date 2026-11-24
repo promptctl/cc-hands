@@ -108,7 +108,8 @@ def build_voice(
     # the streaming pair starts its load on a thread of its own, so neither load's growth is the other's.
     with loads.loading(clock, "tts.loaded", record):
         annotate(voice=str(config.voice))
-        tts = voices.hands_tts(clock, config.voice)  # the one place every utterance is filtered (`hands_tts`)
+        # [LAW:single-enforcer] the service's own filter is the one every utterance meets (`voices.hands_tts`).
+        tts = voices.hands_tts(clock, config.voice)
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())

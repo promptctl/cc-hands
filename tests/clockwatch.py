@@ -105,6 +105,7 @@ UNMOVED = frozenset({
     "test_recorded_turns.py",
     "test_recorder.py",
     "test_refocus.py",
+    "test_render.py",
     "test_restart.py",
     "test_sentences.py",
     "test_session_contract_pinned.py",

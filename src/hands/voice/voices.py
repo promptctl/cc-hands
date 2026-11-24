@@ -8,7 +8,7 @@ to have failed. A file edited by hand changes only the first, until the next sta
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from typing import Any, Protocol, cast
 
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
@@ -38,6 +38,9 @@ LANGUAGE = Language.EN
 
 # Whatever a voice needs before it can be spoken in, made ready, or the reason it cannot be.
 Fetch = Callable[[Chosen], None]
+
+# Where a frame enters the pipeline ahead of the TTS service.
+Push = Callable[[Frame], Awaitable[None]]
 
 
 def source(voice: Chosen) -> str:
@@ -79,6 +82,18 @@ def fetched(voice: Chosen) -> None:
                 raise Rejected(f"Kyutai's voice library has no voice called {path!r}; hands also speaks in {', '.join(VOICES)}") from error
         case _:
             download_if_necessary(get_predefined_voice(language=language_to_pocket_tts_language(LANGUAGE), name=voice))
+
+
+async def speak_in(push: Push, voice: Chosen) -> None:
+    """From the next thing said on, the speaker is in `voice`: a frame in order with the speech around it."""
+    await push(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=source(voice))))
+
+
+async def say(push: Push, voice: Chosen, text: str) -> None:
+    """`voice` says `text`: a change of voice, then the line, in order. [LAW:single-enforcer] the one way a voice is made to
+    say a line, whether it is heard by the user (`Voices`) or rendered to be recorded (`hands.voice.render`)."""
+    await speak_in(push, voice)
+    await push(line_frame(hands_says(text), append_to_context=False))
 
 
 def sample(voice: Chosen) -> str:
@@ -159,11 +174,10 @@ class Voices:
             await asyncio.gather(*(asyncio.to_thread(self._fetch, voice) for voice, _ in lines))
             try:
                 for voice, line in lines:
-                    await self._speak_in(voice)
-                    await self._lines.push_frame(line_frame(hands_says(line), append_to_context=False))
+                    await say(self._lines.push_frame, voice, line)
             finally:
                 # A hearing cancelled or failed partway still hands the speaker back the voice it speaks in.
-                await self._speak_in(now)
+                await speak_in(self._lines.push_frame, now)
             return now
 
     async def use(self, voice: Chosen) -> None:
@@ -173,11 +187,8 @@ class Voices:
         async with self._changing:
             await asyncio.to_thread(self._fetch, voice)
             await asyncio.to_thread(keep, self._home, voice)
-            await self._speak_in(voice)
+            await speak_in(self._lines.push_frame, voice)
             self._speaking = voice
-
-    async def _speak_in(self, voice: Chosen) -> None:
-        await self._lines.push_frame(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=source(voice))))
 
 
 class SaidInTTS(PocketTTSService):
@@ -250,12 +261,12 @@ class SaidInTTS(PocketTTSService):
 
 
 def hands_tts(clock: Clock, voice: Chosen) -> SaidInTTS:
-    """hands' TTS service in `voice`, as the pipeline speaks with it and as the script that records takes of hands' speech
-    makes them: one construction, so a take is made on the path hands speaks on.
+    """hands' TTS service in `voice`: built here for the pipeline and for `hands.voice.render`, so what is rendered to be recorded
+    is made by the service hands speaks with.
 
-    [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a TTS service's
-    filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's own reply alike, so this is the
-    one place all of them meet before they are heard. It also decides the reply the audit log records, which is built from
-    what a filter returned: what the user heard, never what was sent to the speaker. See voice/spoken.py, which also
-    records what it costs."""
+    [LAW:single-enforcer] every utterance is filtered by the service built here, whichever of them sent it: Pipecat applies a
+    TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's own reply alike, so
+    this is the one place all of them meet before they are heard. It also decides the reply the audit log records, which is
+    built from what a filter returned: what the user heard, never what was sent to the speaker. See voice/spoken.py, which
+    also records what it costs."""
     return SaidInTTS(clock, settings=SaidInTTS.Settings(voice=source(voice), language=LANGUAGE), text_filters=[SpokenForm()])

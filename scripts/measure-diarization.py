@@ -59,7 +59,8 @@ def one_person(directory: Path) -> None:
         said = spoken(run, audio[start:end])
         words.update(said)
         wordless += not said
-    first, *others = [speaker for speaker, _ in words.most_common()] or [None]
+    ranked = [speaker for speaker, _ in words.most_common()]
+    first, others = (ranked[0] if ranked else None), ranked[1:]
     print(
         f"one person, {len(audio) / RATE / 60:.1f} min in {len(clips)} clips: words by speaker {dict(words.most_common())}; "
         f"{sum(words[other] for other in others)} words given to anyone but speaker {first}; {wordless} clips with no words"
