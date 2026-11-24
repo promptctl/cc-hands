@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from hands.clock import Clock
 from hands.sessions import heartbeat
 from hands.sessions.home import Home
+from hands.sessions.processes import Processes
 
 # [LAW:one-source-of-truth] the one signal both ends mean "restart" by: the daemon's handler and this sender.
 RESTART_SIGNAL = signal.SIGUSR1
@@ -55,24 +56,22 @@ class NotBack:
 Outcome = Restarted | NotRunning | NotBack
 
 
-def restart(home: Home, now: Callable[[], datetime], wait: Callable[[], None], within: timedelta = BACK_WITHIN) -> Outcome:
+def restart(processes: Processes, home: Home, now: Callable[[], datetime], wait: Callable[[], None], within: timedelta = BACK_WITHIN) -> Outcome:
     """Ask the daemon to restart and wait for the run it starts again to be running."""
     asked = now()
-    match heartbeat.look(home.status, asked):
+    match heartbeat.look(processes, home.status, asked):
         # [LAW:no-ambient-temporal-coupling] only a running pipeline is asked: by then the run has long since put in
         # its handler, which a run in its first moments has not, and the signal's default would end it.
         case heartbeat.Up(status=before) if before.pipeline == "running":
             pass
         case verdict:
             return NotRunning(verdict)
-    try:
-        os.kill(before.pid, RESTART_SIGNAL)
-    except ProcessLookupError:
+    if not processes.signal(before.pid, RESTART_SIGNAL):
         # It ended between the look and the ask: what its heartbeat says now is why it was not restarted.
-        return NotRunning(heartbeat.look(home.status, now()))
+        return NotRunning(heartbeat.look(processes, home.status, now()))
     while True:
         at = now()
-        match heartbeat.look(home.status, at):
+        match heartbeat.look(processes, home.status, at):
             # The new run's heartbeat is told from the old one's by when it started: the pid is the same.
             case heartbeat.Up(status=status) if status.started_at > before.started_at and status.pipeline == "running":
                 return Restarted(status, at - asked)

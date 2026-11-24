@@ -7,8 +7,8 @@ how they fall here.
 
 A test is in the unit layer when it passes with everything outside the process refused by the OS. `pytest --layer=unit`
 runs every test not marked `@pytest.mark.outside` inside a macOS sandbox (tests/offline.py, tests/unit.sb) that refuses a
-process start, a socket bound or connected (loopback and local ones too), and a read of the speech models' weights the
-run fetched. A test that depends on one fails with the OS's `PermissionError`, naming the path or the address, and says
+process start, a socket bound or connected (loopback and local ones too), a read of any other process, and a read of the
+speech models' weights the run fetched. A test that depends on one fails with the OS's `PermissionError`, naming the path or the address, and says
 what to do: mark it `outside`, or take the reach out. A fixture that does it fails every test that uses it.
 
 What code under test makes of a refusal is its own. `PermissionError` is an `OSError`, so a function that answers "absent"
@@ -44,6 +44,15 @@ a terminal of hands' own, with the mock of Anthropic's API as its model, in `mak
 A claim the pin stops keeping fails the second, and the fake is changed to match. tests/test_pinned_brain.py is the brain's one
 smoke test, the happy path through hands' proxy, and tests/test_session_contract_pinned.py pins the order of a /clear's and a
 /resume's end, start and first request that the brain follows. The rig the three pinned modules share is tests/pinnedbrain.py.
+
+## The Mac's processes
+
+hands reads and signals other processes only through `Processes` (hands.sessions.processes), whose one real adapter,
+hands.sessions.kernel's `KERNEL`, only a composition root imports (tests/test_processes_boundary.py). A test of what hands
+makes of the process table gives its code a fake table, tests/fakeprocesses.py. What hands relies on of the kernel is a
+contract, tests/processescontract.py, run against the fake in `make check` (test_processes_contract.py) and against the
+kernel, on children the test starts, `outside` (test_processes_contract_kernel.py). A claim the kernel stops keeping fails
+the second, and the fake is changed to match.
 
 ## The phone's pages
 

@@ -462,7 +462,9 @@ async def in_tmux(children: Children, station: Station, argv: Sequence[str], wor
     tmux = shutil.which("tmux", path=inherited.get("PATH"))
     if tmux is None:
         raise Unstartable("no tmux is on the PATH to run the brain in")
-    socket = socket_directory(inherited) / "default"
+    # [LAW:effects-at-boundaries] exception: the brain's terminal reads the user from the machine until it is reached
+    # through Terminals (promptctl-testing-c3u.fhu).
+    socket = socket_directory(inherited, os.getuid()) / "default"
     socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     session = brain_session(station.config_dir)
     # Two brains on one config directory would share one conversation: one left by a hands that ended while a person

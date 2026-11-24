@@ -7,13 +7,14 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from conftest import unedited
+from fakeprocesses import FakeProcesses, Running, processes
 from hands.clock import SYSTEM
 from hands.daemon import indicator
 from hands.sessions import audit, heartbeat
@@ -246,15 +247,23 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.outside
-def test_looking_at_the_heartbeat_judges_it_against_the_process_table(dead_pid: Callable[[], int], tmp_path: Path) -> None:
+# A pid a process started long ago holds, and one no process holds.
+RUNNING, GONE = 4242, 4343
+
+
+def up() -> FakeProcesses:
+    """The Mac's processes, RUNNING among them."""
+    return processes(Running(RUNNING))
+
+
+def test_looking_at_the_heartbeat_judges_it_against_the_process_table(tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     now = datetime.now(UTC)
-    assert heartbeat.look(path, now) == heartbeat.NeverRan(path)
-    heartbeat.write(path, beat(pid=os.getpid(), started_at=now, written_at=now))
-    assert isinstance(heartbeat.look(path, now), heartbeat.Up)
-    heartbeat.write(path, beat(pid=dead_pid(), started_at=now, written_at=now))
-    assert isinstance(heartbeat.look(path, now), heartbeat.Down)
+    assert heartbeat.look(up(), path, now) == heartbeat.NeverRan(path)
+    heartbeat.write(path, beat(pid=RUNNING, started_at=now, written_at=now))
+    assert isinstance(heartbeat.look(up(), path, now), heartbeat.Up)
+    heartbeat.write(path, beat(pid=GONE, started_at=now, written_at=now))
+    assert isinstance(heartbeat.look(up(), path, now), heartbeat.Down)
 
 
 @pytest.mark.parametrize(
@@ -263,10 +272,10 @@ def test_looking_at_the_heartbeat_judges_it_against_the_process_table(dead_pid: 
 def test_a_heartbeat_that_cannot_be_read_is_its_own_verdict_and_never_raises(raw: bytes, tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     path.write_bytes(raw)
-    assert isinstance(heartbeat.look(path, NOW), heartbeat.Unreadable)
+    assert isinstance(heartbeat.look(up(), path, NOW), heartbeat.Unreadable)
     path.unlink()
     path.mkdir()  # a read that fails in the OS, not in the parse
-    assert isinstance(heartbeat.look(path, NOW), heartbeat.Unreadable)
+    assert isinstance(heartbeat.look(up(), path, NOW), heartbeat.Unreadable)
 
 
 def test_hands_status_exits_zero_only_when_the_daemon_is_up_and_its_event_fails_with_what_it_said(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -275,21 +284,21 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up_and_its_event_fails_
     def errors() -> list[str | None]:
         return [line.get("error") for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
 
-    assert main(["--home", str(tmp_path), "status"]) == 1
+    assert main(["--home", str(tmp_path), "status"], processes=up()) == 1
     said = capsys.readouterr().out
     assert "has not run" in said
     assert errors() == [f"exited 1: {said.rstrip()}"]
-    heartbeat.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC)))
-    assert main(["--home", str(tmp_path), "status"]) == 0
-    assert capsys.readouterr().out.startswith(f"hands is up: pid {os.getpid()}")
+    heartbeat.write(home.status, beat(pid=RUNNING, started_at=datetime.now(UTC), written_at=datetime.now(UTC)))
+    assert main(["--home", str(tmp_path), "status"], processes=up()) == 0
+    assert capsys.readouterr().out.startswith(f"hands is up: pid {RUNNING}")
     assert errors()[1:] == [None]
     home.status.write_text("{")
-    assert main(["--home", str(tmp_path), "status"]) == 2
+    assert main(["--home", str(tmp_path), "status"], processes=up()) == 2
     said = capsys.readouterr().err
     assert "cannot be read" in said
     assert errors()[2:] == [f"exited 2: {said.rstrip()}"]
     heartbeat.write(home.status, beat(pid=2**63))
-    assert main(["--home", str(tmp_path), "status"]) == 2
+    assert main(["--home", str(tmp_path), "status"], processes=up()) == 2
     assert "not a process id" in capsys.readouterr().err
 
 
@@ -297,28 +306,27 @@ def test_a_relative_hands_home_is_refused_but_never_stands_in_the_way_of_an_expl
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("HANDS_HOME", "relhome")
-    assert main(["--home", str(tmp_path), "status"]) == 1
+    assert main(["--home", str(tmp_path), "status"], processes=up()) == 1
     assert "has not run" in capsys.readouterr().out
-    assert main(["status"]) == 2
+    assert main(["status"], processes=up()) == 2
     assert "HANDS_HOME must be an absolute path, got 'relhome'" in capsys.readouterr().err
 
 
-@pytest.mark.outside
-def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then(dead_pid: Callable[[], int]) -> None:
+def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then() -> None:
     now = datetime.now(UTC)
-    assert heartbeat.running(beat(pid=os.getpid(), started_at=now))
-    assert heartbeat.running(beat(pid=1, started_at=now))  # launchd, root's: seen, and it started before now
-    assert not heartbeat.running(beat(pid=dead_pid(), started_at=now))
-    # This process holds the pid, but it started long after the heartbeat's daemon did: the number was reused.
-    assert not heartbeat.running(beat(pid=os.getpid(), started_at=now - timedelta(days=3)))
+    table = processes(Running(RUNNING, start=(now - timedelta(days=1)).timestamp()))
+    assert heartbeat.running(table, beat(pid=RUNNING, started_at=now))
+    assert not heartbeat.running(table, beat(pid=GONE, started_at=now))
+    # A process holds the pid, but it started long after the heartbeat's daemon did: the number was reused.
+    assert not heartbeat.running(table, beat(pid=RUNNING, started_at=now - timedelta(days=3)))
 
 
 def test_a_heartbeat_whose_pid_went_to_a_later_process_reads_as_down(tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     now = datetime.now(UTC)
     # After a reboot: the old heartbeat, still on disk, names a pid some new process now holds.
-    heartbeat.write(path, beat(pid=os.getpid(), started_at=now - timedelta(days=3), written_at=now - timedelta(days=3)))
-    assert isinstance(heartbeat.look(path, now), heartbeat.Down)
+    heartbeat.write(path, beat(pid=RUNNING, started_at=now - timedelta(days=3), written_at=now - timedelta(days=3)))
+    assert isinstance(heartbeat.look(processes(Running(RUNNING, start=now.timestamp())), path, now), heartbeat.Down)
 
 
 async def test_the_heartbeat_is_rewritten_every_period() -> None:
@@ -414,10 +422,10 @@ def test_the_tmux_segment_shows_a_turn_and_a_degradation_as_the_menu_bar_does_an
 
 def test_hands_tmux_status_prints_the_segment_and_exits_zero_whatever_the_verdict(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
-    assert main(["--home", str(tmp_path), "tmux-status"]) == 0
+    assert main(["--home", str(tmp_path), "tmux-status"], processes=up()) == 0
     assert capsys.readouterr().out == "#[fg=colour244]✋ off#[default]\n"
     home.status.write_text("{")
-    assert main(["--home", str(tmp_path), "tmux-status"]) == 0
+    assert main(["--home", str(tmp_path), "tmux-status"], processes=up()) == 0
     assert capsys.readouterr().out == "#[fg=red,bold]⚠︎ hands unreadable#[default]\n"
 
 

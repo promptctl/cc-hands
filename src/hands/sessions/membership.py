@@ -14,7 +14,7 @@ from pathlib import Path
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.processes import parse_pid, process_starts, still_running
+from hands.sessions.processes import Processes, parse_pid, still_running
 
 
 def write_membership(home: Home, membership: Membership) -> None:
@@ -74,16 +74,16 @@ def running(record: Recorded, started: Mapping[int, float]) -> bool:
     return still_running(record.membership.pid, record.written_at, started)
 
 
-def holder(home: Home, pid: int) -> Membership | None:
+def holder(processes: Processes, home: Home, pid: int) -> Membership | None:
     """The session the process holds, as its files say; None when no file written while it ran names it."""
-    return holders(*naming(home, pid)).get(pid)
+    return holders(*naming(processes, home, pid)).get(pid)
 
 
-def naming(home: Home, pid: int) -> tuple[list[Recorded], Mapping[int, float]]:
+def naming(processes: Processes, home: Home, pid: int) -> tuple[list[Recorded], Mapping[int, float]]:
     """The files naming the process, and when it started: all that says which session it holds."""
     # An unreadable file, which the daemon's sweep reports and removes, names no process.
     records, _ = recorded(home)
-    return [record for record in records if record.membership.pid == pid], process_starts({pid})
+    return [record for record in records if record.membership.pid == pid], processes.starts({pid})
 
 
 @dataclass(frozen=True)

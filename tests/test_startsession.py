@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakeprocesses import processes
 
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
@@ -17,7 +18,7 @@ from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
 from hands.sessions.membership import parse_membership
 from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends
-from hands.sessions.terminals import Process
+from hands.sessions.processes import Process
 from hands.voice.tool import Result
 from hands.voice.tools import start_session_tool
 
@@ -36,7 +37,7 @@ def members(home: Home) -> list[Membership]:
 
 def start(home: Home, folder: Path, model: str = "", environment: Mapping[str, str] = os.environ) -> dict[str, Any]:
     """The tool called as the model calls it, in the environment hands was started in."""
-    start_session = start_session_tool(SYSTEM, home, AuditLog(home.audit, clock=datetime.now).record, environment, lambda: members(home))
+    start_session = start_session_tool(SYSTEM, processes(), home, AuditLog(home.audit, clock=datetime.now).record, environment, lambda: members(home))
 
     async def called() -> Result:
         return await start_session.body(folder=str(folder), model=model)

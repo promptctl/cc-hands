@@ -12,6 +12,7 @@ import pytest
 from conftest import children_on, laid_out, new_sessions, shell_without_hands_settings
 from fixtures import pins
 from fixtures.pins import LAID_OUT
+from fakeprocesses import processes
 from hands.brain import process
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
@@ -156,7 +157,7 @@ async def test_the_start_records_what_its_preflight_found_before_its_configurati
         raise CannotStart("; ".join(cast(Refused, checked.verdict).refusals))
 
     with pytest.raises(CannotStart):
-        await run.configured(configure, lambda _: None, home, LAID_OUT, {}, new_sessions(clock=VirtualClock()), run_start)
+        await run.configured(configure, lambda _: None, processes(), home, LAID_OUT, {}, new_sessions(clock=VirtualClock()), run_start)
     events: list[WideEvent] = []
     run_start.ended(events.append, None)
     assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("unreadable", "not-a-shim")]

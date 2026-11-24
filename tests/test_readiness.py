@@ -1,27 +1,22 @@
 """`hands check`: each piece hands needs, found or named as missing, through the same edges a user's machine has."""
 
-import contextlib
-import ctypes
 import errno
-import fcntl
 import json
 import os
-import pty
 import shutil
 import socket
-import subprocess
 import tempfile
-import termios
 import sys
 from collections import Counter
-from collections.abc import Callable, Generator, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
 import pytest
 
-from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, stand_in, SYSTEM_PATH, Unstarting
+from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, SYSTEM_PATH, Unstarting
+from fakeprocesses import FakeProcesses, Running, processes
 from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
@@ -30,12 +25,12 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
 from hands.daemon.cli import VERBOSE_HINT, main
 from hands.daemon.readiness import Missing, Ready, Unknown
-from hands.sessions import audit, child, heartbeat, liveness, processes, terminals, wrapper
+from hands.sessions import audit, child, heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
-from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
+from hands.sessions.processes import TerminalProcess, TerminalProcesses, Undescribed, terminal_processes
 from hands.sessions.wrapper import shim_script
 from hands.core.session import PinnedClaude, Runnable
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -47,19 +42,6 @@ def root() -> Iterator[Path]:
     root = Path(tempfile.mkdtemp(prefix="ready-", dir="/tmp")).resolve()
     yield root
     shutil.rmtree(root)
-
-
-@pytest.fixture(autouse=True)
-def only_this_tests_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A check scans this machine's real processes, and any other at a terminal, a shell in another pane among them,
-    may be caught mid-exec while it does: only a refusal of a process a test started is the test's."""
-    scan = readiness.terminal_processes
-
-    def own() -> Terminals:
-        found = scan()
-        return Terminals(found.found, [each for each in found.unread if each.parent == os.getpid()])
-
-    monkeypatch.setattr(readiness, "terminal_processes", own)
 
 
 def claude_listing(root: Path, plugins: object) -> str:
@@ -261,45 +243,40 @@ def installed(root: Path) -> str:
     """A PATH whose real `claude` is a link into an install directory of versions, as Claude Code installs itself."""
     version = root / "install" / "9.9.9"
     if not version.exists():
-        version.parent.mkdir(parents=True)
-        stand_in(version)
+        native(version)
         (root / "bin").mkdir()
         (root / "bin" / "claude").symlink_to(version)
     return f"{root / 'bin'}:{SYSTEM_PATH}"
 
 
-@contextlib.contextmanager
-def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",), piped: bool = False, pass_fds: Sequence[int] = ()) -> Generator[int]:
-    """A process started as executable in cwd with a terminal of its own, as a session runs, its stdin a pipe if piped;
-    its pid, once it runs executable."""
-    controller, terminal = pty.openpty()
-    # Popen returns only once the child has exec'd, so the process is executable from the first look at it.
-    process = subprocess.Popen(
-        [executable, *arguments],
-        cwd=cwd,
-        # As a shell starts a program: with the directory it starts in as its PWD.
-        env={**os.environ, "PWD": str(cwd)},
-        pass_fds=pass_fds,
-        stdin=subprocess.PIPE if piped else terminal,
-        stdout=terminal,
-        stderr=terminal,
-        start_new_session=True,
-        preexec_fn=lambda: fcntl.ioctl(1, termios.TIOCSCTTY, 0),
-    )
-    try:
-        yield process.pid
-    finally:
-        process.kill()
-        process.wait()
-        if process.stdin is not None:
-            process.stdin.close()
-        os.close(controller)
-        os.close(terminal)
+def native(at: Path) -> Path:
+    """A file at `at` that is no script, as a native Claude Code's executable is not: nothing here runs it."""
+    executable(at, "\x7fELF")
+    return at
 
 
-@pytest.mark.outside
+# This user's Claude Code config, which every session here runs under, and the check with it.
+CLAUDE_CONFIG = "/Users/me/.claude"
+
+
+@pytest.fixture(autouse=True)
+def configured_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", CLAUDE_CONFIG)
+
+
+# The terminal each session here is started on.
+TTY = 0x10000003
+
+
+def at_a_terminal(pid: int, executable: Path, cwd: Path, arguments: tuple[str, ...] = (), piped: bool = False, start: float = 0.0) -> Running:
+    """A process started as executable in cwd on a terminal of its own, as a session runs, its stdin a pipe if piped, as
+    a shell starts a program: with the directory it starts in as its PWD."""
+    environment = {"CLAUDE_CONFIG_DIR": CLAUDE_CONFIG, "PWD": str(cwd)}
+    return Running(pid, tty=TTY, in_front=True, start=start, cwd=cwd, path=executable, arguments=arguments, environment=environment, interactive=not piped)
+
+
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    assert readiness.sessions(processes(), Home(root / "home"), installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 @pytest.mark.outside
@@ -308,44 +285,37 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
     listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listening.bind(str(root / "live.sock"))
     listening.listen()
-    # Running processes of their own, since one process holds one session.
-    sleepers = [subprocess.Popen(["sleep", "30"]) for _ in range(3)]
+    # One process each, since one process holds one session.
+    wrapped, bare, orphaned = 4001, 4002, 4003
+    table = processes(Running(wrapped), Running(bare), Running(orphaned))
     try:
-        joined(home, "wrapped", sleepers[0].pid, root / "live.sock")
-        joined(home, "unwrapped", sleepers[1].pid, None)
-        joined(home, "orphaned", sleepers[2].pid, root / "gone.sock")
-        found = readiness.sessions(home, installed(root), untmuxed)
+        joined(home, "wrapped", wrapped, root / "live.sock")
+        joined(home, "unwrapped", bare, None)
+        joined(home, "orphaned", orphaned, root / "gone.sock")
+        found = readiness.sessions(table, home, installed(root), untmuxed)
     finally:
         listening.close()
-        for sleeper in sleepers:
-            sleeper.kill()
-            sleeper.wait()
     assert isinstance(found, Missing)
     assert found.detail.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:")
     assert found.step == "2 sessions unreachable"
-    assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
-    assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter and runs in no tmux pane, so it cannot be typed into: restart it" in found.said
-    assert found.said.endswith(f"\n  these are typed into:\n    /code/wrapped (pid {sleepers[0].pid}) is typed into through its fritter")
+    assert f"/code/orphaned (pid {orphaned}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
+    assert f"/code/unwrapped (pid {bare}) was started outside fritter and runs in no tmux pane, so it cannot be typed into: restart it" in found.said
+    assert found.said.endswith(f"\n  these are typed into:\n    /code/wrapped (pid {wrapped}) is typed into through its fritter")
 
 
-@pytest.mark.outside
 def test_a_session_started_outside_fritter_in_front_of_its_tmux_pane_is_typed_into_through_it(root: Path) -> None:
     home = Home(root / "home")
-    sleeper = subprocess.Popen(["sleep", "30"])
+    bare = 4001
     asked: list[Sequence[int]] = []
 
     def in_front(pids: Sequence[int]) -> list[Keyboard]:
         asked.append(pids)
         return [PANE] * len(pids)
 
-    try:
-        joined(home, "unwrapped", sleeper.pid, None)
-        found = readiness.sessions(home, installed(root), in_front)
-    finally:
-        sleeper.kill()
-        sleeper.wait()
-    assert asked == [[sleeper.pid]]
-    assert found == Ready("1 running session reachable", f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/unwrapped (pid {sleeper.pid}) is typed into through its tmux pane %12")
+    joined(home, "unwrapped", bare, None)
+    found = readiness.sessions(processes(Running(bare)), home, installed(root), in_front)
+    assert asked == [[bare]]
+    assert found == Ready("1 running session reachable", f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/unwrapped (pid {bare}) is typed into through its tmux pane %12")
 
 
 def unwrapped(pane: Keyboard) -> readiness.Finding:
@@ -388,111 +358,57 @@ def test_a_session_whose_reach_is_unknown_is_not_said_among_those_hands_cannot_r
     )
 
 
-@pytest.mark.outside
 def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     home = Home(root / "home")
-    ended = subprocess.Popen(["true"])
-    ended.wait()
-    joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home, installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    joined(home, "ended", 4001, None)
+    assert readiness.sessions(processes(), home, installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
-@pytest.mark.outside
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
     home = Home(root / "home")
     home.memberships.mkdir(parents=True)
     bad = home.membership(SessionId("bad"))
     bad.write_text("{not json")
-    found = readiness.sessions(home, installed(root), untmuxed)
+    found = readiness.sessions(processes(), home, installed(root), untmuxed)
     assert isinstance(found, Missing) and f"{bad} names no session hands can read" in found.said
     assert bad.exists()
 
 
-@pytest.mark.outside
 def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
     project = root / "project"
     project.mkdir()
-    with at_a_terminal(root / "install" / "9.9.9", project) as pid:
-        found = readiness.sessions(home, path, untmuxed)
+    pid = 4001
+    found = readiness.sessions(processes(at_a_terminal(pid, root / "install" / "9.9.9", project)), home, path, untmuxed)
     assert isinstance(found, Missing) and f"{project} (pid {pid}) is a session hands has no record of" in found.said
 
 
-@pytest.mark.outside
 def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
-    printing = stand_in(root / "install" / "9.9.7")
-    with at_a_terminal(printing, root, ["-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
-        found = readiness.sessions(home, path, untmuxed)
+    table = processes(at_a_terminal(4001, root / "install" / "9.9.7", root, ("-p", "hello")), at_a_terminal(4002, root / "install" / "9.9.9", root, piped=True))
+    found = readiness.sessions(table, home, path, untmuxed)
     assert found == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
 
 
-@pytest.mark.outside
 def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     gone = root / "gone"
     gone.mkdir()
     monkeypatch.chdir(gone)
     gone.rmdir()
-    found = readiness.unrecorded(Home(root / "home"), installed(root), set())
+    found = readiness.unrecorded(processes(), Home(root / "home"), installed(root), set())
     assert isinstance(found, readiness.Unfindable) and found.said.startswith("cannot tell which Claude Code config this check runs under")
 
 
-@pytest.mark.outside
-def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_whether_it_reads_and_writes_it(root: Path) -> None:
-    with at_a_terminal(Path("/bin/sleep"), root) as reading, at_a_terminal(Path("/bin/sleep"), root, ["31"], piped=True) as piped:
-        found = {process.pid: process for process in terminal_processes().found}
-        said = {pid: (found[pid].arguments, interactive(found[pid])) for pid in (reading, piped)}
-    assert said == {reading: (("30",), True), piped: (("31",), False)}
-
-
-@pytest.mark.outside
-def test_a_process_reading_its_terminal_as_dev_tty_reads_its_terminal(root: Path) -> None:
-    controller, terminal = pty.openpty()
-
-    def reopened() -> None:
-        # As `xargs -o` and `< /dev/tty` give a run its stdin: the terminal, opened by the name each process has for its own.
-        fcntl.ioctl(1, termios.TIOCSCTTY, 0)
-        os.dup2(os.open("/dev/tty", os.O_RDWR), 0)
-
-    process = subprocess.Popen(["/bin/sleep", "30"], cwd=root, stdin=subprocess.DEVNULL, stdout=terminal, stderr=terminal, start_new_session=True, preexec_fn=reopened)
-    try:
-        found = next(found for found in terminal_processes().found if found.pid == process.pid)
-        assert interactive(found)
-    finally:
-        process.kill()
-        process.wait()
-        os.close(controller)
-        os.close(terminal)
-
-
-@pytest.mark.outside
-def test_a_process_the_kernel_will_not_describe_is_named_and_hides_no_other(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    started_as = terminals._started_as  # pyright: ignore[reportPrivateUsage]
-
+def test_a_process_the_kernel_will_not_describe_is_named_and_hides_no_other(root: Path) -> None:
     # As kern.procargs2 answers a process caught mid-exec, or on its way out.
-    def refusing(pid: int) -> tuple[Path, tuple[str, ...], dict[str, str]]:
-        if pid == refused:
-            ctypes.set_errno(errno.EIO)
-            terminals._raise_unless_exited(pid, "kern.procargs2")  # pyright: ignore[reportPrivateUsage]
-        return started_as(pid)
-
-    monkeypatch.setattr(terminals, "_started_as", refusing)
-    with at_a_terminal(Path("/bin/sleep"), root) as refused, at_a_terminal(Path("/bin/sleep"), root) as described:
-        scan = terminal_processes()
-        # Only this test's own: any other process at a terminal on this machine may be caught mid-exec too.
-        unread = [each for each in scan.unread if each.pid in (refused, described)]
-    assert (unread, described in {process.pid for process in scan.found}) == ([Undescribed(refused, os.getpid(), "kern.procargs2", errno.EIO)], True)
-
-
-@pytest.mark.outside
-def test_a_process_that_has_ended_is_no_process_the_kernel_would_not_describe() -> None:
-    process = subprocess.Popen(["/usr/bin/true"])
-    process.wait()
-    ctypes.set_errno(errno.EIO)
-    with pytest.raises(terminals._Exited):  # pyright: ignore[reportPrivateUsage]
-        terminals._raise_unless_exited(process.pid, "kern.procargs2")  # pyright: ignore[reportPrivateUsage]
+    refused, described, ours = 4001, 4002, 4000
+    table = processes(
+        Running(ours), Running(refused, parent=ours, tty=TTY, refused="kern.procargs2"), at_a_terminal(described, root / "install" / "9.9.9", root)
+    )
+    scan = terminal_processes(table)
+    assert (scan.unread, [process.pid for process in scan.found]) == ([Undescribed(refused, ours, "kern.procargs2", errno.EIO)], [described])
 
 
 def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_session() -> None:
@@ -508,7 +424,7 @@ def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_se
 def test_a_process_not_described_is_unknown_unless_hands_knows_it_or_it_is_a_runs_helper() -> None:
     run = terminal(1, "/v/1.0.0")
     stranger, member, helper = (Undescribed(pid, parent, "kern.procargs2", errno.EIO) for pid, parent in ((7, 0), (8, 0), (9, 1)))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, Terminals([run], [stranger, member, helper]), {1, 8}, reads_its_terminal)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, TerminalProcesses([run], [stranger, member, helper]), {1, 8}, reads_its_terminal)
     assert found.unread == [stranger]
 
 
@@ -516,49 +432,39 @@ def test_a_run_of_claude_whose_terminal_the_kernel_will_not_say_is_unknown_not_a
     told, piped = terminal(1, "/v/1.0.0"), terminal(2, "/v/1.0.0", tty=PIPED)
     refusal = Undescribed(1, 0, "proc_pidfdinfo of fd 0", errno.EIO)
 
-    def refusing(process: Terminal) -> bool | Undescribed:
+    def refusing(process: TerminalProcess) -> bool | Undescribed:
         return refusal if process is told else reads_its_terminal(process)
 
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, Terminals([told, piped], []), set(), refusing)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, TerminalProcesses([told, piped], []), set(), refusing)
     assert (found.sessions, found.others, found.unread) == ([], {"piped": 1}, [refusal])
 
 
-@pytest.mark.outside
 def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_of(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
-    with at_a_terminal(root / "install" / "9.9.9", root) as pid:
-        # Written before the process under its pid started, as an ended session's file left behind is.
-        os.utime(home.membership(joined(home, "ended", pid, None).id), (0, 0))
-        found = readiness.sessions(home, path, untmuxed)
+    pid = 4001
+    table = processes(at_a_terminal(pid, root / "install" / "9.9.9", root, start=1000.0))
+    # Written before the process under its pid started, as an ended session's file left behind is.
+    os.utime(home.membership(joined(home, "ended", pid, None).id), (0, 0))
+    found = readiness.sessions(table, home, path, untmuxed)
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
 
 
-@pytest.mark.outside
 def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
-    pruned = stand_in(root / "install" / "9.9.8")
-    with at_a_terminal(pruned, root) as pid:
-        pruned.unlink()
-        found = readiness.sessions(home, path, untmuxed)
+    # Started on a version no longer installed: the kernel says the path it was started by, which names nothing now.
+    pid = 4001
+    found = readiness.sessions(processes(at_a_terminal(pid, root / "install" / "9.9.8", root)), home, path, untmuxed)
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
 
 
-@pytest.mark.outside
 def test_a_program_started_by_a_relative_path_is_named_where_it_is_after_it_changes_directory(root: Path) -> None:
-    (root / "bin").mkdir()
-    program = stand_in(root / "bin" / "claude")
-    worktree = root / "worktree"
-    worktree.mkdir()
-    read, write = os.pipe()
-    with open(read, "rb", buffering=0) as moved, open(write, "wb", buffering=0) as said:
-        # As the shim starts the real `claude` under a relative PATH entry, and as a session then moves into a worktree.
-        with at_a_terminal(Path("bin/claude"), root, ("--moves", str(worktree), str(write)), pass_fds=(write,)) as pid:
-            # Only the program can say so now: one that ends without moving is read as nothing, not waited on.
-            said.close()
-            assert moved.read(1) == b"."
-            [process] = [process for process in terminal_processes().found if process.pid == pid]
+    # As the shim starts the real `claude` under a relative PATH entry, and as a session then moves into a worktree: the
+    # kernel keeps the path it was started by and the PWD it was started with, and says where it works now.
+    program, worktree = root / "bin" / "claude", root / "worktree"
+    moved = Running(4001, tty=TTY, cwd=worktree, path=Path("bin/claude"), environment={"PWD": str(root)}, interactive=True)
+    [process] = terminal_processes(processes(moved)).found
     assert (process.executable, process.cwd) == (program, worktree)
 
 
@@ -569,10 +475,10 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
     listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listening.bind(str(root / "live.sock"))
     listening.listen()
+    pid = 4001
     try:
-        with at_a_terminal(root / "install" / "9.9.9", root) as pid:
-            joined(home, "known", pid, root / "live.sock")
-            found = readiness.sessions(home, path, untmuxed)
+        joined(home, "known", pid, root / "live.sock")
+        found = readiness.sessions(processes(at_a_terminal(pid, root / "install" / "9.9.9", root)), home, path, untmuxed)
     finally:
         listening.close()
     assert found == Ready("1 running session reachable", f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/known (pid {pid}) is typed into through its fritter")
@@ -586,17 +492,17 @@ INTERACTIVE, PIPED = 1, 2
 
 def terminal(
     pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG, arguments: tuple[str, ...] = (), tty: int = INTERACTIVE
-) -> Terminal:
-    return Terminal(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)}, arguments, tty)
+) -> TerminalProcess:
+    return TerminalProcess(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)}, arguments, tty)
 
 
 
-def reads_its_terminal(process: Terminal) -> bool:
+def reads_its_terminal(process: TerminalProcess) -> bool:
     return process.tty == INTERACTIVE
 
 
-def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[Terminal]:
-    return [session.process for session in readiness.unjoined(home, Path(claude), CHECKED, Terminals(terminals, []), members or set(), reads_its_terminal).sessions]
+def unjoined(claude: str, terminals: list[TerminalProcess], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[TerminalProcess]:
+    return [session.process for session in readiness.unjoined(home, Path(claude), CHECKED, TerminalProcesses(terminals, []), members or set(), reads_its_terminal).sessions]
 
 
 def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install() -> None:
@@ -640,7 +546,7 @@ def test_a_session_under_the_same_config_by_way_of_a_link_is_named(tmp_path: Pat
     (tmp_path / ".claude").symlink_to(tmp_path / "dotfiles" / "claude")
     session = terminal(1, "/v/1.0.0", config=tmp_path / started)
     config = readiness.config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / checked)}, Path("/"))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), config, Terminals([session], []), set(), reads_its_terminal)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), config, TerminalProcesses([session], []), set(), reads_its_terminal)
     assert [joined.process for joined in found.sessions] == [session]
 
 
@@ -668,7 +574,7 @@ def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> Non
     controlling = terminal(4, "/v/1.0.0", arguments=("remote-control", "--spawn", "worktree"))
     asked = terminal(5, "/v/1.0.0", arguments=("fix the readme",))
     found = readiness.unjoined(
-        Home(Path("/h")), Path("/v/1.0.0"), CHECKED, Terminals([printing, piped, prompted, controlling, asked], []), set(), reads_its_terminal
+        Home(Path("/h")), Path("/v/1.0.0"), CHECKED, TerminalProcesses([printing, piped, prompted, controlling, asked], []), set(), reads_its_terminal
     )
     assert [session.process for session in found.sessions] == [prompted, asked]
     assert found.others == {"print": 1, "piped": 1, "subcommand": 1}
@@ -685,7 +591,7 @@ def test_a_session_hands_has_no_record_of_is_told_to_reload_where_it_can_be_type
     inside, outside = terminal(10, "/v/1.0.0", "/code/in", parent=5), terminal(11, "/v/1.0.0", "/code/out", parent=6)
     paned, behind = terminal(12, "/v/1.0.0", "/code/paned", parent=6), terminal(13, "/v/1.0.0", "/code/behind", parent=6)
     unread = terminal(14, "/v/1.0.0", "/code/unread", parent=6)
-    sessions = readiness.unjoined(home, Path("/v/1.0.0"), CHECKED, Terminals([fritter, inside, outside, paned, behind, unread], []), set(), reads_its_terminal)
+    sessions = readiness.unjoined(home, Path("/v/1.0.0"), CHECKED, TerminalProcesses([fritter, inside, outside, paned, behind, unread], []), set(), reads_its_terminal)
     # The fritter that wrapped a session types into it whatever its pane is.
     panes: dict[int, Keyboard] = {10: PaneUnread("no tmux"), 11: NotInTmux(), 12: PANE, 13: Behind(PANE), 14: PaneUnread("tmux did not answer")}
     found = readiness.sessions_found([], set(), [], sessions, panes)
@@ -701,7 +607,7 @@ def test_a_session_hands_has_no_record_of_is_told_to_reload_where_it_can_be_type
 
 
 def test_with_no_real_claude_a_session_hands_has_no_record_of_cannot_be_found(root: Path) -> None:
-    found = readiness.sessions(Home(root / "home"), "/nowhere", untmuxed)
+    found = readiness.sessions(processes(), Home(root / "home"), "/nowhere", untmuxed)
     assert isinstance(found, Unknown) and "this PATH has no `claude` of its own" in found.said
 
 
@@ -709,7 +615,7 @@ def test_a_claude_that_is_a_script_cannot_tell_its_sessions(root: Path) -> None:
     (root / "bin").mkdir()
     (root / "bin" / "claude").write_text("#!/usr/bin/env node\n")
     (root / "bin" / "claude").chmod(0o755)
-    found = readiness.sessions(Home(root / "home"), str(root / "bin"), untmuxed)
+    found = readiness.sessions(processes(), Home(root / "home"), str(root / "bin"), untmuxed)
     assert isinstance(found, Unknown) and "is a script, so its sessions run as its interpreter" in found.said
 
 
@@ -719,16 +625,19 @@ def test_sessions_that_cannot_be_looked_for_are_said_beside_the_ones_that_cannot
     assert isinstance(found, Missing) and "bad.json names no session" in found.said and "cannot be found: why" in found.said
 
 
-def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def refused(pid: int) -> float | None:
-        raise OSError(1, f"sysctl refused pid {pid}")
+class Refusing(FakeProcesses):
+    """A table whose every start the kernel refuses."""
 
+    def starts(self, pids: Collection[int]) -> dict[int, float]:
+        raise OSError(1, f"sysctl refused pid {min(pids)}")
+
+
+def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path) -> None:
     home = Home(root / "home")
-    joined(home, "running", os.getpid(), None)
-    # The one place the sysctl is made, so the refusal comes for the session's pid, whichever caller asks.
-    monkeypatch.setattr(processes, "_process_start", refused)
-    found = readiness.sessions(home, "/nowhere", untmuxed)
-    assert isinstance(found, Unknown) and found.said == f"cannot look at the running sessions in {home.memberships}: [Errno 1] sysctl refused pid {os.getpid()}"
+    pid = 4001
+    joined(home, "running", pid, None)
+    found = readiness.sessions(Refusing({pid: Running(pid)}), home, "/nowhere", untmuxed)
+    assert isinstance(found, Unknown) and found.said == f"cannot look at the running sessions in {home.memberships}: [Errno 1] sysctl refused pid {pid}"
 
 
 def test_the_sessions_line_counts_sessions_and_unreadable_files_apart_with_the_fix_for_each() -> None:
@@ -916,21 +825,30 @@ def test_the_brain_says_its_account_and_never_a_key() -> None:
 # hands running
 
 
+# The running hands a heartbeat here names.
+HANDS = 4242
+
+
+def hands_running() -> FakeProcesses:
+    """The Mac's processes, with the running hands among them, started long before its heartbeat."""
+    return processes(Running(HANDS))
+
+
 def beating(home: Home) -> None:
     home.root.mkdir(parents=True, exist_ok=True)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
+    heart = heartbeat.Heart(home.status, HANDS, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     heart.beat("running", None, 0, listening=True, degraded=())
 
 
 def test_hands_up_is_ready(root: Path) -> None:
     home = Home(root / "home")
     beating(home)
-    found = readiness.daemon(heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC))
+    found = readiness.daemon(heartbeat.look(hands_running(), home.status, datetime.now(UTC)), datetime.now(UTC))
     assert isinstance(found, Ready) and found.said.startswith("hands is up")
 
 
 def test_hands_that_never_ran_is_missing_and_says_to_run_it(root: Path) -> None:
-    found = readiness.daemon(heartbeat.look(Home(root / "home").status, datetime.now(UTC)), datetime.now(UTC))
+    found = readiness.daemon(heartbeat.look(hands_running(), Home(root / "home").status, datetime.now(UTC)), datetime.now(UTC))
     assert isinstance(found, Missing) and "hands has not run" in found.said and "`hands run`" in found.said
 
 
@@ -938,7 +856,7 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.status.write_text("not json")
-    assert isinstance(readiness.daemon(heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC)), Unknown)
+    assert isinstance(readiness.daemon(heartbeat.look(hands_running(), home.status, datetime.now(UTC)), datetime.now(UTC)), Unknown)
 
 
 # hands check
@@ -1040,7 +958,7 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
 @pytest.mark.outside
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 0
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 0
     assert marks(capsys) == dict.fromkeys(STEPS, "✓")
 
 
@@ -1091,7 +1009,7 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
     assert marks(capsys) == {step: "✗" if step in steps else "✓" for step in STEPS}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1106,10 +1024,10 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     home = set_up(root, fritter, monkeypatch, "unreadable")
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 2
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 2
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?"}
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?", "grant": "✗"}
     # Each event's reason names the steps that decided its exit: the one not looked at, then the missing one alone.
     events = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1126,14 +1044,14 @@ def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_b
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     no_hands(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
     *terse, hint = capsys.readouterr().out.splitlines()
     assert hint == VERBOSE_HINT
     [line] = [each for each in terse if each.startswith("✗")]
     named, fix = line.split("  → ")
     assert (named.rstrip(), fix) == ("✗ `hands` not on PATH", "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH")
     assert not any(each.startswith(" ") for each in terse)
-    assert main(["--home", str(home.root), "check", "-v"], pin=LAID_OUT) == 1
+    assert main(["--home", str(home.root), "check", "-v"], pin=LAID_OUT, processes=hands_running()) == 1
     full = capsys.readouterr().out.splitlines()
     # Each step's line is the one the terse check printed, and beneath it, what is said of it in full, less its fix.
     assert [each for each in full if not each.startswith(" ")] == terse

@@ -38,7 +38,7 @@ from hands.core.bearer import bearer
 from hands.core.session import Membership, SessionId
 from hands.daemon.exits import Exit, Failed
 from hands.sessions.startsession import as_from_a_terminal, joined
-from hands.sessions.terminals import process_table
+from hands.sessions.processes import Processes
 from hands.sessions import audit, heartbeat
 from hands.sessions import child
 from hands.sessions.child import Children, NeverStarted
@@ -258,6 +258,7 @@ class Run:
     word: str
     offset: int
     children: Children
+    processes: Processes
     lines: list[Line] = field(default_factory=list[Line])
     began: float = field(init=False)
 
@@ -294,14 +295,14 @@ async def until[T](clock: Clock, stage: Stage, seconds: float, found: Callable[[
     return seen
 
 
-async def smoke(children: Children, home: Home, environment: Mapping[str, str]) -> Exit:
+async def smoke(children: Children, processes: Processes, home: Home, environment: Mapping[str, str]) -> Exit:
     """Run the test, printing each stage as it is reached; 0 once every stage is, and the first that is not, failed."""
     # Picked by the clock's randomness, so a run on a seeded clock picks the same word every time.
     word = WORDS[int(children.clock.token(4), 16) % len(WORDS)]
     folder = (home.root / FOLDER).resolve()
     annotate(word=word, folder=folder)
     _, offset = audit.tail(home.audit, 0)
-    smoked = Run(home, word, offset, children)
+    smoked = Run(home, word, offset, children, processes)
     try:
         await _stages(smoked, folder, environment)
     except NotReached as missed:
@@ -320,7 +321,7 @@ async def smoke(children: Children, home: Home, environment: Mapping[str, str]) 
 
 async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> None:
     home = smoked.home
-    verdict = heartbeat.look(home.status, smoked.clock.wall())
+    verdict = heartbeat.look(smoked.processes, home.status, smoked.clock.wall())
     match verdict:
         case heartbeat.Up():
             smoked.reached("up", heartbeat.describe(verdict, smoked.clock.wall()))
@@ -337,7 +338,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     # hands speaks of a session by its folder's name, so a live session in any folder of the smoke folder's name is one the
     # brain may take for the session the test starts; the run refuses, just before it empties the smoke folder or starts its own.
     # [LAW:single-enforcer] running as the daemon's sweep judges it.
-    running, _ = live(home)
+    running, _ = live(smoked.processes, home)
     if others := [other for other in running if other.cwd.name.casefold() == folder.name.casefold()]:
         named = "; ".join(f"session {other.id} (pid {other.pid}) in {other.cwd}, which hands calls {other.cwd.name!r}" for other in others)
         pids = " ".join(str(other.pid) for other in others)
@@ -383,8 +384,8 @@ async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -
     async def found() -> Membership | None:
         # Read beside the daemon, as its sweep reads them, not from its registry; a file being written is read again
         # at the next poll.
-        running, _ = live(home)
-        return joined(running, session.pid, process_table())
+        running, _ = live(smoked.processes, home)
+        return joined(running, session.pid, smoked.processes.table())
 
     member = await until(
         smoked.clock, "joined", JOIN_SECONDS, found,
@@ -511,6 +512,6 @@ async def _synthesized(children: Children, text: str) -> bytes:
             return read.readframes(read.getnframes())
 
 
-def run_smoke(children: Children, home: Home) -> Exit:
+def run_smoke(children: Children, processes: Processes, home: Home) -> Exit:
     """`hands smoke`, as the CLI runs it."""
-    return asyncio.run(smoke(children, home, os.environ))
+    return asyncio.run(smoke(children, processes, home, os.environ))

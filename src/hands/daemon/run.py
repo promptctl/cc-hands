@@ -47,6 +47,7 @@ from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
+from hands.sessions.processes import Processes
 from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
@@ -207,10 +208,10 @@ class Mind:
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]]
 
 
-async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
+async def front_now(sessions: Sessions, processes: Processes, environment: Mapping[str, str]) -> InFront:
     """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await read_front(sessions.children, running, environment)
+    return await read_front(sessions.children, processes, running, environment)
 
 
 @asynccontextmanager
@@ -273,7 +274,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
+    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, heart: heartbeat.Heart, record: Record,
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     pin: pinned.Pin,
@@ -301,7 +302,7 @@ async def run(
         children = Children(clock, record)
         sessions = Sessions(
             clock=clock, record=record, changes=deltas, names=names,
-            typist=partial(type_into, children, environment), keyboards=partial(tmux.keyboards, children, environment=environment),
+            typist=partial(type_into, children, environment), keyboards=partial(tmux.keyboards, children, processes, environment=environment),
         )
         # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
         # before each turn's hook is applied.
@@ -338,19 +339,19 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        read = await start(lambda: configured(configure, survey, home, pin, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        read = await start(lambda: configured(configure, survey, processes, home, pin, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if read is not None:
             config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
-            tools = acts(sessions, store, home, recounts, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, record)
+            tools = acts(sessions, processes, store, home, recounts, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, record)
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             # [LAW:single-enforcer] one owner of a switch under way, whether the user asks by voice or on the page.
             switches = Switches(player)
             gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, switches=switches, wake=config.wake, models=CLAUDE_MODELS)
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(sessions, processes, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
@@ -359,15 +360,15 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, home.clips, record), "the voice load"), heart, sessions.live_count, degrading, stop, clock)
                 if voice is not None:
                     summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
-                    await converse(clock, voice, home, sessions, tails, reader, heart, degrading, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, driving, config.wake, run_start, environment, gallery)
+                    await converse(clock, voice, processes, home, sessions, tails, reader, heart, degrading, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, driving, config.wake, run_start, environment, gallery)
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, pin: pinned.Pin, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
+async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
-    await sweep(home, sessions, frozenset())
+    await sweep(processes, home, sessions, frozenset())
     # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
     # refusal only a Claude Code can say. [LAW:no-ambient-temporal-coupling] its facts reach the start's event here, on
     # the loop that owns it, never from the thread it ran on.
@@ -400,6 +401,7 @@ async def configured(configure: Callable[[preflight.Preflight], Configured], sur
 async def converse(
     clock: Clock,
     voice: Voice,
+    processes: Processes,
     home: Home,
     sessions: Sessions,
     tails: Tails,
@@ -454,7 +456,7 @@ async def converse(
     utterances = Utterances(clock, record)
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the progress ticker"),
-        asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
+        asyncio.create_task(keep_sweeping(processes, home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(reader.keep_reading(READ_SECONDS), name="the status and transcript reader"),
         asyncio.create_task(utterances.keep(), name="the utterances"),
         asyncio.create_task(

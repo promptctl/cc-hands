@@ -8,7 +8,7 @@ from hands.core.events import Attached, Died, MovedOn, Observed
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
 from hands.sessions.membership import Recorded, Unreadable, holders, naming, recorded, remove_ended_membership, running
-from hands.sessions.processes import process_starts
+from hands.sessions.processes import Processes
 from hands.sessions.registry import Sessions
 
 
@@ -16,7 +16,7 @@ from hands.sessions.registry import Sessions
 Unfiled = frozenset[SessionId]
 
 
-async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfiled:
+async def sweep(processes: Processes, home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfiled:
     """Apply what the files and the process table say now: a running session is attached, an ended one ends and its file goes."""
     # [LAW:no-ambient-temporal-coupling] taken before the directory is read: a session joins only after its shim
     # has written its file, so one that joins while the sweep runs is never taken for a session whose file is gone.
@@ -24,7 +24,7 @@ async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfi
     records, unreadable = recorded(home)
     for file in unreadable:
         _remove_unreadable(file)
-    started = process_starts({record.membership.pid for record in records})
+    started = processes.starts({record.membership.pid for record in records})
     seen_all, unfiled = observations(listed, records, started, unfiled_before)
     for seen in seen_all:
         await sessions.apply(seen)
@@ -36,27 +36,27 @@ async def sweep(home: Home, sessions: Sessions, unfiled_before: Unfiled) -> Unfi
     return unfiled
 
 
-async def keep_sweeping(home: Home, sessions: Sessions, period: float) -> None:
+async def keep_sweeping(processes: Processes, home: Home, sessions: Sessions, period: float) -> None:
     """Sweep now and once a period after, until cancelled. The period is how late a closed terminal is heard."""
     unfiled: Unfiled = frozenset()
     while True:
-        unfiled = await sweep(home, sessions, unfiled)
+        unfiled = await sweep(processes, home, sessions, unfiled)
         await sessions.clock.sleep(period)
 
 
-def observed(home: Home, membership: Membership) -> Observed:
+def observed(processes: Processes, home: Home, membership: Membership) -> Observed:
     """What the files and the OS say of one session now, judged as a sweep judges it."""
     # [LAW:single-enforcer] the sweep's own judgement, of only the files naming the session's pid: they alone say which
     # session that process holds. Judged as a session already unfiled, so a file that is gone says so now.
-    seen, _ = observations([membership], *naming(home, membership.pid), frozenset({membership.id}))
+    seen, _ = observations([membership], *naming(processes, home, membership.pid), frozenset({membership.id}))
     return next(observation for observation in seen if observation.membership.id == membership.id)
 
 
-def live(home: Home) -> tuple[list[Membership], list[Unreadable]]:
+def live(processes: Processes, home: Home) -> tuple[list[Membership], list[Unreadable]]:
     """The sessions running now, and the membership files that do not parse; nothing is removed."""
     records, unreadable = recorded(home)
     # [LAW:single-enforcer] a session is running when the sweep would attach it, and by no other test.
-    seen, _ = observations((), records, process_starts({record.membership.pid for record in records}), frozenset())
+    seen, _ = observations((), records, processes.starts({record.membership.pid for record in records}), frozenset())
     return [observed.membership for observed in seen if isinstance(observed, Attached)], unreadable
 
 

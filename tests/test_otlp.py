@@ -24,6 +24,7 @@ from hands.core.wire import Answered, Ending, Exchanged, Garbled, MainTurn, Mess
 from hands.daemon import indicator
 from hands.daemon.cli import main
 from hands.sessions import heartbeat
+from hands.sessions.kernel import KERNEL
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions.home import Home
 from hands.sessions.otlp import BATCH_SPANS, ENCODINGS, FAILING_BATCHES, LOGS, STOPPED, TIMEOUT_SECONDS, TRACES, Exporter, Exports, Failing, answered, degradation, exporting, failing, logs, spans, traced
@@ -566,7 +567,7 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
 
     def look(before: indicator.Shown | None) -> indicator.Shown:
         heart.beat("running", None, 0, listening=False, degraded=exports.degraded())
-        return indicator.show(before, heartbeat.look(home.status, datetime.now(UTC)), datetime.now(UTC))
+        return indicator.show(before, heartbeat.look(KERNEL, home.status, datetime.now(UTC)), datetime.now(UTC))
 
     def batch(span_id: str) -> None:
         # Once the batch is said as every signal.

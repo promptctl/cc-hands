@@ -1,16 +1,14 @@
 """Which tmux pane a session runs in: read over a process table and every tmux server's panes, never kept."""
 
 import os
-import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from conftest import stand_in
+from fakeprocesses import USER, Running, processes
 from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import tmux
 from hands.sessions.tmux import Answered
-from hands.sessions.terminals import Process, ancestor_terminals, front_terminal
-import pytest
+from hands.sessions.processes import Process, ancestor_terminals, front_terminal
 
 # Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
 PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
@@ -65,22 +63,16 @@ def test_keys_reach_a_session_through_its_pane_only_while_it_is_in_front_of_that
     assert keyboard(300, [Listed({PANE: HANDS}), Unanswered("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")]) == PaneUnread("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")
 
 
-@pytest.mark.outside
 def test_a_relative_socket_whose_server_pid_is_now_another_users_names_no_server(tmp_path: Path) -> None:
-    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it. $TMUX is read from
-    # a program built for the test, since macOS shows no one /bin/cat's.
-    held = subprocess.Popen([stand_in(tmp_path / "stand-in")], env={"TMUX": "mine,1,0"})
-    try:
-        table = {held.pid: Process(held.pid, 1, os.geteuid(), 1, None), 1: Process(1, 0, 0, None, None)}
-        assert tmux.sockets({"TMUX_TMPDIR": str(tmp_path)}, [held.pid], table) == []
-    finally:
-        held.kill()
-        held.wait()
+    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it.
+    held = 4242
+    table = processes(Running(held, tty=1, environment={"TMUX": "mine,1,0"}))
+    assert tmux.sockets(table, {"TMUX_TMPDIR": str(tmp_path)}, [held], table.table()) == []
 
 
 def test_sockets_are_looked_for_where_tmux_puts_them_with_an_empty_tmux_tmpdir_read_as_unset() -> None:
-    assert tmux.socket_directory({"TMUX_TMPDIR": "/var/run/mine"}) == Path(f"/var/run/mine/tmux-{os.getuid()}")
-    assert tmux.socket_directory({"TMUX_TMPDIR": ""}) == tmux.socket_directory({}) == Path(f"/tmp/tmux-{os.getuid()}")
+    assert tmux.socket_directory({"TMUX_TMPDIR": "/var/run/mine"}, USER) == Path(f"/var/run/mine/tmux-{USER}")
+    assert tmux.socket_directory({"TMUX_TMPDIR": ""}, USER) == tmux.socket_directory({}, USER) == Path(f"/tmp/tmux-{USER}")
 
 
 def test_a_pane_closed_between_its_listing_and_the_look_at_its_terminal_leaves_the_rest_of_its_server_read() -> None:

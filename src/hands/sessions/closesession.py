@@ -6,7 +6,6 @@ nothing but that `claude`, so tmux closes it, and a shell the user started it fr
 returns once the registry no longer lists the session, or says why it did not.
 """
 
-import os
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ from hands.core.events import Attached, Died, MovedOn
 from hands.core.session import Idle, Session, SessionId, Told, Untold
 from hands.sessions import audit, liveness, wide
 from hands.sessions.home import Home
+from hands.sessions.processes import Processes
 
 # How long a closed session has to leave the registry: Claude Code's exit, and the SessionEnd that says so, or the sweep
 # that finds its process gone.
@@ -64,7 +64,7 @@ def done(session: Session) -> bool:
             return False
 
 
-async def close(home: Home, clock: Clock, record: audit.Record, live: Callable[[SessionId], Session | None], session: SessionId, asked: Asked) -> Outcome:
+async def close(processes: Processes, home: Home, clock: Clock, record: audit.Record, live: Callable[[SessionId], Session | None], session: SessionId, asked: Asked) -> Outcome:
     """End `session` as `asked`, and wait until `live` no longer has it; or leave it running, where it was asked about as
     done and is not."""
     # [LAW:nothing-unseen] a close is one unit of work: which session, why, and whether it was left running or signalled.
@@ -77,16 +77,16 @@ async def close(home: Home, clock: Clock, record: audit.Record, live: Callable[[
         wide.annotate(done=is_done)
         if asked == "done" and not is_done:
             return LeftRunning(found)
-        signalled = _signalled(home, found)
+        signalled = _signalled(processes, home, found)
         wide.annotate(signalled=signalled)
         await _ended(clock, live, session)
         return Closed()
 
 
-def _signalled(home: Home, session: Session) -> bool:
+def _signalled(processes: Processes, home: Home, session: Session) -> bool:
     """Send the session's `claude` SIGTERM, where its process still holds it: whether it was sent."""
     pid = session.membership.pid
-    match liveness.observed(home, session.membership):
+    match liveness.observed(processes, home, session.membership):
         case Attached():
             pass
         case Died() | MovedOn():
@@ -94,13 +94,10 @@ def _signalled(home: Home, session: Session) -> bool:
             # ended, and the sweep says so to the registry.
             return False
     try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        # It ended since it was judged running.
-        return False
+        # False where it ended since it was judged running.
+        return processes.signal(pid, signal.SIGTERM)
     except OSError as error:
         raise NotClosed(f"session {session.membership.id}'s claude, pid {pid}, could not be signalled to end: {error}") from error
-    return True
 
 
 async def _ended(clock: Clock, live: Callable[[SessionId], Session | None], session: SessionId) -> None:

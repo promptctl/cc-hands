@@ -17,7 +17,7 @@ from hands.clock import Clock
 from hands.core.stopfailure import LOGIN_EXPIRED_SAID
 from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.processes import parse_pid, process_starts, still_running
+from hands.sessions.processes import Processes, parse_pid, still_running
 
 # Starting until Pipecat reports the pipeline started; stopped only in the last heartbeat of a run told to stop.
 PipelineState = Literal["starting", "running", "stopped"]
@@ -215,22 +215,23 @@ def last_said(verdict: Verdict) -> tuple[Degradation, ...]:
             return ()
 
 
-def look(path: Path, now: datetime) -> Verdict:
-    """What the heartbeat file says of the daemon now: the one way anything outside the daemon learns whether it is up."""
+def look(processes: Processes, path: Path, now: datetime) -> Verdict:
+    """What the heartbeat file says of the daemon now, by whether `processes` still runs the one that wrote it: the one
+    way anything outside the daemon learns whether it is up."""
     # [LAW:single-enforcer] `hands status`, the crash check at start, the menu-bar indicator, and the shim all judge through here.
     try:
         last = read(path)
     except (Rejected, OSError) as error:
         # [LAW:no-silent-failure] an unreadable heartbeat is its own verdict, never taken for "not running".
         return Unreadable(path, str(error))
-    return judge(path, last, now, alive=last is not None and running(last))
+    return judge(path, last, now, alive=last is not None and running(processes, last))
 
 
-def running(status: Status) -> bool:
+def running(processes: Processes, status: Status) -> bool:
     """Whether the process that wrote the heartbeat is still running: its pid is, and not as a later process."""
     # [LAW:single-enforcer] the session sweep's own test for a reused pid. Asked of kill(pid, 0) alone, a pid that
     # went to another process after a crash or a reboot read as a daemon that had stopped responding.
-    return still_running(status.pid, status.started_at.timestamp(), process_starts({status.pid}))
+    return still_running(status.pid, status.started_at.timestamp(), processes.starts({status.pid}))
 
 
 def judge(path: Path, status: Status | None, now: datetime, alive: bool) -> Verdict:

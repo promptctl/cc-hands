@@ -1,20 +1,20 @@
 """The `close_session` tool: a session's claude ended, and the session gone from the registry, as the user asked: a session
-they named whatever it is doing, and of the sessions asked about as done only those at their prompt. Each session is a
-real process, and the registry is kept by the liveness sweep, as the daemon keeps it."""
+they named whatever it is doing, and of the sessions asked about as done only those at their prompt. Each session's claude is
+a process in a fake table, which a SIGTERM ends unless it catches it, and the registry is kept by the liveness sweep, as the
+daemon keeps it."""
 
 import asyncio
 import json
 import os
-import subprocess
-import time
-from collections.abc import Awaitable, Callable, Generator
-from contextlib import contextmanager, suppress
+import signal
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from fakeprocesses import FakeProcesses, Running, processes
 from hands.clock import SYSTEM
 from hands.core.events import Event, Joined, PermissionRequested, Prompted, StatusReported
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId
@@ -31,14 +31,11 @@ from test_startsession import home_in
 from conftest import new_sessions
 
 
-pytestmark = pytest.mark.outside
-
-
-def run[T](home: Home, sessions: Sessions, body: Callable[[], Awaitable[T]]) -> T:
+def run[T](table: FakeProcesses, home: Home, sessions: Sessions, body: Callable[[], Awaitable[T]]) -> T:
     """`body` run while the liveness sweep keeps `sessions`, as the daemon's does."""
 
     async def swept() -> T:
-        sweeping = asyncio.create_task(keep_sweeping(home, sessions, 0.05))
+        sweeping = asyncio.create_task(keep_sweeping(table, home, sessions, 0.05))
         try:
             return await body()
         finally:
@@ -47,9 +44,9 @@ def run[T](home: Home, sessions: Sessions, body: Callable[[], Awaitable[T]]) -> 
     return asyncio.run(swept())
 
 
-def close(home: Home, sessions: Sessions, ids: list[str], asked: str) -> Callable[[], Awaitable[Result]]:
+def close(table: FakeProcesses, home: Home, sessions: Sessions, ids: list[str], asked: str) -> Callable[[], Awaitable[Result]]:
     """The tool called as the model calls it."""
-    close_session = close_session_tool(home, AuditLog(home.audit, clock=datetime.now).record, sessions)
+    close_session = close_session_tool(table, home, AuditLog(home.audit, clock=datetime.now).record, sessions)
     return lambda: close_session.body(sessions=ids, asked=asked)
 
 
@@ -62,32 +59,9 @@ def closes(home: Home) -> list[dict[str, Any]]:
     return [line for line in map(json.loads, segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "session.close"]
 
 
-def running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-@contextmanager
-def processes(count: int, command: tuple[str, ...] = ("sleep", "120")) -> Generator[list[int]]:
-    """`count` processes running `command`, each the test's grandchild, so that one ending is reaped by launchd as a
-    claude is by the fritter that ran it, and is gone from the process table; their pids."""
-    pids = [int(subprocess.run(["/bin/sh", "-c", '"$@" >/dev/null 2>&1 & echo $!', "sh", *command], capture_output=True, text=True, check=True).stdout) for _ in range(count)]
-    try:
-        yield pids
-    finally:
-        for pid in pids:
-            with suppress(ProcessLookupError):
-                os.kill(pid, 9)
-
-
-def ended(pid: int) -> None:
-    deadline = time.monotonic() + 5
-    while running(pid):
-        assert time.monotonic() < deadline, f"pid {pid} never ended"
-        time.sleep(0.05)
+def claudes(*pids: int) -> FakeProcesses:
+    """A table in which each of `pids` is a claude, running since long before any session here wrote its file."""
+    return processes(*(Running(pid) for pid in pids))
 
 
 def joined(home: Home, sessions: Sessions, tmp_path: Path, pid: int, name: str, *events: Callable[[SessionId], Event]) -> SessionId:
@@ -112,34 +86,35 @@ def status(said: Status) -> Callable[[SessionId], Event]:
 def test_only_the_sessions_that_are_done_are_closed_of_those_asked_about_as_done(tmp_path: Path) -> None:
     home = home_in(tmp_path)
     sessions = new_sessions(clock=SYSTEM)
-    with processes(7) as (idle, busy, waiting, shelled, held, prompted, unasked):
-        ids = {
-            "idle": joined(home, sessions, tmp_path, idle, "idle", status(Idle())),
-            "busy": joined(home, sessions, tmp_path, busy, "busy", status(Busy())),
-            "waiting": joined(home, sessions, tmp_path, waiting, "waiting", status(Waiting("permission prompt"))),
-            "shelled": joined(home, sessions, tmp_path, shelled, "shelled", status(Shell())),
-            # At a dialog whose request is heard before the status that says it waits.
-            "held": joined(home, sessions, tmp_path, held, "held", status(Idle()), lambda session: PermissionRequested(session, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")),
-            # A prompt its hook opened a turn for, before the status that says it is busy is read.
-            "prompted": joined(home, sessions, tmp_path, prompted, "prompted", status(Idle()), lambda session: Prompted(session, at=2.0, mode=None, prompt=PromptId("p1"), text="")),
-        }
-        joined(home, sessions, tmp_path, unasked, "unasked", status(Idle()))
+    pids = idle, busy, waiting, shelled, held, prompted, unasked = range(4001, 4008)
+    table = claudes(*pids)
+    ids = {
+        "idle": joined(home, sessions, tmp_path, idle, "idle", status(Idle())),
+        "busy": joined(home, sessions, tmp_path, busy, "busy", status(Busy())),
+        "waiting": joined(home, sessions, tmp_path, waiting, "waiting", status(Waiting("permission prompt"))),
+        "shelled": joined(home, sessions, tmp_path, shelled, "shelled", status(Shell())),
+        # At a dialog whose request is heard before the status that says it waits.
+        "held": joined(home, sessions, tmp_path, held, "held", status(Idle()), lambda session: PermissionRequested(session, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")),
+        # A prompt its hook opened a turn for, before the status that says it is busy is read.
+        "prompted": joined(home, sessions, tmp_path, prompted, "prompted", status(Idle()), lambda session: Prompted(session, at=2.0, mode=None, prompt=PromptId("p1"), text="")),
+    }
+    joined(home, sessions, tmp_path, unasked, "unasked", status(Idle()))
 
-        results = dict(zip(ids, each(run(home, sessions, close(home, sessions, list(ids.values()), "done"))), strict=True))
-        ended(idle)
+    results = dict(zip(ids, each(run(table, home, sessions, close(table, home, sessions, list(ids.values()), "done"))), strict=True))
 
-        assert results["idle"] == {"closed": "idle"}
-        assert {name: result["state"] for name, result in results.items() if name != "idle"} == {
-            "busy": "working",
-            "waiting": "waiting at a dialog: permission prompt",
-            "shelled": "idle, with a shell command it started in the background still running",
-            "held": "waiting for permission to use Bash",
-            "prompted": "working",
-        }
-        assert all(results[name]["left_running"] == name for name in ("busy", "waiting", "shelled", "held", "prompted"))
-        # Only the done one ended and left the registry; the rest, and the session nobody asked about, run on.
-        assert [running(pid) for pid in (idle, busy, waiting, shelled, held, prompted, unasked)] == [False, True, True, True, True, True, True]
-        assert sorted(sessions.live_ids()) == ["busy", "held", "prompted", "shelled", "unasked", "waiting"]
+    assert results["idle"] == {"closed": "idle"}
+    assert {name: result["state"] for name, result in results.items() if name != "idle"} == {
+        "busy": "working",
+        "waiting": "waiting at a dialog: permission prompt",
+        "shelled": "idle, with a shell command it started in the background still running",
+        "held": "waiting for permission to use Bash",
+        "prompted": "working",
+    }
+    assert all(results[name]["left_running"] == name for name in ("busy", "waiting", "shelled", "held", "prompted"))
+    # Only the done one was told to end and left the registry; the rest, and the session nobody asked about, run on.
+    assert table.signalled == [(idle, signal.SIGTERM)]
+    assert sorted(table.running) == [1, busy, waiting, shelled, held, prompted, unasked]
+    assert sorted(sessions.live_ids()) == ["busy", "held", "prompted", "shelled", "unasked", "waiting"]
     # [LAW:nothing-unseen] each close says which session, why it was asked, whether it was done, and whether it was signalled.
     facts = {event["facts"]["session"]: event["facts"] for event in closes(home)}
     assert facts["idle"] == {"session": "idle", "asked": "done", "done": True, "signalled": True}
@@ -149,12 +124,13 @@ def test_only_the_sessions_that_are_done_are_closed_of_those_asked_about_as_done
 def test_a_named_session_is_closed_whatever_it_is_doing(tmp_path: Path) -> None:
     home = home_in(tmp_path)
     sessions = new_sessions(clock=SYSTEM)
-    with processes(2) as (busy, other):
-        id = joined(home, sessions, tmp_path, busy, "billing", status(Busy()))
-        joined(home, sessions, tmp_path, other, "docs", status(Idle()))
-        assert each(run(home, sessions, close(home, sessions, [id], "named"))) == [{"closed": "billing"}]
-        ended(busy)
-        assert sessions.live_ids() == ["docs"] and running(other)
+    busy, other = 4001, 4002
+    table = claudes(busy, other)
+    id = joined(home, sessions, tmp_path, busy, "billing", status(Busy()))
+    joined(home, sessions, tmp_path, other, "docs", status(Idle()))
+    assert each(run(table, home, sessions, close(table, home, sessions, [id], "named"))) == [{"closed": "billing"}]
+    assert table.signalled == [(busy, signal.SIGTERM)]
+    assert sessions.live_ids() == ["docs"] and other in table.running
     assert closes(home)[0]["facts"] == {"session": "billing", "asked": "named", "done": False, "signalled": True}
 
 
@@ -162,33 +138,37 @@ def test_a_session_that_is_not_running_and_one_that_will_not_end_are_said(tmp_pa
     monkeypatch.setattr(closesession, "END_SECONDS", 0.5)
     home = home_in(tmp_path)
     sessions = new_sessions(clock=SYSTEM)
-    assert each(run(home, sessions, close(home, sessions, ["nobody"], "named"))) == [{"error": "no session nobody is running"}]
     # A claude that does not end on SIGTERM, as one wedged would not.
-    with processes(1, ("/bin/sh", "-c", "trap '' TERM; while :; do sleep 0.1; done")) as (stuck,):
-        id = joined(home, sessions, tmp_path, stuck, "stuck", status(Idle()))
-        time.sleep(0.2)  # the trap is set before the signal is sent
-        assert each(run(home, sessions, close(home, sessions, [id], "named"))) == [{"error": "session stuck was told to end and is still running 0.5 seconds later"}]
-        assert running(stuck) and sessions.live_ids() == ["stuck"]
+    stuck = 4001
+    table = processes(Running(stuck, caught=frozenset({signal.SIGTERM})))
+    assert each(run(table, home, sessions, close(table, home, sessions, ["nobody"], "named"))) == [{"error": "no session nobody is running"}]
+    id = joined(home, sessions, tmp_path, stuck, "stuck", status(Idle()))
+    assert each(run(table, home, sessions, close(table, home, sessions, [id], "named"))) == [{"error": "session stuck was told to end and is still running 0.5 seconds later"}]
+    assert table.signalled == [(stuck, signal.SIGTERM)]
+    assert stuck in table.running and sessions.live_ids() == ["stuck"]
     assert [event["outcome"] for event in closes(home)] == ["failed", "failed"]
 
 
 def test_a_session_whose_claude_no_longer_holds_it_leaves_with_nothing_signalled(tmp_path: Path) -> None:
     home = home_in(tmp_path)
     sessions = new_sessions(clock=SYSTEM)
-    with processes(3) as (cleared, reused, unfiled):
-        moved = joined(home, sessions, tmp_path, cleared, "moved", status(Idle()))
-        # A /clear in it: the same claude holds a new session, written after the one it left.
-        after = joined(home, sessions, tmp_path, cleared, "after", status(Idle()))
-        os.utime(home.membership(after), (time.time() + 5, time.time() + 5))
-        # A pid a later process took: the file naming it was written before that process started.
-        taken = joined(home, sessions, tmp_path, reused, "taken", status(Idle()))
-        os.utime(home.membership(taken), (time.time() - 60, time.time() - 60))
-        # Its file gone, as its end hook removes it first.
-        gone = joined(home, sessions, tmp_path, unfiled, "gone", status(Idle()))
-        home.membership(gone).unlink()
-        assert each(run(home, sessions, close(home, sessions, [moved, taken, gone], "named"))) == [{"closed": "moved"}, {"closed": "taken"}, {"closed": "gone"}]
-        # No process was sent anything: the claude that moved on runs on in the session it holds.
-        assert all(running(pid) for pid in (cleared, reused, unfiled))
-        assert sessions.live_ids() == ["after"]
+    cleared, reused, unfiled = 4001, 4002, 4003
+    # Each file here is written at `written`, and the process that took the reused pid started after it.
+    written = 1000.0
+    table = processes(Running(cleared), Running(reused, start=written + 60), Running(unfiled))
+    moved = joined(home, sessions, tmp_path, cleared, "moved", status(Idle()))
+    os.utime(home.membership(moved), (written, written))
+    # A /clear in it: the same claude holds a new session, written after the one it left.
+    after = joined(home, sessions, tmp_path, cleared, "after", status(Idle()))
+    os.utime(home.membership(after), (written + 5, written + 5))
+    # A pid a later process took: the file naming it was written before that process started.
+    taken = joined(home, sessions, tmp_path, reused, "taken", status(Idle()))
+    os.utime(home.membership(taken), (written, written))
+    # Its file gone, as its end hook removes it first.
+    gone = joined(home, sessions, tmp_path, unfiled, "gone", status(Idle()))
+    home.membership(gone).unlink()
+    assert each(run(table, home, sessions, close(table, home, sessions, [moved, taken, gone], "named"))) == [{"closed": "moved"}, {"closed": "taken"}, {"closed": "gone"}]
+    # No process was sent anything: the claude that moved on runs on in the session it holds.
+    assert table.signalled == []
+    assert sessions.live_ids() == ["after"]
     assert [event["facts"]["signalled"] for event in closes(home)] == [False, False, False]
-

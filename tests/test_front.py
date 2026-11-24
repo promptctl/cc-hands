@@ -1,17 +1,10 @@
-import fcntl
-import os
-import subprocess
-import sys
-import termios
-import time
-from collections.abc import Iterator
-
 import pytest
 
 from hands.core.front import Candidate, FrontUnread, NoSessionInFront, Screen, SessionInFront, in_front, told
 from hands.core.session import SessionId
 from hands.sessions.front import _under  # pyright: ignore[reportPrivateUsage]
-from hands.sessions.terminals import ancestor_terminals, ancestors, process_table
+from hands.sessions.processes import ancestor_terminals
+from fakeprocesses import Running, processes
 
 # Terminals by device number: two tabs, a tmux client in a third, and the panes behind it.
 TAB, OTHER_TAB, CLIENT, PANE, OTHER_PANE, FRITTER = 1, 2, 3, 10, 11, 20
@@ -53,53 +46,15 @@ def test_the_brain_is_told_the_session_in_front_or_that_none_is_and_nothing_of_a
     assert told(FrontUnread("no window is on screen")) == ""
 
 
-@pytest.fixture
-def at_a_terminal() -> Iterator[tuple[subprocess.Popen[bytes], int]]:
-    """A process whose controlling terminal is a pty of the test's own, with a child of its own under it."""
-    controller, terminal = os.openpty()
-
-    def control() -> None:
-        os.setsid()
-        fcntl.ioctl(terminal, termios.TIOCSCTTY, 0)
-
-    child = "import subprocess, sys; subprocess.run([sys.executable, '-c', 'import time; time.sleep(30)'])"
-    process = subprocess.Popen([sys.executable, "-c", child], stdin=terminal, stdout=terminal, stderr=terminal, preexec_fn=control)
-    try:
-        yield process, os.fstat(terminal).st_rdev
-    finally:
-        process.kill()
-        process.wait()
-        os.close(controller)
-        os.close(terminal)
-
-
-@pytest.mark.outside
-def test_the_kernel_says_each_process_terminal_and_the_terminals_a_session_runs_under(at_a_terminal: tuple[subprocess.Popen[bytes], int]) -> None:
-    process, device = at_a_terminal
-    # Until the child has started: polled, since nothing of the child's says when it has.
-    deadline = time.monotonic() + 10
-    processes = process_table()
-    while not any(child.parent == process.pid for child in processes.values()):
-        assert time.monotonic() < deadline, "the child never started"
-        time.sleep(0.01)
-        processes = process_table()
-    [grandchild] = [child for child in processes.values() if child.parent == process.pid]
-    assert processes[process.pid].tty == device
-    # The child inherits the terminal; the test itself, started by pytest, sits above it with whatever it has.
-    assert next(ancestor_terminals(grandchild.pid, processes)) == device
-    assert device not in set(ancestor_terminals(os.getpid(), processes))
-    assert [found.pid for found in _under(process.pid, processes)] == [grandchild.pid]
-
-
-def test_the_process_table_holds_roots_processes_too_and_the_tests_own_line_of_parents_ends_at_launchd() -> None:
-    processes = process_table()
-    # A terminal app starts each tab's shell through /usr/bin/login, which runs as root: a table of this user's
-    # processes alone breaks the line between a session and its app there.
-    assert processes[1].uid == 0
-    assert any(process.uid == 0 for process in processes.values() if process.pid != 1)
-    # Only the test's own line is walked: a walk over every process on the machine was seen to break at a parent missing
-    # from the table, with other processes exiting as it was read.
-    line = list(ancestors(os.getpid(), processes))
-    assert line[-1].pid == 1, line
-    # Its own parent, the kernel, is not in the table, so a walk up ends there.
-    assert processes[1].parent not in processes
+def test_a_session_runs_under_each_terminal_on_its_line_of_parents_its_own_first_and_its_descendants_are_under_it() -> None:
+    # A shell on a tab's terminal, and under it a fritter on the same, which runs a claude on a terminal of its own; the
+    # test's own line, from launchd, reaches no terminal.
+    tab, fritters = 0x1000_0001, 0x1000_0002
+    shell, fritter, claude, other = 4001, 4002, 4003, 4004
+    table = processes(
+        Running(shell, tty=tab), Running(fritter, parent=shell, tty=tab), Running(claude, parent=fritter, tty=fritters), Running(other)
+    ).table()
+    assert list(ancestor_terminals(claude, table)) == [fritters, tab, tab]
+    assert list(ancestor_terminals(other, table)) == []
+    assert sorted(found.pid for found in _under(shell, table)) == [fritter, claude]
+    assert list(_under(claude, table)) == []

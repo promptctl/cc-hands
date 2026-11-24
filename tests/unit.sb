@@ -2,7 +2,15 @@
 ; is. No process is started: macOS answers a process-fork deny to Popen, posix_spawn and fork alike. Denying process-exec*
 ; as well would make `os.access(path, X_OK)` answer no for every file, so every `shutil.which` would find nothing, tests
 ; that gate on a tool would skip and code under test would take its tool-absent branch; fork alone is enough. No socket is
-; bound or connected, loopback and local ones included. The weights the run fetched are unread: tests/offline.py appends a
-; deny of each folder that holds them after this file.
+; bound or connected, loopback and local ones included. No other process is read: not the process table, nor any
+; process's record (kern.proc, its start among it), arguments or environment (kern.procargs2), the list of pids, or
+; libproc's word on one, so a test reaches the Mac's processes only through a fake of hands' Processes; a process's word
+; on itself still answers. Both rules are needed, as probed on macOS 26: without the sysctl one, kern.proc and
+; kern.procargs2 answer for every pid; and a process-info deny of `(target others)` leaves the run's parent and children
+; read. The weights the run fetched are unread: tests/offline.py appends a deny of each folder that holds them after this
+; file.
 (deny process-fork)
 (deny network*)
+(deny sysctl-read (sysctl-name-prefix "kern.proc"))
+(deny process-info*)
+(allow process-info* (target self))

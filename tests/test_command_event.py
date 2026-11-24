@@ -20,6 +20,7 @@ from hands.daemon.cli import main
 from hands.sessions import heartbeat
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
+from hands.sessions.processes import Processes
 from hands.voice import phoneaddress
 
 
@@ -95,7 +96,7 @@ def test_a_phone_with_no_address_a_phone_reaches_fails_saying_so(tmp_path: Path,
 def test_a_command_that_raises_is_a_failed_event_with_no_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
 
-    def full_disk(clock: Clock, home: Home) -> Literal[0]:
+    def full_disk(clock: Clock, _processes: Processes, home: Home) -> Literal[0]:
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(cli, "report", full_disk)
@@ -175,7 +176,7 @@ def sinks() -> set[int]:
     return set(handlers)
 
 
-def warned(_clock: Clock, home: Home) -> Literal[0]:
+def warned(_clock: Clock, _processes: Processes, home: Home) -> Literal[0]:
     """`hands status`, standing in as a command that warns."""
     logger.warning("warned inside the command")
     return 0

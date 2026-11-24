@@ -51,12 +51,13 @@ def hold(unit: Unit | None = None) -> str:
     """The calling process in the OFFLINE sandbox, or with `unit`, the unit layer's, which every process it starts inherits
     and none can leave, so a connection a test, or any child of one, makes past loopback is refused by the OS before a
     packet leaves, and the machine's Claude Code policy is nowhere it looks; and how it is held. The unit layer's is
-    refused more: a process started, a socket bound or connected anywhere, a fetched weight read. It is macOS's
-    sandbox_init, the call sandbox-exec makes, on the run's own process, as Bazel's macOS sandbox holds a test with the
-    network denied.
+    refused more: a process started, a socket bound or connected anywhere, another process read, a fetched weight read.
+    It is macOS's sandbox_init, the call sandbox-exec makes, on the run's own process, as Bazel's macOS sandbox holds a
+    test with the network denied.
 
     [LAW:single-enforcer] what is proven is what the profile promises, a connection past loopback refused, loopback
-    open and no policy found (the unit layer's: loopback closed, a process start and each weights folder refused), not
+    open and no policy found (the unit layer's: loopback closed, a process start, each read of another process and each
+    weights folder refused, the process's own record still read), not
     that this call applied it: a run started inside a held one, as wake-training's test of its own conftest starts one,
     is held by its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process held already.
     [LAW:no-silent-failure] a run that is not so held stops before any test, with the OS's reason, whether the run was in
@@ -71,11 +72,11 @@ def hold(unit: Unit | None = None) -> str:
     error = ctypes.c_char_p()
     sandbox.sandbox_init(profile.encode(), 0, ctypes.byref(error))
     refused, looped, found = _refused(), _looped(), policy_found()
-    forked, unread = (True, True) if unit is None else (_forked(), _unread(roots))
-    kept = refused and not found and (looped if unit is None else not looped and forked and unread)
+    forked, unread, scanned = (True, True, []) if unit is None else (_forked(), _unread(roots), _scanned())
+    kept = refused and not found and (looped if unit is None else not looped and forked and unread and not scanned)
     if not kept:
         in_one = bool(sandbox.sandbox_check(os.getpid(), None, 0))
-        more = "" if unit is None else f"; a process start refused: {forked}; weights unread: {unread}"
+        more = "" if unit is None else f"; a process start refused: {forked}; weights unread: {unread}; process reads that answered as they should not: {scanned}"
         raise pytest.UsageError(
             f"the run cannot hold itself to {held}: {error.value!r}; in a sandbox already: {in_one}; past loopback refused: {refused}; loopback open: {looped}; Claude Code policy found: {found}{more}"
         )
@@ -94,6 +95,37 @@ def _forked() -> bool:
     except PermissionError:
         return True
     return False
+
+
+# The kernel's answers about a process: sysctl's CTL_KERN names, and libproc's PROC_PIDTBSDINFO with its record's size.
+_KERN_PROC_ALL, _KERN_PROC_PID, _KERN_PROCARGS2 = (1, 14, 0), (1, 14, 1), (1, 49)
+_PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
+
+
+def _scanned() -> list[str]:
+    """Each read of another process the kernel answered this process: the process table, the parent's record (its start
+    among it), what the parent was started as, the list of pids, and libproc's word on the parent; and this process's own
+    record and its word on itself, which must answer, named where they did not."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+
+    def sysctl(*mib: int) -> bool:
+        name, room = (ctypes.c_int * len(mib))(*mib), ctypes.c_size_t(1 << 20)
+        return libc.sysctl(name, len(mib), ctypes.create_string_buffer(room.value), ctypes.byref(room), None, 0) == 0
+
+    def pidinfo(pid: int) -> bool:
+        return libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.create_string_buffer(_BSDINFO_SIZE), _BSDINFO_SIZE) > 0
+
+    parent, own = os.getppid(), os.getpid()
+    others = {
+        "kern.proc.all": sysctl(*_KERN_PROC_ALL),
+        f"kern.proc.pid.{parent}": sysctl(*_KERN_PROC_PID, parent),
+        f"kern.procargs2.{parent}": sysctl(*_KERN_PROCARGS2, parent),
+        "proc_listallpids": libproc.proc_listallpids(None, 0) > 0,
+        f"proc_pidinfo of {parent}": pidinfo(parent),
+    }
+    itself = {f"kern.proc.pid.{own}, refused": not sysctl(*_KERN_PROC_PID, own), f"proc_pidinfo of {own}, refused": not pidinfo(own)}
+    return [read for read, answered in (*others.items(), *itself.items()) if answered]
 
 
 def _unread(roots: tuple[Path, ...]) -> bool:

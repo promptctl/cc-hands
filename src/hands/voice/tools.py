@@ -34,6 +34,7 @@ from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.spoken import counted
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
+from hands.sessions.processes import Processes
 from hands.sessions.child import Children
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Lit, LitFailed, Untracked
@@ -77,7 +78,7 @@ _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 
 def acts(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: OwnModel, voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str],
+    sessions: Sessions, processes: Processes, store: SummaryStore, home: Home, recounts: Recounts, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: OwnModel, voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str],
     record: Record,
 ) -> list[Tool[Answer]]:
     """hands' own tools, in the order its schema lists them, each the act alone: [LAW:types-are-the-program] built with
@@ -92,14 +93,14 @@ def acts(
     """
     overlays = Overlays(home)
     return [
-        list_sessions_tool(sessions, overlays, home, environment),
+        list_sessions_tool(sessions, processes, overlays, home, environment),
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store, Lit(sessions.children, environment)),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
-        read_screen_tool(sessions, environment),
+        read_screen_tool(sessions, processes, environment),
         set_overlay_tool(sessions, overlays),
         *permission_tools(sessions),
         catch_up_tool(sessions, home),
@@ -111,12 +112,12 @@ def acts(
         *spotify_tools(spotify.Player(functools.partial(spotify.osascript, sessions.children)), catalogue),
         # A session is started by the daemon, in the environment hands was started in, which is the user's, and is started
         # once the registry holds it, so the brain can stage for it at once; it is closed once the registry no longer does.
-        start_session_tool(sessions.clock, home, record, environment, sessions.live_members),
-        close_session_tool(home, record, sessions),
+        start_session_tool(sessions.clock, processes, home, record, environment, sessions.live_members),
+        close_session_tool(processes, home, record, sessions),
     ]
 
 
-def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool[Result]:
+def list_sessions_tool(sessions: Sessions, processes: Processes, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool[Result]:
     async def list_sessions() -> Result:
         """List the running Claude Code sessions by name, what each is doing, and the permission mode each is in.
 
@@ -134,7 +135,7 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
         listings = sessions.live()
-        panes, focus = await asyncio.gather(tmux.panes(sessions.children, [listing.session.membership.pid for listing in listings], environment), _focus(home))
+        panes, focus = await asyncio.gather(tmux.panes(sessions.children, processes, [listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
             "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
             "focus": focus,
@@ -144,7 +145,7 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
 
 
 
-def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool[Result]:
+def read_screen_tool(sessions: Sessions, processes: Processes, environment: Mapping[str, str]) -> Tool[Result]:
     async def read_screen(session: str) -> Result:
         """What a session's terminal shows now, as text, read off the tmux pane it runs in.
 
@@ -160,7 +161,7 @@ def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool
         live = sessions.live_session(id)
         if live is None:
             return {"error": f"no session {session} is running: list_sessions names the ones that are"}
-        [pane] = await tmux.panes(sessions.children, [live.membership.pid], environment)
+        [pane] = await tmux.panes(sessions.children, processes, [live.membership.pid], environment)
         match pane:
             case Pane(socket=socket, id=pane_id):
                 match await tmux.shown(sessions.children, environment, socket, pane_id):
@@ -999,7 +1000,7 @@ async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind
     return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
-def start_session_tool(clock: Clock, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool[Result]:
+def start_session_tool(clock: Clock, processes: Processes, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool[Result]:
     """[LAW:nothing-unseen] each start is its own session.start event, inside the call's."""
 
     async def start_session(folder: str, model: str = "") -> Result:
@@ -1012,7 +1013,7 @@ def start_session_tool(clock: Clock, home: Home, record: Record, environment: Ma
             model: The model it starts on, as the user named it (opus, sonnet, haiku, or a model id). Empty for Claude Code's own default.
         """
         try:
-            started = await startsession.start(home, Children(clock, record), record, Path(folder), model or None, environment, members)
+            started = await startsession.start(home, Children(clock, record), processes, record, Path(folder), model or None, environment, members)
         except startsession.NotStarted as why:
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}
@@ -1020,14 +1021,14 @@ def start_session_tool(clock: Clock, home: Home, record: Record, environment: Ma
     return tool(start_session)
 
 
-def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool[Result]:
+def close_session_tool(processes: Processes, home: Home, record: Record, sessions: Sessions) -> Tool[Result]:
     """[LAW:nothing-unseen] each close is its own session.close event, inside the call's."""
 
     async def closed(id: SessionId, asked: closesession.Asked) -> Result:
         # Its name as the user knows it, read while it is still listed.
         name = spoken_name(sessions, id)
         try:
-            match await closesession.close(home, sessions.clock, record, sessions.live_session, id, asked):
+            match await closesession.close(processes, home, sessions.clock, record, sessions.live_session, id, asked):
                 case closesession.Closed():
                     return {"closed": name}
                 case closesession.LeftRunning(session=found):

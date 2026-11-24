@@ -3,7 +3,6 @@
 import asyncio
 import os
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -58,6 +57,7 @@ from hands.voice.microphone import Devices
 from hands.voice.ptt import Gate
 from hands.voice.shortcut import Move
 from hands.voice.turnstop import TurnResolved, Words
+from fakeprocesses import Running, processes
 
 
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
@@ -445,40 +445,41 @@ async def test_a_notification_osascript_never_posts_is_refused_and_said() -> Non
     assert errors == [f"osascript did not post 'hello': osascript was killed with SIGKILL, because it ran past {notify.POST_TIMEOUT_SECONDS:.1f}s"]
 
 
-GONE = "a pid no process holds"
+# A run's pid, which a process started long before its heartbeat holds, and one no process holds.
+RUNS, GONE = 4242, 4343
 
 
 @pytest.mark.parametrize(
     ("pipeline", "pid", "written_ago", "crashed"),
     [
         (None, GONE, 0, False),  # never ran
-        pytest.param("stopped", GONE, 0, False, marks=pytest.mark.outside),
-        pytest.param("running", GONE, 0, True, marks=pytest.mark.outside),
-        pytest.param("starting", GONE, 0, True, marks=pytest.mark.outside),
-        ("running", os.getpid(), 0, False),  # up: this is not a restart
-        ("running", os.getpid(), 60, True),  # hung, and something now holds its pid
+        ("stopped", GONE, 0, False),
+        ("running", GONE, 0, True),
+        ("starting", GONE, 0, True),
+        ("running", RUNS, 0, False),  # up: this is not a restart
+        ("running", RUNS, 60, True),  # hung, and something now holds its pid
     ],
 )
 def test_a_run_crashed_when_its_last_heartbeat_was_not_a_stop_and_it_is_not_beating(
-    pipeline: heartbeat.PipelineState | None, pid: int | str, written_ago: int, crashed: bool, tmp_path: Path, dead_pid: Callable[[], int]
+    pipeline: heartbeat.PipelineState | None, pid: int, written_ago: int, crashed: bool, tmp_path: Path
 ) -> None:
     home = Home(tmp_path)
     now = datetime.now(UTC)
     if pipeline is not None:
-        heartbeat.write(home.status, heartbeat.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0, False, (), None))
-    assert crashed_before(SYSTEM, home) is crashed
+        heartbeat.write(home.status, heartbeat.Status(pid, now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0, False, (), None))
+    assert crashed_before(SYSTEM, processes(Running(RUNS)), home) is crashed
 
 
 def test_a_heartbeat_whose_pid_a_later_process_took_is_a_crash(tmp_path: Path) -> None:
     home = Home(tmp_path)
     day_ago = datetime.now(UTC) - timedelta(days=1)
-    # This process holds the pid, but it started long after the run that wrote the heartbeat.
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
-    assert crashed_before(SYSTEM, home) is True
+    # A process holds the pid, but it started long after the run that wrote the heartbeat.
+    heartbeat.write(home.status, heartbeat.Status(RUNS, day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
+    assert crashed_before(SYSTEM, processes(Running(RUNS, start=datetime.now(UTC).timestamp())), home) is True
 
 
 def test_a_heartbeat_that_does_not_parse_is_not_taken_for_a_crash(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
     home.status.write_text("{")
-    assert crashed_before(SYSTEM, home) is False
+    assert crashed_before(SYSTEM, processes(), home) is False
     assert "not counted as a crash" in capsys.readouterr().err
