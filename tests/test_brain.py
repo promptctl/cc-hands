@@ -26,8 +26,9 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from loguru import logger
 
 from hands.core.playback import Bookmark
-from hands.brain import configdir, pinned, process
-from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
+from hands.brain import configdir, mcp, pinned, process
+from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, Request, Unanswerable, parse, serve_mcp
+from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
@@ -100,6 +101,35 @@ async def rpc(server: McpServer, message: dict[str, object]) -> tuple[int, objec
 
 def ran(recorded: Sequence[Entry]) -> list[tuple[str, str, Mapping[str, Fact]]]:
     return [(entry.event, entry.outcome, entry.facts) for entry in recorded if isinstance(entry, WideEvent)]
+
+
+def test_a_posted_body_is_parsed_once_into_the_message_it_is() -> None:
+    assert parse(b'{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "echo", "_meta": {"k": 1}}}') == Request(
+        3, "tools/call", Payload({"name": "echo", "_meta": {"k": 1}}), Payload({"k": 1})
+    )
+    assert parse(b'{"jsonrpc": "2.0", "id": "a", "method": "ping"}') == Request("a", "ping", Payload({}), Payload({}))
+    assert parse(b'{"jsonrpc": "2.0", "method": "notifications/initialized"}') == mcp.Unanswered()
+    assert parse(b'{"jsonrpc": "2.0", "id": 4, "result": {}}') == mcp.Unanswered()
+
+
+def test_a_body_that_is_no_request_hands_can_answer_is_refused_with_the_id_it_could_read() -> None:
+    def refused(body: bytes) -> tuple[int, object, str | None]:
+        match parse(body):
+            case Unanswerable(code, _, id, method):
+                return code, id, method
+            case other:
+                raise AssertionError(other)
+
+    assert refused(b"{not json") == (-32700, None, None)
+    # An integer too long for Python to read and nesting too deep are not JSON either, never a 500.
+    assert refused(b'{"jsonrpc": "2.0", "id": ' + b"9" * 5000 + b', "method": "ping"}') == (-32700, None, None)
+    assert refused(b"[" * 1_000_000) == (-32700, None, None)
+    assert refused(b'[{"jsonrpc": "2.0", "id": 1, "method": "ping"}]') == (-32600, None, None)
+    assert refused(b'{"jsonrpc": "2.0", "id": true, "method": "ping"}') == (-32600, None, "ping")
+    assert refused(b'{"jsonrpc": "2.0", "id": null, "method": "ping"}') == (-32600, None, "ping")
+    assert refused(b'{"jsonrpc": "2.0", "id": 5, "method": 5}') == (-32600, None, None)
+    assert refused(b'{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": "echo"}') == (-32602, 6, "tools/call")
+    assert refused(b'{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"_meta": "toolu_1"}}') == (-32602, 7, "tools/call")
 
 
 @pytest.mark.outside

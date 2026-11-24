@@ -22,6 +22,7 @@ from hands.clock import Clock
 from hands.core.bearer import bearer, bears
 from hands.core.trace import Span
 from hands.sessions.audit import Record, said
+from hands.sessions.payload import NotJson, Payload, Rejected
 from hands.sessions.wide import annotate, begun, continuing, fail, unit
 from hands.voice.tool import Tool
 
@@ -94,21 +95,21 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
 
     async def post(request: web.Request) -> web.Response:
         match parse(await request.read()):
-            case Request(id, "tools/call", {"name": str(name)} as params) if name in by_name and (arguments := _arguments(params)) is not None:
-                return web.json_response(await call(id, by_name[name], arguments, _text(_object(params.get("_meta")).get(TOOL_USE_ID))))
-            case Request(id, method, params):
+            case Request(id, "tools/call", Payload({"name": str(name)} as params), meta) if name in by_name and (arguments := _arguments(params)) is not None:
+                return web.json_response(await call(id, by_name[name], arguments, _text(meta.fields.get(TOOL_USE_ID))))
+            case Request(id, method, Payload(params)):
                 # [LAW:nothing-unseen] every request but a tool's run, which is the tool's own event, is one event.
                 with unit("mcp.request", record, begun(clock)):
                     annotate(method=method)
                     answered = answer(id, method, params)
                 return web.json_response(answered)
-            case Unanswerable(code, why, method):
-                # Answered by the id JSON-RPC gives a refusal of a message it cannot take an id from: none. A 202 would
-                # leave a client that sent a request waiting on an answer that never comes.
+            case Unanswerable(code, why, id, method):
+                # Answered, by none where no id could be read from it: a 202 would leave a client that sent a request
+                # waiting on an answer that never comes.
                 with unit("mcp.request", record, begun(clock)):
                     annotate(method=method)
                     fail(why)
-                return web.json_response(_error(None, code, why))
+                return web.json_response(_error(id, code, why))
             case Unanswered():
                 return web.Response(status=202)
 
@@ -179,7 +180,9 @@ type RequestId = str | int
 class Request:
     id: RequestId
     method: str
-    params: Mapping[str, object]
+    params: Payload
+    # The params' _meta, where a client says what the request is part of: empty where it names none.
+    meta: Payload
 
 
 @dataclass(frozen=True)
@@ -189,10 +192,12 @@ class Unanswered:
 
 @dataclass(frozen=True)
 class Unanswerable:
-    """A message refused before there is a request to answer: not JSON, an id JSON-RPC takes none of, or no message."""
+    """A message refused before there is a request to answer: not JSON, no message, an id JSON-RPC takes none of, or
+    params that are no object."""
 
     code: int
     why: str
+    id: RequestId | None
     method: str | None
 
 
@@ -200,24 +205,31 @@ type Message = Request | Unanswered | Unanswerable
 
 
 def parse(body: bytes) -> Message:
-    """A POSTed body as the one JSON-RPC message it is. [LAW:parse-dont-validate] the id is parsed here, once, so no
-    request reaches a method with an id the client could not be answered by."""
+    """A POSTed body as the one JSON-RPC message it is. [LAW:parse-dont-validate] the id, the params and their _meta
+    are parsed here, once, by hands' one reader of JSON, so no request reaches a method with an id the client could
+    not be answered by, or with params that are no object."""
     try:
-        message = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        return Unanswerable(PARSE_ERROR, f"not JSON: {error}", None)
-    match message:
+        message = Payload.parse(body)
+    except NotJson as error:
+        return Unanswerable(PARSE_ERROR, str(error), None, None)
+    except Rejected as error:
+        # A batch among them: no version this server speaks takes one.
+        return Unanswerable(INVALID_REQUEST, f"no JSON-RPC message: {error}", None, None)
+    match message.fields:
         case {"method": str(method), "id": id}:
             match _request_id(id):
                 case None:
-                    return Unanswerable(INVALID_REQUEST, f"a request's id is a string or an integer, never {json.dumps(id)}", method)
+                    return Unanswerable(INVALID_REQUEST, f"a request's id is a string or an integer, never {json.dumps(id)}", None, method)
                 case parsed:
-                    return Request(parsed, method, _params(message))
+                    try:
+                        params = Payload.of(message.fields.get("params", {}), "its params")
+                        return Request(parsed, method, params, Payload.of(params.fields.get("_meta", {}), "its params' _meta"))
+                    except Rejected as error:
+                        return Unanswerable(INVALID_PARAMS, str(error), parsed, method)
         case {"method": str()} | {"id": str() | int(), "result": _} | {"id": str() | int(), "error": _}:
             return Unanswered()
         case _:
-            # A batch among them: no version this server speaks takes one.
-            return Unanswerable(INVALID_REQUEST, f"no JSON-RPC request, notification or answer: {_kind(message)}", None)
+            return Unanswerable(INVALID_REQUEST, "no JSON-RPC message: an object with no method named in text and no answer", None, None)
 
 
 def _request_id(value: object) -> RequestId | None:
@@ -229,20 +241,6 @@ def _request_id(value: object) -> RequestId | None:
             return value
         case _:
             return None
-
-
-def _kind(value: object) -> str:
-    match value:
-        case dict():
-            return "an object with no method"
-        case list():
-            return "an array"
-        case _:
-            return f"a {json.dumps(value)[:40]}"
-
-
-def _params(message: Mapping[str, object]) -> Mapping[str, object]:
-    return _object(message.get("params"))
 
 
 def _object(value: object) -> Mapping[str, object]:
