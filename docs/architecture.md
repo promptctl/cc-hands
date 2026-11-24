@@ -1771,10 +1771,12 @@ turn after the brain listed it is left alone, even before its busy status is rea
 voice-activity frames, so the key is the VAD: every microphone frame carries the key
 it was captured under, and the clip owner (`hands.voice.clipowner`) pushes the VAD frames
 where those keys change, numbering each clip, so the turn the strategies see and the audio
-every model hears are cut at the same frame. How a turn ended is not a key position: the gate counts the
-turns it has sent and thrown away, every frame carries both counts, and the clip owner
-ends its clip as they move. A frame is captured every 20 ms, and a turn can end and the next
-arm between two of them. The key is also the mute: microphone bytes become silence
+every model hears are cut at the same frame. How a turn ended is not a key position: the gate keeps, in order,
+how every turn it has ended ended, sent or thrown away, and every frame carries that record. The clip owner
+ends its clip as the record grows, by the fate it names for it. A frame is captured every 20 ms, and several
+turns can end between two of them: the clip open ends first, and each other turn was over before any
+of it was heard, which the owner says as `TurnUnheard` and records as a `turn.unheard` event, so every turn the gate
+ends is a clip or that. The key is also the mute: microphone bytes become silence
 of the same length unless the key is pressed. Frames flow at full rate either way;
 only their content changes. The microphone opens on the press, and a clip's audio
 begins there, so words said before the press means talk are kept; they are thrown
@@ -2129,6 +2131,13 @@ clip, so the page places them by where they fall: each names the milestones it m
 come after, and until hands says it took the clip shown, nothing else told is of it. A milestone of a clip the
 page has let go of is not shown. A call's `phone.call` event counts the milestones its
 page was told.
+
+hands answers every press of the page's exactly once: `opened`, naming the press and
+its clip, or `unopened`, naming the press and why, which is a turn that began and ended
+between two of the page's messages (a tap shorter than one), so the clip owner never heard it open.
+Every clip ends exactly once, as `released` or as `discarded`, naming the clip. The page
+says `Heard nothing from that press.` for an unopened press and for a discarded clip, and
+the milestones after it are of no clip it shows.
 
 The channel also carries the transcript (`hands.voice.transcript`), which the page
 keeps under a button, hidden until asked for. Every message on it is one JSON

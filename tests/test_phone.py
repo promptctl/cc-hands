@@ -32,8 +32,10 @@ from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
 from hands.voice.clips import Clip
-from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
-from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, Quiet, kind, parse_said, quiet_message
+from hands.voice.clipowner import ClipOwner
+from hands.voice.latency import LatencyObserver
+from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
+from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Opened, Phone, Quiet, Unopened, answer, kind, parse_said, quiet_message
 from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -51,7 +53,8 @@ from hands.voice.pinnedfile import Release
 from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from hands.voice.synthesis import Ended, Synthesis
-from conftest import events
+from conftest import events, running
+from test_clipowner import Scripted
 
 
 def unused_gallery() -> Gallery:
@@ -234,7 +237,7 @@ LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spok
 # All a turn answered from the phone tells the page, in its order: the clip its press opened, as the gate's first turn,
 # released, and the turn's milestones.
 PRESSED = Clip(3, "phone button")
-TOLD: list[Told] = [ClipOpened(PRESSED, 0), ClipReleased(PRESSED), *get_args(Milestone)]
+TOLD: list[Told] = [ClipOpened(PRESSED, 0), ClipReleased(PRESSED), ClipDiscarded(PRESSED), *get_args(Milestone)]
 
 
 @pytest.mark.outside
@@ -249,6 +252,7 @@ async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_
     assert [json.loads(cast(str, told)) for told in call.page.told] == [
         {"kind": "opened", "press": 1, "clip": 3},
         {"kind": "milestone", "milestone": "released", "clip": 3},
+        {"kind": "milestone", "milestone": "discarded", "clip": 3},
         *({"kind": "milestone", "milestone": milestone} for milestone in get_args(Milestone)),
         {"kind": "heard", "text": "Is the parser fixed?"},
         {"kind": "saying", "text": "It is.", "chars_per_sec": 15.0},
@@ -273,17 +277,89 @@ async def test_each_press_is_told_the_clip_of_the_turn_it_opened_whenever_that_c
     assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "opened", "press": 2, "clip": 5}, {"kind": "opened", "press": 1, "clip": 4}]
 
 
+@pytest.mark.outside
+async def test_each_press_is_answered_once_under_its_own_number_as_opened_or_as_unopened_with_why(call: Call) -> None:
+    for said in ["press", "release", "press"]:
+        call.page.send(said)
+    await call.until(lambda: call.key.gate.turn == 1 and call.key.gate.key == "down")
+    unopened = TurnUnopened(0, UNHEARD)
+    for told in [unopened, unopened, ClipOpened(Clip(5, "phone button"), 1), ClipOpened(Clip(5, "phone button"), 1), TurnUnopened(1, UNHEARD)]:
+        call.phone.tell(told)
+    await call.until(lambda: len(call.page.told) == 2)
+    # A turn that is not one of the page's presses, the desk's, is nothing of the page's.
+    call.phone.tell(TurnUnopened(7, UNHEARD))
+    await call.phone.hang_up("stopped")
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [
+        {"kind": "unopened", "press": 1, "why": UNHEARD},
+        {"kind": "opened", "press": 2, "clip": 5},
+    ]
+
+
+@asynccontextmanager
+async def hearing(call: Call) -> AsyncGenerator[list[KeyedAudio]]:
+    """The call's microphone fed to a clip owner whose observer tells the call's page, as hands' pipeline is wired: the
+    frames it was given, in order. A clip it sends is transcribed to nothing."""
+    owner = ClipOwner(SYSTEM, Scripted([None]), (), call.recorded.append)
+    given: list[KeyedAudio] = []
+    async with running([owner], [LatencyObserver(SYSTEM, owner, call.phone.tell)]) as run:
+
+        async def feed() -> None:
+            while True:
+                given.append(await call.phone.heard.get())
+                await run.worker.queue_frame(given[-1])
+
+        feeding = asyncio.create_task(feed())
+        try:
+            yield given
+        finally:
+            feeding.cancel()
+
+
+@pytest.mark.outside
+async def test_a_press_and_release_with_no_audio_between_them_are_answered_unopened_and_the_next_press_under_its_own_number(call: Call) -> None:
+    async with hearing(call):
+        # The turn nothing was heard in is made by the order of the page's messages: no audio is sent between its two buttons.
+        for said in [quiet_message(960), "press", "release", quiet_message(960), "press", LOUD, "release", quiet_message(960)]:
+            call.page.send(said)
+        await call.until(lambda: len(call.page.told) == 3)
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [
+        {"kind": "unopened", "press": 1, "why": UNHEARD},
+        {"kind": "opened", "press": 2, "clip": 1},
+        {"kind": "milestone", "milestone": "released", "clip": 1},
+    ]
+
+
+@pytest.mark.outside
+async def test_a_clip_thrown_away_is_told_discarded_naming_it_and_never_released(call: Call) -> None:
+    async with hearing(call) as given:
+        for said in [quiet_message(960), "press", LOUD]:
+            call.page.send(said)
+        await call.until(lambda: any(frame.key == "down" and any(frame.audio) for frame in given))
+        call.key.move("drop", "phone button")
+        call.page.send(quiet_message(960))
+        await call.until(lambda: len(call.page.told) == 2)
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [
+        {"kind": "opened", "press": 1, "clip": 1},
+        {"kind": "milestone", "milestone": "discarded", "clip": 1},
+    ]
+
+
 async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:
     """A turn taken at the desk passes the same milestones, and no page is waiting on it."""
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
     phone.tell(ClipReleased(Clip(1, "shortcut")))
 
 
+def test_a_press_is_answered_with_the_clip_its_turn_opened_or_with_why_it_opened_none() -> None:
+    assert answer(2, ClipOpened(Clip(5, "phone button"), 1)) == Opened(2, 5)
+    assert answer(1, TurnUnopened(0, UNHEARD)) == Unopened(1, UNHEARD)
+
+
 def test_the_page_knows_every_milestone_hands_tells_it() -> None:
     """The page says what each milestone means by name, and names one it does not know as an error on its face."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
-    assert [milestone for milestone in ("released", *get_args(Milestone)) if f'"{milestone}": ' not in table] == []
+    assert [milestone for milestone in ("released", "discarded", *get_args(Milestone)) if f'"{milestone}": ' not in table] == []
 
 
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
@@ -300,7 +376,7 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     call.page.channel.close()
     await call.until(lambda: call.key.gate.place == "desk")
     # The clip open at the phone is sent as it stands.
-    assert (call.key.gate.key, call.key.gate.sent, call.key.gate.dropped) == ("up", 1, 0)
+    assert (call.key.gate.key, call.key.gate.ended) == ("up", ("sent",))
     await asyncio.wait_for(playing, 1)
     [event] = calls(call.recorded)
     assert (event.outcome, event.parent_id, event.facts["remote"]) == ("ok", None, "192.168.7.20")
@@ -456,7 +532,7 @@ async def heard_from(script: Sequence[bytes | str]) -> list[tuple[str, int, int,
             up.page.send(said)
         # The last press is the script's end: the channel is ordered, so everything before it has been heard.
         await up.until(lambda: up.phone.moves.qsize() == script.count("press") + script.count("release") + 1)
-        return [(frame.key, frame.sent, frame.turn, frame.sample_rate, frame.audio) for frame in up.heard()]
+        return [(frame.key, frame.ended.count("sent"), frame.turn, frame.sample_rate, frame.audio) for frame in up.heard()]
 
 
 @pytest.mark.outside

@@ -17,8 +17,8 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import Clip
 from hands.voice.latency import LatencyObserver
-from hands.voice.milestone import ClipOpened, ClipReleased, Told
-from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, TurnOpened, TurnResolved, Words
+from hands.voice.milestone import UNHEARD, ClipDiscarded as Discarded, ClipOpened, ClipReleased, Told, TurnUnopened
+from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, TurnOpened, TurnResolved, TurnUnheard, Words
 
 # The clip owner, and the boundary after it: a frame is pushed first by the processor that made it, and every push of
 # it after that is the same frame crossing the next boundary.
@@ -100,9 +100,19 @@ async def test_words_typed_open_no_turn_of_the_key_and_are_told_only_as_released
     assert await told(TurnOpened(clip=typed), ClipSent(clip=typed)) == [ClipReleased(typed)]
 
 
-async def test_a_clip_thrown_away_is_never_told_as_released() -> None:
-    discarded = ClipDiscarded()
-    assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == [ClipOpened(clip(1), 0)]
+def discarded(number: int) -> ClipDiscarded:
+    return ClipDiscarded(clip=clip(number))
+
+
+async def test_a_clip_thrown_away_is_told_once_as_discarded_naming_it_and_never_as_released() -> None:
+    thrown = discarded(1)
+    assert await told(opened(1), thrown, thrown, resolved(1), UserStoppedSpeakingFrame()) == [ClipOpened(clip(1), 0), Discarded(clip(1))]
+
+
+async def test_a_turn_the_clip_owner_never_heard_open_is_told_once_as_unopened_with_why_and_opens_no_window() -> None:
+    unheard = TurnUnheard(turn=4)
+    assert await told(unheard, unheard, BotStartedSpeakingFrame()) == [TurnUnopened(4, UNHEARD)]
+    assert await logged(unheard, BotStartedSpeakingFrame()) == ["latency: first audio, answering no user turn"]
 
 
 async def test_a_turn_with_no_words_in_it_is_told_and_what_hands_says_next_is_no_answer_to_it() -> None:
@@ -154,13 +164,13 @@ async def test_another_clip_done_with_says_nothing_of_the_clip_still_being_trans
         opened(1),
         sent(1),
         opened(2),
-        ClipDiscarded(),
+        discarded(2),
         resolved(2),
         Words(text="hello", user_id="u", timestamp="t"),
         resolved(1),
         UserStoppedSpeakingFrame(),
     )
-    assert milestones == [*by_the_key(1), ClipOpened(clip(2), 1), "transcript"]
+    assert milestones == [*by_the_key(1), ClipOpened(clip(2), 1), Discarded(clip(2)), "transcript"]
 
 
 async def test_a_clip_with_no_words_in_a_turn_that_has_some_is_still_answered_and_timed_from_its_release() -> None:
@@ -192,12 +202,12 @@ async def test_a_clip_thrown_away_after_a_turn_was_sent_says_nothing_of_the_repl
         resolved(1),
         UserStoppedSpeakingFrame(),
         opened(2),
-        ClipDiscarded(),
+        discarded(2),
         resolved(2),
         UserStoppedSpeakingFrame(),
         BotStartedSpeakingFrame(),
     )
-    assert milestones == [*by_the_key(1), "transcript", ClipOpened(clip(2), 1), "first audio"]
+    assert milestones == [*by_the_key(1), "transcript", ClipOpened(clip(2), 1), Discarded(clip(2)), "first audio"]
     assert "after key release" in lines[-1]
 
 
@@ -280,7 +290,7 @@ async def test_nothing_is_measured_from_a_release_that_never_happened(frame: Fra
 
 
 async def test_a_clip_thrown_away_is_no_release_to_measure_a_narration_from() -> None:
-    lines = await logged(opened(1), ClipDiscarded(), BotStartedSpeakingFrame())
+    lines = await logged(opened(1), discarded(1), BotStartedSpeakingFrame())
     assert lines == ["latency: first audio, answering no user turn"]
 
 

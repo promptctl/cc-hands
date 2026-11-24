@@ -22,9 +22,10 @@ from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import KEPT_SECONDS
+from hands.voice.clips import KEPT_SECONDS, Clip
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
+from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, TurnUnopened
 from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
@@ -331,7 +332,7 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
     # What hands heard: the tone inside the turns, and the second clip ended by the silence that follows it.
     frames: list[KeyedAudio] = []
     async with asyncio.timeout(10):
-        while not frames or frames[-1].sent < 2:
+        while not frames or len(frames[-1].ended) < 2:
             await asyncio.sleep(0.05)
             while not hands.phone.heard.empty():
                 frames.append(hands.phone.heard.get_nowait())
@@ -342,6 +343,39 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
     ended = event.facts["ended"]
     assert isinstance(ended, CallLeft) and ended.rejected == 0 and ended.held_back > 0
 
+
+
+async def test_the_page_says_it_heard_nothing_from_a_press_hands_opened_no_clip_for_and_from_a_clip_hands_threw_away(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(hands.address("/"))
+    await page.get_by_role("button", name="Connect").click()
+    await expect(page.locator("#state")).to_have_text("Connected. Hold the button and speak.")
+    talk = (await page.locator("#talk").bounding_box()) or {}
+    await page.mouse.move(talk["x"] + talk["width"] / 2, talk["y"] + talk["height"] / 2)
+
+    async def until_moved(count: int) -> None:
+        """Until hands has taken `count` moves of the page's button, so what it tells of a press finds the press."""
+        async with asyncio.timeout(10):
+            while hands.phone.moves.qsize() < count:
+                await asyncio.sleep(0.01)
+
+    # hands numbers the call's presses as the page does: the first press opened the gate's turn 0, and says no clip came of it.
+    await page.mouse.down()
+    await until_moved(1)
+    hands.phone.tell(TurnUnopened(0, UNHEARD))
+    await expect(page.locator("#state")).to_have_text("Heard nothing from that press.")
+    await page.mouse.up()
+    await until_moved(2)
+    # The page keeps what hands said of the press once the button is let go.
+    await expect(page.locator("#state")).to_have_text("Heard nothing from that press.")
+    # The second press opened turn 1 and a clip of its own, which hands then threw away.
+    await page.mouse.down()
+    await until_moved(3)
+    thrown = Clip(9, "phone button")
+    hands.phone.tell(ClipOpened(thrown, 1))
+    await expect(page.locator("#state")).to_have_text("Listening…")
+    hands.phone.tell(ClipDiscarded(thrown))
+    await expect(page.locator("#state")).to_have_text("Heard nothing from that press.")
+    await page.mouse.up()
 
 
 async def test_stop_stops_the_turn_the_page_shows_and_says_what_came_of_it(browser: Opened, hands: Hands) -> None:

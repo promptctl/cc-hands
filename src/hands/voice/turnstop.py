@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pipecat.frames.frames import (
     DataFrame,
     Frame,
+    SystemFrame,
     TranscriptionFrame,
     UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
@@ -55,8 +56,21 @@ class ClipSent(VADUserStoppedSpeakingFrame):
     clip: Clip
 
 
+@dataclass(kw_only=True)
 class ClipDiscarded(VADUserStoppedSpeakingFrame):
-    """The user stopped speaking, and what the clip recorded is thrown away: nothing of it is transcribed or sent."""
+    """The user stopped speaking, and what this clip recorded is thrown away: nothing of it is transcribed or sent."""
+
+    clip: Clip
+
+
+@dataclass(kw_only=True)
+class TurnUnheard(SystemFrame):
+    """The gate ended this turn, numbered as it numbers them (`hands.voice.ptt.Gate.turn`), and the clip owner heard none of it:
+    it began and ended between two of the microphone's frames, so no clip of it was opened. A tap shorter than a frame is
+    one. Pushed by the clip owner alone, once for each such turn, in the order the gate ended them. A system frame, as the VAD
+    frames `ClipSent` and `ClipDiscarded` are, so it keeps its order with them."""
+
+    turn: int
 
 
 class Words(TranscriptionFrame, UninterruptibleFrame):

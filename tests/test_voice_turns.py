@@ -234,14 +234,19 @@ class Rig:
         for key in keys:
             match self.gate.key, key:
                 case "down", "up" | "listening" | "arming":
-                    self.gate = replace(self.gate, sent=self.gate.sent + 1)
+                    self.gate = replace(self.gate, ended=(*self.gate.ended, "sent"))
                 case "down", "dropped":
-                    self.gate = replace(self.gate, dropped=self.gate.dropped + 1)
+                    self.gate = replace(self.gate, ended=(*self.gate.ended, "dropped"))
                 case _:
                     pass
             self.gate = replace(self.gate, key="up" if key == "dropped" else key, opened=by)
             frames.append(self.gate.framed(sound, sound if captured is None else captured, played, 16000, 1, place_of(by)))
         await self.worker.queue_frames(frames)
+
+    async def play(self, timeline: "Timeline") -> None:
+        """The frames of a timeline, after which the rig's gate is the timeline's: the turns it ended are on the gate's record."""
+        self.gate = timeline.gate
+        await self.worker.queue_frames(timeline.frames)
 
     async def capture(self, gate: Gate, sound: bytes) -> None:
         """A frame captured under `gate`, as it stands after whatever moves made it."""
@@ -786,6 +791,8 @@ class Timeline:
 
     frames: list[KeyedAudio]
     moves: list[Move]
+    # The gate as the last frame was captured under it.
+    gate: Gate
 
     def clip_frames(self) -> int:
         """How many frames were captured with the turn open or its press arming: the audio the turn is made of."""
@@ -826,7 +833,7 @@ def play_out[S, E](
                         moves.append(move)
                         gate = gate.after(move, by)
         frames.append(gate.framed(SPEECH, SPEECH, None, 16000, 1, place_of(by)))
-    return Timeline(frames, moves)
+    return Timeline(frames, moves, gate)
 
 
 def shortcut_timeline(told: Sequence[tuple[float, KeyEvent]], seconds: float) -> Timeline:
@@ -847,7 +854,7 @@ def engaged_conversation(told: Sequence[tuple[float, desk.Event]], seconds: floa
 async def test_a_shortcut_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
     timeline = shortcut_timeline([(0.0, Pressed(0.0)), (180.0, Released())], 181.0)
     assert timeline.moves == ["arm", "start", "stop"]
-    await rig.worker.queue_frames(timeline.frames)
+    await rig.play(timeline)
     await rig.texts.put("three minutes of dictation")
     assert await rig.everything_sent(clips=1) == ["three minutes of dictation"]
     # Every frame from the press to the release, then Pipecat's silence: 180 s of it, none cut.
@@ -859,7 +866,7 @@ async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whol
     engage = [(1.0, desk.Chosen("engaged"))]
     timeline = engaged_conversation([*engage, (2.0, desk.SpeechStarted(2.0)), (182.0, desk.TurnEnded("verdict"))], 183.0)
     assert timeline.moves == ["listen", "arm", "start", "stop"]
-    await rig.worker.queue_frames(timeline.frames)
+    await rig.play(timeline)
     await rig.texts.put("three minutes of conversation")
     assert await rig.everything_sent(clips=1) == ["three minutes of conversation"]
     # The turn is all 180 s it was open, after the second the desk heard before it.
@@ -872,7 +879,7 @@ async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it
     # Pressed, and never released: a key stuck down, or a release macOS never reported.
     timeline = shortcut_timeline([(0.0, Pressed(0.0))], 5.0)
     assert timeline.moves == ["arm", "start", "timeout"]
-    await rig.worker.queue_frames(timeline.frames)
+    await rig.play(timeline)
     await rig.texts.put("what I said before the limit")
     assert await rig.everything_sent(clips=1) == ["what I said before the limit"]
     # The three seconds up to the limit, every one; after it the microphone is closed, and the room is no part of it.
@@ -888,7 +895,7 @@ async def test_an_engaged_turn_that_never_ends_is_sent_at_the_limit_with_all_it_
     # Speech that never stops and is never judged ended.
     timeline = engaged_conversation([*engage, (2.0, desk.SpeechStarted(2.0))], 6.0)
     assert timeline.moves == ["listen", "arm", "start", "timeout"]
-    await rig.worker.queue_frames(timeline.frames)
+    await rig.play(timeline)
     await rig.texts.put("what I said before the limit")
     assert await rig.everything_sent(clips=1) == ["what I said before the limit"]
     # The three seconds up to the limit, every one, after the second the desk heard before it.
@@ -989,7 +996,7 @@ async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, mon
     # The least a transcription is given, made far shorter than this turn's transcription takes.
     monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
     timeline = shortcut_timeline([(0.0, Pressed(0.0)), (180.0, Released())], 181.0)
-    await rig.worker.queue_frames(timeline.frames)
+    await rig.play(timeline)
     await rig.until(lambda: len(rig.heard) == 1)
     await asyncio.sleep(0.5)
     await rig.texts.put("three minutes of dictation")

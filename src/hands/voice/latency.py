@@ -27,7 +27,8 @@ from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.frame_processor import FrameProcessor
 
 from hands.clock import Clock
-from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
+from hands.voice import turnstop
+from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
 from hands.voice.turnstop import ClipSent, KeyOpened, Words
 
 # The first arrival of each of these frame types in an open window is a milestone. `first audio` is not among them:
@@ -75,8 +76,8 @@ class Turn:
 
 
 class LatencyObserver(BaseObserver):
-    """Log each milestone's distance from the key release, per turn, and tell `told` each clip `clips` opens and sends, and
-    each milestone of a turn, as it lands."""
+    """Log each milestone's distance from the key release, per turn, and tell `told` each clip `clips` opens, sends or
+    discards, each turn it never heard, and each milestone of a turn, as it lands."""
 
     def __init__(self, clock: Clock, clips: FrameProcessor, told: Callable[[Told], None]) -> None:
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
@@ -98,10 +99,17 @@ class LatencyObserver(BaseObserver):
         frame = data.frame
         # [LAW:one-source-of-truth] a clip opens and ends once, as the clip owner pushes it: every later push is the same
         # frame crossing the next boundary, and may come after the next clip has opened. A clip thrown away, a wake that
-        # asked nothing, is no release: nothing of it is sent, so there is no reply to time from it.
+        # asked nothing, is no release: nothing of it is sent, so there is no reply to time from it, and a turn the owner
+        # never heard open has no clip to time anything from.
         match frame:
             case KeyOpened(clip=clip, turn=turn) if data.source is self._clips:
                 self._told(ClipOpened(clip, turn))
+                return
+            case turnstop.ClipDiscarded(clip=clip) if data.source is self._clips:
+                self._told(ClipDiscarded(clip))
+                return
+            case turnstop.TurnUnheard(turn=turn) if data.source is self._clips:
+                self._told(TurnUnopened(turn, UNHEARD))
                 return
             case ClipSent(clip=clip) if data.source is self._clips:
                 # The release is what the window's numbers are measured from, so it is also what opens the window.

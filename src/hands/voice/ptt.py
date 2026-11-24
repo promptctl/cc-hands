@@ -28,7 +28,7 @@ from hands.clock import Clock
 from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
-from hands.voice.clips import Played
+from hands.voice.clips import Fate, Played
 from hands.voice.shortcut import Move
 from hands.voice.trigger import Trigger, by_hand, place_of
 
@@ -53,29 +53,31 @@ class KeyedAudio(InputAudioRawFrame):
     # None at the phone, whose own canceller is told what it plays, and hands is not.
     played: Played
     key: Key
-    # How many turns the gate has sent, and thrown away, by this frame.
-    sent: int
-    dropped: int
-    # The gate's number for the turn this audio is of, or the next to open (`Gate.turn`).
-    turn: int
+    # How every turn the gate has ended ended, in order, by this frame (`Gate.ended`).
+    ended: tuple[Fate, ...]
     place: Place
     # The trigger that opened the last clip, as it opened it.
     opened: Trigger
+
+    @property
+    def turn(self) -> int:
+        """The gate's number for the turn this audio is of, or the next to open (`Gate.turn`)."""
+        return len(self.ended)
 
 
 @dataclass(frozen=True)
 class Gate:
     """The pure push-to-talk state: which position the key is in, the place hands is at, whether the desk listens
-    between turns, and how many turns have ended each way."""
+    between turns, and how each turn it has ended ended."""
 
     key: Key = "up"
     place: Place = "desk"
     # [LAW:one-source-of-truth] listening between turns is the desk's: at the phone, its button alone opens the microphone.
     listens: bool = False
-    # [LAW:no-ambient-temporal-coupling] how each turn ended is counted, not left in a key position: a frame is captured
-    # every 20 ms and a turn can end and the next arm between two of them, so the clip owner ends each turn as these move.
-    sent: int = 0
-    dropped: int = 0
+    # [LAW:no-ambient-temporal-coupling] how each turn ended is recorded in order, not left in a key position: a frame is
+    # captured every 20 ms and several turns can end between two of them, so the clip owner reads each turn's end, and which
+    # it was, off this record as it grows.
+    ended: tuple[Fate, ...] = ()
     # [LAW:no-ambient-temporal-coupling] the trigger that opened the last turn travels with the audio, as the key does, so
     # what reads a clip's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
     opened: Trigger = "shortcut"
@@ -122,15 +124,15 @@ class Gate:
                 # where it already is, the clip open goes on.
                 return replace(self.moved(at), key="down", opened=by)
             case "stop" | "timeout":
-                return replace(self, key=rest, place=at, sent=self.sent + 1)
+                return replace(self, key=rest, place=at, ended=(*self.ended, "sent"))
             case "drop":
-                return replace(self, key=rest, place=at, dropped=self.dropped + (self.key == "down"))
+                return replace(self, key=rest, place=at, ended=(*self.ended, "dropped"))
 
     def moved(self, to: Place) -> "Gate":
         """The gate once hands is at `to`: a clip open at the place it leaves is sent as it stands."""
         if to == self.place:
             return self
-        return replace(self, key=self._rest(to, self.listens), place=to, sent=self.sent + (self.key == "down"))
+        return replace(self, key=self._rest(to, self.listens), place=to, ended=(*self.ended, "sent") if self.turn_open else self.ended)
 
     def called(self, to: Place) -> "Gate":
         """The gate once a call has come, `to` the phone, or gone, `to` the desk.
@@ -148,7 +150,7 @@ class Gate:
     def turn(self) -> int:
         """The gate's number for the turn open, or the next to open: how many turns it has ended. A press learns the turn
         it opens from it, and the clip owner numbers the clip the turn opens with it, so the two are bound exactly."""
-        return self.sent + self.dropped
+        return len(self.ended)
 
     @staticmethod
     def _rest(place: Place, listens: bool) -> Key:
@@ -177,7 +179,7 @@ class Gate:
         `played` over it, tagged with this gate. What was played is not the microphone's, so the key mutes none of it."""
         return KeyedAudio(
             audio=self.audible(audio), captured=self.audible(captured), played=played, sample_rate=sample_rate, num_channels=num_channels,
-            key=self.key, sent=self.sent, dropped=self.dropped, turn=self.turn, place=place, opened=self.opened,
+            key=self.key, ended=self.ended, place=place, opened=self.opened,
         )
 
 
@@ -217,7 +219,7 @@ class PushToTalk:
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
             self._modality = modality_at(gate.place)
-            ended("place.moved", self._record, begun(self._clock), None, before=before.place, after=gate.place, by=by, sent=gate.sent != before.sent)
+            ended("place.moved", self._record, begun(self._clock), None, before=before.place, after=gate.place, by=by, sent="sent" in gate.ended[len(before.ended) :])
 
     @property
     def gate(self) -> Gate:

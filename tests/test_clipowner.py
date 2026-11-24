@@ -21,7 +21,7 @@ from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip, Fate, Heard, Hearing, Hearings, Recording, Reference, Sound, Playhead, Synthesis, Transcriber, voices
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger
-from hands.voice.turnstop import SpeechHeard, TurnOpened, TurnResolved, Typed, Words
+from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
 
 
 @dataclass
@@ -76,12 +76,20 @@ class Seen(FrameProcessor):
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self.seen: list[tuple[object, ...]] = []
+        # How each turn the gate ended was said to end, as (kind, clip or turn number), in the order it was said.
+        self.ends: list[tuple[str, int]] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
             case TurnOpened(clip=clip):
                 self.seen.append(("opened", clip.number))
+            case ClipSent(clip=clip):
+                self.ends.append(("sent", clip.number))
+            case ClipDiscarded(clip=clip):
+                self.ends.append(("discarded", clip.number))
+            case TurnUnheard(turn=turn):
+                self.ends.append(("unheard", turn))
             case TurnResolved(clip=clip):
                 self.seen.append(("resolved", clip.number))
             case Words(text=text):
@@ -129,6 +137,11 @@ async def rigged(transcriber: Transcriber, listeners: Sequence[Heeding] = (), cl
     owner, seen = ClipOwner(clock, transcriber, listeners, recorded.append), Seen()
     async with running([owner, seen]) as run:
         yield Rig(run, owner, seen, recorded)
+
+
+def tap(gate: Gate, by: Trigger = "shortcut") -> Gate:
+    """The gate once a press and its release both came, with no frame captured between them."""
+    return gate.after("start", by).after("stop", by)
 
 
 def frame_of(n: int) -> bytes:
@@ -491,3 +504,34 @@ async def test_a_clip_the_hand_opened_was_cut_as_it_opened_so_its_close_cuts_not
         # Hands played over it, so its transcriber is given what hands played, to hear only the people in it by.
         [given] = transcriber.given
         assert voices(given) == ("charles",)
+
+
+async def test_a_turn_that_opens_and_ends_between_two_frames_is_said_unheard_once_and_the_next_clip_is_numbered_as_ever() -> None:
+    async with rigged(Scripted([None])) as rig:
+        await rig.frame(rig.gate, frame_of(1))
+        await rig.frame(tap(rig.gate), frame_of(2))
+        await rig.frame(rig.gate, frame_of(3))
+        await rig.clip([frame_of(4)])
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+    assert rig.seen.ends == [("unheard", 0), ("sent", 1)]
+    # Each is an event of its own, so a turn nothing was heard in is never mistaken for one that never ran.
+    assert [(event.facts["turn"], event.facts["fate"]) for event in rig.events("turn.unheard")] == [(0, "sent")]
+
+
+async def test_every_turn_the_gate_ended_between_two_frames_is_said_unheard_in_the_order_it_ended() -> None:
+    async with rigged(Scripted([])) as rig:
+        await rig.frame(rig.gate, frame_of(1))
+        await rig.frame(tap(tap(rig.gate)), frame_of(2))
+        await rig.until(lambda: len(rig.seen.ends) == 2)
+    assert rig.seen.ends == [("unheard", 0), ("unheard", 1)]
+
+
+async def test_a_clip_thrown_away_is_said_discarded_and_never_sent_though_a_turn_ended_beside_it_before_the_next_frame() -> None:
+    """The clip open is dropped, and a tap opens and ends, with no frame between: the record says in order how each ended, so
+    the clip is not taken for the one the totals alone would call sent."""
+    async with rigged(Scripted([])) as rig:
+        down = rig.gate.after("start", "shortcut")
+        await rig.frame(down, frame_of(1))
+        await rig.frame(tap(down.after("drop", "shortcut")), frame_of(2))
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+    assert rig.seen.ends == [("discarded", 1), ("unheard", 1)]

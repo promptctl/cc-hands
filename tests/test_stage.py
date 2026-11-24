@@ -80,6 +80,7 @@ from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
 from hands.voice.player import line_frame
 from hands.voice.trigger import Trigger
+from hands.voice.clips import Clip
 from hands.voice.turnstop import ClipDiscarded
 from hands.voice.speech import Aloud, Narrated
 
@@ -774,7 +775,7 @@ async def test_a_clip_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) ->
     rig.at(1000.0)
     await rig.release()
     rig.at(1003.0)
-    await rig.release(ClipDiscarded())
+    await rig.release(ClipDiscarded(clip=Clip(2, "shortcut")))
     rig.at(1003.5)
     await rig.say("hello")
     exchange, _ = rig.request()
