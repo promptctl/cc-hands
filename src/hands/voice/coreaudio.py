@@ -143,8 +143,8 @@ def _has_streams(device: int, scope: object) -> bool:
 
 # [LAW:no-shared-mutable-globals] exception: CoreAudio carries only an integer to its listener, a module-level
 # function, so a call finds its target here by token, and the tokens are counted here. device_changes alone writes
-# them: it takes a token and adds its target as it starts listening, and deletes the target as it stops, under
-# `_calling`, which a target is called under too.
+# them: it takes a token and adds its target before it listens, so nothing can call it yet, and deletes the target as
+# it stops, under `_calling`, which a target is called under too.
 _targets: dict[int, Callable[[], object]] = {}
 _tokens = itertools.count(1)
 _calling = threading.Lock()
@@ -177,7 +177,8 @@ def device_changes(changed: Callable[[], object]) -> Iterator[None]:
     the context is open, and never once it has closed.
 
     It is called on a CoreAudio thread, within milliseconds: measured at 17 ms from an aggregate device being
-    destroyed to the call, once for the input and once for the output.
+    destroyed to the call, once for the input and once for the output. It is called holding the lock the context's
+    close waits on, so it returns at once and never closes the context itself.
     """
     token = next(_tokens)
     _targets[token] = changed
@@ -193,11 +194,13 @@ def device_changes(changed: Callable[[], object]) -> Iterator[None]:
         # CoreAudio said, so `changed` is not called once the context has closed, and a listener CoreAudio keeps finds
         # no target and says so.
         refused: list[str] = []
-        for name, address in listening:
-            if status := CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token):
-                refused.append(f"{name}: OSStatus {status}")
-        with _calling:
-            del _targets[token]
+        try:
+            for name, address in listening:
+                if status := CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token):
+                    refused.append(f"{name}: OSStatus {status}")
+        finally:
+            with _calling:
+                del _targets[token]
         if refused:
             # [LAW:no-silent-failure] exception: logged, not raised. A raise would take the place of whatever ends the
             # context, as a cancel ends hands' (voice/devices.py follows until cancelled), and leave the caller nothing

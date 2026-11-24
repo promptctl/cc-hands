@@ -111,8 +111,8 @@ def test_each_device_of_the_systems_has_a_name_it_is_found_by() -> None:
             name = coreaudio._name(device)
             assert name, f"device {device} is named nothing"
             for scope, find in ((coreaudio._INPUT_STREAMS, hardware.inputs), (coreaudio._OUTPUT_STREAMS, hardware.outputs)):
-                # The first device of that name: this one, or another of the same name.
-                if coreaudio._has_streams(device, scope) and ((found := find(name)) is None or coreaudio._name(found) != name):
+                # The first device of that name on this side: this one, or another of the same name and side.
+                if coreaudio._has_streams(device, scope) and ((found := find(name)) is None or coreaudio._name(found) != name or not coreaudio._has_streams(found, scope)):
                     unfound.append((device, name))
         except coreaudio._Gone:
             continue  # torn down while it was read: whether it was found says nothing
@@ -183,6 +183,18 @@ def test_a_listener_coreaudio_would_not_remove_is_said_and_calls_nobody(listened
     _notice(token)
     assert changes == []
     assert said == [("ERROR", "CoreAudio would not stop listening for changes to the device list: OSStatus -50"), _LATE]
+
+
+def test_a_stop_whose_removal_raises_still_calls_nobody(listened: _Listened, said: list[tuple[str, str]], monkeypatch: pytest.MonkeyPatch) -> None:
+    def raising(*_: object) -> int:
+        raise RuntimeError("removal raised")
+
+    changes: list[str] = []
+    with pytest.raises(RuntimeError, match="removal raised"), coreaudio.device_changes(lambda: changes.append("changed")):
+        token = listened.added[0][1]
+        monkeypatch.setattr(coreaudio.CoreAudio, "AudioObjectRemovePropertyListener", raising)
+    _notice(token)
+    assert (changes, said) == ([], [_LATE])
 
 
 class _Contended:
