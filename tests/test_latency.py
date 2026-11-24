@@ -109,7 +109,7 @@ async def test_a_clip_thrown_away_is_told_once_as_discarded_naming_it_and_never_
     assert await told(opened(1), thrown, thrown, resolved(1), UserStoppedSpeakingFrame()) == [ClipOpened(clip(1), 0), Discarded(clip(1))]
 
 
-async def test_a_turn_the_clip_owner_never_heard_open_is_told_once_as_unopened_with_why_and_opens_no_window() -> None:
+async def test_a_turn_the_clip_owner_never_heard_open_is_told_once_as_unopened_and_opens_no_window() -> None:
     unheard = TurnUnheard(turn=4)
     assert await told(unheard, unheard, BotStartedSpeakingFrame()) == [TurnUnopened(4)]
     assert await logged(unheard, BotStartedSpeakingFrame()) == ["latency: first audio, answering no user turn"]

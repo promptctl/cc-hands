@@ -406,6 +406,9 @@ function syncLock() {
         got.addEventListener("release", () => {
           if (lock !== got) return;
           lock = null;
+          // A page that left the front loses its lock as the browser's rule, which is no taking back: it is asked for again as
+          // the page returns.
+          if (document.hidden) return;
           lockWhy = "the browser let go of it";
           mine.tell({kind: "screen", state: "unkept", why: lockWhy});
           drawNote();

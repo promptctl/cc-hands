@@ -48,8 +48,8 @@ UNHEARD = "its turn was over before hands heard any of it"
 
 @dataclass(frozen=True)
 class TurnUnopened:
-    """The gate's turn `turn` opened no clip, for `UNHEARD`: the page's press that opened it, if it was the page's, is
-    answered by this and not by a clip."""
+    """The gate's turn `turn` opened no clip, because it was over before the clip owner heard it open (`UNHEARD`): the page's
+    press that opened it, if it was the page's, is answered by this and not by a clip."""
 
     turn: int
 

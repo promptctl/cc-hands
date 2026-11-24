@@ -35,7 +35,7 @@ from hands.voice.clips import Clip
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
-from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Opened, Phone, Quiet, Unopened, answer, kind, parse_said, quiet_message
+from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Opened, Phone, Quiet, Unopened, UnopenedReason, answer, kind, parse_said, quiet_message
 from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -362,6 +362,13 @@ def test_the_page_knows_every_milestone_hands_tells_it() -> None:
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
     assert [milestone for milestone in ("released", "discarded", *get_args(Milestone)) if f'"{milestone}": ' not in table] == []
+
+
+def test_the_page_knows_every_reason_hands_opens_no_turn_for() -> None:
+    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    table = page[page.index("const UNOPENED = {") : page.index("};", page.index("const UNOPENED = {"))]
+    reasons = [reason for member in get_args(UnopenedReason) for reason in get_args(member)]
+    assert reasons != [] and [reason for reason in reasons if f'"{reason}": ' not in table] == []
 
 
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:

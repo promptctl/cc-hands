@@ -713,9 +713,10 @@ class Phone:
             case _:
                 self._unopened(call, press, reason)
         score = wake.score if isinstance(wake, Wake) else None
-        # An unreadable wake says what could not be read of it, which is more than the page is told.
-        words = wake.why if isinstance(wake, Unreadable) else None if reason is None else _why(reason).words
-        failure = f"the page's wake opened nothing: {words}" if reason is not None and _why(reason).mistake else None
+        failure = None
+        if reason is not None and (why := _why(reason)).mistake:
+            # An unreadable wake says what could not be read of it, which is more than the page is told.
+            failure = f"the page's wake opened nothing: {wake.why if isinstance(wake, Unreadable) else why.words}"
         ended("phone.wake", self._record, begun(self._clock), None, failure, score=score, threshold=THRESHOLD, while_speaking=self._speaking(), opened=reason is None, press=press)
 
     def _unopened(self, call: Call, press: int, reason: UnopenedReason) -> None:
