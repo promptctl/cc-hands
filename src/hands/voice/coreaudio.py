@@ -1,6 +1,6 @@
 # pyright: basic, reportAttributeAccessIssue=false
-# PyObjC ships no type stubs and loads its names lazily, so a static check cannot see them; this file is the only one
-# that touches CoreAudio.
+# PyObjC ships no type stubs and loads its names lazily, so a static check cannot see them; this file is hands'
+# only one that touches CoreAudio.
 """The system's audio devices, from CoreAudio: the defaults and the names of those there are, and word when they change."""
 
 import itertools
