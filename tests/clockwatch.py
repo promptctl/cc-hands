@@ -44,6 +44,7 @@ CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
 UNMOVED = frozenset({
     "conftest.py",
+    "fixtures/command_imports_child.py",
     "fixtures/standin_daemon.py",
     "fixtures/watched_run.py",
     "test_answer_permission.py",
