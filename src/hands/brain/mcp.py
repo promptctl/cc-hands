@@ -2,10 +2,9 @@
 
     claude --mcp-config '{"mcpServers": {"hands": {"type": "http", "url": "<the server's url>"}}}'
 
-The second adapter over the tools in hands.voice.tools, beside Pipecat's, reading each through hands.voice.tool, which
-loads no Pipecat. It speaks the part of MCP a tools-only
-server needs: initialize, ping, tools/list, and tools/call, each POSTed as JSON-RPC and answered as JSON. It opens no
-event stream of its own, so a GET is refused, as the transport allows.
+The adapter over the tools in hands.voice.tools, reading each through hands.voice.tool. It speaks the part of MCP a
+tools-only server needs: initialize, ping, tools/list, and tools/call, each POSTed as JSON-RPC and answered as JSON. It
+opens no event stream of its own, so a GET is refused, as the transport allows.
 
 Its tools type into sessions and answer permissions, and a port on 127.0.0.1 is reachable by every local process and
 every web page, so each request carries a token only the brain's --mcp-config holds.
@@ -30,7 +29,9 @@ from hands.voice.tool import Tool
 SERVER_NAME = "hands"
 PATH = "/mcp"
 
-# JSON-RPC's codes for a request that names no method this server has, and for one whose params do not parse.
+# JSON-RPC's codes for a message that is no request, notification or answer, for a request that names no method this
+# server has, and for one whose params do not parse.
+INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 PARSE_ERROR = -32700
@@ -91,9 +92,7 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
         try:
             message = json.loads(await request.read())
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
-            with unit("mcp.request", record, begun(clock)):
-                fail(f"not JSON: {error}")
-            return web.json_response(_error(None, PARSE_ERROR, f"not JSON: {error}"))
+            return unanswerable(PARSE_ERROR, f"not JSON: {error}")
         match message:
             case {"method": "tools/call", "id": str() | int() as id, "params": {"name": str(name)} as params} if name in by_name and (arguments := _arguments(params)) is not None:
                 return web.json_response(await call(id, by_name[name], arguments, _text(_object(params.get("_meta")).get(TOOL_USE_ID))))
@@ -103,9 +102,21 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
                     annotate(method=method)
                     answered = answer(id, method, _params(message))
                 return web.json_response(answered)
-            case _:
+            case {"method": str(), "id": id}:
+                # Refused as the request it is: a 202 would leave its client waiting on an answer that never comes.
+                return unanswerable(INVALID_REQUEST, f"a request's id is a string or an integer, never {id!r}")
+            case {"method": str()} | {"id": str() | int(), "result": _} | {"id": str() | int(), "error": _}:
                 # A notification, or the client's answer to a request this server never makes: nothing to say back.
                 return web.Response(status=202)
+            case _:
+                return unanswerable(INVALID_REQUEST, f"no JSON-RPC request, notification or answer: a {type(message).__name__}")
+
+    def unanswerable(code: int, why: str) -> web.Response:
+        """A message refused before it names a request to answer, by the id JSON-RPC gives such a refusal: none."""
+        # [LAW:nothing-unseen] one event, as every request is.
+        with unit("mcp.request", record, begun(clock)):
+            fail(why)
+        return web.json_response(_error(None, code, why))
 
     def answer(id: str | int, method: str, params: Mapping[str, object]) -> Mapping[str, object]:
         match method:

@@ -153,6 +153,11 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         assert discovered == {"jsonrpc": "2.0", "id": 6, "error": {"code": -32601, "message": "no method server/discover"}}
         async with aiohttp.ClientSession() as client, client.post(server.url, data=b"{not json", headers={"Authorization": f"Bearer {server.token}"}) as garbled:
             assert (await garbled.json())["error"]["code"] == -32700
+        # A request JSON-RPC takes no id of is answered refused, never left waiting on a 202, and so is what is no message.
+        _, nameless = await rpc(server, {"jsonrpc": "2.0", "id": None, "method": "tools/list"})
+        assert nameless == {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "a request's id is a string or an integer, never None"}}
+        async with aiohttp.ClientSession() as client, client.post(server.url, json=[{"jsonrpc": "2.0", "id": 7, "method": "ping"}], headers={"Authorization": f"Bearer {server.token}"}) as batched:
+            assert (await batched.json())["error"]["code"] == -32600
         async with aiohttp.ClientSession() as client, client.get(server.url, headers={"Authorization": f"Bearer {server.token}"}) as stream:
             assert stream.status == 405
         assert [(event, outcome, facts.get("tool", facts.get("method"))) for event, outcome, facts in ran(recorded)] == [
@@ -163,8 +168,10 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
             ("mcp.request", "failed", "resources/list"),
             ("mcp.request", "ok", "server/discover"),
             ("mcp.request", "failed", None),
+            ("mcp.request", "failed", None),
+            ("mcp.request", "failed", None),
         ]
-        [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent)][-1:]
+        [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent)][-3:-2]
         assert garbled_event.error is not None and garbled_event.error.startswith("not JSON: ")
     finally:
         await server.close()
