@@ -5,8 +5,9 @@ over it, over a reply in a second of its voices, and alone after it; and hands a
 of the speaker, as at the desk (`hands_<what>`), and where a person speaks over hands, out of no speaker, as in headphones
 (`hands_no_echo_<what>`).
 
-hands' sentences are made by hands' own TTS, each in the voice its script gives, and played out of the default speaker, the
-canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says the person's lines. hands'
+hands' sentences are made by hands' own TTS service (`hands.voice.render` through `hands.voice.voices.hands_tts`), each in the voice its script
+gives, and played out of the default speaker, the canceller told each as hands tells it; a second voice ('alba'), not told to the
+canceller, says the person's lines. hands'
 voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The default
 microphone is heard through the canceller as the desk hears it. The .flac holds, at RATE, the audio as heard after the
 canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, hands' sentences with the
@@ -22,6 +23,7 @@ hands' nor the person's, where hands is out of the speaker.
     uv run python scripts/record-double-talk.py        # lists the takes
 """
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -36,13 +38,13 @@ import numpy as np
 import pyaudio
 import soundfile
 
-from hands.sessions.wide import begun
-from hands.virtualclock import VirtualClock
-from hands.voice.clips import RATE, SLOT, Playhead, Synthesis
+from hands.clock import SYSTEM
+from hands.voice.clips import RATE, SLOT, Playhead
 from hands.voice.echo import EchoCanceller
 from hands.voice.recorder import track
+from hands.voice.render import Rendered, Saying, render
 from hands.voice.voicechoice import DEFAULT, parse_voice
-from hands.voice.voices import pocket, source
+from hands.voice.voices import hands_tts
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
@@ -154,7 +156,13 @@ TAKES = {
     "hands_then_a_person_alone": (ALONE, 1.0),
 }
 LEAD, TAIL = 1.0, 2.0
+PERSON = "alba"
 BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
+
+
+async def rendering(sayings: list[Saying]) -> list[Rendered]:
+    """Each saying made by hands' own TTS service, built here as the pipeline builds it."""
+    return await render(SYSTEM, hands_tts(SYSTEM, DEFAULT), sayings)
 
 
 def osascript(line: str) -> str:
@@ -178,10 +186,12 @@ def speaker_up(was_muted: bool) -> Generator[None]:
 
 def main(fixture: Path, script: Script, gain: float) -> None:
     was_muted = speaker_muted()  # before the synthesis, so an output with no mute fails at once
-    say = pocket()
-    made = [say(source(parse_voice(reply.voice)), reply.text) for reply in script.hands]
+    sayings = [*(Saying(parse_voice(reply.voice), reply.text) for reply in script.hands), *(Saying(parse_voice(PERSON), line.text) for line in script.person)]
+    made_by_hands = asyncio.run(rendering(sayings))
+    heard_by_hands, said_by_person = made_by_hands[: len(script.hands)], made_by_hands[len(script.hands) :]
+    made = [one.audio for one in heard_by_hands]
     onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + reply.pause for audio, reply in zip(made[:-1], script.hands[1:], strict=True))]))
-    lines = [(line, say(source(parse_voice("alba")), line.text)) for line in script.person]
+    lines = list(zip(script.person, (one.audio for one in said_by_person), strict=True))
 
     def begins(line: Said, audio: np.ndarray) -> float:
         match line.placed:
@@ -210,7 +220,7 @@ def main(fixture: Path, script: Script, gain: float) -> None:
     for start, (_, audio) in zip(starts, lines):
         at = round(start * RATE)
         other[at : at + len(audio)] = audio[: length - at]
-    syntheses = [Synthesis(reply.voice, reply.text, begun(VirtualClock())) for reply in script.hands]
+    syntheses = [one.synthesis for one in heard_by_hands]
     out = np.clip((hands * gain + other) * 32767, -32768, 32767).astype(np.int16).tobytes()
     reference = np.clip(hands * 32767, -32768, 32767).astype(np.int16).tobytes()
 
@@ -232,7 +242,8 @@ def main(fixture: Path, script: Script, gain: float) -> None:
             done.set()
         return chunk, pyaudio.paContinue if stop < length else pyaudio.paComplete
 
-    def microphone(in_data: bytes, _frames: int, _time: object, _status: int) -> tuple[None, int]:
+    def microphone(in_data: bytes | None, _frames: int, _time: object, _status: int) -> tuple[None, int]:
+        assert in_data is not None, "an input stream's callback is handed what the microphone heard"
         cancelled = echo.heard(in_data, RATE, 1)
         captured.extend(in_data)
         heard.extend(cancelled.heard)

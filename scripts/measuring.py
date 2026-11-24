@@ -18,7 +18,8 @@ from hands.voice import streaming
 
 # Last on the path, so nothing in tests/ stands in for a module of the same name installed.
 sys.path.append(str(Path(__file__).resolve().parent.parent / "tests"))
-from listening import LEAD, SHAPES, Live, turn  # noqa: E402
+# Re-exported: the scripts take the feed and the turn rule from here, as the docstring says.
+from listening import LEAD as LEAD, SHAPES as SHAPES, Live as Live, turn as turn  # noqa: E402
 from turntaking import Stretch, turns  # noqa: E402
 
 RATE = streaming.RATE

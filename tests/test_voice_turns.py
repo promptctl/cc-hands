@@ -299,7 +299,7 @@ async def rigged(
     watching: Sequence[BaseObserver] = (),
 ) -> AsyncGenerator[Rig]:
     """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
-    monkeypatch.setattr(built, "SaidInTTS", NoSpeech)
+    monkeypatch.setattr(voices, "SaidInTTS", NoSpeech)
     recorded: list[Entry] = []
     primed: list[None] = []
     streamed = Streamed()

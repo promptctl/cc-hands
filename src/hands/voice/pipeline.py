@@ -33,7 +33,7 @@ from hands.voice.phone import Phone
 from hands.sessions.audit import Record
 from hands.voice.player import Lines, Markers, Player
 from hands.voice.ptt import PushToTalk
-from hands.voice.spoken import FenceAggregator, SpokenForm
+from hands.voice.spoken import FenceAggregator
 from hands.voice.turnstart import TriggerTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import conversation, dtln, loads, streaming, voices
@@ -108,12 +108,8 @@ def build_voice(
     # the streaming pair starts its load on a thread of its own, so neither load's growth is the other's.
     with loads.loading(clock, "tts.loaded", record):
         annotate(voice=str(config.voice))
-        # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
-        # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
-        # own reply alike, so this is the one place all of them meet before they are heard.
-        # It also decides the reply the audit log records, which is built from what a filter returned: what the user heard,
-        # never what was sent to the speaker. See voice/spoken.py, which also records what it costs.
-        tts = SaidInTTS(clock, settings=SaidInTTS.Settings(voice=voices.source(config.voice), language=voices.LANGUAGE), text_filters=[SpokenForm()])
+        # [LAW:single-enforcer] the service's own filter is the one every utterance meets (`voices.hands_tts`).
+        tts = voices.hands_tts(clock, config.voice)
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())

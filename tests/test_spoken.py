@@ -31,7 +31,7 @@ from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.floor import Floor
 from hands.voice.player import Player
 from hands.voice.spoken import FenceAggregator, SpokenForm
-from hands.voice import voicechoice
+from hands.voice import voicechoice, voices
 from hands.voice.ptt import PushToTalk
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -352,7 +352,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
             pieced.update(kwargs)
             super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
-    monkeypatch.setattr(built, "SaidInTTS", Recorded)
+    monkeypatch.setattr(voices, "SaidInTTS", Recorded)
     monkeypatch.setattr(built, "LLMTextProcessor", Pieces)
     clock = VirtualClock()
     voice = built.build_voice(

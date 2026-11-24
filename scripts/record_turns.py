@@ -33,6 +33,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from hands.brain import pinned
 from hands.sessions.hookconfig import BRAIN_HOOKS, brain_hook, plugin_hooks
@@ -46,7 +47,7 @@ OUT = RECORDED
 CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 # The hooks a recording holds: every one a wrapped session posts (hands' plugin's own: the shim's, and MessageDisplay),
 # every one the brain does, and PreToolUse, which neither subscribes to, so a recording shows when a call started.
-HOOKS = tuple(dict.fromkeys((*plugin_hooks()["hooks"], *BRAIN_HOOKS, "PreToolUse")))
+HOOKS = tuple(dict.fromkeys((*cast(dict[str, object], plugin_hooks()["hooks"]), *BRAIN_HOOKS, "PreToolUse")))
 TMUX = "record-turns"
 # How often the transcript and the session file are read.
 POLL = 0.001

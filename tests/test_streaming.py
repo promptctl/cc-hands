@@ -437,7 +437,7 @@ def spoken_words(spoken: Spoken) -> list[tuple[int, str]]:
 
 
 class Stepped:
-    """mlx-audio's session as `_Paired` reads it: what it was fed, feed by feed, and the count of it the session keeps."""
+    """mlx-audio's session as `Paired` reads it: what it was fed, feed by feed, and the count of it the session keeps."""
 
     def __init__(self) -> None:
         self.fed: list[Samples] = []
@@ -456,7 +456,7 @@ class Stepped:
 
 def test_the_session_is_fed_nothing_until_a_feed_completes_a_step_and_then_all_of_it_in_order() -> None:
     session = Stepped()
-    paired = streaming._Paired(session)  # pyright: ignore[reportPrivateUsage]
+    paired = streaming.Paired(session)
     # Each diarizer step costs the session a feed, and a feed reads the GPU, so 20 ms frames between steps must not.
     run = np.arange(32000, dtype=np.float32)
     frames = [run[start : start + 320] for start in range(0, len(run), 320)]
@@ -470,7 +470,7 @@ def test_the_session_is_fed_nothing_until_a_feed_completes_a_step_and_then_all_o
 
 def test_a_run_begun_afresh_keeps_nothing_of_one_stopped_part_way_through_a_step() -> None:
     session = Stepped()
-    paired = streaming._Paired(session)  # pyright: ignore[reportPrivateUsage]
+    paired = streaming.Paired(session)
     paired.decoded(np.ones(320, np.float32))
     paired.reset()
     first = next(samples for samples in range(320, 32000, 320) if steps(samples) > 0)
@@ -481,7 +481,7 @@ def test_a_run_begun_afresh_keeps_nothing_of_one_stopped_part_way_through_a_step
 
 
 def test_a_clip_closed_short_of_a_step_fails_rather_than_carrying_its_samples_into_the_next() -> None:
-    paired = streaming._Paired(Stepped())  # pyright: ignore[reportPrivateUsage]
+    paired = streaming.Paired(Stepped())
     paired.decoded(np.ones(320, np.float32))
     with pytest.raises(AssertionError, match="ends every clip on a step"):
         paired.closed()

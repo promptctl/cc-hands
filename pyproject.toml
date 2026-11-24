@@ -60,13 +60,26 @@ packages = ["src/hands"]
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 # What tests import from scripts/, as pytest's pythonpath below puts it on the path.
 extraPaths = ["scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
 reportMatchNotExhaustive = "error"
+
+# Scripts are measured by hand and read numpy and scipy untyped, so they are held to what their imports say (a name gone from
+# hands or from tests/ fails here) and not to strict typing of what they compute.
+[[tool.pyright.executionEnvironments]]
+root = "scripts"
+# What a script imports from tests/, as it puts it on its own path.
+extraPaths = ["scripts", "tests"]
+reportUnknownVariableType = "none"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownParameterType = "none"
+reportUnknownLambdaType = "none"
+reportMissingTypeArgument = "none"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

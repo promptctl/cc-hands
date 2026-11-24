@@ -411,7 +411,7 @@ def speaker(label: str) -> int:
 
 
 @dataclass
-class _Paired:
+class Paired:
     """The run's session of the pair, mlx-audio's own: given any partition of the run, it holds the samples back until
     they complete a diarizer step, decodes every chunk the diarizer has committed, and says where the diarizer heard each
     speaker in it."""
@@ -438,7 +438,7 @@ class _Paired:
         push = session._push_features
 
         def pushed(mel: Any, probs: Any, *, final: bool = False) -> Any:
-            # Imported where a chunk is taken, not where this is built: mlx-audio's import costs ~1.8 s, which a `_Paired`
+            # Imported where a chunk is taken, not where this is built: mlx-audio's import costs ~1.8 s, which a `Paired`
             # that takes no chunk (the unit tests') need not pay.
             import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
             from mlx_audio.stt.models.nemotron_asr.speaker_streaming import speaker_activity  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
@@ -527,7 +527,7 @@ def diarizer() -> Any:
     return model
 
 
-def load(gating: int) -> Session:
+def load(gating: int) -> Paired:
     """The run's session of the pair, each speaker's stream stepped `gating` chunks from the last the diarizer heard them
     in, the models fetched if they never were: a few seconds on this Mac from the cache, on MLX's default device, which
     is the CPU where there is no Metal."""
@@ -544,4 +544,4 @@ def load(gating: int) -> Session:
     )
     if session.chunk_mel != CHUNK:
         raise ValueError(f"{MODEL}'s session takes chunks of {session.chunk_mel} mel frames; hands gates speakers in chunks of {CHUNK}")
-    return _Paired(session)
+    return Paired(session)
