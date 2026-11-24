@@ -30,8 +30,9 @@ from mlx_audio.utils import get_model_path
 from hands.brain import pinned
 from hands.voice import dtln, engaged, streaming, transcription, voiceprints
 from hands.voice import ortweb
-from hands.voice.ortweb import Runtime, Unserved
-from hands.voice.wake import fetched
+from hands.voice.ortweb import Runtime
+from hands.voice.pinnedfile import Mismatch, Unserved
+from hands.voice.wakemodels import Unheard, WakeModels
 from hands.voice.wakeword import Pretrained
 from npm_registry import REGISTRY
 from sentences import INSTALL_FAILURES, PUNKT_TAB, install
@@ -138,14 +139,14 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     disable_progress_bars()
     fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
     # The echo canceller's model, which the unit layer's tests of the canceller run for real, so it is read there too.
-    fetching(write, f"DTLN-aec's models at {dtln.REVISION[:12]}", (OSError, HTTPException, ValueError), partial(dtln.fetched, fetches.dtln))
+    fetching(write, f"DTLN-aec's models at {dtln.REVISION[:12]}", (OSError, HTTPException, Mismatch), partial(dtln.fetched, fetches.dtln))
     if fetches.unit:
         return
     for weights in WEIGHTS:
         # The hub's failures are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
         fetching(write, f"{weights.what} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), weights.fetch)
     for word in WAKE_WORDS:
-        fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(fetches.wake_word, word)))
+        fetching(write, f"the {word.phrase} wake word's models", (Unheard,), partial(asyncio.run, WakeModels(fetches.wake_word).ensured(word)))
     # The runtime the phone's page runs the wake word on, which its page test has the page fetch from hands.
     fetching(write, f"ONNX Runtime Web {ortweb.VERSION}", (Unserved,), partial(asyncio.run, Runtime(fetches.runtime).ensured()))
     fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, REGISTRY)))

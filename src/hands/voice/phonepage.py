@@ -29,12 +29,13 @@ from hands.voice.backlogpage import backlog_routes
 from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.ortweb import Runtime
+from hands.voice.pagescript import script_route
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
 from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, own_certificate, server_context
 from hands.voice.phonewake import wake_routes
 from hands.voice.summaries import SummaryStore
-from hands.voice.wake import Models
+from hands.voice.wakemodels import WakeModels
 
 # How often the page asks Tailscale for the tailnet's certificate again: Tailscale renews one a month before its 90
 # days are out, so a day is far inside the time a renewed one has before the old one ends.
@@ -56,14 +57,9 @@ def parse_offer(body: object) -> Offer:
 def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[web.RouteDef]:
     """The page, the script every phone page asks hands through, and the one route that takes its calls."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
-    script = resources.files("hands.voice").joinpath("hands.js").read_text()
 
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
-
-    # Never kept by the browser, as no page is: a page and the script it asks hands through are always one run's.
-    async def scripted(_request: web.Request) -> web.Response:
-        return web.Response(text=script, content_type="text/javascript", headers={"Cache-Control": "no-store"})
 
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
@@ -86,10 +82,10 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
             case answer:
                 return web.json_response({"sdp": answer.sdp, "type": answer.type})
 
-    return [web.get("/", shown), web.get("/hands.js", scripted), web.post("/offer", offered)]
+    return [web.get("/", shown), script_route("hands.js"),web.post("/offer", offered)]
 
 
-def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: Models, runtime: Runtime) -> web.Application:
+def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: WakeModels, runtime: Runtime) -> web.Application:
     """Every page the phone opens, under the phone's `key`. The phone's page reads and stops `brain`. The conversation
     page reads the audit log at `audit` and hands `typed` what is typed into it; the backlog page reads its summaries
     from `store` and runs its writes in `environment`, the one hands was started in; the gallery page sets hands'

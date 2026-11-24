@@ -9,9 +9,8 @@
 
 export const RATE = 16000;
 export const CHUNK = 1280;
-const BANDS = 32, MEL_WINDOW = 76, EMBEDDING_SIZE = 96, CONTEXT = 480;
-// How many rows of each openWakeWord keeps: nothing older than these is read.
-const MEL_KEPT = 970, FEATURES_KEPT = 120, ZERO_SCORES = 5;
+export const BANDS = 32, MEL_WINDOW = 76, EMBEDDING_SIZE = 96;
+const CONTEXT = 480, ZERO_SCORES = 5;
 // What forgetting fills the stream with in place of audio: four seconds of noise, as openWakeWord does, so the first
 // seconds of a stream are heard against noise, never against a silence the model was not trained on.
 const NOISE_SAMPLES = 4 * RATE, NOISE_AMPLITUDE = 1000, EMBEDDING_STRIDE = 8;
@@ -37,7 +36,8 @@ function rowsOf(answer, width) {
 
 // A wake word's stream over `models` -- { melspectrogram(samples), embedding(window), word(features) }, each a function
 // that answers a promise of what the model answers, flat -- whose word's model hears `frames` vectors at a time, and
-// which hears the word at a score of `threshold` or over. `random` is where the noise comes from.
+// which hears the word at a score of `threshold` or over. `random` is where the noise comes from. A word's model that
+// hears more vectors than the noise a stream starts with makes is thrown: its first chunk could not be heard.
 //
 // feed(samples) takes samples at RATE as 16-bit integers held as numbers, of any count, and answers { scores, heard }:
 // the score of each whole chunk it completed, up to and including the first at the threshold, and that score or null.
@@ -50,6 +50,7 @@ export async function wakeStream({ melspectrogram, embedding, word, frames, thre
   async function forget() {
     raw = new Float32Array(0);
     pending = new Float32Array(0);
+    // As openWakeWord's AudioFeatures starts its buffer (openwakeword/utils.py): rows of ones.
     mel = Array.from({ length: MEL_WINDOW }, () => new Float32Array(BANDS).fill(1));
     scored = 0;
     const noise = Float32Array.from({ length: NOISE_SAMPLES }, () => Math.floor(random() * 2 * NOISE_AMPLITUDE) - NOISE_AMPLITUDE);
@@ -62,13 +63,16 @@ export async function wakeStream({ melspectrogram, embedding, word, frames, thre
 
   async function heard(chunk) {
     raw = concatenated(raw, chunk).slice(-(CHUNK + CONTEXT));
-    mel = [...mel, ...(await melRows(raw))].slice(-MEL_KEPT);
-    features = [...features, await embedding(flattened(mel.slice(-MEL_WINDOW)))].slice(-FEATURES_KEPT);
-    const score = await word(flattened(features.slice(-frames)));
+    // Only what a model reads is kept: the last MEL_WINDOW rows, and the last `frames` vectors.
+    mel = [...mel, ...(await melRows(raw))].slice(-MEL_WINDOW);
+    features = [...features, await embedding(flattened(mel))].slice(-frames);
+    const score = await word(flattened(features));
+    // openWakeWord's own (openwakeword/model.py): the first five scores of a stream are zero while its buffers fill.
     return scored++ < ZERO_SCORES ? 0 : score;
   }
 
   await forget();
+  if (frames > features.length) throw new Error(`the wake word's model hears ${frames} vectors at a time, and a stream starts with ${features.length}`);
   return {
     async feed(samples) {
       const input = concatenated(pending, samples);
@@ -85,7 +89,6 @@ export async function wakeStream({ melspectrogram, embedding, word, frames, thre
       pending = input.slice(at);
       return { scores, heard: null };
     },
-    forget,
   };
 }
 
@@ -101,6 +104,8 @@ const hann = x => 0.5 + 0.5 * Math.cos(Math.PI * x / HALF_WIDTH);
 // input around its moment, scaled to sum to one, so a tone keeps its level; a rate above RATE widens the window to
 // lowpass at half of RATE, so what is above it does not fold into what is heard.
 export function resampler(rate) {
+  // [LAW:parse-dont-validate] a rate is the stream's, said once: one that is not a count of samples a second would never advance the stream, or advance it on NaN.
+  if (!(Number.isFinite(rate) && rate > 0)) throw new Error(`a stream's rate is a number of samples a second above zero, not ${rate}`);
   const ratio = rate / RATE;
   const width = Math.max(ratio, 1);
   const reach = Math.ceil(HALF_WIDTH * width);

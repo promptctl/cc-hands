@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
-from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, Route, async_playwright, expect
+from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
 from hands.clock import SYSTEM
 from hands.sessions.audit import AuditLog, Replied, Transcribed
@@ -23,16 +23,17 @@ from hands.voice.clips import KEPT_SECONDS
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
 from hands.voice.ortweb import Runtime
+from hands.voice.pinnedfile import Fetch, Pin
 from hands.voice.phone import Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
-from hands.voice.phonewake import MODELS as WAKE_MODELS
 from hands.voice.ptt import PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.tool import tool
 from hands.voice.tools import audited
 from hands.voice.voicechoice import VOICES, Voice
-from hands.voice.wake import THRESHOLD, Models, WakeWord
+from hands.voice.wake import WakeWord
+from hands.voice.wakemodels import ROLES, THRESHOLD, Files, WakeModels
 from hands.voice.wakeword import Pretrained
 from speech import RATE, quiet, spoken
 from test_backlogpage import LIT, Workspace, epic, real_lit, workspace  # pyright: ignore[reportUnusedImport]  (a fixture, found by its name)
@@ -71,7 +72,15 @@ class Hands:
 
 
 @pytest.fixture
-async def hands(tmp_path: Path, models: Path, onnx_runtime: Path) -> AsyncGenerator[Hands]:
+def wake_models(request: pytest.FixtureRequest, models: Path, tmp_path: Path) -> WakeModels:
+    """The models hands serves the wake word's page: the run's own, already fetched, unless a test parametrizes this with a
+    fetch of its own, which then fetches into a directory that holds none."""
+    fetch: Fetch | None = getattr(request, "param", None)
+    return WakeModels(models) if fetch is None else WakeModels(tmp_path / "unfetched", fetch)
+
+
+@pytest.fixture
+async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> AsyncGenerator[Hands]:
     home = Home(tmp_path / "hands")
     key = phone_key(SYSTEM, home)
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
@@ -82,7 +91,7 @@ async def hands(tmp_path: Path, models: Path, onnx_runtime: Path) -> AsyncGenera
 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(VirtualClock()), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
-    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, Models(models), Runtime(onnx_runtime))
+    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Runtime(onnx_runtime))
     requests = list[str]()
 
     @web.middleware
@@ -160,6 +169,18 @@ async def browser(chrome: Browser) -> AsyncGenerator[Opened]:
     opened = await Opened.made(chrome)
     yield opened
     assert await opened.closed() == []
+
+
+@pytest.fixture
+async def keeping_browser(hands: Hands, tmp_path: Path) -> AsyncGenerator[Opened]:
+    """As `browser`, with a profile on disk, as a phone's browser has: a throwaway profile keeps its cache in memory, which
+    holds no file of 15 MB. It takes `hands` so it ends first, as `chrome` does."""
+    async with async_playwright() as playwright:
+        opened = await Opened.watching(await playwright.chromium.launch_persistent_context(tmp_path / "profile", channel="chrome", args=FAKE_MICROPHONE))
+        yield opened
+        faults = await opened.closed()
+        await opened.context.close()
+    assert faults == []
 
 
 async def test_a_fault_in_a_pages_own_code_is_caught_by_the_check(chrome: Browser, hands: Hands) -> None:
@@ -258,10 +279,11 @@ PHONE_RATE = 48_000
 PIECE = PHONE_RATE // 50
 
 START_DETECTOR = """
-async () => {
+async rate => {
   const { startDetector } = await import("/detector.js");
   window.events = [];
   window.detector = startDetector({
+    rate,
     onReady: ready => events.push({ kind: "ready", ...ready }),
     onFailed: why => events.push({ kind: "failed", why }),
     onHeard: (score, at) => events.push({ kind: "heard", score, at }),
@@ -270,10 +292,10 @@ async () => {
 """
 
 FEED = """
-({ encoded, rate, piece }) => {
+({ encoded, piece }) => {
   const bytes = Uint8Array.from(atob(encoded), each => each.charCodeAt(0));
   const heard = new Int16Array(bytes.buffer);
-  for (let at = 0; at < heard.length; at += piece) detector.feed(Float32Array.from(heard.subarray(at, at + piece), each => each / 32768), rate);
+  for (let at = 0; at < heard.length; at += piece) detector.feed(Float32Array.from(heard.subarray(at, at + piece), each => each / 32768));
 }
 """
 
@@ -285,15 +307,15 @@ def at_the_phones_rate(audio: bytes) -> str:
     return base64.b64encode(upsampled.tobytes()).decode()
 
 
-async def detecting(page: Page) -> None:
-    """The detector started on `page`, and said whether it can listen."""
-    await page.evaluate(START_DETECTOR)
+async def detecting(page: Page, rate: float = PHONE_RATE) -> None:
+    """The detector started on `page` for audio at `rate`, and said whether it can listen."""
+    await page.evaluate(START_DETECTOR, rate)
     await page.wait_for_function("events.length > 0")
 
 
-def mac_hears_at(models: Path, audio: bytes) -> float:
+def mac_hears_at(files: Files, audio: bytes) -> float:
     """The seconds of `audio` the Mac's own detector has been given when it first hears the wake word, as the desk gives it audio, 20 ms at a time."""
-    word = WakeWord(models, Pretrained())
+    word = WakeWord(files)
     step = 640
     for start in range(0, len(audio), step):
         if word.score(audio[start : start + step]) >= THRESHOLD:
@@ -305,49 +327,55 @@ async def test_the_phone_hears_the_wake_word_where_the_mac_does_and_asks_nothing
     asked_of = list[str]()
     browser.context.on("request", lambda request: asked_of.append(request.url))
     page = await browser.open(hands.address("/"))
-    await detecting(page)
-    assert await page.evaluate("events") == [{"kind": "ready", "phrase": "Hey Jarvis", "threshold": THRESHOLD, "keptSeconds": KEPT_SECONDS}]
     # Jarvis named in passing comes first, with a second of quiet either side: the word is in what comes after it.
     before = quiet(1.0) + spoken(IN_PASSING) + quiet(1.0)
     said = quiet(1.0) + spoken(PHRASE) + quiet(1.0)
-    await page.evaluate(FEED, {"encoded": at_the_phones_rate(before + said), "rate": PHONE_RATE, "piece": PIECE})
+    # All of it is fed as the detector starts, before its models have loaded: it is heard once they have, and in the order it came.
+    await page.evaluate(START_DETECTOR, PHONE_RATE)
+    await page.evaluate(FEED, {"encoded": at_the_phones_rate(before + said), "piece": PIECE})
     await page.wait_for_function("events.some(each => each.kind === 'heard')")
-    heard = next(each for each in await page.evaluate("events") if each["kind"] == "heard")
-    assert heard["score"] >= THRESHOLD
+    [ready, *_, heard] = await page.evaluate("events")
+    assert ready == {"kind": "ready", "phrase": "Hey Jarvis", "threshold": THRESHOLD, "keptSeconds": KEPT_SECONDS}
+    assert heard["kind"] == "heard" and heard["score"] >= THRESHOLD
     # Not in the sentence that names Jarvis in passing, but in the one that says the word: and where the Mac hears it, to
     # within what the phone's chunks and its own resampling move it by.
     assert len(before) / (RATE * 2) < heard["at"]
-    assert abs(heard["at"] - mac_hears_at(models, before + said)) < 0.5
+    assert abs(heard["at"] - mac_hears_at(await WakeModels(models).ensured(Pretrained()), before + said)) < 0.5
     # Everything the page and its worker loaded came from hands, the runtime and the models among it.
     origin = str(hands.server.make_url("/"))
     assert [url for url in asked_of if not url.startswith(origin)] == []
-    wanted = {"/detector.js", "/detector-worker.js", "/wakestream.js", "/hands.js", "/wake/settings", "/ort/1.31.1/ort.wasm.bundle.min.mjs", "/ort/1.31.1/ort-wasm-simd-threaded.wasm", *(f"/wake/models/{name}" for name in WAKE_MODELS)}
+    wanted = {"/detector.js", "/detector-worker.js", "/wakestream.js", "/hands.js", "/wake/settings", "/ort/1.31.1/ort.wasm.bundle.min.mjs", "/ort/1.31.1/ort-wasm-simd-threaded.wasm", *(f"/wake/models/{role}" for role in ROLES)}
     assert wanted <= set(hands.requests)
 
 
-async def test_a_second_page_runs_the_runtime_from_the_browsers_copy(hands: Hands, tmp_path: Path) -> None:
+async def test_a_second_page_runs_the_runtime_from_the_browsers_copy(keeping_browser: Opened, hands: Hands) -> None:
     def runtime() -> list[str]:
         return [path for path in hands.requests if path.startswith("/ort/")]
 
-    # A profile on disk, as a phone's browser has: a throwaway profile keeps its cache in memory, which holds no file of 15 MB.
-    async with async_playwright() as playwright:
-        opened = await Opened.watching(await playwright.chromium.launch_persistent_context(tmp_path / "profile", channel="chrome", args=FAKE_MICROPHONE))
-        await detecting(await opened.open(hands.address("/")))
-        assert len(runtime()) == 2
-        await detecting(await opened.open(hands.address("/")))
-        assert len(runtime()) == 2
-        assert await opened.closed() == []
-        await opened.context.close()
+    await detecting(await keeping_browser.open(hands.address("/")))
+    assert len(runtime()) == 2
+    await detecting(await keeping_browser.open(hands.address("/")))
+    assert len(runtime()) == 2
 
 
-async def test_a_model_route_that_fails_reaches_the_page_as_why_it_cannot_listen(browser: Opened, hands: Hands) -> None:
-    async def broken(route: Route) -> None:
-        await route.fulfill(status=503, body="hands cannot read the word's model")
+class Unreachable:
+    """A fetch that cannot reach the release."""
 
-    await browser.context.route("**/wake/models/word.onnx", broken)
+    async def __call__(self, directory: Path, pin: Pin) -> Path:
+        raise OSError("the network is down")
+
+
+@pytest.mark.parametrize("wake_models", [Unreachable()], indirect=True)
+async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_cannot_listen_in_hands_words(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
     await detecting(page)
-    assert await page.evaluate("events") == [{"kind": "failed", "why": "hands cannot read the word's model"}]
+    assert await page.evaluate("events") == [{"kind": "failed", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
+
+
+async def test_a_rate_that_is_not_a_rate_is_refused_by_the_detector_in_words(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(hands.address("/"))
+    await detecting(page, rate=0)
+    assert await page.evaluate("events") == [{"kind": "failed", "why": "a stream's rate is a number of samples a second above zero, not 0"}]
 
 
 async def test_a_page_opened_without_the_phones_key_is_told_so_by_hands_and_says_it_cannot_listen(browser: Opened, hands: Hands) -> None:

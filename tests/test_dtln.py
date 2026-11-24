@@ -2,13 +2,14 @@
 out, run on parts that are arithmetic, so what is tested is the plumbing and not the weights; the weights are held to
 the harness's numbers in tests/test_echoscore.py."""
 
-import io
 from pathlib import Path
 
 import numpy as np
 import pytest
+from fakefetch import Network
 
 from hands.voice.dtln import BLOCK, MAX_DELAY, SHIFT, Dtln, Stages, fetched
+from hands.voice.pinnedfile import Mismatch
 from hands.voice.dtln import _EARLY, _REPLAYED, _SETTLED  # pyright: ignore[reportPrivateUsage]  (the constants the plumbing is held to)
 
 BINS = BLOCK // 2 + 1
@@ -142,10 +143,7 @@ def test_a_frame_of_microphone_and_a_frame_of_reference_of_different_lengths_is_
 
 
 def test_a_download_that_is_not_the_pinned_file_is_refused_by_name_and_leaves_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def served(url: str, timeout: float) -> io.BytesIO:
-        return io.BytesIO(b"not the model")
-
-    monkeypatch.setattr("urllib.request.urlopen", served)
-    with pytest.raises(ValueError, match="dtln_aec_512_1.tflite"):
+    Network(monkeypatch, b"not the model")
+    with pytest.raises(Mismatch, match="dtln_aec_512_1.tflite"):
         fetched(tmp_path)
     assert list(tmp_path.iterdir()) == []

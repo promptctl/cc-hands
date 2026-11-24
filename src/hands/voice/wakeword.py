@@ -31,11 +31,3 @@ class Trained:
 # [LAW:one-type-per-behavior] a word whose model hands fetches, or one whose model the user keeps.
 type Word = Pretrained | Trained
 
-
-def model_of(word: Word, models: Path) -> Path:
-    """The file `word` is heard with: openWakeWord's own, in `models`, or the user's, where they keep it."""
-    match word:
-        case Pretrained(phrase=phrase):
-            return models / PRETRAINED[phrase]
-        case Trained(model=model):
-            return model

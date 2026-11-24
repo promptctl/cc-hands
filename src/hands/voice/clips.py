@@ -35,7 +35,7 @@ RATE = 16_000
 SECOND = RATE * 2
 
 # [LAW:one-source-of-truth] how much of what was heard the clip owner keeps from before a turn opens, as the seconds it
-# is and the bytes of it: the phone's page keeps the same length of its own audio (`hands.voice.phonewake`).
+# is and the bytes of it: the seconds are what the phone's page is told to keep (`hands.voice.phonewake`'s settings).
 KEPT_SECONDS = 1.0
 KEPT = int(KEPT_SECONDS * SECOND)
 

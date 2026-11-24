@@ -3,16 +3,11 @@ room while hands speaks as while it is quiet."""
 
 import ast
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
-import aiohttp
 import pytest
-from aiohttp import web
-from aiohttp.http_parser import HttpResponseParserPy, RawResponseMessage
-from aiohttp.streams import StreamReader
 from conftest import hearing_with, model_facts
 from speech import quiet, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
@@ -25,8 +20,9 @@ from hands.voice.engaged import drive
 from hands.voice.trigger import Choice
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
-from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, THRESHOLD, Models, WakeWord, fetched, listening, loaded
-from hands.voice.wakeword import PRETRAINED, Pretrained, Trained
+from hands.voice.wake import SAMPLE_RATE, WakeWord, listening, loaded
+from hands.voice.wakemodels import THRESHOLD, Files, WakeModels
+from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
 
 
 class ScriptedEars:
@@ -152,6 +148,11 @@ def test_the_detector_hears_the_room_while_hands_speaks_and_each_waking_says_whe
     assert events[0].parent_id == events[2].span_id
 
 
+async def files_of(models: Path, word: Word) -> Files:
+    """The files `word` is heard with, from the models the run fetched."""
+    return await WakeModels(models).ensured(word)
+
+
 def said(asked: str) -> bytes:
     """What is `asked`, with a second of silence either side."""
     return quiet(1.0) + spoken(asked) + quiet(1.0)
@@ -166,7 +167,7 @@ def wakes(word: WakeWord, audio: bytes) -> bool:
 @pytest.mark.outside
 async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(models: Path) -> None:
     events: list[WideEvent] = []
-    async with loaded(SYSTEM, SAMPLE_RATE, models, Pretrained(), events.append) as word:
+    async with loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
         assert wakes(word, said("Hey Jarvis. What is the status of the build?"))
         assert not wakes(word, said("I was talking with Jarvis earlier about the build, and it was fine."))
     assert [(event.event, event.outcome, model_facts(event)["phrase"]) for event in events] == [("desk.wake_word_loaded", "ok", "Hey Jarvis")]
@@ -175,7 +176,7 @@ async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(
 @pytest.mark.outside
 async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(models: Path) -> None:
     events: list[WideEvent] = []
-    async with loaded(SYSTEM, SAMPLE_RATE, models, Pretrained("Hey Mycroft"), events.append) as word:
+    async with loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained("Hey Mycroft")), Pretrained("Hey Mycroft"), events.append) as word:
         assert wakes(word, said("Hey Mycroft. What is the status of the build?"))
         assert not wakes(word, said("Hey Jarvis. What is the status of the build?"))
     assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Mycroft", str(models / PRETRAINED["Hey Mycroft"]))]
@@ -188,7 +189,8 @@ async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_t
     trained.parent.mkdir()
     trained.write_bytes((models / PRETRAINED["Hey Mycroft"]).read_bytes())
     events: list[WideEvent] = []
-    async with loaded(SYSTEM, SAMPLE_RATE, models, Trained("Hey Computer", trained), events.append) as word:
+    word_trained = Trained("Hey Computer", trained)
+    async with loaded(SYSTEM, SAMPLE_RATE, await files_of(models, word_trained), word_trained, events.append) as word:
         assert wakes(word, said("Hey Mycroft. What is the status of the build?"))
     assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Computer", str(trained))]
 
@@ -196,7 +198,7 @@ async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_t
 async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
     events: list[WideEvent] = []
     with pytest.raises(ValueError, match="16000 Hz"):
-        async with loaded(SYSTEM, 48_000, Path("unread"), Pretrained(), events.append):
+        async with loaded(SYSTEM, 48_000, Files(Path("unread"), Path("unread"), Path("unread")), Pretrained(), events.append):
             pass
     assert [(event.event, event.outcome) for event in events] == [("desk.wake_word_loaded", "failed")]
 
@@ -233,7 +235,7 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     async def on_move(move: Made) -> None:
         made.append(move.move)
 
-    async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append) as ears, loaded(SYSTEM, SAMPLE_RATE, models, Pretrained(), events.append) as word:
+    async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append) as ears, loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
         driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:
@@ -248,124 +250,6 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     assert [facts["complete"] for facts in judged] == [True], judged
     [desk] = [event for event in events if event.event == "desk" and event.facts["level"] == "wake word"]
     assert dict(desk.counts)["ended_on_silence"] == 0
-
-
-JARVIS = PRETRAINED["Hey Jarvis"]
-
-
-@asynccontextmanager
-async def release(model: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> AsyncGenerator[str]:
-    """A release served from this machine, each file in it answered by `model`: the address it is fetched from."""
-    app = web.Application()
-    app.router.add_get("/{name}", model)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "127.0.0.1", 0).start()
-    try:
-        yield f"http://127.0.0.1:{runner.addresses[0][1]}"
-    finally:
-        await runner.cleanup()
-
-
-@pytest.mark.outside
-async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_path: Path) -> None:
-    served: list[str] = []
-
-    async def model(request: web.Request) -> web.StreamResponse:
-        name = request.match_info["name"]
-        served.append(name)
-        match name:
-            case "embedding_model.onnx":
-                raise web.HTTPNotFound()
-            case "hey_jarvis_v0.1.onnx":
-                # The connection drops with the body half sent.
-                response = web.StreamResponse(headers={"Content-Length": "100"})
-                await response.prepare(request)
-                await response.write(b"half")
-                request.transport.close() if request.transport else None
-                return response
-            case _:
-                return web.Response(body=b"features")
-
-    async with release(model) as address:
-        with pytest.raises(aiohttp.ClientResponseError):
-            await fetched(tmp_path, Pretrained(), address)
-        assert sorted(path.name for path in tmp_path.iterdir()) == [MELSPECTROGRAM]
-        (tmp_path / EMBEDDING).write_bytes(b"features")
-        with pytest.raises(aiohttp.ClientPayloadError):
-            await fetched(tmp_path, Pretrained(), address)
-        assert not (tmp_path / JARVIS).exists()
-        (tmp_path / JARVIS).write_bytes(b"word")
-        assert await fetched(tmp_path, Pretrained(), address) == ()
-        assert served == [MELSPECTROGRAM, EMBEDDING, JARVIS]
-
-
-@pytest.mark.outside
-async def test_asks_for_the_models_that_arrive_while_they_are_being_fetched_wait_for_that_fetch(tmp_path: Path) -> None:
-    served: list[str] = []
-    begun, open_gate = asyncio.Event(), asyncio.Event()
-
-    async def model(request: web.Request) -> web.StreamResponse:
-        served.append(request.match_info["name"])
-        begun.set()
-        # The release holds its first answer until the test lets it go, so the second ask arrives while it is fetching.
-        await open_gate.wait()
-        return web.Response(body=b"features")
-
-    async with release(model) as address:
-        models = Models(tmp_path, address)
-        first = asyncio.create_task(models.ensured(Pretrained()))
-        await begun.wait()
-        second = asyncio.create_task(models.ensured(Pretrained()))
-        await asyncio.sleep(0)
-        assert not second.done()
-        open_gate.set()
-        assert (await first, await second) == ((MELSPECTROGRAM, EMBEDDING, JARVIS), ())
-    assert sorted(served) == sorted((MELSPECTROGRAM, EMBEDDING, JARVIS))
-    assert sorted(path.name for path in tmp_path.iterdir()) == sorted((MELSPECTROGRAM, EMBEDDING, JARVIS))
-
-
-@pytest.mark.outside
-async def test_the_models_are_fetched_from_a_release_whose_headers_are_far_longer_than_githubs(tmp_path: Path) -> None:
-    # GitHub's content-security-policy alone was 9243 bytes on 2026-10-23; this is three and a half times that.
-    long = "x" * (32 * 1024)
-
-    async def model(_request: web.Request) -> web.Response:
-        return web.Response(body=b"features", headers={"Content-Security-Policy": long})
-
-    async with release(model) as address:
-        assert await fetched(tmp_path, Pretrained(), address) == (MELSPECTROGRAM, EMBEDDING, JARVIS)
-    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == dict.fromkeys((MELSPECTROGRAM, EMBEDDING, JARVIS), b"features")
-
-
-@pytest.mark.outside
-async def test_a_long_header_line_still_arriving_when_a_read_ends_is_waited_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """aiohttp's own parser, the one it falls back to where its compiled one was not built, holds a line it has not had
-    the end of against a limit of its own, so the header is split: its end is sent once its start has been read."""
-    begun = asyncio.Event()
-
-    class Reading(HttpResponseParserPy):
-        def feed_data(self, data: bytes, *args: Any, **kwargs: Any) -> tuple[list[tuple[RawResponseMessage, StreamReader]], bool, bytes]:
-            begun.set()
-            return super().feed_data(data, *args, **kwargs)
-
-    monkeypatch.setattr("aiohttp.client_proto.HttpResponseParser", Reading)
-    head = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nContent-Security-Policy: " + b"x" * (32 * 1024)
-
-    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        await reader.readuntil(b"\r\n\r\n")
-        writer.write(head[: len(head) // 2])
-        await writer.drain()
-        await begun.wait()
-        writer.write(head[len(head) // 2 :] + b"\r\n\r\nfeatures")
-        await writer.drain()
-        writer.close()
-
-    for name in (MELSPECTROGRAM, EMBEDDING):
-        (tmp_path / name).write_bytes(b"features")
-    async with await asyncio.start_server(answer, "127.0.0.1", 0) as server:
-        assert await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}") == (JARVIS,)
-    assert (tmp_path / JARVIS).read_bytes() == b"features"
 
 
 def test_wake_training_scores_its_models_at_the_threshold_hands_wakes_at() -> None:

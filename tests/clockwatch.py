@@ -93,6 +93,7 @@ UNMOVED = frozenset({
     "test_phonewake.py",
     "test_pinned.py",
     "test_pinned_brain.py",
+    "test_pinnedfile_served.py",
     "test_playback.py",
     "test_progress.py",
     "test_proxy.py",

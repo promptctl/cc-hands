@@ -191,3 +191,17 @@ def test_the_same_samples_in_any_split_give_the_same_output(stream: Stream) -> N
 def test_output_is_16_bit_integers_clamped_where_a_microphone_clips(stream: Stream) -> None:
     heard = tone(stream, 48000, 300, level=1.5)
     assert (np.max(heard), np.min(heard), np.all(heard == np.round(heard))) == (32767, -32768, True)
+
+
+@pytest.mark.parametrize("rate", ["0", "-48000", "NaN", "Infinity", "undefined"])
+def test_a_rate_that_is_not_a_number_of_samples_a_second_above_zero_is_refused_where_the_stream_is_made(stream: Stream, rate: str) -> None:
+    stream.run(f"var refused; try {{ resampler({rate}) }} catch (why) {{ refused = why.message }}")
+    assert stream.value("refused") == f"a stream's rate is a number of samples a second above zero, not {rate}"
+
+
+def test_a_word_model_that_hears_more_vectors_than_a_stream_starts_with_is_refused_before_any_audio(stream: Stream) -> None:
+    stream.run("var refused; wakeStream({...models, frames: 42, threshold: 0.5, random}).catch(why => { refused = why.message; })")
+    assert stream.value("refused") == "the wake word's model hears 42 vectors at a time, and a stream starts with 41"
+    # The most it can hear is what the noise makes.
+    stream.run("var made = null; wakeStream({...models, frames: 41, threshold: 0.5, random}).then(each => { made = each; })")
+    assert stream.value("made !== null") is True

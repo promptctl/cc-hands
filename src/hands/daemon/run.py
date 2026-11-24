@@ -62,7 +62,7 @@ from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.shortcut import Move
 from hands.voice.clips import Trigger
 from hands.voice.atdesk import serve_desk
-from hands.voice.wake import Models
+from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
 from hands.voice.ortweb import Runtime
@@ -409,8 +409,8 @@ async def converse(
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
     # [LAW:single-enforcer] one owner of the wake word's models and one of the runtime the phone runs them on: the desk and
     # the phone's page ask the same ones, and what they ask for together is fetched once.
-    wake_models = Models(home.wake_word)
-    runtime = Runtime()
+    wake_models = WakeModels(home.wake_word)
+    runtime = Runtime(home.onnx_runtime)
 
     def beat() -> None:
         # A turn opened with no microphone hears nothing, so it is not listening.

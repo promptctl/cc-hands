@@ -47,7 +47,7 @@ from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
 from hands.voice.ortweb import Runtime
-from hands.voice.wake import Models
+from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from hands.voice.synthesis import Ended, Synthesis
 from conftest import events
@@ -59,9 +59,9 @@ def unused_gallery() -> Gallery:
     return Gallery(voices=Mock(), levels=Mock(), desk=Mock(), own=Mock(), speaker=Mock(), wake=Pretrained(), models=())
 
 
-def unused_wake(home: Home) -> tuple[Models, Runtime]:
+def unused_wake(home: Home) -> tuple[WakeModels, Runtime]:
     """The wake word's models and runtime no request in these tests reads: the routes that serve them are tested in test_phonewake."""
-    return Models(home.wake_word), Runtime(home.wake_word)
+    return WakeModels(home.wake_word), Runtime(home.onnx_runtime)
 
 
 KEY = "the-phone-key"

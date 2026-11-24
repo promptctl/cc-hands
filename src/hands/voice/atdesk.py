@@ -11,7 +11,7 @@ from loguru import logger
 from hands.clock import Clock
 from hands.sessions.wide import WideEvent, annotate, begun, unit
 from hands.voice import wake
-from hands.voice.wake import Models
+from hands.voice.wakemodels import WakeModels
 from hands.voice.cues import Cue, Played, level_cue
 from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Ears, Hears, drive, loaded
@@ -46,7 +46,7 @@ async def serve_desk(
     tapped: Callable[[Clock, Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     microphone: Microphone,
     speaker: Callable[[], Speaker],
-    models: Models,
+    models: WakeModels,
     word: Word,
     taken: Callable[[Move], Awaitable[None]],
     beat: Callable[[], None],
@@ -77,10 +77,11 @@ async def serve_desk(
         # [LAW:no-silent-failure] the models every level hears with are fetched and loaded once, beside the talk key as
         # the desk starts: one that cannot be is the run's failure, said with what could not be loaded, never a level
         # that fails as it is chosen.
-        # [LAW:nothing-unseen] the fetch is its own unit of work, naming the files it fetched, none once they are kept.
+        # [LAW:nothing-unseen] the fetch is its own unit of work, naming the files the wake word is heard with.
         with unit("desk.fetched", record, begun(clock)):
-            annotate(fetched=", ".join(await models.ensured(word)))
-        async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, models.directory, word, record) as heard:
+            files = await models.ensured(word)
+            annotate(files=", ".join(path.name for path in files.by_role().values()))
+        async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
 
     await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels.chosen, at_desk, at_level, record)

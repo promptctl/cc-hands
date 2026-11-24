@@ -15,8 +15,9 @@ export const carriesKey = key !== "";
 // so soon after.
 const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
-// [LAW:one-source-of-truth] every request a page makes crosses to hands here, and what came of it is one of three outcomes.
-// `readBody` reads an answer's body as the request wants it: its text, or its bytes.
+// [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of three
+// outcomes. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
+// key and fail in the browser's words. `readBody` reads an answer's body as the request wants it: its text, or its bytes.
 async function crossed(method, path, body, within, readBody) {
   const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(within) };
   if (body !== undefined) {

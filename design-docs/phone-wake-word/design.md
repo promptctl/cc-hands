@@ -90,7 +90,7 @@ What the second is for:
 - The wake word itself, so Whisper hears the sentence whole, as it does at the desk.
 - Cutting hands off. A turn the voice opened stops hands' reply once a person is heard in it, and the wake word in the kept second is that person.
 
-Why a second: it is the Mac's own length (`clips.SECOND`), the Mac tells the page that length as a duration, and the clip owner keeps only the last second of what comes before a clip, so more would be thrown away.
+Why a second: it is the Mac's own length (`clips.KEPT_SECONDS`), the Mac tells the page that length as a duration, and the clip owner keeps only the last second of what comes before a clip, so more would be thrown away.
 
 The second is not there to cover a connection opening, since the call is already up.
 

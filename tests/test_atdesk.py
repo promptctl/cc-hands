@@ -24,7 +24,8 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import SHORTCUT_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
 from hands.voice.tools import listening_tools
 from hands.voice.trigger import Levels
-from hands.voice.wake import SAMPLE_RATE, Models
+from hands.voice.wake import SAMPLE_RATE
+from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 
 
@@ -125,7 +126,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     off, wake, engaged, deaf = map(spoken, [ask, "Hey Jarvis. What is the status of the build?", ask, ask])
 
     level, choose = listening_tools(levels, Pretrained())
-    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=Models(models), word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
+    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=WakeModels(models), word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
 
     async def alongside(waiting: Awaitable[object]) -> None:
         """`waiting`, beside the desk: a desk that ended is the failure itself, raised, never a wait that runs out on it."""
@@ -217,6 +218,6 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
         await serving
     assert len(beats) == 3, "each change of level is beaten, so the indicator reads it at once"
     fetched = [event for event in events if event.event == "desk.fetched"]
-    assert [(event.outcome, event.facts["fetched"]) for event in fetched] == [("ok", "")]
+    assert [(event.outcome, event.facts["files"]) for event in fetched] == [("ok", "melspectrogram.onnx, embedding_model.onnx, hey_jarvis_v0.1.onnx")]
     leveled = [(event.facts["was"], event.facts["now"], event.facts["by"]) for event in events if event.event == "desk.leveled"]
     assert leveled == [("off", "wake word", "tap"), ("wake word", "engaged", "tool"), ("engaged", "off", "tap")]

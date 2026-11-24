@@ -64,6 +64,11 @@ class Home:
         return self.root / "wake-word"
 
     @property
+    def onnx_runtime(self) -> Path:
+        """ONNX Runtime Web's files, which the phone's page runs the wake word on, fetched by the daemon when a page first asks (hands.voice.ortweb)."""
+        return self.root / "onnxruntime-web"
+
+    @property
     def clips(self) -> Path:
         """Each clip the desk or the phone heard, as hands heard it and with what hands was playing over it, one
         directory for each run, written by the daemon alone (hands.voice.recorder)."""

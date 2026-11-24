@@ -26,6 +26,7 @@ import numpy as np
 from ai_edge_litert.interpreter import Interpreter
 
 from hands.voice import pinnedfile
+from hands.voice.pinnedfile import Pin
 
 SAMPLE_RATE = 16000
 BLOCK, SHIFT = 512, 128
@@ -93,11 +94,11 @@ def weights() -> tuple[Path, Path]:
 def fetched(directory: Path) -> tuple[Path, Path]:
     """The two parts' files, fetched from the model's repository at REVISION into `directory` unless they are there, each held to its digest.
 
-    A canceller that cancels with other weights would leak hands' voice or eat a person's with nothing to say why, so a
-    file that is not the one pinned is refused by name (`hands.voice.pinnedfile`)."""
+    [LAW:no-silent-failure] a canceller that cancels with other weights would leak hands' voice or eat a person's with
+    nothing to say why, so a file that is not the one pinned is refused by name (`hands.voice.pinnedfile`)."""
     directory.mkdir(parents=True, exist_ok=True)
     first, second = (
-        pinnedfile.fetched(directory, name, f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", digest, REVISION)
+        pinnedfile.fetched(directory, Pin(name, f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", digest, REVISION))
         for name, digest in PARTS
     )
     return first, second
