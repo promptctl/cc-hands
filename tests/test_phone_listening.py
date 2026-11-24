@@ -20,9 +20,10 @@ from hands.voice.clips import Clip, Sound
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import ClipOpened
-from hands.voice.phone import DetectorFailed, DetectorLoaded, Level, Unreadable, Wake, parse_said
+from hands.voice.phone import DetectorFailed, DetectorLoaded, DetectorWaiting, Ignored, Level, ScreenKept, ScreenUnkept, Unreadable, Wake, parse_said
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.trigger import PHONE_WAKE
+from hands.voice.wakeword import THRESHOLD
 from test_clipowner import Heeding, Scripted
 from test_phone import LOUD, Call, calling, quiet_message
 
@@ -39,6 +40,10 @@ def level_message(level: str) -> str:
     return json.dumps({"kind": "level", "level": level})
 
 
+def detector_message(state: str, why: str | None = None) -> str:
+    return json.dumps({"kind": "detector", "state": state, "browser": "Safari 26", **({} if why is None else {"why": why})})
+
+
 @pytest.mark.parametrize(
     ("said", "read"),
     [
@@ -47,9 +52,12 @@ def level_message(level: str) -> str:
         (wake_message(1), Wake(1.0)),
         (level_message("wake word"), Level("wake word")),
         (level_message("off"), Level("off")),
-        (json.dumps({"kind": "detector", "loaded": True, "browser": "Safari 26"}), DetectorLoaded("Safari 26")),
-        (json.dumps({"kind": "detector", "loaded": False, "browser": "Safari 26", "why": "out of memory"}), DetectorFailed("Safari 26", "out of memory")),
-        (json.dumps({"kind": "detector", "loaded": False, "browser": "Safari 26"}), DetectorFailed("Safari 26", "no reason given")),
+        (detector_message("loaded"), DetectorLoaded("Safari 26")),
+        (detector_message("waiting", "hands did not answer within 60 s"), DetectorWaiting("Safari 26", "hands did not answer within 60 s")),
+        (detector_message("failed", "out of memory"), DetectorFailed("Safari 26", "out of memory")),
+        (json.dumps({"kind": "ignored", "score": 0.8}), Ignored(0.8)),
+        (json.dumps({"kind": "screen", "state": "kept"}), ScreenKept()),
+        (json.dumps({"kind": "screen", "state": "unkept", "why": "this browser has no screen wake lock"}), ScreenUnkept("this browser has no screen wake lock")),
     ],
 )
 def test_what_the_page_says_of_its_detector_and_its_level_is_read(said: str, read: object) -> None:
@@ -68,9 +76,24 @@ def test_a_wake_with_no_score_is_still_a_wake() -> None:
 
 @pytest.mark.parametrize(
     "said",
-    [level_message("engaged"), level_message(""), json.dumps({"kind": "level"}), json.dumps({"kind": "detector", "browser": "Safari"}), json.dumps({"kind": "detector", "loaded": True}), json.dumps({"kind": "detector", "loaded": "yes", "browser": "x"}), json.dumps({"kind": "hello"})],
+    [
+        level_message("engaged"),
+        level_message(""),
+        json.dumps({"kind": "level"}),
+        json.dumps({"kind": "detector", "browser": "Safari"}),
+        json.dumps({"kind": "detector", "state": "loaded"}),
+        json.dumps({"kind": "detector", "state": "dead", "browser": "x"}),
+        # A detector that is waiting or has failed says why: a record with no reason would be read as one the page never gave.
+        detector_message("failed"),
+        detector_message("waiting"),
+        json.dumps({"kind": "ignored", "score": 1.5}),
+        json.dumps({"kind": "ignored"}),
+        json.dumps({"kind": "screen", "state": "unkept"}),
+        json.dumps({"kind": "screen", "state": "asleep"}),
+        json.dumps({"kind": "hello"}),
+    ],
 )
-def test_a_level_or_a_detector_hands_cannot_read_is_not_read(said: str) -> None:
+def test_a_level_a_detector_or_a_screen_hands_cannot_read_is_not_read(said: str) -> None:
     with pytest.raises(Rejected):
         parse_said(said, 48000)
 
@@ -148,7 +171,7 @@ async def test_a_wake_while_hands_is_at_the_desk_opens_nothing_and_the_next_one_
         call.key.end(call.key.gate.turn, "stop", "shortcut")
         call.page.send(wake_message())
         await call.until(lambda: len(call.page.told) == 1)
-        assert told(call) == [{"kind": "unopened", "press": 1, "why": "hands is at the desk", "at_desk": True}]
+        assert told(call) == [{"kind": "unopened", "press": 1, "reason": "elsewhere", "why": "hands is at the desk"}]
         assert (call.key.gate.place, call.key.gate.turn_open, call.key.gate.ended) == ("desk", False, ("sent",))
         # Hands being at the desk is no mistake of the page's, for the page cannot know it.
         [refused] = wakes(call)
@@ -167,7 +190,7 @@ async def test_a_wake_at_off_or_over_an_open_turn_opens_nothing_and_is_the_pages
     async with calling() as call:
         call.page.send(wake_message())
         await call.until(lambda: len(call.page.told) == 1)
-        assert told(call) == [{"kind": "unopened", "press": 1, "why": "the phone is not listening for the wake word", "at_desk": False}]
+        assert told(call) == [{"kind": "unopened", "press": 1, "reason": "deaf", "why": "the phone is not listening for the wake word"}]
         call.page.send(level_message("wake word"))
         call.page.send("press")
         await call.until(lambda: call.key.gate.key == "down")
@@ -283,11 +306,25 @@ async def test_the_call_ending_during_a_wakes_turn_sends_it_and_tells_the_page_n
 
 
 @pytest.mark.outside
-async def test_a_detector_that_loaded_or_failed_is_an_event_with_the_browser_the_page_is_in() -> None:
+async def test_what_became_of_a_detector_is_an_event_with_the_browser_the_page_is_in_and_a_waiting_one_is_not_a_failed_one() -> None:
     async with calling() as call:
-        call.page.send(json.dumps({"kind": "detector", "loaded": True, "browser": "Safari 26"}))
-        call.page.send(json.dumps({"kind": "detector", "loaded": False, "browser": "Safari 26", "why": "out of memory"}))
-        await call.until(lambda: len(events(call.recorded, "phone.detector")) == 2)
-        loaded, failed = events(call.recorded, "phone.detector")
-        assert (loaded.outcome, loaded.facts) == ("ok", {"browser": "Safari 26", "loaded": True})
-        assert (failed.outcome, failed.error, failed.facts) == ("failed", "out of memory", {"browser": "Safari 26", "loaded": False})
+        for said in [detector_message("waiting", "hands did not answer within 60 s"), detector_message("loaded"), detector_message("failed", "out of memory")]:
+            call.page.send(said)
+        await call.until(lambda: len(events(call.recorded, "phone.detector")) == 3)
+        waiting, loaded, failed = events(call.recorded, "phone.detector")
+        assert (waiting.outcome, waiting.facts) == ("ok", {"browser": "Safari 26", "state": "waiting", "why": "hands did not answer within 60 s"})
+        assert (loaded.outcome, loaded.facts) == ("ok", {"browser": "Safari 26", "state": "loaded"})
+        assert (failed.outcome, failed.error, failed.facts) == ("failed", "out of memory", {"browser": "Safari 26", "state": "failed"})
+
+
+@pytest.mark.outside
+async def test_a_word_the_page_heard_and_opened_no_turn_for_is_an_event_with_its_score_and_so_is_the_screen_it_could_not_keep_on() -> None:
+    async with calling() as call:
+        for said in [json.dumps({"kind": "ignored", "score": 0.8}), json.dumps({"kind": "screen", "state": "kept"}), json.dumps({"kind": "screen", "state": "unkept", "why": "no lock"})]:
+            call.page.send(said)
+        await call.until(lambda: len(events(call.recorded, "phone.screen")) == 2)
+        [ignored] = events(call.recorded, "phone.ignored")
+        assert (ignored.outcome, ignored.facts) == ("ok", {"score": 0.8, "threshold": THRESHOLD})
+        kept, unkept = events(call.recorded, "phone.screen")
+        assert (kept.outcome, kept.facts) == ("ok", {"state": "kept"})
+        assert (unkept.outcome, unkept.error, unkept.facts) == ("failed", "no lock", {"state": "unkept"})

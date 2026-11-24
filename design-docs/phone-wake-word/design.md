@@ -188,14 +188,16 @@ From the page:
 | `press`, `release` | the button | as today |
 | `wake`, with the detector's score | the detector heard the word and no turn is open | new |
 | `level`, `wake word` or `off` | once the wake word is on and the detector is ready, and on each change after; a call starts at `off` | new |
-| `detector`, loaded or failed and why, and the browser the page is in | once for each call that loads the detector | new |
+| `detector`, loaded, waiting on hands, or failed, and why for the last two, and the browser the page is in | loaded or failed once for each call that loads the detector; waiting the first time hands gave it no answer | new |
+| `ignored`, with the detector's score | the detector heard the word and a turn was open, so no wake was sent | new |
+| `screen`, kept, or unkept and why | each time the page asked the browser to keep the screen on | new |
 
 From hands:
 
 | message | when | |
 |---|---|---|
 | `opened`, naming the press and the clip | a press or a wake opened a turn, and this is its clip | today's message; a wake counts as a press |
-| `unopened`, naming the press and why | a press or a wake opened no clip: hands is at the desk, or its turn was over before hands heard any of it | new |
+| `unopened`, naming the press, the reason as one of a closed set, and why in words | a press or a wake opened no clip: hands is at the desk, the phone is not listening, a turn is open, the wake could not be read, or its turn was over before hands heard any of it | new |
 | `released`, naming the clip | the turn was sent | as today |
 | `discarded`, naming the clip | the turn was thrown away: nothing was asked | new |
 | milestones and transcript lines | as today | |

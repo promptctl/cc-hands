@@ -93,7 +93,9 @@ is not, what does it; it exits 0 only when every step is done.
    browser. The phrase is heard on the phone itself, by the same three openWakeWord
    models running in the page, which hands serves to it on the first Connect with the
    wake word on (about 3 MB); with it off, none are fetched. Until the phrase is said,
-   no microphone audio leaves the phone: hands is sent only a count of the silence. When
+   no microphone audio leaves the phone: hands is sent only a count of the silence, and
+   what became of the detector, the score of a phrase it heard while a turn was open, and
+   whether the screen is kept awake, none of which is audio. When
    it is said, the phone sends the second before it, then the rest as it comes, and
    hands ends the turn as it ends any other. Holding the button still talks, whether or
    not the wake word is loaded, off, or has failed; the page says when it is not

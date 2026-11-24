@@ -79,8 +79,8 @@ let ahead = 0;
 // The time on hands' clock now, in seconds, as hands' reads last said it.
 export const handsNow = () => Date.now() / 1000 + ahead;
 
-// How long the page waits to read hands again after a read that failed.
-const AGAIN_MS = 2000;
+// How long a page, or its worker, waits to ask hands again after an ask that got no answer.
+export const AGAIN_MS = 2000;
 
 // Read `path` for as long as the page is open: each read says what it last saw and waits at hands until what it shows
 // changes from it (hands.voice.longpoll), bounded by the wait hands said; a read that has seen nothing is answered at once.

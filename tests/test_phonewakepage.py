@@ -7,6 +7,7 @@ import asyncio
 import base64
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -15,7 +16,7 @@ from conftest import events, running
 from playwright.async_api import Page, Route, expect
 from speech import spoken
 from test_clipowner import Heeding, Scripted
-from test_pages import IN_PASSING, PHRASE, WAKE_OFF, Hands, Opened, browser, chrome, hands, unreachable, wake_models  # pyright: ignore[reportUnusedImport]  (fixtures, found by their names)
+from test_pages import IN_PASSING, PHRASE, Hands, Opened, browser, chrome, hands, unreachable, wake_models  # pyright: ignore[reportUnusedImport]  (fixtures, found by their names)
 
 from hands.clock import SYSTEM
 from hands.voice.clipowner import ClipOwner
@@ -99,7 +100,7 @@ async def sent(page: Page) -> list[dict[str, Any]]:
 
 
 async def until_sent(page: Page, kind: str, count: int = 1) -> None:
-    """Until the page has sent `count` messages of `kind`."""
+    """Until the page has sent `count` messages of `kind` on its call, from the page's first."""
     await page.wait_for_function("([kind, count]) => sent.filter(each => each.kind === kind).length >= count", arg=[kind, count])
 
 
@@ -107,6 +108,24 @@ async def until(condition: Callable[[], bool]) -> None:
     async with asyncio.timeout(15):
         while not condition():
             await asyncio.sleep(0.02)
+
+
+async def held_open(held: asyncio.Event, route: Route) -> None:
+    """A request kept waiting until `held` is set, and then let through."""
+    await held.wait()
+    await route.continue_()
+
+
+async def button_down(page: Page) -> None:
+    """The button goes down and stays down."""
+    talk = (await page.locator("#talk").bounding_box()) or {}
+    await page.mouse.move(talk["x"] + talk["width"] / 2, talk["y"] + talk["height"] / 2)
+    await page.mouse.down()
+
+
+def detector_states(hands: Hands) -> list[object]:
+    """What the page told hands of its detector on each call, in order: loaded, waiting, or failed."""
+    return [event.facts["state"] for event in events(hands.recorded, "phone.detector")]
 
 
 def hands_ends_the_turn(hands: Hands, how: Ending) -> None:
@@ -207,12 +226,7 @@ async def test_with_the_wake_word_on_nothing_leaves_the_phone_until_the_word_is_
 
 async def test_a_browser_that_never_opened_the_page_has_the_wake_word_on_and_the_line_says_so_once_the_detector_is_ready(browser: Opened, hands: Hands) -> None:
     held = asyncio.Event()
-
-    async def hold(route: Route) -> None:
-        await held.wait()
-        await route.continue_()
-
-    await browser.context.route("**/wake/settings", hold)
+    await browser.context.route("**/wake/settings", partial(held_open, held))
     page = await connected(browser, hands)
     await expect(page.get_by_role("button", name="Phone wake word")).to_have_attribute("aria-pressed", "true")
     # While the detector loads, the page says what it says with the wake word off, and hands has been told nothing of the phone listening.
@@ -221,7 +235,7 @@ async def test_a_browser_that_never_opened_the_page_has_the_wake_word_on_and_the
     held.set()
     await expect(page.locator("#state")).to_have_text(LISTENING)
     [loaded] = events(hands.recorded, "phone.detector")
-    assert loaded.facts["loaded"] is True and "Chrome" in str(loaded.facts["browser"])
+    assert loaded.facts["state"] == "loaded" and "Chrome" in str(loaded.facts["browser"])
     await until(lambda: hands.gate.gate.phone_level == "wake word")
 
 
@@ -243,9 +257,7 @@ async def test_turned_off_the_choice_survives_a_reload_and_a_page_off_before_con
 
 async def holds_and_opens(page: Page, hands: Hands) -> None:
     """The button held opens a turn at the phone, which hands says it has, and let go ends it."""
-    talk = (await page.locator("#talk").bounding_box()) or {}
-    await page.mouse.move(talk["x"] + talk["width"] / 2, talk["y"] + talk["height"] / 2)
-    await page.mouse.down()
+    await button_down(page)
     await until(lambda: hands.gate.gate.turn_open and hands.gate.gate.opened == "phone button")
     await page.mouse.up()
     await until(lambda: not hands.gate.gate.turn_open)
@@ -263,7 +275,7 @@ async def test_turning_the_wake_word_off_and_on_in_a_call_stops_and_starts_the_d
     await page.get_by_role("button", name="Phone wake word").click()
     await expect(page.locator("#state")).to_have_text(LISTENING)
     await until(lambda: hands.gate.gate.phone_level == "wake word")
-    assert [event.facts["loaded"] for event in events(hands.recorded, "phone.detector")] == [True, True]
+    assert detector_states(hands) == ["loaded", "loaded"]
 
 
 async def test_a_word_said_after_a_button_turn_sends_the_kept_second_without_what_was_heard_before_the_button_went_down(browser: Opened, hands: Hands) -> None:
@@ -283,17 +295,18 @@ async def test_a_word_said_after_a_button_turn_sends_the_kept_second_without_wha
     assert sum(each["audio"] for each in kept) <= KEPT_SECONDS * rate + 128
 
 
-async def test_a_word_said_inside_a_button_turn_opens_nothing(browser: Opened, hands: Hands) -> None:
+async def test_a_word_said_inside_a_button_turn_opens_nothing_and_is_a_hearing_in_hands_record_with_its_score(browser: Opened, hands: Hands) -> None:
     page = await listening(browser, hands)
-    talk = (await page.locator("#talk").bounding_box()) or {}
-    await page.mouse.move(talk["x"] + talk["width"] / 2, talk["y"] + talk["height"] / 2)
-    await page.mouse.down()
+    await button_down(page)
     await until(lambda: hands.gate.gate.turn_open)
     await speak(page, spoken(PHRASE))
     await page.mouse.up()
     await until(lambda: not hands.gate.gate.turn_open)
     assert [each for each in await sent(page) if each.get("kind") == "wake"] == []
     assert events(hands.recorded, "phone.wake") == []
+    await until(lambda: bool(events(hands.recorded, "phone.ignored")))
+    [ignored] = events(hands.recorded, "phone.ignored")
+    assert isinstance(ignored.facts["score"], float) and ignored.facts["score"] >= 0.5
 
 
 async def test_turned_off_during_a_wakes_turn_the_turn_is_sent(browser: Opened, hands: Hands) -> None:
@@ -309,12 +322,7 @@ async def test_turned_off_during_a_wakes_turn_the_turn_is_sent(browser: Opened, 
 
 async def test_holding_the_button_opens_a_turn_while_the_detector_loads(browser: Opened, hands: Hands) -> None:
     held = asyncio.Event()
-
-    async def hold(route: Route) -> None:
-        await held.wait()
-        await route.continue_()
-
-    await browser.context.route("**/wake/settings", hold)
+    await browser.context.route("**/wake/settings", partial(held_open, held))
     page = await connected(browser, hands)
     await expect(page.locator("#state")).to_have_text(LOADING)
     await holds_and_opens(page, hands)
@@ -326,9 +334,7 @@ async def test_holding_the_button_during_a_wakes_turn_sends_it_and_opens_the_but
         page = await listening(browser, hands)
         await speak(page, spoken(PHRASE))
         await until(lambda: hands.gate.gate.turn_open and hands.gate.gate.opened == PHONE_WAKE)
-        talk = (await page.locator("#talk").bounding_box()) or {}
-        await page.mouse.move(talk["x"] + talk["width"] / 2, talk["y"] + talk["height"] / 2)
-        await page.mouse.down()
+        await button_down(page)
         await until(lambda: hands.gate.gate.opened == "phone button")
         assert hands.gate.gate.ended == ("sent",) and hands.gate.gate.turn_open
         await page.mouse.up()
@@ -341,7 +347,7 @@ async def test_a_detector_that_cannot_load_is_said_with_why_and_told_to_hands_an
     await expect(page.locator("#wake-note")).to_have_text("The wake word is not listening: hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down.")
     await expect(page.locator("#state")).to_have_text(LOADING)
     [failed] = events(hands.recorded, "phone.detector")
-    assert failed.outcome == "failed" and failed.facts["loaded"] is False and "melspectrogram.onnx" in str(failed.error)
+    assert failed.outcome == "failed" and failed.facts["state"] == "failed" and "melspectrogram.onnx" in str(failed.error)
     assert hands.gate.gate.phone_level == "off"
     await holds_and_opens(page, hands)
 
@@ -362,7 +368,8 @@ async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_th
     await expect(page.locator("#state")).to_have_text(LISTENING)
     await expect(page.locator("#wake-note")).to_have_text("")
     assert len(refused) == 1
-    assert [event.facts["loaded"] for event in events(hands.recorded, "phone.detector")] == [True]
+    # hands' record has the wait as its own fact, once, ahead of the load: a detector waiting is not one that never ran.
+    assert detector_states(hands) == ["waiting", "loaded"]
 
 
 async def test_a_wake_hands_answers_unopened_at_the_desk_says_so_and_leaves_the_page_waiting_for_the_word(browser: Opened, hands: Hands) -> None:
@@ -401,7 +408,35 @@ async def test_a_call_that_drops_and_is_made_again_by_the_page_listens_for_the_w
     await expect(page.locator("#state")).to_contain_text("Calling again")
     await expect(page.locator("#state")).to_have_text(LISTENING)
     await until(lambda: hands.gate.gate.phone_level == "wake word")
-    assert [event.facts["loaded"] for event in events(hands.recorded, "phone.detector")] == [True, True]
+    assert detector_states(hands) == ["loaded", "loaded"]
+
+
+async def test_a_call_that_ends_while_the_detectors_script_comes_in_starts_no_detector(browser: Opened, hands: Hands) -> None:
+    held = asyncio.Event()
+    arrived = asyncio.Event()
+
+    async def hold_the_script(route: Route) -> None:
+        arrived.set()
+        await held_open(held, route)
+
+    await browser.context.route("**/detector.js", hold_the_script)
+    page = await connected(browser, hands)
+    await asyncio.wait_for(arrived.wait(), 15)
+    await hands.phone.hang_up("hung up")
+    await expect(page.locator("#state")).to_contain_text("Calling again")
+    await expect(page.locator("#state")).to_have_text(LOADING)
+    held.set()
+    await expect(page.locator("#state")).to_have_text(LISTENING)
+    # One detector asked hands for its settings: the first call's script arrived to a call that was over, and started none.
+    assert [path for path in hands.requests if path.startswith("/wake/settings")] == ["/wake/settings"]
+    assert detector_states(hands) == ["loaded"]
+
+
+async def test_a_browser_that_will_not_keep_the_choice_says_so_beside_the_button(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script('if (window.isSecureContext) Object.defineProperty(window, "localStorage", { get() { throw new Error("storage is off"); } })')
+    page = await browser.open(hands.address("/"))
+    await expect(page.locator("#wake-note")).to_have_text("This browser will not keep the wake word's choice: storage is off.")
+    await expect(page.get_by_role("button", name="Phone wake word")).to_have_attribute("aria-pressed", "true")
 
 
 async def test_the_page_holds_a_screen_wake_lock_while_the_wake_word_is_on_and_the_call_is_up_and_none_otherwise(browser: Opened, hands: Hands) -> None:
@@ -420,6 +455,17 @@ async def test_the_page_holds_a_screen_wake_lock_while_the_wake_word_is_on_and_t
     await hands.phone.hang_up("hung up")
     await page.wait_for_function("locks === 0")
     await page.wait_for_function("locks === 1")
+    # Each lock the page got is in hands' record.
+    assert {event.facts["state"] for event in events(hands.recorded, "phone.screen")} == {"kept"}
+
+
+async def test_a_browser_with_no_screen_wake_lock_says_the_screen_may_sleep_and_tells_hands(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script('if (window.isSecureContext) Object.defineProperty(navigator, "wakeLock", { value: undefined })')
+    page = await connected(browser, hands)
+    await expect(page.locator("#wake-note")).to_have_text("The screen may go to sleep, which stops the wake word: this browser has no screen wake lock.")
+    await until(lambda: bool(events(hands.recorded, "phone.screen")))
+    [unkept] = events(hands.recorded, "phone.screen")
+    assert unkept.outcome == "failed" and unkept.facts["state"] == "unkept" and unkept.error == "this browser has no screen wake lock"
 
 
 async def test_a_hands_that_answers_after_the_pages_sixty_seconds_is_waited_on_not_given_up_on(browser: Opened, hands: Hands) -> None:

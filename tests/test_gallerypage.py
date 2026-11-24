@@ -170,7 +170,7 @@ async def test_the_page_is_served_and_its_reads_and_choices_need_the_phones_key(
     body = await shown.text()
     assert shown.status == 200 and "hands' voices and options" in body
     # The level control is the desk's own: the phone page has its wake word button beside Connect.
-    assert "<h2>Listening at the desk</h2>" in body
+    assert "Listening at the desk" in body
     assert shown.headers["Cache-Control"] == "no-store"
 
     refused = await page.client.get("/gallery/state")

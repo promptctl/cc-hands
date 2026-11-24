@@ -6,7 +6,7 @@
 //
 // The phone's key reaches it in its address's fragment, as it reaches a page, so it asks hands through hands.js as a page does.
 
-import { asked, askedForBytes, unanswered } from "/hands.js";
+import { AGAIN_MS, asked, askedForBytes, unanswered } from "/hands.js";
 import { BANDS, EMBEDDING_SIZE, MEL_WINDOW, RATE, resampler, wakeStream } from "/wakestream.js";
 
 // The models by the role each plays in wakeStream's steps, which is the name hands serves each by.
@@ -25,9 +25,6 @@ function settingsOf(body) {
   }
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
-
-// How long a hands that gave no answer is waited on before it is asked again.
-const AGAIN_MS = 2000;
 
 // hands that did not answer, or could not be reached, is waited for and never given up on: on a cold first run `/wake/settings`
 // waits on the models' fetch for longer than any one request is given, and a `failed` is final, so a page that gave up there
@@ -127,5 +124,6 @@ async function run() {
 
 run().catch(error => {
   onmessage = null;
-  postMessage({ kind: "failed", why: error.message });
+  // A promise can be rejected with any value, and the page shows `why` as it comes: a thing with no message says what it is.
+  postMessage({ kind: "failed", why: error?.message || String(error) });
 });
