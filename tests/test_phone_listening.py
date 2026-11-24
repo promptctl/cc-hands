@@ -180,7 +180,7 @@ async def test_a_wake_then_speech_then_quiet_opens_a_turn_at_the_phone_that_star
         # The clip starts with the second the page kept before the wake, and the wake's turn was opened by no hand.
         assert sound.heard[: 2 * RATE] == BEFORE * SECOND and sound.seconds > 1.0
         [woke] = events(page.recorded, "phone.wake")
-        assert (woke.facts["score"], woke.facts["threshold"], woke.facts["hands_speaking"], woke.facts["opened"]) == (0.9, THRESHOLD, False, True)
+        assert (woke.facts["score"], woke.facts["threshold"], woke.facts["while_speaking"], woke.facts["opened"]) == (0.9, THRESHOLD, False, True)
         assert (page.key.gate.key, page.key.gate.opened, page.key.gate.ended) == ("listening", "phone wake word", ("sent",))
         [judged] = events(page.recorded, "phone.judged")
         assert judged.outcome == "ok"
@@ -303,7 +303,7 @@ async def test_a_verdict_after_a_press_took_over_ends_nothing_of_the_buttons_tur
         await page.until(lambda: page.moves[-2:] == ["stop", "start"] and page.key.gate.turn_open)
         assert (page.key.gate.opened, page.key.gate.ended) == ("phone button", ("sent",))
         [followed] = events(page.recorded, "phone.turn")
-        assert followed.facts["end"] == "gate"
+        assert (followed.facts["end"], followed.facts["by"]) == ("gate", "phone wake word")
 
 
 async def test_after_a_refused_wake_or_a_desk_takeover_the_next_wake_opens_a_turn_and_is_no_mistake() -> None:
@@ -352,3 +352,27 @@ async def test_a_release_over_a_wakes_turn_ends_nothing_of_it() -> None:
 def test_a_wake_whose_score_is_no_probability_is_refused_as_unreadable(score: float) -> None:
     with pytest.raises(Rejected, match="not a probability"):
         parse_said(wake_message(score), RATE)
+
+
+async def test_hanging_up_over_a_wakes_turn_ends_what_the_driver_followed_with_no_frame_to_say_so() -> None:
+    async with up() as page:
+        page.send(level_message("wake word"), wake_message(0.9), QUIET, *[SPEECH] * 3)
+        await page.told_count(1)
+        await page.phone.hang_up("hung up")
+        await page.until(lambda: bool(events(page.recorded, "phone.turn")))
+        [followed] = events(page.recorded, "phone.turn")
+        assert (followed.facts["end"], followed.facts["by"]) == ("gate", "call")
+        assert page.key.gate.ended == ("sent",)
+
+
+@pytest.mark.parametrize(
+    ("message", "unreadable"),
+    [
+        ({"kind": "level", "level": "engaged"}, "neither off nor wake word"),
+        ({"kind": "detector", "state": "loading", "browser": "Safari"}, "neither loaded nor failed"),
+        ({"kind": "shout"}, "none hands reads"),
+    ],
+)
+def test_a_level_a_detector_state_or_a_kind_hands_does_not_know_is_refused_as_unreadable(message: dict[str, str], unreadable: str) -> None:
+    with pytest.raises(Rejected, match=unreadable):
+        parse_said(json.dumps(message), RATE)

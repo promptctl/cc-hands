@@ -7,7 +7,7 @@ from hands.virtualclock import VirtualClock
 from hands.core.place import Place
 from hands.voice.shortcut import Move
 from hands.sessions.audit import Entry
-from hands.voice.ptt import Gate, Key, PushToTalk
+from hands.voice.ptt import Gate, Key, PushToTalk, TurnEnded
 from hands.voice.tools import modality_tool
 from hands.voice.trigger import Trigger, place_of
 from hands.voice.voiceturn import TurnId
@@ -306,9 +306,12 @@ def test_a_voice_arms_a_turn_only_from_where_it_listens(voice: Trigger) -> None:
     listening = Gate("listening", place, listening=frozenset({place}))
     armed = listening.after("arm", voice)
     assert (armed.key, armed.after("start", voice).key) == ("arming", "down")
-    # Deaf, or with a press or a turn open, the voice arms nothing.
+    # Deaf, or with a press or a turn open, the voice arms nothing; and it starts only what is armed, so it opens no turn
+    # where it was refused, and takes none from a hand that has one open.
     for refused in (Gate("up", place), Gate("arming", place), Gate("down", place, opened="shortcut")):
         assert refused.took("arm", voice) is None
+    for unarmed in (Gate("up", place), Gate("listening", place), Gate("down", place, opened="shortcut")):
+        assert unarmed.took("start", voice) is None and unarmed.after("start", voice) == unarmed
     # A hand opens a turn as it always has.
     assert Gate("up", "desk").took("start", "shortcut") == "start"
 
@@ -321,3 +324,26 @@ def test_a_clip_is_ended_by_the_trigger_that_opened_it() -> None:
         down = Gate("down", place_of(opened), opened=opened)
         for end in ends:
             assert (down.took(end, ender), down.took(end, opened)) == (None, end)
+
+
+def test_the_gate_tells_those_who_watch_each_turn_it_ends_in_order_and_what_ended_it() -> None:
+    key = PushToTalk(VirtualClock(), lambda _: None)
+    told: list[TurnEnded] = []
+    key.watch(told.append)
+    key.move("start", "shortcut")
+    key.move("stop", "shortcut")
+    key.move("start", "shortcut")
+    key.move("drop", "shortcut")
+    key.move("start", "shortcut")
+    # A hand at the other place takes hands there and sends the clip open, and a call that goes sends the one it has.
+    key.move("start", "phone button")
+    key.go("desk")
+    assert told == [
+        TurnEnded(TurnId(0), "sent", "shortcut"),
+        TurnEnded(TurnId(1), "dropped", "shortcut"),
+        TurnEnded(TurnId(2), "sent", "phone button"),
+        TurnEnded(TurnId(3), "sent", "call"),
+    ]
+    # A move that ends nothing tells no one.
+    key.move("stop", "shortcut")
+    assert len(told) == 4

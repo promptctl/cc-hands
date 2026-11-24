@@ -1,11 +1,11 @@
 """The phone's driver: a turn a wake opened at the phone is heard with the models and ended by the one table of how a voice
-turn ends, through the gate, which takes an end only for the turn it is at, and followed by the audio the gate keyed."""
+turn ends, through the gate, which takes an end only for the turn it is at, and told as the gate ends one."""
 
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import NoReturn
+from typing import Literal, NoReturn
 
 import pytest
 from conftest import ScriptedEars
@@ -16,7 +16,7 @@ from hands.voice import engaged, shortcut, voiceturn
 from hands.voice.atphone import drive
 from hands.voice.engaged import loaded
 from hands.voice.phone import WakeOpened
-from hands.voice.ptt import Gate, KeyedAudio, PushToTalk
+from hands.voice.ptt import Gate, KeyedAudio, PushToTalk, TurnEnded
 from hands.voice.shortcut import Move
 from hands.voice.trigger import PHONE_WAKE
 from hands.voice.voiceturn import TurnId
@@ -32,10 +32,12 @@ class Rig:
     clock: VirtualClock = field(default_factory=VirtualClock)
     taken: list[Move] = field(default_factory=list[Move])
     events: list[WideEvent] = field(default_factory=list[WideEvent])
-    turns: asyncio.Queue[WakeOpened | KeyedAudio] = field(default_factory=asyncio.Queue[WakeOpened | KeyedAudio])
+    turns: asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio] = field(default_factory=asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio])
 
     def __post_init__(self) -> None:
         self.key = PushToTalk(self.clock, lambda _entry: None)
+        # As the phone does: the driver is told each turn the gate ends.
+        self.key.watch(self.turns.put_nowait)
         self.key.go("phone")
         self.key.move("listen", PHONE_WAKE)
 
@@ -140,22 +142,29 @@ async def test_a_verdict_for_a_turn_a_press_took_ends_nothing_of_the_buttons_tur
         assert rig.taken == []
         assert (rig.key.gate.turn_open, rig.key.gate.opened, rig.key.gate.ended) == (True, "phone button", ("sent",))
         # What the driver followed was over before its verdict: the gate ended it first.
-        assert [(event.event, event.facts.get("end")) for event in rig.events] == [("phone.judged", None), ("phone.turn", "gate")]
+        assert [(event.event, event.facts.get("end"), event.facts.get("by")) for event in rig.events] == [("phone.judged", None, None), ("phone.turn", "gate", "phone wake word")]
 
 
-async def test_a_turn_the_gate_ended_is_let_go_at_the_next_frame_the_gate_keyed() -> None:
+@pytest.mark.parametrize("cause", ["phone wake word", "shortcut", "call"])
+async def test_a_turn_the_gate_ended_is_let_go_as_it_ends_it_and_says_what_ended_it(cause: Literal["phone wake word", "shortcut", "call"]) -> None:
     ears = ScriptedEars([True])
     async with driving(ears) as rig:
         turn = rig.wake()
         await rig.hear(b"q")
-        # A press, a hand at the desk taking hands there, the level going off, or the call: the gate ends the turn.
-        assert rig.key.end(turn, "stop", PHONE_WAKE) == "stop"
-        assert (ears.afreshed, ears.cleared) == (1, 0)
-        await rig.hear(b"q")
-        # The frame says the gate ended a turn, so the driver's Smart Turn is cleared and the turn is no longer followed.
+        match cause:
+            case "phone wake word":
+                # A press or the level going off: the phone sends the turn its wake opened.
+                assert rig.key.end(turn, "stop", PHONE_WAKE) == "stop"
+            case "shortcut":
+                # A hand at the desk takes hands there, and the clip open at the phone is sent as it stands.
+                rig.key.move("start", "shortcut")
+            case "call":
+                rig.key.go("desk")
+        await settle()
+        # No frame follows: the call is gone, or hands is elsewhere. The driver's Smart Turn is cleared all the same.
         assert (ears.afreshed, ears.cleared) == (1, 1)
         [event] = rig.events
-        assert (event.event, event.facts["end"], event.facts["frames"]) == ("phone.turn", "gate", 1)
+        assert (event.event, event.facts["end"], event.facts["by"], event.facts["frames"]) == ("phone.turn", "gate", cause, 1)
         # Its deadlines end nothing, and no later frame is heard.
         await rig.due(shortcut.TURN_LIMIT_SECONDS)
         await rig.hear(b"S")

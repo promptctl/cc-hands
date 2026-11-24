@@ -2080,13 +2080,13 @@ failure of its `phone.wake` event. The key resting at `listening` keeps the seco
 clip starts with it.
 
 The phone's driver follows the gate. It is told of a turn as the gate takes the wake, hears the phone's audio
-from then on, and lets the turn go when the audio the gate keyed says the gate ended it, so a turn's ask
-window and limit run from the wake. A second Silero and Smart Turn, loaded as hands starts and before the
+from then on, and is told as the gate ends the turn, whatever ended it, so a turn's ask window and limit run from the
+wake and a call that hangs up in the middle of one lets it go at once. A second Silero and Smart Turn, loaded as hands starts and before the
 phone's page is answered, are its ears: ears that cannot load fail the run with the load named
 (`phone.loaded`). It runs the shared life of a voice turn and owns only how the turn ends, which the gate
 takes only while that turn is the one it is at, so a verdict, a limit or an ask of a turn a press, a hand at
 the desk, the level, or the call already ended ends nothing of the next. Each turn it follows is one
-`phone.turn`, and each `detector` message one `phone.detector`.
+`phone.turn`, saying what ended it where the gate did first, and each `detector` message one `phone.detector`.
 
 **The phone is a second place, beside the desk.** The desk is the Mac's own mic and
 speakers; the phone is a page hands serves (`hands.voice.phonepage`) that a phone

@@ -44,7 +44,7 @@ from hands.sessions.audit import Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import Begun, Fact, begun, continuing, ended, since
 from hands.voice.milestone import ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
-from hands.voice.ptt import KeyedAudio, PushToTalk, Refusal
+from hands.voice.ptt import KeyedAudio, PushToTalk, Refusal, TurnEnded
 from hands.voice.shortcut import Instant, Move
 from hands.voice.transcript import Line
 from hands.voice.trigger import PHONE_WAKE, PhoneLevel
@@ -460,9 +460,9 @@ class Phone:
         # The phone's microphone as the pipeline hears it: keyed frames at the pipeline's rate, while hands is at the phone.
         self.heard: asyncio.Queue[KeyedAudio] = asyncio.Queue()
         # What the phone's driver follows (`hands.voice.atphone`), in the order the gate moved and the audio was captured: each
-        # wake the gate took, and every frame of the microphone as the gate keyed it, whose `ended` says when the gate ended a
-        # turn.
-        self.turns: asyncio.Queue[WakeOpened | KeyedAudio] = asyncio.Queue()
+        # wake the gate took, every turn it ended, however, and every frame of the microphone as the gate keyed it.
+        self.turns: asyncio.Queue[WakeOpened | TurnEnded | KeyedAudio] = asyncio.Queue()
+        key.watch(self.turns.put_nowait)
         # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
         self.moves: asyncio.Queue[Move] = asyncio.Queue()
 
@@ -646,7 +646,7 @@ class Phone:
                 why, failure = _refused(refusal)
                 self.tell(Unopened(press, why))
         # [LAW:nothing-unseen] a mistake of the page's is the wake's failure, which the audit log says at error level.
-        ended("phone.wake", self._record, began, None, failure, score=score, threshold=THRESHOLD, hands_speaking=speaking, opened=refusal is None)
+        ended("phone.wake", self._record, began, None, failure, score=score, threshold=THRESHOLD, while_speaking=speaking, opened=refusal is None)
 
     def _listening(self, level: PhoneLevel) -> None:
         """The page's level: the gate's listening at the phone follows it. Off, a turn a wake opened is sent first, as the
