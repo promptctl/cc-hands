@@ -183,7 +183,7 @@ def backlog_routes(children: Children, store: SummaryStore, key: str, record: Re
             fail(str(error))
             return web.Response(status=400, text=str(error))
         annotate(project=project)
-        match await _read(children, project):
+        match await _read(children, project, environment):
             case Backlog() as backlog:
                 return web.json_response(shown(sighting(store, project, backlog)))
             case Untracked() as untracked:
@@ -207,8 +207,8 @@ def backlog_routes(children: Children, store: SummaryStore, key: str, record: Re
         project, ticket, place = parse_asked(body)
         async with writing[project]:
             annotate(project=project, ticket=ticket, place=place)
-            move = (await _before(children, project)).move(ticket, place)
-            after, _ = await writes.settled(children, project, rank(children, project, move, person), _beside("ranked", move))
+            move = (await _before(children, project, environment)).move(ticket, place)
+            after, _ = await writes.settled(children, project, environment, rank(children, project, move, person), _beside("ranked", move))
             return web.json_response(shown(sighting(store, project, after)))
 
     @keyed(children.clock, "backlog.leveled", record, key)
@@ -220,26 +220,26 @@ def backlog_routes(children: Children, store: SummaryStore, key: str, record: Re
         project, ticket, level = parse_leveling(body)
         async with writing[project]:
             annotate(project=project, ticket=ticket, level=level)
-            now = await _before(children, project)
+            now = await _before(children, project, environment)
             match now.leveling(ticket, level).epic:
                 case str(epic):
                     annotate(epic=epic)
                     _landed("unneeded", "created", "ranked")
                 case NewEpic(topic=topic, title=title, parent=frame, place=place) as new:
-                    now, epic = await writes.settled(children, project, make_epic(children, project, new, person), Write("created", lambda backlog: backlog.level_epics(topic, frame).get(level), f"the epic {title}"))
+                    now, epic = await writes.settled(children, project, environment, make_epic(children, project, new, person), Write("created", lambda backlog: backlog.level_epics(topic, frame).get(level), f"the epic {title}"))
                     annotate(epic=epic)
                     try:
                         move = now.move(epic, place)
                     except Rejected as error:
                         raise Halted(409, f"lit made {epic}, {title}, at the bottom of its frame, and it cannot be ranked {place}: {error}") from error
-                    await writes.settled(children, project, rank(children, project, move, person), _beside("ranked", move))
-            now, _ = await writes.settled(children, project, adopt(children, project, ticket, epic, person), Write("moved", lambda backlog: epic if backlog.parent.get(ticket) == epic else None, f"{ticket} in {epic}"))
+                    await writes.settled(children, project, environment, rank(children, project, move, person), _beside("ranked", move))
+            now, _ = await writes.settled(children, project, environment, adopt(children, project, ticket, epic, person), Write("moved", lambda backlog: epic if backlog.parent.get(ticket) == epic else None, f"{ticket} in {epic}"))
             # lit keeps a ticket's rank when it moves it, which falls anywhere among its new epic's: it is ranked below
             # the last of the others, unless it is the last there already, alone there included.
             match now.open_children(epic):
                 case (*_, last) if last != ticket:
                     below = now.move(ticket, Place("below", last))
-                    await writes.settled(children, project, rank(children, project, below, person), Write("placed", lambda backlog: ticket if backlog.open_children(epic)[-1:] == (ticket,) else None, f"{ticket} last in {epic}"))
+                    await writes.settled(children, project, environment, rank(children, project, below, person), Write("placed", lambda backlog: ticket if backlog.open_children(epic)[-1:] == (ticket,) else None, f"{ticket} last in {epic}"))
                 case _:
                     _landed("unneeded", "placed")
             # The page drew the press when it was made and redraws nothing, so a leveling that holds is answered with nothing more.
@@ -254,14 +254,14 @@ def backlog_routes(children: Children, store: SummaryStore, key: str, record: Re
         project, ticket, text = parse_note(body)
         async with writing[project]:
             annotate(project=project, ticket=ticket, chars=len(text))
-            before = await _before(children, project)
+            before = await _before(children, project, environment)
             # [LAW:single-enforcer] also what keeps an id lit would read as its own flag, `--help`, from `lit comment add`,
             # which takes no `--`: no ticket lit keeps is one.
             if ticket not in before.kept:
                 raise Halted(404, f"lit holds no ticket {ticket} in {project}")
             # The note is kept where the backlog after it holds one more of these words by the page's signer than before.
             held = _notes(before, ticket, text, person.name)
-            await writes.settled(children, project, comment(children, project, ticket, text, person), Write("noted", lambda backlog: text if _notes(backlog, ticket, text, person.name) > held else None, f"the note on {ticket}"))
+            await writes.settled(children, project, environment, comment(children, project, ticket, text, person), Write("noted", lambda backlog: text if _notes(backlog, ticket, text, person.name) > held else None, f"the note on {ticket}"))
             return web.Response(status=204)
 
     return [web.get("/backlog", page_served), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked), web.post("/backlog/level", leveled), web.post("/backlog/note", noted)]
@@ -283,17 +283,17 @@ class Unread:
     why: str
 
 
-async def _read(children: Children, project: Path) -> Backlog | Untracked | Unread:
-    """The backlog in `project` read fresh, before a write or after one; each caller says what each answer is for it."""
+async def _read(children: Children, project: Path, environment: Mapping[str, str]) -> Backlog | Untracked | Unread:
+    """The backlog in `project` read fresh by lit run in `environment`, before a write or after one; each caller says what each answer is for it."""
     try:
-        return await read_backlog(children, project)
+        return await read_backlog(children, project, environment)
     except (LitFailed, Rejected) as error:
         return Unread(f"the backlog in {project} could not be read: {error}")
 
 
-async def _before(children: Children, project: Path) -> Backlog:
+async def _before(children: Children, project: Path, environment: Mapping[str, str]) -> Backlog:
     """The backlog in `project` a write is checked against; raises Halted where lit holds none there or cannot give it."""
-    match await _read(children, project):
+    match await _read(children, project, environment):
         case Backlog() as backlog:
             return backlog
         case Untracked(why=why):
@@ -353,7 +353,7 @@ class Writes:
         fail(said)
         return web.Response(status=status, text=said)
 
-    async def settled[T](self, children: Children, project: Path, lit: Awaitable[str], write: Write[T]) -> tuple[Backlog, T]:
+    async def settled[T](self, children: Children, project: Path, environment: Mapping[str, str], lit: Awaitable[str], write: Write[T]) -> tuple[Backlog, T]:
         """The backlog lit holds after `lit` made `write`, and what `write.holds` proves of it, and the step is "yes";
         raises Halted where it does not hold there, and the step is "no", and where the backlog cannot be read again to
         see, and the step stays "unknown" [LAW:no-silent-failure].
@@ -377,7 +377,7 @@ class Writes:
             said = str(error)
         self.ran = True
         annotate(**{f"{write.step}_said": said})
-        match await _read(children, project):
+        match await _read(children, project, environment):
             case Backlog() as after if (proof := write.holds(after)) is not None:
                 _landed("yes", write.step)
                 return after, proof

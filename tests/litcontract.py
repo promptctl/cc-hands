@@ -6,21 +6,25 @@ longer keeps fails the run against lit, and the fake is changed to match.
 
 The claims: an epic is made at the bottom of its frame and found by its frame, title, and topic; a ticket filed is at the
 top of its epic; a rank puts a ticket beside its target; a move keeps the ticket's rank, and the same move again is code 6,
-state_already_holds; a comment is held signed by its signer; each write's first word is the ticket it wrote."""
+state_already_holds, the reason lit records on its line of the events file under the trace hands hands it; a comment is held signed by its signer; each write's first word is the ticket it wrote."""
 
+import json
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from hands.sessions.backlog import Backlog, LitFailed, Move, NewEpic, Person, Place, adopt, comment, file_ticket, make_epic, rank, read_backlog
-from hands.sessions.child import Children
+from hands.sessions.child import Children, Outcome as Ended
+from conftest import exited
 
 SIGNER = Person("hands-contract", os.environ)
 
 
 async def read(children: Children, project: Path) -> Backlog:
-    backlog = await read_backlog(children, project)
+    backlog = await read_backlog(children, project, os.environ)
     assert isinstance(backlog, Backlog), backlog
     return backlog
 
@@ -32,7 +36,7 @@ async def made(children: Children, project: Path, title: str) -> str:
 
 
 async def filed(children: Children, project: Path, epic: str, title: str) -> str:
-    return await file_ticket(children, project, epic, "wake-word", title, f"The words of {title}.", "contract")
+    return await file_ticket(children, project, epic, "wake-word", title, f"The words of {title}.", "contract", os.environ)
 
 
 class LitContract:
@@ -84,3 +88,42 @@ class LitContract:
         assert said.split()[0] == ticket
         [note] = (await read(children, project)).comments[ticket]
         assert (note.by, note.body) == (SIGNER.name, "Split it")
+
+
+# [LAW:one-source-of-truth] the codes lit gives the reasons the fakes of lit fail on (docs/cli-reference.md in links, "Every
+# reason"): each of the first two may follow a commit, and code 6 is a write whose asked state already holds.
+CODES = {"command_failed": 1, "workspace_busy": 1, "workspace_not_initialized": 3, "state_already_holds": 6}
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """lit stopping short of what it was asked, on `reason`: it says `why`, exits on the code it gives `reason`, and
+    records `reason` on its invocation's line of the events file."""
+
+    reason: str
+    why: str
+
+
+def answered(answer: "Ended | Refusal", env: Mapping[str, str]) -> Ended:
+    """What a lit run in `env` that ends in `answer` leaves: a refusal's line in the events file, as lit writes it
+    under the trace it was handed (docs/events.md in links), and what it exited with."""
+    match answer:
+        case Refusal(reason=reason, why=why):
+            _, trace, span, _ = env["TRACEPARENT"].split("-")
+            events = Path(env.get("XDG_STATE_HOME") or Path(env["HOME"]) / ".local" / "state") / "links-issue-tracker" / "events.jsonl"
+            events.parent.mkdir(parents=True, exist_ok=True)
+            with events.open("a") as file:
+                file.write(json.dumps({"event": "lit", "trace_id": trace, "parent_span_id": span, "exit_code": CODES[reason], "reason": reason}) + "\n")
+            return exited(CODES[reason], err=f"{why}\nremediation: retry\n".encode())
+        case ended:
+            return ended
+
+
+def refusing(reason: str, why: str) -> str:
+    """A stub lit's script that refuses as `answered` has the fake refuse: its line in the events file, `why`, its code."""
+    line = f'{{"event":"lit","trace_id":"%s","parent_span_id":"%s","exit_code":{CODES[reason]},"reason":"{reason}"}}\\n'
+    return (
+        'state="${XDG_STATE_HOME:-$HOME/.local/state}/links-issue-tracker"; mkdir -p "$state"\n'
+        f'printf \'{line}\' "$(echo "$TRACEPARENT" | cut -d- -f2)" "$(echo "$TRACEPARENT" | cut -d- -f3)" >> "$state/events.jsonl"\n'
+        f"echo '{why}' >&2\nexit {CODES[reason]}"
+    )

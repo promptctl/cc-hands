@@ -92,10 +92,10 @@ class Sighted:
     said: Mapping[str, str]
 
 
-async def sighted(children: Children, store: SummaryStore, project: Path) -> Sighted | tracker.Untracked:
+async def sighted(children: Children, store: SummaryStore, project: Path, environment: Mapping[str, str]) -> Sighted | tracker.Untracked:
     """The backlog in `project` read fresh with every summary already said of it, or that lit has no workspace there;
     raises LitFailed when lit cannot say, and Rejected when what it said does not parse."""
-    match await tracker.read_backlog(children, project):
+    match await tracker.read_backlog(children, project, environment):
         case tracker.Untracked() as untracked:
             return untracked
         case backlog:

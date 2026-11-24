@@ -32,7 +32,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from conftest import SYSTEM_PATH, Faked, children_on, events, executable, exited
-from litcontract import LitContract
+from litcontract import LitContract, Refusal, answered, refusing
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
@@ -270,11 +270,6 @@ def test_a_level_the_page_sends_is_its_project_its_ticket_and_one_of_the_levels(
 # --- the routes, with lit faked where hands runs it
 
 
-# [LAW:one-source-of-truth] the codes lit gives the reasons these fakes fail on (docs/cli-reference.md in links, "Every
-# reason"): each of the first two may follow a commit, and code 6 is a write whose asked state already holds.
-CODES = {"command_failed": 1, "workspace_busy": 1, "workspace_not_initialized": 3, "state_already_holds": 6}
-
-
 @dataclass(frozen=True)
 class Outcome:
     """How the fake lit answers a write: whether it makes it, what another writer does first, the reason it fails on
@@ -284,7 +279,7 @@ class Outcome:
     writes: bool = True
     meanwhile: Callable[["FakeLit"], object] = lambda _: None
     reason: str | None = None
-    exports: Ended | None = None
+    exports: "Ended | Refusal | None" = None
     # Set as lit is asked; lit answers only once `answer` is.
     asked: asyncio.Event | None = None
     answer: asyncio.Event | None = None
@@ -296,7 +291,7 @@ class FakeLit:
     writes it, each write saying what lit says, held to lit by the contract in litcontract.py; each write of a
     subcommand answers as its `Outcome` scripts it."""
 
-    def __init__(self, backlog: "Held", outcomes: Mapping[str, Outcome], exports: Ended | None = None) -> None:
+    def __init__(self, backlog: "Held", outcomes: Mapping[str, Outcome], exports: "Ended | Refusal | None" = None) -> None:
         issues, relations = backlog
         self.issues = list(issues)
         self.relations = list(relations)
@@ -328,9 +323,10 @@ class FakeLit:
         self.gone |= outcome.gone
         if self.gone:
             return NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory", "lit"))
+        assert env is not None, "hands runs lit in an environment it names, its trace among it"
         if command == "export":
             if self.exports is not None:
-                return self.exports
+                return answered(self.exports, env)
             ranked = [{**each, "rank": f"{at:04d}"} for at, each in enumerate(self.issues)]
             return exited(0, export(ranked, self.relations, self.comments))
         if outcome.asked is not None and outcome.answer is not None:
@@ -341,11 +337,11 @@ class FakeLit:
         self.exports = outcome.exports or self.exports
         match outcome.reason:
             case None:
-                return ran
+                return answered(ran, env)
             case reason:
-                return refused(reason, f"the fake's {command} stopped")
+                return answered(Refusal(reason, f"the fake's {command} stopped"), env)
 
-    def written(self, command: str, rest: list[str]) -> Ended:
+    def written(self, command: str, rest: list[str]) -> "Ended | Refusal":
         """Make the write lit is asked for, and answer as lit answers it."""
         flags = {flag: value for flag, value in zip(rest, rest[1:]) if flag.startswith("--")}
         match command, rest:
@@ -366,7 +362,7 @@ class FakeLit:
             case "parent", ["set", *_]:
                 child, epic = flags["--child"], flags["--parent"]
                 if self.parent(child) == epic:
-                    return refused("state_already_holds", f"relation src={child} dst={epic} type=parent-child already exists, so there is nothing to add")
+                    return Refusal("state_already_holds", f"relation src={child} dst={epic} type=parent-child already exists, so there is nothing to add")
                 self.relations = [each for each in self.relations if each["src_id"] != child] + [inside(epic, child)]
                 return said(f"{child} child of {epic}")
             case "comment", ["add", ticket, *_]:
@@ -380,14 +376,9 @@ def said(words: str) -> Ran:
     return exited(0, f"{words}\ndeeper guidance: lit quickstart update\n".encode())
 
 
-def refused(reason: str, why: str) -> Ran:
-    """lit's answer to a write it stopped short of, on the code it gives `reason`."""
-    return exited(CODES[reason], err=f"error (code={CODES[reason]}, reason={reason}): {why}\nremediation: retry\n".encode())
-
-
 # What lit's export answers while another lit holds its store, and in a directory it has no workspace in.
-BUSY = refused("workspace_busy", "another lit holds the store")
-UNTRACKED = refused("workspace_not_initialized", "no lit workspace here")
+BUSY = Refusal("workspace_busy", "another lit holds the store")
+UNTRACKED = Refusal("workspace_not_initialized", "no lit workspace here")
 
 
 @dataclass
@@ -778,7 +769,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    read = await sighted(children_on(page.clock), page.store, workspace.root)
+    read = await sighted(children_on(page.clock), page.store, workspace.root, os.environ)
     assert isinstance(read, Sighted)
     # The leaves are said first; the epic waits on them.
     page.store.keep({due.digest: f"Said of {due.id}." for due in page.store.reckon(read.backlog.thing()).due})
@@ -877,7 +868,7 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
 @real_lit
 async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    stub_lit(tmp_path, monkeypatch, rank='echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1')
+    stub_lit(tmp_path, monkeypatch, rank=refusing("workspace_busy", "the store is locked"))
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 409 and body.startswith(f"the backlog lit holds after does not have {parser} above {mic}; lit rank") and "workspace_busy" in body
     assert workspace.order(mic, parser) == [mic, parser]
@@ -921,7 +912,7 @@ async def test_a_rank_whose_backlog_could_not_be_read_again_is_not_known(page: P
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     ranked = tmp_path / "ranked"
     # lit ranks, and every export after it fails.
-    stub_lit(tmp_path, monkeypatch, export=f'if [ -e {ranked} ]; then\necho "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1\nfi', rank=f"touch {ranked}")
+    stub_lit(tmp_path, monkeypatch, export=f'if [ -e {ranked} ]; then\n{refusing("workspace_busy", "the store is locked")}\nfi', rank=f"touch {ranked}")
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 502 and body.startswith(f"whether lit holds {parser} above {mic} is not known; lit exited 0: ") and f"the backlog in {workspace.root} could not be read" in body and "workspace_busy" in body
     assert workspace.order(mic, parser) == [parser, mic]
@@ -943,7 +934,7 @@ async def test_a_rank_lit_is_killed_on_after_writing_it_is_a_drop_that_landed(pa
 
 @pytest.mark.outside
 @real_lit
-@pytest.mark.parametrize("export, why", [('echo "error (code=1, reason=workspace_busy): locked" >&2; exit 1', "workspace_busy"), ("echo not json", "JSON")])
+@pytest.mark.parametrize("export, why", [(refusing("workspace_busy", "locked"), "workspace_busy"), ("echo not json", "JSON")])
 async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, export: str, why: str) -> None:
     stub_lit(tmp_path, monkeypatch, export=export)
     response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)
@@ -967,13 +958,13 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
-    read = await sighted(children_on(page.clock), page.store, workspace.root)
+    read = await sighted(children_on(page.clock), page.store, workspace.root, os.environ)
     assert isinstance(read, Sighted)
     assert await page.store.wanted()
     # Every ticket said, round by round, as the summarising task says them.
     while due := page.store.reckon(read.backlog.thing()).due:
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
-    again = await sighted(children_on(page.clock), page.store, workspace.root)
+    again = await sighted(children_on(page.clock), page.store, workspace.root, os.environ)
     assert isinstance(again, Sighted) and len(again.said) == 3
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(page.store.wanted(), 0.2)
@@ -1021,7 +1012,7 @@ async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_mo
 @real_lit
 async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_and_the_ticket_was_not_moved(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, parent='echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1')
+    stub_lit(tmp_path, monkeypatch, parent=refusing("workspace_busy", "the store is locked"))
     status, body = await leveled(page, workspace, hey, "high")
     [event] = page.events("backlog.leveled")
     assert status == 409 and body.startswith(f"the backlog lit holds after does not have {hey} in {event.facts['epic']}; lit parent") and "workspace_busy" in body
@@ -1091,7 +1082,7 @@ async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_p
 @pytest.mark.parametrize(
     "before_rank, status, ranked, moved",
     [
-        ('echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1', 409, "no", None),
+        (refusing("workspace_busy", "the store is locked"), 409, "no", None),
         (f'{LIT} "$@" >/dev/null\nkill -9 $$', 204, "yes", "yes"),
     ],
     ids=["refused", "killed after writing"],
@@ -1193,7 +1184,7 @@ async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked
 async def test_a_project_lit_stops_tracking_once_the_epic_is_made_is_said_as_such(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     made = tmp_path / "made"
-    stub_lit(tmp_path, monkeypatch, export=f'if [ -e {made} ]; then\necho "error (code=3, reason=workspace_not_initialized): no workspace" >&2\nexit 3\nfi', new=f"touch {made}")
+    stub_lit(tmp_path, monkeypatch, export=f'if [ -e {made} ]; then\n{refusing("workspace_not_initialized", "no workspace")}\nfi', new=f"touch {made}")
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 502 and body.startswith("whether lit holds the epic wake word - high is not known; lit exited 0: ") and body.endswith(f"; and lit no longer tracks {workspace.root}: lit has no workspace there")
     [event] = page.events("backlog.leveled")
@@ -1261,7 +1252,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(children_on(VirtualClock()), workspace.root, hey, "Seen again.", Inherited())
+    await comment(children_on(VirtualClock()), workspace.root, hey, "Seen again.", Inherited(os.environ))
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
