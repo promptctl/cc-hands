@@ -1160,6 +1160,26 @@ async def test_a_level_epic_whose_every_ticket_is_closed_is_used_again_and_never
     assert page.events("backlog.leveled")[1].facts["created"] == "unneeded"
 
 
+@pytest.mark.outside
+@real_lit
+async def test_a_level_epic_lit_archived_is_put_away_and_the_next_press_makes_the_level_another(page: Page, workspace: Workspace) -> None:
+    _, hey, custom = epic(workspace, "Train a new wake word", "Hey hands", "Custom wake word", topic="wake-word")
+    items = await level(page, workspace, hey, "high")
+    shelved = next(node["id"] for node in items if node["title"] == "wake word - high")
+    workspace.lit("archive", shelved, "--reason", "Put away.")
+    items = await level(page, workspace, custom, "high")
+    # A ticket inside an archived epic is a root of the tree, as the epic lit lists no longer holds it.
+    assert titled(items) == [("wake word - high", [custom]), ("Hey hands", [])]
+    [made] = [node["id"] for node in items if node["title"] == "wake word - high"]
+    assert made != shelved
+    exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
+    # The archived epic is kept as lit archived it, holding what it held, and nothing is moved into it.
+    [kept] = [entry for entry in exported["issues"] if entry["id"] == shelved]
+    assert kept["archived_at"] is not None
+    assert {relation["src_id"] for relation in exported["relations"] if relation["type"] == "parent-child" and relation["dst_id"] == shelved} == {hey}
+    assert page.events("backlog.leveled")[1].facts["created"] == "yes"
+
+
 def exported_epics(workspace: Workspace) -> list[dict[str, Any]]:
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     parents = {relation["src_id"]: relation["dst_id"] for relation in exported["relations"] if relation["type"] == "parent-child"}
