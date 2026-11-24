@@ -10,7 +10,8 @@ from hands.voice.desk import Leveled
 from hands.voice.tools import listening_tools
 from hands.voice.trigger import Levels
 from hands.voice.wake import Unheard, WakeWord
-from hands.voice.wakeword import PRETRAINED, Pretrained, Trained
+from hands.voice.wakemodels import EMBEDDING, MELSPECTROGRAM, PRETRAINED, Files
+from hands.voice.wakeword import Pretrained, Trained
 
 # A model of two words, as openWakeWord scores them, which no wake word is: tests/fixtures/two_words.onnx scores both 0.5.
 TWO_WORDS = Path(__file__).parent / "fixtures" / "two_words.onnx"
@@ -64,22 +65,20 @@ async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -
 async def test_a_trained_wake_word_is_heard_with_its_own_model(tmp_path: Path, models: Path) -> None:
     # openWakeWord's Hey Mycroft model stands in for one the user trained, under a name of their own.
     trained = tmp_path / "hey_computer.onnx"
-    trained.write_bytes((models / PRETRAINED["Hey Mycroft"]).read_bytes())
-    WakeWord(models, Trained("Hey Computer", trained))
+    trained.write_bytes((models / PRETRAINED["Hey Mycroft"].name).read_bytes())
+    WakeWord(Files(models / MELSPECTROGRAM.name, models / EMBEDDING.name, trained))
 
 
 @pytest.mark.parametrize(
     ("model", "said"),
     [
-        (None, "no wake word model at {model}"),
         (b"not a model", "the wake word model at {model} cannot be loaded: "),
         pytest.param(TWO_WORDS.read_bytes(), "the wake word model at {model} scores 2 words, and a wake word is one", marks=pytest.mark.outside),
     ],
 )
-def test_a_trained_wake_word_it_cannot_hear_with_is_refused_naming_the_model(tmp_path: Path, models: Path, model: bytes | None, said: str) -> None:
+def test_a_trained_wake_word_it_cannot_hear_with_is_refused_naming_the_model(tmp_path: Path, models: Path, model: bytes, said: str) -> None:
     trained = tmp_path / "hey_computer.onnx"
-    if model is not None:
-        trained.write_bytes(model)
+    trained.write_bytes(model)
     with pytest.raises(Unheard) as refused:
-        WakeWord(models, Trained("Hey Computer", trained))
+        WakeWord(Files(models / MELSPECTROGRAM.name, models / EMBEDDING.name, trained))
     assert str(refused.value).startswith(said.format(model=trained))

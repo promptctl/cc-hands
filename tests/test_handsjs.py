@@ -5,11 +5,10 @@ What hands answers a read is built as hands builds it (hands.voice.longpoll.Read
 
 import json
 from dataclasses import dataclass
-from importlib import resources
 from typing import cast
 
 import pytest
-import quickjs
+from jsmodule import JsModule
 
 from hands.voice.longpoll import WAIT_SECONDS, Read
 
@@ -24,6 +23,12 @@ function setTimeout(fire, ms) { timers.push({fire, ms}); }
 var AbortSignal = {timeout: ms => ({bound: ms})};
 function answer(status, text) {
   requests.shift().resolve({ok: status >= 200 && status < 300, status, text: async () => text});
+}
+function answerBytes(status, bytes) {
+  requests.shift().resolve({ok: status >= 200 && status < 300, status, text: async () => "refused in words", arrayBuffer: async () => new Uint8Array(bytes).buffer});
+}
+function cutOffBytes(message) {
+  requests.shift().resolve({ok: true, status: 200, arrayBuffer: async () => { throw new Error(message); }});
 }
 function cutOff(message) {
   requests.shift().resolve({ok: true, status: 200, text: async () => { throw new Error(message); }});
@@ -49,23 +54,18 @@ class Page:
     """A page holding the script, and the fake hands it asks."""
 
     def __init__(self, fragment: str = "#the%20key") -> None:
-        self._js = quickjs.Context()
-        self._js.eval(f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}")
-        # QuickJS here loads no module a module imports, so what the module exports is handed to the test as a page's
-        # import would be.
-        module = resources.files("hands.voice").joinpath("hands.js").read_text()
-        self._js.module(f"{module}\nObject.assign(globalThis, {{asked, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS}});")
+        self._js = JsModule(
+            "hands.js", "asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
+        )
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
         self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
 
     def run(self, code: str) -> None:
-        self._js.eval(code)
-        self.settle()
+        self._js.run(code)
 
     def settle(self) -> None:
         """Every job the script has to run before it next waits on hands or a timer."""
-        while self._js.execute_pending_job():
-            pass
+        self._js.settle()
 
     def asking(self) -> list[Asked]:
         return [Asked(**each) for each in json.loads(cast(str, self._js.eval("asking()")))]
@@ -77,10 +77,10 @@ class Page:
         self.answer(200, json.dumps(Read(seen=seen, waits=WAIT_SECONDS, now=now, shown=shown)))
 
     def timers(self) -> list[int]:
-        return json.loads(cast(str, self._js.eval("JSON.stringify(timers.map(timer => timer.ms))")))
+        return cast(list[int], self._js.value("timers.map(timer => timer.ms)"))
 
     def seen(self, name: str) -> list[object]:
-        return json.loads(cast(str, self._js.eval(f"JSON.stringify({name})")))
+        return cast(list[object], self._js.value(name))
 
 
 @pytest.fixture
@@ -111,6 +111,25 @@ def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: P
 ])
 def test_what_came_of_a_request_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
     page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
+    page.run(settled)
+    assert page.seen("outcome") == outcome
+
+
+def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) -> None:
+    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
+    assert page.asking() == [Asked("GET", "/wake/models/word.onnx", "Bearer the key", None, page.answer_ms)]
+    page.run("answerBytes(200, [1, 2, 255])")
+    page.run("outcome.body = Array.from(outcome.body)")
+    assert page.seen("outcome") == {"kind": "answered", "body": [1, 2, 255]}
+
+
+@pytest.mark.parametrize(("settled", "outcome"), [
+    ("answerBytes(503, [1, 2])", {"kind": "refused", "status": 503, "text": "refused in words"}),
+    ('cutOffBytes("network reset")', {"kind": "lost", "why": "hands' answer was cut off: network reset"}),
+    ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
+])
+def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
+    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
     page.run(settled)
     assert page.seen("outcome") == outcome
 

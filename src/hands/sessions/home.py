@@ -60,8 +60,13 @@ class Home:
 
     @property
     def wake_word(self) -> Path:
-        """The wake word's models, fetched by the daemon as the desk starts, unless already here (hands.voice.wake)."""
+        """The wake word's models, fetched on the first ask of the desk or the phone's page, unless already here (hands.voice.wakemodels)."""
         return self.root / "wake-word"
+
+    @property
+    def onnx_runtime(self) -> Path:
+        """ONNX Runtime Web's files, which the phone's page runs the wake word on, fetched by the daemon when a page first asks (hands.voice.ortweb)."""
+        return self.root / "onnxruntime-web"
 
     @property
     def clips(self) -> Path:

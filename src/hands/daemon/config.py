@@ -50,7 +50,8 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
-from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
+from hands.voice.wakemodels import PRETRAINED
+from hands.voice.wakeword import Pretrained, Trained, Word
 
 # How late an edit to the file is heard.
 EDIT_SECONDS = 1.0

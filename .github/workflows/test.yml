@@ -48,7 +48,14 @@ jobs:
         if: matrix.fetches
         with:
           path: .pytest_cache/d/wake-word
-          key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
+          key: wake-word-${{ hashFiles('src/hands/voice/wakemodels.py') }}
+      # The runtime the phone's page runs the wake word on, 15 MB, fetched by the run from a CDN at the version and digests
+      # src/hands/voice/ortweb.py pins; kept the same way, for the same reason.
+      - uses: actions/cache@v4
+        if: matrix.fetches
+        with:
+          path: .pytest_cache/d/onnxruntime-web
+          key: onnxruntime-web-${{ hashFiles('src/hands/voice/ortweb.py') }}
       # NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, fetched by the run into pytest's cache at the
       # pin tests/sentences.py holds; kept the same way, for the same reason.
       - uses: actions/cache@v4

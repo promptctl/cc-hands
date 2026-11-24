@@ -1,13 +1,17 @@
 """The phone's pages, each its own code run in the installed Google Chrome against the routes hands serves the phone, on
 the route tests' fakes: a choice made on each page as a person makes it, and what the page shows of it."""
 
+import base64
 import os
 import subprocess
-from collections.abc import AsyncGenerator
+import threading
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
@@ -16,22 +20,31 @@ from hands.sessions.audit import AuditLog, Replied, Transcribed
 from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
 from hands.virtualclock import VirtualClock
+from hands.voice.clips import KEPT_SECONDS
 from hands.voice.gallerypage import Gallery
+from hands.voice.keyed import UNKEYED, Handler
 from hands.voice.phone import Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
+from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
 from hands.voice.ptt import PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.tool import tool
 from hands.voice.tools import audited
 from hands.voice.voicechoice import VOICES, Voice
-from hands.voice.wakeword import Pretrained
+from hands.voice.wake import WakeWord
+from hands.voice.wakemodels import PRETRAINED, ROLES, Files, WakeModels
+from hands.voice.wakeword import THRESHOLD, Pretrained
+from speech import RATE, quiet, spoken
 from test_backlogpage import LIT, Workspace, epic, real_lit, workspace  # pyright: ignore[reportUnusedImport]  (a fixture, found by its name)
 from test_brainpage import SLEEPING, Brain
 from test_conversationpage import a_log, set_trigger
 from test_gallerypage import MODELS, Desk, Listening, Own, Speaker, Voicing
 
 pytestmark = pytest.mark.outside
+
+# A model of two words, as openWakeWord scores them, which no wake word is: tests/test_trigger.py has it too.
+TWO_WORDS = Path(__file__).parent / "fixtures" / "two_words.onnx"
 
 # A microphone Chrome makes up, granted without asking: the phone's call takes one, and no test has a person to allow it.
 FAKE_MICROPHONE = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
@@ -53,6 +66,8 @@ class Hands:
     typed: list[str]
     log: AuditLog
     voices: Voicing
+    # The path of every request hands took, in the order it took them.
+    requests: list[str]
 
     def address(self, path: str, **query: str) -> str:
         """`path` on this server, carrying the phone's key as `hands phone` prints it."""
@@ -60,7 +75,15 @@ class Hands:
 
 
 @pytest.fixture
-async def hands(tmp_path: Path) -> AsyncGenerator[Hands]:
+def wake_models(request: pytest.FixtureRequest, models: Path, tmp_path: Path) -> WakeModels:
+    """The models hands serves the wake word's page: the run's own, already fetched, unless a test parametrizes this with
+    the fetch it wants given the run's models, which then fetches into a directory that holds none."""
+    fetch: Callable[[Path], Fetch] | None = getattr(request, "param", None)
+    return WakeModels(models, SYSTEM) if fetch is None else WakeModels(tmp_path / "unfetched", SYSTEM, fetch(models))
+
+
+@pytest.fixture
+async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> AsyncGenerator[Hands]:
     home = Home(tmp_path / "hands")
     key = phone_key(SYSTEM, home)
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
@@ -71,9 +94,17 @@ async def hands(tmp_path: Path) -> AsyncGenerator[Hands]:
 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(VirtualClock()), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
-    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery)
+    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
+    requests = list[str]()
+
+    @web.middleware
+    async def taken(request: web.Request, handler: Handler) -> web.StreamResponse:
+        requests.append(request.path)
+        return await handler(request)
+
+    pages.middlewares.append(taken)
     async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests)
         await phone.stop()
 
 
@@ -87,7 +118,11 @@ class Opened:
 
     @classmethod
     async def made(cls, chrome: Browser) -> "Opened":
-        opened = cls(await chrome.new_context())
+        return await cls.watching(await chrome.new_context())
+
+    @classmethod
+    async def watching(cls, context: BrowserContext) -> "Opened":
+        opened = cls(context)
         await opened.context.add_init_script(MARKED)
         # Every page the context opens, those a page's link opens among them.
         opened.context.on("page", opened._watched)
@@ -137,6 +172,18 @@ async def browser(chrome: Browser) -> AsyncGenerator[Opened]:
     opened = await Opened.made(chrome)
     yield opened
     assert await opened.closed() == []
+
+
+@pytest.fixture
+async def keeping_browser(hands: Hands, tmp_path: Path) -> AsyncGenerator[Opened]:
+    """As `browser`, with a profile on disk, as a phone's browser has: a throwaway profile keeps its cache in memory, which
+    holds no file of 15 MB. It takes `hands` so it ends first, as `chrome` does."""
+    async with async_playwright() as playwright:
+        opened = await Opened.watching(await playwright.chromium.launch_persistent_context(tmp_path / "profile", channel="chrome", args=FAKE_MICROPHONE))
+        yield opened
+        faults = await opened.closed()
+        await opened.context.close()
+    assert faults == []
 
 
 async def test_a_fault_in_a_pages_own_code_is_caught_by_the_check(chrome: Browser, hands: Hands) -> None:
@@ -225,3 +272,139 @@ async def test_a_note_saved_on_the_backlog_page_is_kept_by_lit_on_its_ticket(bro
     await expect(page.get_by_label(f"Note on {ticket}")).to_have_attribute("placeholder", "Noted: Say which word wakes it")
     shown = subprocess.run([str(LIT), "show", ticket], cwd=workspace.root, check=True, capture_output=True, text=True).stdout
     assert "Say which word wakes it" in shown
+
+
+# The wake word on the phone: a page's own code runs the Mac's models on the audio it is given. What it is given is
+# recordings of speech, as a phone's microphone would give them, at 48 kHz in pieces of 20 ms.
+PHRASE = "Hey Jarvis. What is the status of the build?"
+IN_PASSING = "I was talking with Jarvis earlier about the build, and it was fine."
+PHONE_RATE = 48_000
+PIECE = PHONE_RATE // 50
+
+START_DETECTOR = """
+async rate => {
+  const { startDetector } = await import("/detector.js");
+  window.events = [];
+  window.detector = startDetector({
+    rate,
+    onReady: ready => events.push({ kind: "ready", ...ready }),
+    onFailed: why => events.push({ kind: "failed", why }),
+    onHeard: (score, at) => events.push({ kind: "heard", score, at }),
+  });
+}
+"""
+
+FEED = """
+({ encoded, piece }) => {
+  const bytes = Uint8Array.from(atob(encoded), each => each.charCodeAt(0));
+  const heard = new Int16Array(bytes.buffer);
+  for (let at = 0; at < heard.length; at += piece) detector.feed(Float32Array.from(heard.subarray(at, at + piece), each => each / 32768));
+}
+"""
+
+
+def at_the_phones_rate(audio: bytes) -> str:
+    """`audio`, 16 kHz as the desk hears it, as a phone's microphone would give it: 48 kHz, as base64 for the page."""
+    heard = np.frombuffer(audio, np.int16)
+    upsampled = np.interp(np.arange(len(heard) * 3) / 3, np.arange(len(heard)), heard).astype(np.int16)
+    return base64.b64encode(upsampled.tobytes()).decode()
+
+
+async def detecting(page: Page, rate: float = PHONE_RATE) -> None:
+    """The detector started on `page` for audio at `rate`, and said whether it can listen."""
+    await page.evaluate(START_DETECTOR, rate)
+    await page.wait_for_function("events.length > 0")
+
+
+def mac_hears_at(files: Files, audio: bytes) -> float:
+    """The seconds of `audio` the Mac's own detector has been given when it first hears the wake word, as the desk gives it audio, 20 ms at a time."""
+    word = WakeWord(files)
+    step = 640
+    for start in range(0, len(audio), step):
+        if word.score(audio[start : start + step]) >= THRESHOLD:
+            return (start + step) / (RATE * 2)
+    raise AssertionError("the Mac's detector never heard the wake word in this audio")
+
+
+async def test_the_phone_hears_the_wake_word_where_the_mac_does_and_asks_nothing_of_any_site_but_hands(browser: Opened, hands: Hands, models: Path) -> None:
+    asked_of = list[str]()
+    browser.context.on("request", lambda request: asked_of.append(request.url))
+    page = await browser.open(hands.address("/"))
+    # Jarvis named in passing comes first, with a second of quiet either side: the word is in what comes after it.
+    before = quiet(1.0) + spoken(IN_PASSING) + quiet(1.0)
+    said = quiet(1.0) + spoken(PHRASE) + quiet(1.0)
+    # All of it is fed as the detector starts, before its models have loaded: it is heard once they have, and in the order it came.
+    await page.evaluate(START_DETECTOR, PHONE_RATE)
+    await page.evaluate(FEED, {"encoded": at_the_phones_rate(before + said), "piece": PIECE})
+    await page.wait_for_function("events.some(each => each.kind === 'heard')")
+    [ready, *_, heard] = await page.evaluate("events")
+    assert ready == {"kind": "ready", "phrase": "Hey Jarvis", "threshold": THRESHOLD, "keptSeconds": KEPT_SECONDS}
+    assert heard["kind"] == "heard" and heard["score"] >= THRESHOLD
+    # Not in the sentence that names Jarvis in passing, but in the one that says the word: and where the Mac hears it, to
+    # within what the phone's chunks and its own resampling move it by.
+    assert len(before) / (RATE * 2) < heard["at"]
+    assert abs(heard["at"] - mac_hears_at((await WakeModels(models, SYSTEM).ensured(Pretrained())).files, before + said)) < 0.5
+    # Everything the page and its worker loaded came from hands, the runtime and the models among it.
+    origin = str(hands.server.make_url("/"))
+    assert [url for url in asked_of if not url.startswith(origin)] == []
+    wanted = {"/detector.js", "/detector-worker.js", "/wakestream.js", "/hands.js", "/wake/settings", "/ort/1.31.1/ort.wasm.bundle.min.mjs", "/ort/1.31.1/ort-wasm-simd-threaded.wasm", *(f"/wake/models/{role}" for role in ROLES)}
+    assert wanted <= set(hands.requests)
+
+
+async def test_a_second_page_runs_the_runtime_from_the_browsers_copy(keeping_browser: Opened, hands: Hands) -> None:
+    def runtime() -> list[str]:
+        return [path for path in hands.requests if path.startswith("/ort/")]
+
+    await detecting(await keeping_browser.open(hands.address("/")))
+    assert len(runtime()) == 2
+    await detecting(await keeping_browser.open(hands.address("/")))
+    assert len(runtime()) == 2
+
+
+class Unreachable:
+    """A fetch that cannot reach the release."""
+
+    async def __call__(self, directory: Path, pin: Pin, stop: threading.Event) -> Kept:
+        raise OSError("the network is down")
+
+
+class WithTwoWords:
+    """A fetch that gives the run's own models, but for Hey Jarvis's, which it gives a model that scores two words."""
+
+    def __init__(self, models: Path) -> None:
+        self._models = models
+
+    async def __call__(self, directory: Path, pin: Pin, stop: threading.Event) -> Kept:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / pin.name).write_bytes((TWO_WORDS if pin == PRETRAINED["Hey Jarvis"] else self._models / pin.name).read_bytes())
+        return Kept(directory / pin.name, "fetched")
+
+
+def unreachable(_models: Path) -> Fetch:
+    return Unreachable()
+
+
+@pytest.mark.parametrize("wake_models", [unreachable], indirect=True)
+async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_cannot_listen_in_hands_words(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(hands.address("/"))
+    await detecting(page)
+    assert await page.evaluate("events") == [{"kind": "failed", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
+
+
+@pytest.mark.parametrize("wake_models", [WithTwoWords], indirect=True)
+async def test_a_model_that_scores_two_words_is_refused_by_the_phone_as_the_desk_refuses_it(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(hands.address("/"))
+    await detecting(page)
+    assert await page.evaluate("events") == [{"kind": "failed", "why": "the wake word model scores 2 words, and a wake word is one"}]
+
+
+async def test_a_rate_that_is_not_a_rate_is_refused_by_the_detector_in_words(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(hands.address("/"))
+    await detecting(page, rate=0)
+    assert await page.evaluate("events") == [{"kind": "failed", "why": "a stream's rate is a number of samples a second above zero, not 0"}]
+
+
+async def test_a_page_opened_without_the_phones_key_is_told_so_by_hands_and_says_it_cannot_listen(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(keyed_address(str(hands.server.make_url("/")), "not-the-phones-key"))
+    await detecting(page)
+    assert await page.evaluate("events") == [{"kind": "failed", "why": UNKEYED}]

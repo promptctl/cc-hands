@@ -34,6 +34,11 @@ RATE = 16_000
 # Bytes to a second of a clip's audio.
 SECOND = RATE * 2
 
+# [LAW:one-source-of-truth] how much of what was heard the clip owner keeps from before a turn opens, as the seconds it
+# is and the bytes of it: the seconds are what the phone's page is told to keep (`hands.voice.phonewake`'s settings).
+KEPT_SECONDS = 1.0
+KEPT = int(KEPT_SECONDS * SECOND)
+
 # A 10 ms slot of a clip, in samples at RATE: the unit the speaker's reference, and so what hands played, comes in.
 SLOT = RATE // 100
 
@@ -193,7 +198,7 @@ class Recording:
             case _:
                 self._played = None
         # [LAW:dataflow-not-control-flow] every frame trims; gathering, it trims nothing.
-        cut = 0 if gathering else max(0, len(self._heard) - SECOND)
+        cut = 0 if gathering else max(0, len(self._heard) - KEPT)
         del self._heard[:cut]
         del self._captured[:cut]
         match self._played:

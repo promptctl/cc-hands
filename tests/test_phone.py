@@ -46,6 +46,8 @@ from hands.voice.phonepage import phone_pages
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
+from hands.voice.pinnedfile import Release
+from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from hands.voice.synthesis import Ended, Synthesis
 from conftest import events
@@ -55,6 +57,12 @@ def unused_gallery() -> Gallery:
     """A gallery no request in these tests reads: the page's own routes are tested in test_gallerypage, and the one check
     that the phone's server mounts them is made on the port below."""
     return Gallery(voices=Mock(), levels=Mock(), desk=Mock(), own=Mock(), speaker=Mock(), wake=Pretrained(), models=())
+
+
+def unused_wake(home: Home) -> tuple[WakeModels, Release]:
+    """The wake word's models and runtime no request in these tests reads: the routes that serve them are tested in test_phonewake."""
+    return WakeModels(home.wake_word, SYSTEM), Release(home.onnx_runtime, SYSTEM)
+
 
 KEY = "the-phone-key"
 PAGE_RATE = 48000
@@ -433,7 +441,7 @@ def offered(offer: Offer) -> str:
 async def page_server(tmp_path: Path) -> AsyncGenerator[Served, None]:
     key, recorded, home = PushToTalk(SYSTEM, lambda _: None), list[Entry](), Home(tmp_path)
     phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
-    client = TestClient(TestServer(phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, KEY, recorded.append, {}, unused_gallery())))
+    client = TestClient(TestServer(phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, KEY, recorded.append, {}, unused_gallery(), *unused_wake(home))))
     await client.start_server()
     yield client, phone, key, recorded
     await phone.stop()
@@ -675,7 +683,7 @@ async def _served(home: Home, answers: list[Tailnet | Untailed], waits: list[flo
     monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
     recorded: list[Entry] = []
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    pages = phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery())
+    pages = phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery(), *unused_wake(home))
     with unit("hands.start", recorded.append, begun(clock)):
         serving = asyncio.create_task(phonepage.serve_phone(clock, pages, home, asked, recorded.append))
     async with asyncio.timeout(5):
@@ -771,7 +779,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
 
     home = Home(tmp_path)
     key = phone_key(SYSTEM, home)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery()), home, asked, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)

@@ -15,14 +15,16 @@ export const carriesKey = key !== "";
 // so soon after.
 const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
-// [LAW:one-source-of-truth] every request a page makes is this one, and what came of it is one of three outcomes.
-export async function asked(method, path, body, within = ANSWER_MS) {
+// [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of three
+// outcomes. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
+// key and fail in the browser's words. `readBody` reads an answer's body as the request wants it: its text, or its bytes.
+async function crossed(method, path, body, within, readBody) {
   const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(within) };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
-  // Each step of the crossing fails its own way: never reached, an answer cut off on its way back, or one that is not JSON.
+  // Each step of the crossing fails its own way: never reached, or an answer cut off on its way back.
   // A bound that runs out fails the fetch with the TimeoutError AbortSignal.timeout names it by.
   let response;
   try {
@@ -30,21 +32,32 @@ export async function asked(method, path, body, within = ANSWER_MS) {
   } catch (error) {
     return { kind: "lost", why: error.name === "TimeoutError" ? `hands did not answer within ${Math.round(within / 1000)} s` : `hands is out of reach: ${error.message}` };
   }
-  let text;
+  // A refusal is always words, whatever the request wanted.
+  let answer;
   try {
-    text = await response.text();
+    answer = response.ok ? await readBody(response) : await response.text();
   } catch (error) {
     return { kind: "lost", why: `hands' answer was cut off: ${error.message}` };
   }
-  if (!response.ok) return { kind: "refused", status: response.status, text: text || `hands refused with ${response.status}` };
+  if (!response.ok) return { kind: "refused", status: response.status, text: answer || `hands refused with ${response.status}` };
+  return { kind: "answered", body: answer };
+}
+
+// A request whose answer is JSON, or nothing.
+export async function asked(method, path, body, within = ANSWER_MS) {
+  const outcome = await crossed(method, path, body, within, response => response.text());
+  if (outcome.kind !== "answered") return outcome;
   // A choice hands took with nothing to say back answers with no body at all.
-  if (text === "") return { kind: "answered", body: null };
+  if (outcome.body === "") return { kind: "answered", body: null };
   try {
-    return { kind: "answered", body: JSON.parse(text) };
+    return { kind: "answered", body: JSON.parse(outcome.body) };
   } catch (error) {
     return { kind: "lost", why: `hands' answer is not one this page reads: ${error.message}` };
   }
 }
+
+// A request whose answer is a file: its bytes, as a Uint8Array.
+export const askedForBytes = (path, within = ANSWER_MS) => crossed("GET", path, undefined, within, async response => new Uint8Array(await response.arrayBuffer()));
 
 // What a request hands did not answer says: its refusal, or why no answer came.
 export const unanswered = outcome => outcome.kind === "refused" ? outcome.text : outcome.why;

@@ -15,10 +15,8 @@ of it, are in the turn.
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import cast
 
-import aiohttp
 import numpy as np
 from openwakeword.model import Model
 
@@ -26,42 +24,11 @@ from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
-from hands.voice.wakeword import Pretrained, Trained, Word, model_of
+from hands.voice.wakemodels import Files
+from hands.voice.wakeword import THRESHOLD, Word
 
-# openWakeWord's release, and the files hands runs the wake word from, in ONNX: the two models that turn audio into the
-# features every wake word model hears, and a model of each of openWakeWord's own wake words (`PRETRAINED`).
-RELEASE = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1"
-MELSPECTROGRAM = "melspectrogram.onnx"
-EMBEDDING = "embedding_model.onnx"
-# Long enough for the three files, about 3 MB, on a slow connection; a stalled one fails the switch rather than hang it.
-FETCH_SECONDS = 60
-# The longest header line the release may answer with, whole or as much of it as one read has brought. aiohttp's own
-# 8190 bytes is shorter than GitHub's content-security-policy alone, 9243 bytes on 2026-10-23; this is room for it to grow.
-HEADER_BYTES = 64 * 1024
-# openWakeWord's own default: its pretrained models are tuned to score a wake word above it and little else.
-THRESHOLD = 0.5
 # The only rate openWakeWord's models hear.
 SAMPLE_RATE = 16_000
-
-
-async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str, ...]:
-    """`word`'s models in `models`, each fetched from `release` unless already there, and whole or not there at all: the
-    names of those fetched. A word the user trained is never fetched: whether its model is there is WakeWord's to say."""
-    match word:
-        case Pretrained():
-            own: tuple[str, ...] = (model_of(word, models).name,)
-        case Trained():
-            own = ()
-    missing = tuple(name for name in (MELSPECTROGRAM, EMBEDDING, *own) if not (models / name).exists())
-    models.mkdir(parents=True, exist_ok=True)
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=FETCH_SECONDS), raise_for_status=True, max_line_size=HEADER_BYTES, max_field_size=HEADER_BYTES) as http:
-        for name in missing:
-            async with http.get(f"{release}/{name}") as response:
-                partial = models / f"{name}.partial"
-                partial.write_bytes(await response.read())
-            # [LAW:one-source-of-truth] a file under its own name is the whole of it, so one there is never fetched again.
-            partial.replace(models / name)
-    return missing
 
 
 class Unheard(Exception):
@@ -69,18 +36,14 @@ class Unheard(Exception):
 
 
 class WakeWord:
-    """A wake word's model, run locally on the CPU with ONNX Runtime, on 16 kHz mono audio, from the files `fetched` put
-    in `models` and, for a word the user trained, from theirs. Raises Unheard for a model it cannot hear the word with."""
+    """A wake word's model, run locally on the CPU with ONNX Runtime, on 16 kHz mono audio, from `files`
+    (`hands.voice.wakemodels`). Raises Unheard for a model it cannot hear the word with."""
 
-    def __init__(self, models: Path, word: Word) -> None:
-        heard = model_of(word, models)
-        # [LAW:single-enforcer] the one judge of whether a model can be heard with, at the switch and at the load alike.
-        # openWakeWord takes a path that is not there for the name of one of its own models, and says that one is missing.
-        if not heard.is_file():
-            raise Unheard(f"no wake word model at {heard}")
+    def __init__(self, files: Files) -> None:
+        heard = files.word
         try:
             self._model = Model(
-                wakeword_models=[str(heard)], melspec_model_path=str(models / MELSPECTROGRAM), embedding_model_path=str(models / EMBEDDING), inference_framework="onnx"
+                wakeword_models=[str(heard)], melspec_model_path=str(files.melspectrogram), embedding_model_path=str(files.embedding), inference_framework="onnx"
             )
         # ONNX Runtime's errors share no base nearer than Exception; each is said as the model's, with its own words.
         except Exception as error:
@@ -103,14 +66,14 @@ class WakeWord:
 
 
 @asynccontextmanager
-async def loaded(clock: Clock, sample_rate: int, models: Path, word: Word, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
+async def loaded(clock: Clock, sample_rate: int, files: Files, word: Word, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
     """`word`'s model, loaded off the loop as its own unit of work."""
     with loads.loading(clock, "desk.wake_word_loaded", emit):
         # [LAW:nothing-unseen] which word the desk listens for, and the file it is heard with.
-        annotate(phrase=word.phrase, model=str(model_of(word, models)))
+        annotate(phrase=word.phrase, model=str(files.word))
         if sample_rate != SAMPLE_RATE:
             raise ValueError(f"the wake word is heard at {SAMPLE_RATE} Hz, and the desk's microphone runs at {sample_rate} Hz")
-        heard = await asyncio.to_thread(WakeWord, models, word)
+        heard = await asyncio.to_thread(WakeWord, files)
     yield heard
 
 

@@ -66,7 +66,7 @@ The design also overrules an earlier ticket. `hands-phone-app-bef.3pn`, an earli
 
 ### The engine
 
-**ONNX Runtime Web 1.31.1, its WebAssembly build, on one thread, in a Web Worker the page starts.** It runs the three files the Mac runs (`src/hands/voice/wake.py`): `melspectrogram.onnx`, `embedding_model.onnx`, and the word's own model. The Mac serves the page the very files it loads, so the model is the same, and the phrase is the same, for one of openWakeWord's words and for a word Brandon trained alike. The phrase the page shows and the threshold it holds a score to come from the Mac's own values (`wakeword.Word`, `wake.THRESHOLD`), so neither is written twice.
+**ONNX Runtime Web 1.31.1, its WebAssembly build, on one thread, in a Web Worker the page starts.** It runs the three files the Mac runs (`src/hands/voice/wake.py`, which `src/hands/voice/wakemodels.py` fetches them for): `melspectrogram.onnx`, `embedding_model.onnx`, and the word's own model. The Mac serves the page the very files it loads, so the model is the same, and the phrase is the same, for one of openWakeWord's words and for a word Brandon trained alike. The phrase the page shows and the threshold it holds a score to come from the Mac's own values (`wakeword.Word`, `wakeword.THRESHOLD`), so neither is written twice.
 
 The scores are not the Mac's to the last digit, and are not meant to be: openWakeWord starts its buffer from random noise, and the phone's microphone is not the Mac's. Same model, same threshold, same phrase.
 
@@ -90,7 +90,7 @@ What the second is for:
 - The wake word itself, so Whisper hears the sentence whole, as it does at the desk.
 - Cutting hands off. A turn the voice opened stops hands' reply once a person is heard in it, and the wake word in the kept second is that person.
 
-Why a second: it is the Mac's own length (`clips.SECOND`), the Mac tells the page that length as a duration, and the clip owner keeps only the last second of what comes before a clip, so more would be thrown away.
+Why a second: it is the Mac's own length (`clips.KEPT_SECONDS`), the Mac tells the page that length as a duration, and the clip owner keeps only the last second of what comes before a clip, so more would be thrown away.
 
 The second is not there to cover a connection opening, since the call is already up.
 
@@ -132,7 +132,7 @@ What matches the desk's wake word level (`src/hands/voice/desk.py`):
 | | at the desk | at the phone |
 |---|---|---|
 | the word and its model | `config.toml`'s | the same files, served by the Mac |
-| the threshold | `wake.THRESHOLD` | the same value, served by the Mac |
+| the threshold | `wakeword.THRESHOLD` | the same value, served by the Mac |
 | what the turn starts with | the second before the wake | the second before the wake |
 | nothing asked | thrown away after `ASK_SECONDS`, 8 s | the same, by the same code |
 | the end of the turn | Smart Turn's verdict, or the turn's limit | the same, by the same code |
