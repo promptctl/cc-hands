@@ -27,7 +27,7 @@ class _Ticking(VirtualClock):
 
 async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     events: list[WideEvent] = []
-    async with loaded(_Ticking(), 16000, events.append) as ears:
+    async with loaded(_Ticking(), 16000, events.append, "desk.loaded") as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
     [loaded_event] = events
     facts = model_facts(loaded_event)
@@ -45,7 +45,7 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
 async def test_smart_turn_judges_a_finished_sentence_complete_and_one_broken_off_not(said: str, complete: bool) -> None:
     # As the trigger gives it: the speech as speech, then the silence the detector ends it at, then the question.
     audio = spoken(said)
-    async with loaded(VirtualClock(), 16000, lambda event: None) as models:
+    async with loaded(VirtualClock(), 16000, lambda event: None, "desk.loaded") as models:
         for at in range(0, len(audio), 640):
             models.heard(audio[at : at + 640], True)
         models.heard(quiet(STOP_SECS), False)
@@ -56,7 +56,7 @@ async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models
     rig = Rig(verdicts=[])
     # Two phrases with a breath between them, then silence past Smart Turn's own stop: one turn, whatever it judges.
     audio = spoken("create a ticket") + quiet(0.4) + spoken("to read session history") + quiet(4.0)
-    async with loaded(rig.clock, 16000, rig.events.append) as models:
+    async with loaded(rig.clock, 16000, rig.events.append, "desk.loaded") as models:
         driving = rig.start(models)
         await rig.choose("engaged")
         await rig.hear(*(audio[at : at + 640] for at in range(0, len(audio), 640)))
@@ -78,7 +78,7 @@ async def test_hands_alone_at_the_desk_through_the_canceller_arms_no_turn_though
     # stretch of hands for Silero to start on. Heard all as captured, it arms a turn.
     heard = replayed(*take(OPENING)).heard[: 2 * int(cut_in(OPENING) * 16000)]
     rig = Rig(verdicts=[])
-    async with loaded(rig.clock, 16000, rig.events.append) as models:
+    async with loaded(rig.clock, 16000, rig.events.append, "desk.loaded") as models:
         driving = rig.start(models)
         await rig.choose("engaged")
         await rig.hear(*(heard[at : at + 640] for at in range(0, len(heard), 640)))

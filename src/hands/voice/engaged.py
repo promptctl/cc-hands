@@ -145,11 +145,11 @@ class Models:
 
 
 @asynccontextmanager
-async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
-    """Both models, loaded off the loop as their own unit of work, Smart Turn judging at a turn's latency from the first
-    verdict, for as long as the desk hears with them."""
+async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], None], name: str) -> AsyncGenerator[Models]:
+    """Both models, loaded off the loop as their own unit of work, `name`, Smart Turn judging at a turn's latency from the
+    first verdict, for as long as what hears with them does: the desk (`desk.loaded`) or the phone (`phone.loaded`)."""
     async with AsyncExitStack() as held:
-        with loads.loading(clock, "desk.loaded", emit):
+        with loads.loading(clock, name, emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
             # pause the detector ends speech at, as it was loaded with it, and how long Smart Turn's warm-up took.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)

@@ -234,7 +234,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     assert load.outcome == "ok", load.error
     listener = Counted(recognizer, lambda: captured * FRAME)
     downstream = Downstream()
-    async with running([ClipOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record) as models:
+    async with running([ClipOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record, "desk.loaded") as models:
         async def capture(audio: bytes) -> None:
             nonlocal captured
             captured += 1
@@ -262,7 +262,11 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
 
         async def on_move(made: Made) -> None:
             moves.append((captured, made.move))
-            gate.move(made.move, made.by)
+            match made.move:
+                case "stop" | "drop" | "timeout" as how:
+                    gate.end(gate.gate.turn, how, made.by)
+                case move:
+                    gate.move(move, made.by)
 
         async def on_level(leveled: Leveled) -> None:
             pass

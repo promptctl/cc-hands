@@ -97,9 +97,13 @@ Shortcut = Idle | Arming | Talking | Typing
 # What an edge of the shortcut does: opens the microphone on a press, closes it on a press that was Shift after all, and
 # to the turn: opens it, closes it and sends it, or closes it and sends it for being open too long. It throws no turn away.
 ShortcutMove = Literal["arm", "disarm", "start", "stop", "timeout"]
+# The moves of the gate that begin something: a press, an open clip, or a place's listening, and take them back.
+Beginning = Literal["arm", "disarm", "start", "listen", "deafen"]
+# The moves that end a clip: sent as it stands, thrown away, or sent for being open too long.
+Ending = Literal["stop", "drop", "timeout"]
 # Every move of the gate: the shortcut's, the wake word's throwing away of a wake that asked nothing, and the desk's
 # (`hands.voice.desk`) having the microphone listen between turns, and stop.
-Move = ShortcutMove | Literal["drop", "listen", "deafen"]
+Move = Beginning | Ending
 
 
 def asked(event: KeyEvent) -> tuple[tuple[Instant, Ripe | Overlong], ...]:

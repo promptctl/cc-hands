@@ -17,6 +17,10 @@ and the first sound, which the page shows with how long each took; and each line
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
 microphone's wait for the room to go quiet.
 
+The page also tells hands when its detector heard the wake word (`wake`), which of its two levels the phone listens at
+(`level`, `off` at the start of every call), and whether its detector loaded (`detector`). A wake is a press the page
+numbered, which the gate may refuse: it opens a turn made by no hand, or is answered `unopened` with the gate's reason.
+
 A page whose call drops calls again on its own, and says so in its offer: it resumes the phone, where a press of its
 Connect takes it. A resume is declined while another page has the call or an offer in, so two pages left open never take
 the phone back and forth between them; only a press takes it from another page.
@@ -26,6 +30,7 @@ import asyncio
 import fractions
 import json
 from collections import deque
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Literal, NewType
 
@@ -38,11 +43,14 @@ from loguru import logger
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.wide import Begun, Fact, continuing, ended, since
+from hands.sessions.wide import Begun, Fact, begun, continuing, ended, since
 from hands.voice.milestone import ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
-from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.ptt import KeyedAudio, PushToTalk, Refusal
 from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
+from hands.voice.trigger import PHONE_WAKE, PhoneLevel
+from hands.voice.wakeword import THRESHOLD
+
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
 FRAME_SECS = 0.02
@@ -282,13 +290,56 @@ def quiet_message(samples: int) -> str:
     return json.dumps({"kind": "quiet", "samples": samples})
 
 
-# What the page sends over the call's data channel: its microphone, the samples it held back, and its button.
-Said = Pcm | Quiet | Move
+# The page's button: pressed, which opens a turn, or released, which ends it.
+Button = Literal["start", "stop"]
+
+
+@dataclass(frozen=True)
+class Wake:
+    """The page's detector heard the wake word, at `score`: a probability."""
+
+    score: float
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A wake the page numbered whose score hands cannot read, and why. It is counted as the page counts it, so the page's
+    later presses keep their numbers, and answered `unopened`."""
+
+    why: str
+
+
+@dataclass(frozen=True)
+class Level:
+    """The level the page has the phone listening at: it is deaf at `off` alone."""
+
+    level: PhoneLevel
+
+
+@dataclass(frozen=True)
+class DetectorLoaded:
+    """The page's detector loaded, in the browser the page said it is in."""
+
+    browser: str
+
+
+@dataclass(frozen=True)
+class DetectorFailed:
+    """The page's detector could not load, and why, in the browser the page said it is in."""
+
+    browser: str
+    why: str
+
+
+# What the page sends over the call's data channel: its microphone, the samples it held back, its button, and what its
+# detector heard and is set to.
+Said = Pcm | Quiet | Button | Wake | Unreadable | Level | DetectorLoaded | DetectorFailed
 
 
 def parse_said(message: object, rate: int) -> Said:
-    """One message of the page's: 16-bit mono audio at the offer's rate `rate`, a `quiet`, or the button pressed or
-    released; raises Rejected for anything else, and for audio or a count of more than one message may hold."""
+    """One message of the page's: 16-bit mono audio at the offer's rate `rate`, a `quiet`, the button pressed or released,
+    a `wake`, a `level`, or a `detector`; raises Rejected for anything else, and for audio or a count of more than one
+    message may hold. A `wake` whose score is not a probability is still a wake, returned as `Unreadable`."""
     most = largest_message(rate)
     match message:
         case bytes():
@@ -302,16 +353,50 @@ def parse_said(message: object, rate: int) -> Said:
         case str():
             try:
                 said = Payload.parse(message.encode())
-                if said.text("kind") != "quiet":
-                    raise Rejected("its kind is not quiet")
-                samples = said.integer("samples")
-                if samples > most:
-                    raise Rejected(f"it counts {samples} samples, and one message may count {most} at most")
-                return Quiet(samples)
+                match said.text("kind"):
+                    case "quiet":
+                        samples = said.integer("samples")
+                        if samples > most:
+                            raise Rejected(f"it counts {samples} samples, and one message may count {most} at most")
+                        return Quiet(samples)
+                    case "wake":
+                        return _wake(said)
+                    case "level":
+                        match said.text("level"):
+                            case "off" | "wake word" as level:
+                                return Level(level)
+                            case other:
+                                raise Rejected(f"its level is {other!r}, which is neither off nor wake word")
+                    case "detector":
+                        browser, why = said.text("browser"), said.optional_text("why")
+                        return DetectorLoaded(browser) if said.flag("loaded") else DetectorFailed(browser, "no reason given" if why is None else why)
+                    case other:
+                        raise Rejected(f"its kind is {other!r}, which is not one hands reads")
             except Rejected as error:
                 raise Rejected(f"the phone's page sent {message[:80]!r}, which hands cannot read: {error}") from error
         case _:
-            raise Rejected(f"the phone's page sent {message!r}, which is neither audio, a quiet, nor a press or a release")
+            raise Rejected(f"the phone's page sent {message!r}, which is neither audio, a quiet, nor a message hands reads")
+
+
+def _wake(said: Payload) -> Wake | Unreadable:
+    """A wake, with its score if the score is a probability, else as one hands counts and cannot read."""
+    try:
+        score = said.number("score")
+    except Rejected as error:
+        return Unreadable(str(error))
+    # NaN is no probability either, and compares false to both ends.
+    return Wake(score) if 0.0 <= score <= 1.0 else Unreadable(f"its score {score} is not a probability")
+
+
+def _why(refusal: Refusal) -> str:
+    """What the page is told of a wake the gate refused: where hands is, that the phone is not listening, or that a turn is open."""
+    match refusal:
+        case "elsewhere":
+            return "hands is at the desk"
+        case "deaf":
+            return "the phone is not listening for the wake word"
+        case "busy":
+            return "a turn is open"
 
 
 @dataclass
@@ -359,9 +444,13 @@ class Phone:
     already gone moves nothing.
     """
 
-    def __init__(self, clock: Clock, key: PushToTalk, heard_rate: int, played_rate: int, record: Record) -> None:
+    def __init__(self, clock: Clock, key: PushToTalk, heard_rate: int, played_rate: int, record: Record, speaking: Callable[[], bool]) -> None:
         self._clock = clock
         self._key = key
+        # Whether hands is speaking now, as a wake's event says it was.
+        self._speaking = speaking
+        # Who is handed each frame of the phone's audio the pipeline is: the phone's driver, which hears a wake's turn.
+        self._followers: list[Callable[[KeyedAudio], None]] = []
         self._heard_rate = heard_rate
         self._played_rate = played_rate
         self._record = record
@@ -372,6 +461,15 @@ class Phone:
         self.heard: asyncio.Queue[KeyedAudio] = asyncio.Queue()
         # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
         self.moves: asyncio.Queue[Move] = asyncio.Queue()
+
+    def follow(self, heard: Callable[[KeyedAudio], None]) -> None:
+        """Have `heard` called with each frame of the phone's audio the pipeline is given, as it is given, in order."""
+        self._followers.append(heard)
+
+    @property
+    def heard_rate(self) -> int:
+        """The rate the phone's audio is heard at: the pipeline's."""
+        return self._heard_rate
 
     async def answer(self, offer: Offer, remote: str, began: Begun) -> RTCSessionDescription | CallDeclined:
         """Answer the call a page offers, `began` as it was offered, with every candidate hands has; it is taken once it
@@ -477,28 +575,87 @@ class Phone:
             call.heard.clear()
 
     def _hear(self, call: _Call, said: Said) -> None:
-        match said:
-            case bytes():
-                self._heard(call, said)
-            case Quiet(samples=samples):
-                call.held_back += samples
-                # [LAW:dataflow-not-control-flow] silence is the audio it stands for: it takes the path audio takes.
-                self._heard(call, Pcm(bytes(2 * samples)))
-            case move:
-                taken = self._key.move(move, "phone button")
-                match move:
-                    case "start":
-                        # [LAW:no-ambient-temporal-coupling] the press is bound to the turn it opened as it opens it, so
-                        # the page learns its clip exactly, however late either reaches it.
-                        call.presses += 1
-                        call.pressing[self._key.gate.turn] = call.presses
-                    case _:
-                        pass
-                match taken:
-                    case None:
-                        pass
-                    case taken:
-                        self.moves.put_nowait(taken)
+        # [LAW:nothing-unseen] what a message makes of the gate is part of its call, in its trace.
+        with continuing(call.began.span):
+            match said:
+                case bytes():
+                    self._heard(call, said)
+                case Quiet(samples=samples):
+                    call.held_back += samples
+                    # [LAW:dataflow-not-control-flow] silence is the audio it stands for: it takes the path audio takes.
+                    self._heard(call, Pcm(bytes(2 * samples)))
+                case "start":
+                    press = self._press(call)
+                    taken = self._key.move("start", "phone button")
+                    self._opened(call, press)
+                    self.took(taken)
+                case "stop":
+                    self.took(self._key.end(self._key.gate.turn, "stop", "phone button"))
+                case Wake() | Unreadable():
+                    self._wake(call, said)
+                case Level(level=level):
+                    self._level(level)
+                case DetectorLoaded(browser=browser):
+                    ended("phone.detector", self._record, begun(self._clock), None, browser=browser, loaded=True)
+                case DetectorFailed(browser=browser, why=why):
+                    ended("phone.detector", self._record, begun(self._clock), None, why, browser=browser, loaded=False)
+
+    def _wake(self, call: _Call, wake: Wake | Unreadable) -> None:
+        """The page's detector heard the word: a press the page numbered, which the gate takes or refuses, and either is told to
+        the page at once, a refusal as `unopened` with its reason. A wake the page should not have sent is the page's mistake,
+        the failure of its event; one that hands being at the desk refused is no mistake, for the page cannot know."""
+        press = self._press(call)
+        match wake:
+            case Wake():
+                refusal = self._key.gate.refusal(PHONE_WAKE)
+                why, mistake = (None, False) if refusal is None else (_why(refusal), refusal != "elsewhere")
+            case Unreadable(why=unreadable):
+                why, mistake = unreadable, True
+        match why:
+            case None:
+                self.took(self._key.move("arm", PHONE_WAKE))
+                taken = self._key.move("start", PHONE_WAKE)
+                self._opened(call, press)
+                self.took(taken)
+            case _:
+                self._unopened(call, press, why)
+        score = wake.score if isinstance(wake, Wake) else None
+        failure = f"the page's wake opened nothing: {why}" if mistake else None
+        ended("phone.wake", self._record, begun(self._clock), None, failure, score=score, threshold=THRESHOLD, while_speaking=self._speaking(), opened=why is None, press=press)
+
+    def _unopened(self, call: _Call, press: int, why: str) -> None:
+        """A press of the page's that hands answers at once, for it opened no clip."""
+        match call.channel:
+            case RTCDataChannel(readyState="open") as channel:
+                channel.send(wire(Unopened(press, why)))
+                call.told += 1
+            case _:
+                pass
+
+    def _level(self, level: PhoneLevel) -> None:
+        """The level the page has the phone listening at, which is the gate's for the phone: one event for each change."""
+        was = self._key.gate.phone_level
+        self.took(self._key.move("listen" if level == "wake word" else "deafen", PHONE_WAKE))
+        if level != was:
+            ended("phone.leveled", self._record, begun(self._clock), None, was=was, now=level)
+
+    def took(self, taken: tuple[Move, ...]) -> None:
+        """What the gate made of a move, once the phone made it or its driver did, goes to the tone and the words that
+        follow each move it made."""
+        for move in taken:
+            self.moves.put_nowait(move)
+
+    def _press(self, call: _Call) -> int:
+        """The page's next press or wake, numbered as the page numbers them: the channel is ordered and reliable, so the
+        call counts every one the page counts."""
+        call.presses += 1
+        return call.presses
+
+    def _opened(self, call: _Call, press: int) -> None:
+        """The turn the gate has open is the one `press` opened."""
+        # [LAW:no-ambient-temporal-coupling] the press is bound to the turn it opened as it opens it, so the page learns its
+        # clip exactly, however late either reaches it.
+        call.pressing[self._key.gate.turn] = press
 
     def _heard(self, call: _Call, audio: Pcm) -> None:
         frame = AudioFrame.from_ndarray(np.frombuffer(audio, dtype=np.int16)[None, :], format="s16", layout="mono")
@@ -508,7 +665,10 @@ class Phone:
             gate = self._key.gate
             if gate.hears("phone"):
                 heard = out.to_ndarray().astype(np.int16).tobytes()
-                self.heard.put_nowait(gate.framed(heard, heard, None, self._heard_rate, 1, "phone"))
+                frame = gate.framed(heard, heard, None, self._heard_rate, 1, "phone")
+                self.heard.put_nowait(frame)
+                for follower in self._followers:
+                    follower(frame)
 
     def _leave(self, reason: PhoneGone) -> _Call | None:
         # [LAW:no-ambient-temporal-coupling] the place moves in the same step the call goes, before any await: a

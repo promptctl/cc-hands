@@ -262,13 +262,12 @@ def _keyed(phase: Phase, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
 
 def _over_voice(phase: Starting | Woke | Voiced, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
     """Right Shift under what the voice has open: nothing until it is held long enough to mean talk, so Shift typing a
-    capital leaves the voice's turn as it is; held so long, it takes the desk for the key, what the voice armed disarmed
-    and a turn it opened sent."""
+    capital leaves the voice's turn as it is; held so long, it takes the desk for the key. [LAW:single-enforcer] the gate
+    sends the turn the voice opened and takes the arming it made, so the desk only arms and starts."""
     shortcut, _ = shortcut_step(phase.key, event)
     match shortcut:
         case KeyTalking():
-            left = Made("disarm", "engaged conversation") if isinstance(phase, Starting) else Made("stop", _voice(phase))
-            return Keyed(level_of(phase), shortcut), (left, Made("arm", "shortcut"), Made("start", "shortcut"))
+            return Keyed(level_of(phase), shortcut), (Made("arm", "shortcut"), Made("start", "shortcut"))
         case Idle() | KeyArming() | Typing():
             return replace(phase, key=shortcut), ()
 

@@ -44,7 +44,7 @@ PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1, (Playhead(Synthesis("alba", "H
 
 
 def _phone() -> Phone:
-    return Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=16000, record=lambda _: None)
+    return Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=16000, record=lambda _: None, speaking=lambda: False)
 
 
 class Room:
@@ -71,7 +71,7 @@ class Rig:
     def __init__(self) -> None:
         self.clock = VirtualClock()
         self.key = PushToTalk(SYSTEM, lambda _: None)
-        self.phone = Phone(SYSTEM, self.key, heard_rate=16000, played_rate=16000, record=lambda _: None)
+        self.phone = Phone(SYSTEM, self.key, heard_rate=16000, played_rate=16000, record=lambda _: None, speaking=lambda: False)
         self.pushed: list[bytes] = []
         # Each pushed frame's sound as the microphone captured it, before the canceller, and what was played over it.
         self.captured: list[bytes] = []

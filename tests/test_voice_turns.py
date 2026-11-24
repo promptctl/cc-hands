@@ -53,7 +53,7 @@ from hands.voice.milestone import ClipOpened, ClipReleased, Told
 from hands.voice import player as played
 from hands.core.playback import hands_says
 from hands.voice.player import Player
-from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
+from hands.voice.ptt import Gate, Key, KeyedAudio, Open, Pressing, PushToTalk, Resting
 from hands.voice.trigger import Trigger, place_of
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
@@ -194,6 +194,21 @@ class Streamed:
 Captured = Key | Literal["dropped"]
 
 
+def _under(gate: Gate, key: Captured, by: Trigger) -> Gate:
+    """The gate once a frame is captured with the key at `key` for `by`'s microphone: the key the pipeline reads is the
+    gate's position and what listens, so the test sets those."""
+    place = place_of(by)
+    match key:
+        case "down":
+            return replace(gate, position=Open(by), place=place)
+        case "arming":
+            return replace(gate, position=Pressing(by, gate.opened), place=place)
+        case "listening":
+            return replace(gate, position=Resting(by), place=place, listening=gate.listening | {place})
+        case "up" | "dropped":
+            return replace(gate, position=Resting(by), place=place, listening=gate.listening - {place})
+
+
 @dataclass
 class Rig:
     worker: PipelineWorker
@@ -239,7 +254,7 @@ class Rig:
                     self.gate = replace(self.gate, ended=(*self.gate.ended, "dropped"))
                 case _:
                     pass
-            self.gate = replace(self.gate, key="up" if key == "dropped" else key, opened=by)
+            self.gate = _under(self.gate, key, by)
             frames.append(self.gate.framed(sound, sound if captured is None else captured, played, 16000, 1, place_of(by)))
         await self.worker.queue_frames(frames)
 
