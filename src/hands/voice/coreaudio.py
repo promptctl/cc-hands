@@ -31,6 +31,8 @@ _INPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAudi
 _OUTPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAudioObjectPropertyScopeOutput)
 _INPUT_SOURCE = _address(CoreAudio.kAudioDevicePropertyDataSource, CoreAudio.kAudioObjectPropertyScopeInput)
 _OUTPUT_SOURCE = _address(CoreAudio.kAudioDevicePropertyDataSource, CoreAudio.kAudioObjectPropertyScopeOutput)
+# What device_changes listens for, each by the name a refusal to stop is said in.
+_LISTENED = (("the default input", _INPUT), ("the default output", _OUTPUT), ("the device list", _DEVICES))
 
 # The data sources of the Mac's own microphone and speakers, IOAudio's port subtypes 'imic' and 'ispk'. Their transport
 # alone, built-in, does not say so: the headphone jack is built in too, a device of its own on Apple silicon and, on an
@@ -138,8 +140,8 @@ def _has_streams(device: int, scope: object) -> bool:
 
 
 # [LAW:no-shared-mutable-globals] exception: CoreAudio carries only an integer to its listener, a module-level
-# function, so a call finds its target here by token. device_changes alone writes it: it adds a target as it starts
-# listening, and deletes it once CoreAudio has removed every listener that calls it.
+# function, so a call finds its target here by token, and the tokens are counted here. device_changes alone writes
+# them: it takes a token and adds its target as it starts listening, and deletes the target as it stops.
 _targets: dict[int, Callable[[], object]] = {}
 _tokens = itertools.count(1)
 
@@ -149,8 +151,8 @@ def _listener(_object: int, _count: int, _addresses: object, token: int) -> int:
     # A module-level function and not a block: PyObjC makes a new block for every call it is passed to, so a
     # block cannot be removed again (measured: it went on being called after its removal returned 0).
     if (target := _targets.get(token)) is None:
-        # [LAW:no-silent-failure] said, and apart from a failure: a notice already in flight as its listening stopped
-        # comes after its target is gone, and is for nobody.
+        # [LAW:no-silent-failure] a notice after its listening stopped, one in flight as it stopped or one from a
+        # listener CoreAudio would not remove, is for nobody: said, so none is dropped unseen.
         logger.warning("a change to the audio devices came after listening for them had stopped")
         return 0
     try:
@@ -172,23 +174,23 @@ def device_changes(changed: Callable[[], object]) -> Iterator[None]:
     """
     token = next(_tokens)
     _targets[token] = changed
-    listening: list[object] = []
+    listening: list[tuple[str, object]] = []
     try:
-        for address in (_INPUT, _OUTPUT, _DEVICES):
-            _check(CoreAudio.AudioObjectAddPropertyListener(_SYSTEM, address, _listener, token), "listen for changes to the audio devices")
-            listening.append(address)
+        for listened in _LISTENED:
+            _check(CoreAudio.AudioObjectAddPropertyListener(_SYSTEM, listened[1], _listener, token), "listen for changes to the audio devices")
+            listening.append(listened)
         yield
     finally:
-        # Only what was added is removed, so a refused registration is the error that is reported.
-        statuses = [CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token) for address in listening]
-        if any(statuses):
-            # [LAW:no-silent-failure] exception: logged, not raised. hands leaves this context only as a cancel or a
-            # failure is raised through it (voice/devices.py follows until cancelled), and a raise here would take
-            # that one's place. The target stays, so a listener CoreAudio kept still calls it, and whatever that
-            # call meets is logged as it happens.
-            logger.error(f"CoreAudio would not stop listening for changes to the audio devices: OSStatus {statuses}, for the default input, the default output and the device list in turn")
-        else:
-            del _targets[token]
+        # `changed` is called only while the context is open: its target goes whatever CoreAudio says, and a listener
+        # CoreAudio keeps finds none and says so. Only what was added is removed, so a refused registration is the
+        # error that is reported.
+        del _targets[token]
+        refused = [f"{name}: OSStatus {status}" for name, address in listening if (status := CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token))]
+        if refused:
+            # [LAW:no-silent-failure] exception: logged, not raised. A raise would take the place of whatever ends the
+            # context, as a cancel ends hands' (voice/devices.py follows until cancelled), and leave the caller nothing
+            # it could do: what CoreAudio kept is out of its reach, and says each notice it brings.
+            logger.error(f"CoreAudio would not stop listening for changes to {'; '.join(refused)}")
 
 
 def _check(status: int, doing: str) -> None:

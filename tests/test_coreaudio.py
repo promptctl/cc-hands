@@ -38,14 +38,16 @@ _SOURCES = {
     (5, "output"): _NONE,
     (6, "input"): (CoreAudio.kAudioHardwareUnspecifiedError, b""),
 }
-_SIDES = {id(coreaudio._INPUT_SOURCE): "input", id(coreaudio._OUTPUT_SOURCE): "output"}  # pyright: ignore[reportPrivateUsage]
+
+# The side each address the adapter reads a data source by faces: the adapter's own address objects, told by identity.
+_SIDES = ((coreaudio._INPUT_SOURCE, "input"), (coreaudio._OUTPUT_SOURCE, "output"))  # pyright: ignore[reportPrivateUsage]
 
 
 def _read(device: int, address: object) -> tuple[int, bytes]:
-    # A read of anything the table does not hold is a KeyError: the fake answers only what it was written to.
+    # A read of anything the table does not hold fails: the fake answers only what it was written to.
     if device == _TORN_DOWN:
         return CoreAudio.kAudioHardwareBadObjectError, b""
-    return _SOURCES[device, _SIDES[id(address)]]
+    return _SOURCES[device, next(side for known, side in _SIDES if known is address)]
 
 
 def test_a_device_is_the_macs_own_microphone_or_speakers_only_on_their_data_source() -> None:
@@ -99,24 +101,47 @@ def test_no_device_of_the_systems_reads_as_the_macs_own_that_cannot_be() -> None
         pytest.skip("no device is on the Mac's own microphone or speakers now")
 
 
+def test_each_device_of_the_systems_has_a_name_it_is_found_by() -> None:
+    hardware = coreaudio.hardware()
+    for device in coreaudio._devices():  # pyright: ignore[reportPrivateUsage]
+        try:
+            name = coreaudio._name(device)  # pyright: ignore[reportPrivateUsage]
+            finders = [find for scope, find in ((coreaudio._INPUT_STREAMS, hardware.inputs), (coreaudio._OUTPUT_STREAMS, hardware.outputs)) if coreaudio._has_streams(device, scope)]  # pyright: ignore[reportPrivateUsage]
+        except coreaudio._Gone:  # pyright: ignore[reportPrivateUsage]
+            continue
+        assert name, f"device {device} is named nothing"
+        for find in finders:
+            found = find(name)
+            # The first device of that name: this one, or another of the same name. None only where it has gone.
+            assert (found is not None and coreaudio._name(found) == name) or device not in coreaudio._devices(), f"device {device}, {name!r}, is not found by its name"  # pyright: ignore[reportPrivateUsage]
+
+
 def test_a_device_the_system_does_not_have_is_neither() -> None:
     gone = max(coreaudio._devices(), default=0) + 1_000_000  # pyright: ignore[reportPrivateUsage]
     assert (coreaudio.BUILT_INS.microphone(gone), coreaudio.BUILT_INS.speakers(gone)) == (False, False)
 
 
+class _Listened(NamedTuple):
+    """CoreAudio's listener calls, faked: each (address, token) added and removed, in turn, and the status a removal of
+    an address answers, 0 unless set."""
+
+    added: list[tuple[object, int]]
+    removed: list[tuple[object, int]]
+    refusing: list[tuple[object, int]]
+
+
 @pytest.fixture
-def listened(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[list[int], dict[int, int]]]:
-    """CoreAudio's listener calls, faked: the tokens added, and the status each removal answers by its address's turn,
-    0 unless set. Whatever the adapter's targets hold once a test is done is cleared, so none outlives it."""
-    added: list[int] = []
-    refusing: dict[int, int] = {}
-    removed = iter(range(3))
-    monkeypatch.setattr(coreaudio.CoreAudio, "AudioObjectAddPropertyListener", lambda _object, _address, _listener, token: added.append(token) or 0)
-    monkeypatch.setattr(coreaudio.CoreAudio, "AudioObjectRemovePropertyListener", lambda *_: refusing.get(next(removed), 0))
-    held = dict(coreaudio._targets)  # pyright: ignore[reportPrivateUsage]
-    yield added, refusing
-    coreaudio._targets.clear()  # pyright: ignore[reportPrivateUsage]
-    coreaudio._targets.update(held)  # pyright: ignore[reportPrivateUsage]
+def listened(monkeypatch: pytest.MonkeyPatch) -> _Listened:
+    calls = _Listened([], [], [])
+
+    def remove(_object: int, address: object, _listener: object, token: int) -> int:
+        calls.removed.append((address, token))
+        return next((status for refused, status in calls.refusing if refused is address), 0)
+
+    monkeypatch.setattr(coreaudio.CoreAudio, "AudioObjectAddPropertyListener", lambda _object, address, _listener, token: calls.added.append((address, token)) or 0)
+    monkeypatch.setattr(coreaudio.CoreAudio, "AudioObjectRemovePropertyListener", remove)
+    monkeypatch.setattr(coreaudio, "_targets", {})
+    return calls
 
 
 @pytest.fixture
@@ -132,32 +157,33 @@ def _notice(token: int) -> None:
     coreaudio._listener(0, 1, None, token)  # pyright: ignore[reportPrivateUsage]
 
 
-def test_a_change_reaches_who_listens_until_listening_stops_and_one_after_is_said(listened: tuple[list[int], dict[int, int]], said: list[tuple[str, str]]) -> None:
-    added, _refusing = listened
+_LATE = ("WARNING", "a change to the audio devices came after listening for them had stopped")
+
+
+def test_a_change_reaches_who_listens_until_listening_stops_and_one_after_is_said(listened: _Listened, said: list[tuple[str, str]]) -> None:
     changes: list[str] = []
     with coreaudio.device_changes(lambda: changes.append("changed")):
-        _notice(added[0])
-    _notice(added[0])
-    assert (added, changes, said) == ([added[0]] * 3, ["changed"], [("WARNING", "a change to the audio devices came after listening for them had stopped")])
+        token = listened.added[0][1]
+        _notice(token)
+    _notice(token)
+    listening = [(coreaudio._INPUT, token), (coreaudio._OUTPUT, token), (coreaudio._DEVICES, token)]  # pyright: ignore[reportPrivateUsage]
+    assert (listened.added, listened.removed, changes, said) == (listening, listening, ["changed"], [_LATE])
 
 
-def test_a_listener_coreaudio_would_not_remove_still_calls_who_listened_and_is_said(listened: tuple[list[int], dict[int, int]], said: list[tuple[str, str]]) -> None:
-    added, refusing = listened
-    refusing[2] = -50
+def test_a_listener_coreaudio_would_not_remove_is_said_and_calls_nobody(listened: _Listened, said: list[tuple[str, str]]) -> None:
+    listened.refusing.append((coreaudio._DEVICES, -50))  # pyright: ignore[reportPrivateUsage]
     changes: list[str] = []
     with coreaudio.device_changes(lambda: changes.append("changed")):
-        pass
-    _notice(added[0])
-    assert changes == ["changed"]
-    assert said == [("ERROR", "CoreAudio would not stop listening for changes to the audio devices: OSStatus [0, 0, -50], for the default input, the default output and the device list in turn")]
+        token = listened.added[0][1]
+    _notice(token)
+    assert changes == []
+    assert said == [("ERROR", "CoreAudio would not stop listening for changes to the device list: OSStatus -50"), _LATE]
 
 
-def test_a_change_who_listens_cannot_take_is_said_where_it_happened(listened: tuple[list[int], dict[int, int]], said: list[tuple[str, str]]) -> None:
-    added, _refusing = listened
-
+def test_a_change_who_listens_cannot_take_is_said_where_it_happened(listened: _Listened, said: list[tuple[str, str]]) -> None:
     def broken() -> None:
         raise RuntimeError("Event loop is closed")
 
     with coreaudio.device_changes(broken):
-        _notice(added[0])
+        _notice(listened.added[0][1])
     assert said == [("ERROR", "an audio device change could not be passed on")]
