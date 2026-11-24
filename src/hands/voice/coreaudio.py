@@ -1,6 +1,6 @@
 # pyright: basic, reportAttributeAccessIssue=false
-# PyObjC ships no type stubs and loads its names lazily, so a static check cannot see them; this file is hands'
-# only one that touches CoreAudio.
+# [LAW:types-are-the-program] exception: PyObjC ships no type stubs and loads its names lazily, so a static check
+# cannot see them.
 """The system's audio devices, from CoreAudio: the defaults and the names of those there are, and word when they change."""
 
 import itertools
@@ -125,8 +125,8 @@ def _has_streams(device: int, scope: object) -> bool:
 
 
 # [LAW:no-shared-mutable-globals] owned by device_changes alone, which adds a target when it registers its
-# listener and deletes it after the listener is removed, so the listener never looks up a token that is gone.
-# CoreAudio carries only an integer to the listener, so the token is how a call finds its target.
+# listener and deletes it once the listener is removed; a notice CoreAudio sent before then finds no target, and
+# _listener logs it. CoreAudio carries only an integer to the listener, so the token is how a call finds its target.
 _targets: dict[int, Callable[[], object]] = {}
 _tokens = itertools.count(1)
 
@@ -162,10 +162,11 @@ def device_changes(changed: Callable[[], object]) -> Iterator[None]:
         yield
     finally:
         # Only what was added is removed, so a refused registration is the error that is reported.
-        refused = [CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token) for address in listening]
-        if any(refused):
-            # [LAW:no-silent-failure] logged, not raised: raising here would turn a clean stop into a failed run. The
-            # target stays, because a listener CoreAudio kept would otherwise look up a token that is gone.
+        removed = [CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token) for address in listening]
+        if refused := [status for status in removed if status]:
+            # [LAW:no-silent-failure] logged, not raised: hands leaves this context only as a cancel or a failure is
+            # raised through it (voice/devices.py follows until cancelled), and a raise here would take that one's
+            # place. The target stays, so a listener CoreAudio kept still finds where to call.
             logger.error(f"CoreAudio would not stop listening for changes to the audio devices: OSStatus {refused}")
         else:
             del _targets[token]
