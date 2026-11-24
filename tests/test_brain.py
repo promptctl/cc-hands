@@ -26,8 +26,9 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from loguru import logger
 
 from hands.core.playback import Bookmark
-from hands.brain import configdir, pinned, process
-from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
+from hands.brain import configdir, mcp, pinned, process
+from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, Request, Unanswerable, parse, serve_mcp
+from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
@@ -102,6 +103,35 @@ def ran(recorded: Sequence[Entry]) -> list[tuple[str, str, Mapping[str, Fact]]]:
     return [(entry.event, entry.outcome, entry.facts) for entry in recorded if isinstance(entry, WideEvent)]
 
 
+def test_a_posted_body_is_parsed_once_into_the_message_it_is() -> None:
+    assert parse(b'{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "echo", "_meta": {"k": 1}}}') == Request(
+        3, "tools/call", Payload({"name": "echo", "_meta": {"k": 1}}), Payload({"k": 1})
+    )
+    assert parse(b'{"jsonrpc": "2.0", "id": "a", "method": "ping"}') == Request("a", "ping", Payload({}), Payload({}))
+    assert parse(b'{"jsonrpc": "2.0", "method": "notifications/initialized"}') == mcp.Unanswered()
+    assert parse(b'{"jsonrpc": "2.0", "id": 4, "result": {}}') == mcp.Unanswered()
+
+
+def test_a_body_that_is_no_request_hands_can_answer_is_refused_with_the_id_it_could_read() -> None:
+    def refused(body: bytes) -> tuple[int, object, str | None]:
+        match parse(body):
+            case Unanswerable(code, _, id, method):
+                return code, id, method
+            case other:
+                raise AssertionError(other)
+
+    assert refused(b"{not json") == (-32700, None, None)
+    # An integer too long for Python to read and nesting too deep are not JSON either, never a 500.
+    assert refused(b'{"jsonrpc": "2.0", "id": ' + b"9" * 5000 + b', "method": "ping"}') == (-32700, None, None)
+    assert refused(b"[" * 1_000_000) == (-32700, None, None)
+    assert refused(b'[{"jsonrpc": "2.0", "id": 1, "method": "ping"}]') == (-32600, None, None)
+    assert refused(b'{"jsonrpc": "2.0", "id": true, "method": "ping"}') == (-32600, None, "ping")
+    assert refused(b'{"jsonrpc": "2.0", "id": null, "method": "ping"}') == (-32600, None, "ping")
+    assert refused(b'{"jsonrpc": "2.0", "id": 5, "method": 5}') == (-32600, 5, None)
+    assert refused(b'{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": "echo"}') == (-32602, 6, "tools/call")
+    assert refused(b'{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"_meta": "toolu_1"}}') == (-32602, 7, "tools/call")
+
+
 @pytest.mark.outside
 async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_event() -> None:
     recorded: list[Entry] = []
@@ -121,10 +151,25 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
         _, called = await rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi", "times": 2}}})
         assert called == {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": '{"said": "hi hi"}'}], "isError": False}}
         assert ran(recorded) == [
-            ("mcp.request", "ok", {"method": "initialize", "client": "claude-code", "client_version": None, "protocol": "2025-06-18"}),
+            ("mcp.request", "ok", {"method": "initialize", "client": "claude-code", "client_version": None, "asked": "2025-06-18", "protocol": "2025-06-18"}),
             ("mcp.request", "ok", {"method": "tools/list"}),
             ("tool.run", "ok", {"tool": "echo", "called": Called({"text": "hi", "times": 2}, {"said": "hi hi"})}),
         ]
+    finally:
+        await server.close()
+
+
+@pytest.mark.outside
+async def test_a_client_is_agreed_its_protocol_version_only_where_the_server_speaks_it() -> None:
+    recorded: list[Entry] = []
+    server = await serve_mcp(SYSTEM, [], recorded.append, CallSpans())
+    try:
+        agreed: list[object] = []
+        for asked in ("2025-06-18", "2025-03-26", None):
+            _, opened = await rpc(server, {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": asked}})
+            agreed.append(cast(dict[str, dict[str, object]], opened)["result"]["protocolVersion"])
+        # 2025-03-26 takes JSON-RPC batches, which this server refuses: it is answered with the newest the server speaks.
+        assert agreed == ["2025-06-18", "2025-11-25", "2025-11-25"]
     finally:
         await server.close()
 
@@ -153,6 +198,14 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         assert discovered == {"jsonrpc": "2.0", "id": 6, "error": {"code": -32601, "message": "no method server/discover"}}
         async with aiohttp.ClientSession() as client, client.post(server.url, data=b"{not json", headers={"Authorization": f"Bearer {server.token}"}) as garbled:
             assert (await garbled.json())["error"]["code"] == -32700
+        # A request JSON-RPC takes no id of is answered refused, never left waiting on a 202, and so is what is no message.
+        _, nameless = await rpc(server, {"jsonrpc": "2.0", "id": None, "method": "tools/list"})
+        assert nameless == {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "a request's id is a string or an integer, never null"}}
+        # JSON's true is no integer, though Python's int pattern would take it: the tool is never run.
+        _, boolean = await rpc(server, {"jsonrpc": "2.0", "id": True, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}}})
+        assert boolean == {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "a request's id is a string or an integer, never true"}}
+        async with aiohttp.ClientSession() as client, client.post(server.url, json=[{"jsonrpc": "2.0", "id": 7, "method": "ping"}], headers={"Authorization": f"Bearer {server.token}"}) as batched:
+            assert (await batched.json())["error"]["code"] == -32600
         async with aiohttp.ClientSession() as client, client.get(server.url, headers={"Authorization": f"Bearer {server.token}"}) as stream:
             assert stream.status == 405
         assert [(event, outcome, facts.get("tool", facts.get("method"))) for event, outcome, facts in ran(recorded)] == [
@@ -163,9 +216,12 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
             ("mcp.request", "failed", "resources/list"),
             ("mcp.request", "ok", "server/discover"),
             ("mcp.request", "failed", None),
+            ("mcp.request", "failed", "tools/list"),
+            ("mcp.request", "failed", "tools/call"),
+            ("mcp.request", "failed", None),
         ]
-        [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent)][-1:]
-        assert garbled_event.error is not None and garbled_event.error.startswith("not JSON: ")
+        [garbled_event] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.error is not None and entry.error.startswith("not JSON: ")]
+        assert garbled_event.event == "mcp.request"
     finally:
         await server.close()
 

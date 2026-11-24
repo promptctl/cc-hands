@@ -16,6 +16,10 @@ class Rejected(Exception):
     """Input that does not parse. The message names what was wrong with it."""
 
 
+class NotJson(Rejected):
+    """Input that is not JSON at all, beside JSON that is not what was asked for."""
+
+
 @dataclass(frozen=True)
 class Payload:
     fields: Mapping[str, object]
@@ -130,4 +134,4 @@ def _decoded(raw: bytes) -> object:
     try:
         return json.loads(raw)
     except (ValueError, RecursionError) as error:  # a JSONDecodeError or UnicodeDecodeError, an integer too long to read, or nesting too deep
-        raise Rejected(f"not JSON: {error}") from error
+        raise NotJson(f"not JSON: {error}") from error
