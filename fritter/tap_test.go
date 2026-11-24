@@ -107,7 +107,7 @@ func tappedTrusting(t *testing.T, upstream string, to string, roots *x509.CertPo
 func child(t *testing.T, tap *Tap) *http.Client {
 	t.Helper()
 	proxy, _ := url.Parse(tap.door.Address())
-	given, err := os.ReadFile(tap.trusted)
+	given, err := os.ReadFile(tap.trusted.Path())
 	if err != nil {
 		t.Fatalf("the child was given no certificates it can read: %v", err)
 	}
@@ -257,6 +257,7 @@ func TestATapIsAllItsPartsOrNone(t *testing.T) {
 		{"--tap", "https://:8443", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 		{"--tap", "https://example.com", "--tap-ca", "EXTRA_CA=x", "--tap-to", "/tmp/x.sock", "--", "true"},
 		{"--tap", "https://example.com", "--tap-ca", "NO_PROXY", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "https://example.com", "--tap-ca", "FRITTER_SOCKET", "--tap-to", "/tmp/x.sock", "--", "true"},
 		{"--tap", "", "--tap-ca", "", "--tap-to", "", "--", "true"},
 		{"--tap", "https://example.com", "--tap", "https://other.example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 	} {
@@ -479,7 +480,7 @@ func TestTheChildStillTrustsWhatItWasGivenToTrustBefore(t *testing.T) {
 	}
 	t.Setenv("EXTRA_CA", outer)
 	tap := tapped(t, "https://api.example.com", filepath.Join(shortTempDir(t), "wire.sock"))
-	given, err := os.ReadFile(tap.trusted)
+	given, err := os.ReadFile(tap.trusted.Path())
 	if err != nil {
 		t.Fatal(err)
 	}

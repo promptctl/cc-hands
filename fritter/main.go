@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/bmf/cc-hands/fritter/intercept"
@@ -80,7 +81,7 @@ func run(args []string, stdin *os.File, stdout io.Writer) int {
 			return failed
 		}
 		defer tap.close()
-		env = append(env, tap.env(options.tap.trust)...)
+		env = append(env, tap.env()...)
 	}
 
 	wrapped, err := start(options.argv, env)
@@ -162,6 +163,9 @@ func tapOf(given map[string]string) (*tapping, error) {
 		return nil, fmt.Errorf("--tap: %w", err)
 	}
 	variable, err := intercept.ParseTrustVariable(trust)
+	if err == nil && strings.HasPrefix(trust, "FRITTER_") {
+		err = fmt.Errorf("%q is a variable fritter sets itself", trust)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("--tap-ca: %w", err)
 	}

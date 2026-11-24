@@ -166,21 +166,44 @@ func serial() (*big.Int, error) {
 	return n, nil
 }
 
-// AlsoTrusted is what the file `variable` names holds: the certificates a client trusts
+// Trusted is a file of certificates written for a client to trust, and the variable that
+// is to name it: what Environment points the client at, so the two cannot disagree.
+type Trusted struct {
+	variable TrustVariable
+	path     string
+}
+
+// Path is where the file is.
+func (t Trusted) Path() string {
+	return t.path
+}
+
+// Trust writes, at path, the file a client is given to trust in the place of the one
+// `variable` names: the certificates that one holds, if it names one, and the authority,
+// each on lines of its own. [LAW:single-enforcer] the one way a client comes to trust a
+// door, for fritter and brioche alike.
+func (i *Interception) Trust(variable TrustVariable, path string, unread func(error)) (Trusted, error) {
+	already, err := alsoTrusted(variable)
+	if err != nil {
+		// As Node does with a NODE_EXTRA_CA_CERTS it cannot read: says so, and goes on
+		// without them, so the client runs as it would have without the door.
+		unread(fmt.Errorf("cannot read the certificates %s names, so the client is not given them: %w", variable, err))
+	}
+	if err := os.WriteFile(path, bytes.Join([][]byte{already, i.pem}, []byte("\n")), 0o600); err != nil {
+		return Trusted{}, fmt.Errorf("cannot write the certificates the client is to trust: %w", err)
+	}
+	return Trusted{variable: variable, path: path}, nil
+}
+
+// alsoTrusted is what the file `variable` names holds: the certificates a client trusts
 // besides its own before it is given another file in its place. Nothing where `variable`
 // names none; an error where the file it names cannot be read.
-func AlsoTrusted(variable TrustVariable) ([]byte, error) {
+func alsoTrusted(variable TrustVariable) ([]byte, error) {
 	named := os.Getenv(variable.name)
 	if named == "" {
 		return nil, nil
 	}
 	return os.ReadFile(named)
-}
-
-// WriteTrusted writes the file the client is given to trust: what it trusted already, and
-// the authority, each on lines of its own.
-func (i *Interception) WriteTrusted(path string, already []byte) error {
-	return os.WriteFile(path, bytes.Join([][]byte{already, i.pem}, []byte("\n")), 0o600)
 }
 
 // The variables HTTP clients read their proxy from, each spelling.
@@ -227,8 +250,8 @@ func (v Variable) String() string {
 type Proxy func(*http.Request) (*url.URL, error)
 
 // Event is what a door did with one connection or request, said once it is known: one of
-// Opened, HandshakeRefused, HandshakeFailed, Answered, Tunnelled, Unreached, Refused and
-// Logged. [LAW:types-are-the-program] each outcome its own type, holding what that outcome
+// Opened, HandshakeRefused, HandshakeFailed, Answered, Cut, Tunnelled, Unreached, Refused,
+// Logged and Stopped. [LAW:types-are-the-program] each outcome its own type, holding what that outcome
 // has and nothing it does not.
 type Event interface {
 	event()
@@ -271,6 +294,14 @@ type Answered struct {
 	Status int
 }
 
+// Cut: a request whose taker gave up its answer part way, by a panic, as a reverse proxy
+// does when the answer it is copying ends short; Status is what had been answered by then.
+type Cut struct {
+	Route  Route
+	URL    string
+	Status int
+}
+
 // Tunnelled: a CONNECT to any other host, joined to it until both ways ended. Err is what
 // cut either short, nil where both ended as their senders ended them.
 type Tunnelled struct {
@@ -296,10 +327,17 @@ type Logged struct {
 	Line string
 }
 
+// Stopped: one of the door's servers stopped serving before the door was closed, with Err.
+type Stopped struct {
+	Err error
+}
+
 func (Opened) event()           {}
 func (HandshakeRefused) event() {}
 func (HandshakeFailed) event()  {}
 func (Answered) event()         {}
+func (Cut) event()              {}
+func (Stopped) event()          {}
 func (Tunnelled) event()        {}
 func (Unreached) event()        {}
 func (Refused) event()          {}
@@ -322,12 +360,12 @@ type Door struct {
 	address string
 	outer   *http.Server
 	inner   *http.Server // serves the client's intercepted connections, once TLS is ended
-	// The connections taken from the servers to tunnel or intercept, which neither server
-	// tracks: Close ends them. [LAW:no-ambient-temporal-coupling] once closed is set, no
+	// The connections taken from the servers to tunnel or intercept, and those dialled to
+	// tunnel to, which neither server tracks: Close ends them. [LAW:no-ambient-temporal-coupling] once closed is set, no
 	// connection is taken.
 	mu     sync.Mutex
 	closed bool
-	taken  map[*buffered]struct{}
+	taken  map[net.Conn]struct{}
 }
 
 // Open serves `o` on listener. A CONNECT to the origin's host, where it is https, is
@@ -343,7 +381,7 @@ func Open(listener net.Listener, o Opening) (*Door, error) {
 		return nil, errors.New("a door needs an Interception, Intercepted, Forwarded, Proxy and Seen")
 	}
 	serving := log.New(lines(func(line string) { o.Seen(Logged{line}) }), "", 0)
-	door := &Door{opening: o, address: "http://" + listener.Addr().String(), taken: map[*buffered]struct{}{}}
+	door := &Door{opening: o, address: "http://" + listener.Addr().String(), taken: map[net.Conn]struct{}{}}
 	origin := o.Interception.origin
 	door.inner = &http.Server{
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -354,10 +392,15 @@ func Open(listener net.Listener, o Opening) (*Door, error) {
 	}
 	ended := handing(listener.Addr())
 	door.outer = &http.Server{Handler: door.route(ended), ErrorLog: serving}
-	// Serve returns only once its server is closed: every connection it met before then
-	// went to its handler or its ErrorLog.
-	go door.inner.Serve(ended)
-	go door.outer.Serve(listener)
+	// Serve returns once its server is closed, or its listener fails: every connection it
+	// met before then went to its handler or its ErrorLog.
+	for _, serving := range []func() error{func() error { return door.inner.Serve(ended) }, func() error { return door.outer.Serve(listener) }} {
+		go func() {
+			if err := serving(); !errors.Is(err, http.ErrServerClosed) {
+				o.Seen(Stopped{err})
+			}
+		}()
+	}
 	return door, nil
 }
 
@@ -404,6 +447,13 @@ func (door *Door) route(ended *handed) http.Handler {
 // answer has request taken by handler, and says how it was answered once it was.
 func (door *Door) answer(route Route, handler http.Handler, asked string, writer http.ResponseWriter, request *http.Request) {
 	answering := &answering{ResponseWriter: writer}
+	defer func() {
+		// The server ends the connection, and logs what is no http.ErrAbortHandler.
+		if cut := recover(); cut != nil {
+			door.opening.Seen(Cut{Route: route, URL: asked, Status: answering.status})
+			panic(cut)
+		}
+	}()
 	handler.ServeHTTP(answering, request)
 	door.opening.Seen(Answered{Route: route, URL: asked, Status: answering.answered()})
 }
@@ -509,6 +559,9 @@ func handshakeEnded(target string, err error) Event {
 // each way until its sender ends it.
 func (door *Door) tunnel(writer http.ResponseWriter, target string) {
 	far, err := dial(door.opening.Proxy, target)
+	if err == nil {
+		err = door.hold(far)
+	}
 	if err != nil {
 		door.opening.Seen(Unreached{Target: target, Err: err})
 		http.Error(writer, fmt.Sprintf("%s could not reach %s: %v", door.opening.Interception.name, target, err), http.StatusBadGateway)
@@ -516,7 +569,7 @@ func (door *Door) tunnel(writer http.ResponseWriter, target string) {
 	}
 	near, err := door.take(writer)
 	if err != nil {
-		far.Close()
+		door.release(far)
 		door.opening.Seen(Tunnelled{Target: target, Err: err})
 		return
 	}
@@ -530,7 +583,7 @@ func (door *Door) tunnel(writer http.ResponseWriter, target string) {
 	closeWrite(near)
 	err = errors.Join(<-sent, err)
 	door.release(near)
-	far.Close()
+	door.release(far)
 	door.opening.Seen(Tunnelled{Target: target, Err: err})
 }
 
@@ -553,15 +606,8 @@ func (door *Door) take(writer http.ResponseWriter) (*buffered, error) {
 		return nil, err
 	}
 	taken := &buffered{Conn: connection, from: read.Reader}
-	door.mu.Lock()
-	closed := door.closed
-	if !closed {
-		door.taken[taken] = struct{}{}
-	}
-	door.mu.Unlock()
-	if closed {
-		connection.Close()
-		return nil, net.ErrClosed
+	if err := door.hold(taken); err != nil {
+		return nil, err
 	}
 	if _, err := connection.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		door.release(taken)
@@ -570,14 +616,29 @@ func (door *Door) take(writer http.ResponseWriter) (*buffered, error) {
 	return taken, nil
 }
 
+// hold makes connection the door's to end, or ends it where the door is closed.
+func (door *Door) hold(connection net.Conn) error {
+	door.mu.Lock()
+	closed := door.closed
+	if !closed {
+		door.taken[connection] = struct{}{}
+	}
+	door.mu.Unlock()
+	if closed {
+		connection.Close()
+		return net.ErrClosed
+	}
+	return nil
+}
+
 // release ends a connection the door took.
-func (door *Door) release(connection *buffered) {
+func (door *Door) release(connection net.Conn) {
 	door.forget(connection)
 	connection.Close()
 }
 
 // forget gives up a connection the door took, without ending it.
-func (door *Door) forget(connection *buffered) {
+func (door *Door) forget(connection net.Conn) {
 	door.mu.Lock()
 	delete(door.taken, connection)
 	door.mu.Unlock()
@@ -588,11 +649,11 @@ func (door *Door) Address() string {
 	return door.address
 }
 
-// Environment is what points a client at the door, each variable it sets: the door as its
-// proxy for every host, no host exempted, and the file of certificates to trust, `trusted`,
-// in the variable the client reads them from, `trust`.
-func (door *Door) Environment(trust TrustVariable, trusted string) []Variable {
-	given := []Variable{{trust.name, trusted}}
+// Environment is what points a client at the door, each variable it sets: the file of
+// certificates to trust, in the variable it is to be named in, and the door as its proxy
+// for every host, no host exempted.
+func (door *Door) Environment(trusted Trusted) []Variable {
+	given := []Variable{{trusted.variable.name, trusted.path}}
 	for _, name := range proxyVariables {
 		given = append(given, Variable{name, door.address})
 	}
@@ -609,7 +670,7 @@ func (door *Door) Close() {
 	door.mu.Lock()
 	door.closed = true
 	taken := door.taken
-	door.taken = map[*buffered]struct{}{}
+	door.taken = map[net.Conn]struct{}{}
 	door.mu.Unlock()
 	for connection := range taken {
 		connection.Close()
@@ -641,12 +702,17 @@ func dial(proxy Proxy, target string) (net.Conn, error) {
 	if via == nil {
 		return net.DialTimeout("tcp", target, 10*time.Second)
 	}
-	if via.Scheme != "http" {
-		return nil, fmt.Errorf("a tunnel goes only through an http proxy, and the proxy given is %s", via.Redacted())
+	if via.Scheme != "http" && via.Scheme != "https" {
+		return nil, fmt.Errorf("a tunnel goes only through an http or https proxy, and the proxy given is %s", via.Redacted())
 	}
 	connection, err := net.DialTimeout("tcp", hostPort(via), 10*time.Second)
 	if err != nil {
 		return nil, err
+	}
+	if via.Scheme == "https" {
+		// As net/http's own Transport reaches an https proxy: over TLS, trusting what the
+		// machine trusts. The handshake is made under the deadline set below.
+		connection = tls.Client(connection, &tls.Config{ServerName: via.Hostname()})
 	}
 	// As net/http's own Transport asks a proxy for a tunnel.
 	asked := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: target}, Host: target, Header: http.Header{}}

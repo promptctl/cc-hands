@@ -121,7 +121,7 @@ func now() float64 {
 // Tap is a running tap: the proxy the child is given, and the count of copies lost.
 type Tap struct {
 	upstream intercept.Origin
-	trusted  string // the file of certificates the child is given to trust
+	trusted  intercept.Trusted
 	door     *intercept.Door
 	lost     atomic.Int64
 	// [LAW:no-ambient-temporal-coupling] mu orders opening a copy against the close: once
@@ -141,9 +141,9 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot make the certificate the child is answered with for %s: %w", t.upstream, err)
 	}
-	trusted := filepath.Join(dir, "trusted.pem")
-	if err := interception.WriteTrusted(trusted, alsoTrusted(t.trust)); err != nil {
-		return nil, fmt.Errorf("cannot write the certificates the child is to trust: %w", err)
+	trusted, err := interception.Trust(t.trust, filepath.Join(dir, "trusted.pem"), func(unread error) { warn("%v", unread) })
+	if err != nil {
+		return nil, err
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -223,9 +223,9 @@ func startTap(t tapping, dir string) (*Tap, error) {
 
 // env is what the child is given: fritter as its proxy for every host, the certificates to
 // trust, and what each of those variables held before, so what it runs can put that back.
-func (tap *Tap) env(trust intercept.TrustVariable) []string {
+func (tap *Tap) env() []string {
 	given := []string{"FRITTER_TAP=" + tap.door.Address()}
-	for _, variable := range tap.door.Environment(trust, tap.trusted) {
+	for _, variable := range tap.door.Environment(tap.trusted) {
 		given = append(given, variable.String())
 		if outer, found := os.LookupEnv(variable.Name); found {
 			given = append(given, "FRITTER_OUTER_"+variable.Name+"="+outer)
@@ -246,19 +246,6 @@ func told(event intercept.Event) {
 	case intercept.Logged:
 		warn("%s", event.Line)
 	}
-}
-
-// alsoTrusted is what the file `variable` names holds: the certificates the child trusted
-// besides its own before fritter named another file in its place.
-func alsoTrusted(variable intercept.TrustVariable) []byte {
-	held, err := intercept.AlsoTrusted(variable)
-	if err != nil {
-		// As Node does with a NODE_EXTRA_CA_CERTS it cannot read: says so, and goes on
-		// without them, so the child runs as it would have without fritter.
-		warn("cannot read the certificates %s names, so the child is not given them: %v", variable, err)
-		return nil
-	}
-	return held
 }
 
 // close stops serving, and lets the copies still under way finish, up to drainTimeout: the
