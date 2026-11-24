@@ -23,7 +23,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
+
+	"github.com/bmf/cc-hands/fritter/intercept"
 )
 
 const usage = "usage: fritter [--socket-dir DIR] [--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET] -- COMMAND [ARGS...]"
@@ -122,9 +125,12 @@ func parse(args []string) (options, error) {
 				return options{}, fmt.Errorf("--tap, --tap-ca and --tap-to go together")
 			}
 			if tap != "" {
-				upstream, err := parseUpstream(tap)
+				upstream, err := intercept.ParseOrigin(tap)
 				if err != nil {
-					return options{}, err
+					return options{}, fmt.Errorf("--tap: %w", err)
+				}
+				if !variableName.MatchString(trust) {
+					return options{}, fmt.Errorf("--tap-ca names the variable the child reads certificates from, and %q is no variable's name", trust)
 				}
 				parsed.tap = &tapping{upstream: upstream, trust: trust, to: to}
 			}
@@ -151,6 +157,9 @@ func parse(args []string) (options, error) {
 	}
 	return options{}, fmt.Errorf("no -- separating fritter's arguments from the command")
 }
+
+// variableName is the name of an environment variable, as sh spells one.
+var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // warn reports something fritter could not do, without stopping what it was doing.
 //

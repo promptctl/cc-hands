@@ -6,13 +6,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +29,7 @@ import (
 //	fritter --tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET -- COMMAND [ARGS...]
 //
 // fritter is the child's HTTP proxy: it is given fritter's address in the proxy
-// variables every HTTP client reads (proxied), and still names UPSTREAM as its server,
+// variables every HTTP client reads (intercept's Environment), and still names UPSTREAM as its server,
 // so to the child nothing about where it talks has changed. A connection to UPSTREAM's
 // host fritter answers itself, with a certificate for that host signed by an authority it
 // made when it started and holds only in memory; VARIABLE names a file of the
@@ -44,20 +44,12 @@ import (
 // certificates from is the caller's knowledge, so fritter still knows nothing of Claude
 // Code.
 type tapping struct {
-	upstream *url.URL // an origin: scheme and host, nothing more
+	upstream intercept.Origin
 	trust    string
 	to       string
 	// The certificates fritter trusts the upstream's own with; nil for the system's.
 	roots *x509.CertPool
 }
-
-// The variables HTTP clients read their proxy from, each spelling, as fritter sets them.
-var proxied = []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"}
-
-// The variables HTTP clients read the hosts they reach without a proxy from, which the
-// child is given empty: every connection it makes reaches fritter, and fritter reaches
-// the hosts they named as directly as the child did, from its own environment.
-var exempted = []string{"NO_PROXY", "no_proxy"}
 
 // Headers that carry a credential. A copy never holds one: it is the exchange as the
 // listener needs to read it, and the listener is not the one it was sent to. A body is
@@ -127,20 +119,9 @@ func now() float64 {
 	return float64(time.Now().UnixNano()) / 1e9
 }
 
-// parseUpstream reads UPSTREAM as the origin it names: a path on it is the child's to
-// send, as it sends every other part of a request.
-func parseUpstream(raw string) (*url.URL, error) {
-	upstream, err := url.Parse(raw)
-	if err != nil || (upstream.Scheme != "http" && upstream.Scheme != "https") || upstream.Host == "" {
-		return nil, fmt.Errorf("--tap needs an http or https URL, got %q", raw)
-	}
-	return &url.URL{Scheme: upstream.Scheme, Host: upstream.Host}, nil
-}
-
 // Tap is a running tap: the proxy the child is given, and the count of copies lost.
 type Tap struct {
-	address    string
-	upstream   *url.URL
+	upstream   intercept.Origin
 	trusted    string // the file of certificates the child is given to trust
 	door       *intercept.Door
 	lost       atomic.Int64
@@ -151,27 +132,29 @@ type Tap struct {
 // startTap listens on loopback and serves until closed; dir is where it keeps the file of
 // certificates the child is given.
 func startTap(t tapping, dir string) (*Tap, error) {
-	authority, err := intercept.NewAuthority(fmt.Sprintf("fritter %d", os.Getpid()), t.upstream.Hostname())
+	interception, err := intercept.Intercept("fritter", t.upstream, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("cannot make the certificate the child is answered with for %s: %w", t.upstream.Host, err)
+		return nil, fmt.Errorf("cannot make the certificate the child is answered with for %s: %w", t.upstream, err)
 	}
 	trusted := filepath.Join(dir, "trusted.pem")
-	if err := intercept.WriteTrusted(trusted, alsoTrusted(t.trust), authority); err != nil {
+	if err := interception.WriteTrusted(trusted, alsoTrusted(t.trust)); err != nil {
 		return nil, fmt.Errorf("cannot write the certificates the child is to trust: %w", err)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("cannot listen for the child's requests to %s: %w", t.upstream, err)
 	}
-	tap := &Tap{address: "http://" + listener.Addr().String(), upstream: t.upstream, trusted: trusted, to: t.to}
+	tap := &Tap{upstream: t.upstream, trusted: trusted, to: t.to}
 	// [LAW:no-silent-failure] Every error the proxies meet reaches the child, as a 502 or
 	// a reply cut short, and the listener, in the copy. Their own log would write into the
 	// child's terminal, which fritter holds in raw mode under its interface.
 	quiet := log.New(io.Discard, "", 0)
+	// [LAW:one-source-of-truth] the proxy fritter was itself given, if any, for what it
+	// forwards and what it tunnels alike: the child reaches the world as it did before
+	// fritter stood in that place.
+	outer := http.ProxyFromEnvironment
 	onward := &http.Transport{
-		// The proxy fritter was itself given, if any: the child reaches the world as it
-		// did before fritter stood in that place.
-		Proxy:           http.ProxyFromEnvironment,
+		Proxy:           outer,
 		TLSClientConfig: &tls.Config{RootCAs: t.roots},
 		// The reply's bytes as the upstream wrote them, compressed or not: the child
 		// asked for whatever encoding it asked for, and nothing is added to that.
@@ -182,7 +165,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	}
 	copying := &httputil.ReverseProxy{
 		Rewrite: func(out *httputil.ProxyRequest) {
-			out.SetURL(t.upstream)
+			out.SetURL(t.upstream.URL())
 		},
 		Transport: onward,
 		// Each chunk reaches the child as it arrives: a streamed reply is the point.
@@ -211,36 +194,54 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	copied := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		// Read whole, so the copy holds the request the upstream is sent.
 		body, err := io.ReadAll(request.Body)
+		copied := tap.open(requested{Kind: "request", At: now(), Method: request.Method, Path: request.URL.RequestURI(), Headers: kept(request.Header), Body: body})
 		if err != nil {
-			http.Error(writer, fmt.Sprintf("fritter could not read the request: %v", err), http.StatusBadRequest)
+			// The listener hears of it as of any exchange that never reached the upstream.
+			failed := fmt.Sprintf("fritter could not read the request: %v", err)
+			copied.put(unreached{Kind: "unreached", At: now(), Error: failed})
+			copied.close()
+			http.Error(writer, failed, http.StatusBadRequest)
 			return
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
-		copied := tap.open(requested{Kind: "request", At: now(), Method: request.Method, Path: request.URL.RequestURI(), Headers: kept(request.Header), Body: body})
 		copying.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), copyKey{}, copied)))
 	})
 	// What the child asks of anywhere else, in plain HTTP, goes on as it was asked.
 	passing := &httputil.ReverseProxy{Rewrite: func(*httputil.ProxyRequest) {}, Transport: onward, FlushInterval: -1, ErrorLog: quiet}
-	tap.door = intercept.Open(listener, intercept.Opening{Name: "fritter", Tapped: t.upstream, Leaf: authority.Leaf, Opened: copied, Passing: passing, Proxied: http.ProxyFromEnvironment, ErrorLog: quiet})
+	tap.door, err = intercept.Open(listener, intercept.Opening{Interception: interception, Intercepted: copied, Forwarded: passing, Proxy: outer, Seen: told})
+	if err != nil {
+		listener.Close()
+		return nil, err
+	}
 	return tap, nil
 }
 
 // env is what the child is given: fritter as its proxy for every host, the certificates to
 // trust, and what each of those variables held before, so what it runs can put that back.
 func (tap *Tap) env(trust string) []string {
-	given := []string{"FRITTER_TAP=" + tap.address, trust + "=" + tap.trusted}
-	for _, variable := range proxied {
-		given = append(given, variable+"="+tap.address)
-	}
-	for _, variable := range exempted {
-		given = append(given, variable+"=")
-	}
-	for _, variable := range append(append([]string{trust}, proxied...), exempted...) {
-		if outer, found := os.LookupEnv(variable); found {
-			given = append(given, "FRITTER_OUTER_"+variable+"="+outer)
+	given := []string{"FRITTER_TAP=" + tap.door.Address()}
+	for _, variable := range tap.door.Environment(trust, tap.trusted) {
+		given = append(given, variable.String())
+		if outer, found := os.LookupEnv(variable.Name); found {
+			given = append(given, "FRITTER_OUTER_"+variable.Name+"="+outer)
 		}
 	}
 	return given
+}
+
+// told is what fritter says of a connection its door took. The child is answered with
+// every error a tunnel, a refusal or a forwarded request meets, so fritter adds nothing to
+// those. A certificate the child refused is never answered to it, and leaves its every
+// request to the upstream failing, so fritter says so; and so it does of what its servers
+// met, which is a fault of fritter's own. [LAW:nothing-unseen]
+func told(event intercept.Event) {
+	var refused *net.OpError
+	switch {
+	case event.Route == intercept.Intercepted && errors.As(event.Err, &refused) && refused.Op == "remote error":
+		warn("the child refused the certificate fritter answered %s with: %v", event.Target, event.Err)
+	case event.Route == intercept.Served:
+		warn("%v", event.Err)
+	}
 }
 
 // alsoTrusted is what the file `variable` names holds: the certificates the child trusted
@@ -248,7 +249,8 @@ func (tap *Tap) env(trust string) []string {
 func alsoTrusted(variable string) []byte {
 	held, err := intercept.AlsoTrusted(variable)
 	if err != nil {
-		// The child would have been told the same, and gone on without them.
+		// As Node does with a NODE_EXTRA_CA_CERTS it cannot read: says so, and goes on
+		// without them, so the child runs as it would have without fritter.
 		warn("cannot read the certificates %s names, so the child is not given them: %v", variable, err)
 		return nil
 	}
@@ -267,6 +269,11 @@ func (tap *Tap) close() {
 	select {
 	case <-drained:
 	case <-time.After(drainTimeout):
+	}
+	// [LAW:nothing-unseen] what was lost is told with the next copy, and after the last
+	// there is none: said here, once the child has gone and its terminal is its own again.
+	if lost := tap.lost.Load(); lost > 0 {
+		warn("%d copies of the child's exchanges with %s never reached %s", lost, tap.upstream, tap.to)
 	}
 }
 

@@ -1,10 +1,13 @@
 """Giving back what a session's tap replaced: the one rule, read the same in Python and in sh."""
 
+import os
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 
-from hands.sessions.untap import KEPT, REPLACED, tapped, untap_script, untapped
+from hands.sessions.untap import KEPT, REPLACED, TRUST, tapped, untap_script, untapped
 
 TAP = "http://127.0.0.1:40000"
 # A session's environment as fritter left it, its proxy and trust both replaced, and what they were before kept.
@@ -59,3 +62,26 @@ def test_sh_gives_back_what_python_does(environ: dict[str, str]) -> None:
 
 def test_a_tap_s_leavings_are_gone_whether_or_not_its_session_is_still_tapped() -> None:
     assert untapped(CASES["a tap's leavings"]) == {"HOME": "/home/a", "https_proxy": TAP}
+
+
+@pytest.mark.outside
+def test_what_is_given_back_is_every_variable_a_real_fritter_replaces(fritter: Path) -> None:
+    # [LAW:one-source-of-truth] REPLACED restates what fritter sets in a client's environment (fritter/intercept), which
+    # Python cannot import: this is where the two are held to one another.
+    # Short on purpose: macOS caps a unix socket path near 104 bytes, and fritter's lives in this directory.
+    with tempfile.TemporaryDirectory(prefix="untap-", dir="/tmp") as short:
+        machine = {"PATH": "/usr/bin:/bin", "HOME": short}
+        printed = Path(short) / "env"
+        tap = [str(fritter), "--socket-dir", short, "--tap", "https://api.example.com", "--tap-ca", TRUST, "--tap-to", f"{short}/wire.sock", "--"]
+
+        def seen(wrapped: list[str]) -> set[str]:
+            """The names sh -c sees run under `wrapped`, the shell's own among them."""
+            controller, terminal = os.openpty()
+            try:
+                subprocess.run([*wrapped, "sh", "-c", f"env -0 > {printed}"], env=machine, stdin=terminal, stdout=terminal, stderr=terminal, check=True, timeout=30)
+            finally:
+                os.close(terminal)
+                os.close(controller)
+            return {entry.split("=", 1)[0] for entry in printed.read_text().split("\0") if entry}
+
+        assert {name for name in seen(tap) - seen([]) if not name.startswith("FRITTER_")} == set(REPLACED)

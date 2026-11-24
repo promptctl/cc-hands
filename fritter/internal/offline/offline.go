@@ -1,9 +1,9 @@
 // Package offline holds a process in a macOS sandbox profile, as the repository's
 // tests/offline.py holds hands' and wake-training's test runs: sandbox_init, the call
 // sandbox-exec makes, on the process itself. It is cgo, which Go refuses in a _test.go
-// file, so it is a package only fritter's tests import; fritter's binary is built
+// file, so it is a package only fritter's tests import, through testrun; fritter's binary is built
 // without cgo and never links it. It has no tests of its own: a test binary of its own
-// would run unheld, and fritter's held proof tests show what it does.
+// would run unheld, and testrun's held proof tests show what it does.
 package offline
 
 /*
