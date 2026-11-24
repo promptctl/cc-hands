@@ -34,4 +34,26 @@ class ClipReleased:
     clip: Clip
 
 
-Told = ClipOpened | ClipReleased | Milestone
+@dataclass(frozen=True)
+class ClipDiscarded:
+    """A clip thrown away: nothing of it is sent, so no reply is coming to wait for. It ends a clip as `ClipReleased` does,
+    and no clip ends as both."""
+
+    clip: Clip
+
+
+# Why a press of the page's opened no clip: the gate ended its turn between two of the microphone's frames, so the clip
+# owner never heard it open.
+UNHEARD = "its turn was over before hands heard any of it"
+
+
+@dataclass(frozen=True)
+class TurnUnopened:
+    """The gate's turn `turn` opened no clip, for `why`: the page's press that opened it, if it was the page's, is answered
+    by this and not by a clip."""
+
+    turn: int
+    why: str
+
+
+Told = ClipOpened | ClipReleased | ClipDiscarded | TurnUnopened | Milestone

@@ -147,9 +147,12 @@ function say(text, bad = false) { state.textContent = text; state.classList.togg
 // What the page says of the clip it shows, by the last milestone of it. Two milestones are the page's own: `held`, the button
 // down, and `sent`, the button let go with hands yet to say it took the clip. A milestone that `counts` is waited on: the
 // time since the button was let go counts beside its line.
+const NOTHING = "Heard nothing from that press.";
 const OWN = {
   "held": {text: () => "Listening…"},
   "sent": {text: () => "Sent. Waiting for hands…", counts: true},
+  // hands said the press opened no clip, as its turn was over before hands heard any of it.
+  "unopened": {text: () => NOTHING, bad: true},
 };
 // The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. The release names the
 // clip it took, so the page takes only its own press's: let go, or still held as a hand at the desk took hands there and
@@ -158,6 +161,8 @@ const OWN = {
 // nothing else told is of it.
 const TOLD = {
   "released": {after: ["held", "sent"], text: () => held ? "Sent: hands went to the desk, and hears you there now." : "Received. Transcribing…", counts: true},
+  // The clip was thrown away, so nothing of it was sent: it ends as a release ends it, and no reply is coming.
+  "discarded": {after: ["held", "sent"], text: () => NOTHING, bad: true},
   "transcript": {after: ["released"], text: () => "Heard. Waiting for a reply…", counts: true},
   "no words": {after: ["released"], text: (clip) => `No words heard, after ${secs(clip.at - clip.released)}.`, bad: true},
   "failed": {after: ["released", "transcript", "first LLM token"], text: (clip) => `hands failed, after ${secs(clip.at - clip.released)}.`, bad: true},
@@ -201,6 +206,12 @@ function milestone(name, number) {
 function opened(message) {
   if (clip?.press !== message.press) return;
   clip = {...clip, number: message.clip};
+}
+
+// hands' word that a press of the page's opened no clip, by the press's number: the shown press's own or none of it.
+function unopened(message) {
+  if (clip?.press !== message.press) return;
+  show({...clip, milestone: "unopened", at: performance.now()});
 }
 
 // Lets go of the clip shown: no milestone told from here is of it, and its count stops.
@@ -271,6 +282,7 @@ const LINES = {
 function told(message) {
   if (message.kind === "milestone") { milestone(message.milestone, message.clip); return; }
   if (message.kind === "opened") { opened(message); return; }
+  if (message.kind === "unopened") { unopened(message); return; }
   // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
   if (!Object.hasOwn(LINES, message.kind)) { say(`hands told a "${message.kind}", which this page does not know.`, true); return; }
   LINES[message.kind](message);

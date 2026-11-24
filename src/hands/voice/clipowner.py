@@ -1,10 +1,12 @@
 """The clip owner: it cuts the microphone's audio into clips where the gate cut them, numbers each, and gives every model
 the same samples of it, in the order they were captured; it passes on what the models heard, in clip order.
 
-The gate's key and counts travel with every frame (`hands.voice.ptt.KeyedAudio`), so a clip begins and ends where the
-frames say the key moved, in capture order, and nothing else says so. As a clip opens, the owner says the user started
-speaking (`TurnOpened`); as it ends, that they stopped, sent (`ClipSent`) or thrown away (`ClipDiscarded`). Words the user typed are a
-clip of their own, numbered with the key's and taken as they came. Each listener (`hands.voice.clips.Listener`) hears
+The gate's key and the record of how each turn ended travel with every frame (`hands.voice.ptt.KeyedAudio`), so a clip
+begins and ends where the frames say the key moved, in capture order, and nothing else says so. As a clip opens, the owner
+says the user started speaking (`TurnOpened`); as it ends, that they stopped, sent (`ClipSent`) or thrown away
+(`ClipDiscarded`), each naming its clip. A turn the gate ended that no frame saw open is said unheard (`TurnUnheard`), so
+every turn the gate ended is a clip or that. Words the user typed are a clip of their own, numbered with the key's and
+taken as they came. Each listener (`hands.voice.clips.Listener`) hears
 every clip of the key's as it is spoken; the transcriber is given each clip the key sent, whole, once it ends, and its
 words, or why it had none, go on in the order the clips ended, followed by the clip's `TurnResolved`.
 
@@ -28,7 +30,7 @@ from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended,
 from hands.voice.clips import LANGUAGE, RATE, Clip, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, SpeechHeard, TurnOpened, TurnResolved, Typed, Words
+from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
 
 # What every clip is said in, as Pipecat names it.
 _LANGUAGE = Language(LANGUAGE)
@@ -110,11 +112,10 @@ class ClipOwner(FrameProcessor):
         self._transcriber = transcriber
         self._listeners = tuple(listeners)
         self._record = record
-        # The gate as the last frame was captured under it: the key, how many turns it had sent and thrown away, and
-        # whose microphone it came from.
+        # The gate as the last frame was captured under it: the key, how many of the turns it had ended are accounted for
+        # (each a clip that ended, or said unheard), and whose microphone it came from.
         self._key: Key = "up"
-        self._sent = 0
-        self._dropped = 0
+        self._accounted = 0
         self._place: Place = "desk"
         self._recording = Recording()
         # How many clips have opened, the key's and those typed; and the last the key opened, clip 0 until one has. It is
@@ -217,18 +218,22 @@ class ClipOwner(FrameProcessor):
             raise TypeError(f"{type(frame).__name__} carries no key; the keyed microphone makes every frame a clip is cut from")
         if (frame.sample_rate, frame.num_channels) != (RATE, 1):
             raise ValueError(f"a frame came as {frame.num_channels} channel(s) at {frame.sample_rate} Hz; every clip is mono at {RATE} Hz")
-        # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's counts move, not as its key is next seen at rest: a
-        # turn can end and the next arm between two frames, with no frame captured at rest between them. A move between
-        # places sends the clip open in the same frame, which ends it over its own audio before the move clears it.
-        match self._key, frame.sent != self._sent, frame.dropped != self._dropped:
-            case "down", True, _:
-                await self._end("sent")
-            case "down", _, True:
-                # Thrown away: a wake that asked nothing.
-                await self._end("dropped")
+        # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's record of ended turns grows, not as its key is next
+        # seen at rest: several can end between two frames, with no frame captured at rest between them. The clip open, if
+        # there is one, is the first to end, and it ends over its own audio before a move between places clears it; each
+        # other was over before any of it was heard.
+        ending = frame.ended[self._accounted :]
+        match self._key, ending:
+            case "down", (fate, *unheard):
+                await self._end(fate)
+                self._accounted += 1
             case _:
-                pass
-        self._sent, self._dropped = frame.sent, frame.dropped
+                unheard = ending
+        for turn, _ in enumerate(unheard, start=self._accounted):
+            # [LAW:nothing-unseen] a turn no clip was opened for is still one event, and told, so nothing waits on it.
+            ended("turn.unheard", self._record, begun(self._clock), None, turn=turn)
+            await self.push_frame(TurnUnheard(turn=turn))
+        self._accounted += len(unheard)
         if frame.place != self._place:
             # A turn is heard at one place: what the other's microphone heard before it is no part of it.
             self._recording.clear()
@@ -293,7 +298,7 @@ class ClipOwner(FrameProcessor):
             case "sent":
                 await self.push_frame(ClipSent(clip=clip))
             case "dropped":
-                await self.push_frame(ClipDiscarded())
+                await self.push_frame(ClipDiscarded(clip=clip))
         await self._ended.put(_Spoken(clip, fate, sound, begun(self._clock)))
 
     def _open(self, clip: Clip) -> bool:

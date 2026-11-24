@@ -11,7 +11,7 @@ let go before it connected, or left after hands was at it, and why; its duration
 The page sends its microphone as plain 16-bit audio over the call's data channel, in order with its button, and only
 inside a turn: outside one it sends, on the same 20 ms, a `quiet` that counts the samples it held back, which hands hears as
 that much silence. Hands plays to the page over an audio track. Over the same channel hands tells the page each milestone of the turn it is waiting on
-(`hands.voice.milestone`): the clip each of its presses opened, by the press's number, the clip taken, its words heard or none found, a stage failing, the reply begun,
+(`hands.voice.milestone`): the clip each of its presses opened, by the press's number, or that it opened none and why; the clip taken, or thrown away; its words heard or none found, a stage failing, the reply begun,
 and the first sound, which the page shows with how long each took; and each line of the transcript
 (`hands.voice.transcript`), which the page shows when asked to. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
@@ -39,7 +39,7 @@ from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import Begun, Fact, continuing, ended, since
-from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
+from hands.voice.milestone import ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
@@ -137,13 +137,26 @@ class Opened:
     clip: int
 
 
-def wire(told: Opened | ClipReleased | Milestone | Line) -> str:
+@dataclass(frozen=True)
+class Unopened:
+    """A press of the page's that opened no clip, and why: the page's number for it, which hands answers once, here or as
+    `Opened`."""
+
+    press: int
+    why: str
+
+
+def wire(told: Opened | Unopened | ClipReleased | ClipDiscarded | Milestone | Line) -> str:
     """[LAW:single-enforcer] what the page is told, as it reads it: one JSON object, its `kind` saying which."""
     match told:
         case Opened(press=press, clip=clip):
             return json.dumps({"kind": "opened", "press": press, "clip": clip})
+        case Unopened(press=press, why=why):
+            return json.dumps({"kind": "unopened", "press": press, "why": why})
         case ClipReleased(clip=clip):
             return json.dumps({"kind": "milestone", "milestone": "released", "clip": clip.number})
+        case ClipDiscarded(clip=clip):
+            return json.dumps({"kind": "milestone", "milestone": "discarded", "clip": clip.number})
         case str():
             return json.dumps({"kind": "milestone", "milestone": told})
         case line:
@@ -307,7 +320,8 @@ class _Call:
     channel: RTCDataChannel | None = None
     watch: asyncio.Task[None] | None = None
     arrived_ms: float = 0.0
-    # How many presses the page has sent, as it numbers them, and the gate's turn each opened, until its clip opens.
+    # How many presses the page has sent, as it numbers them, and the gate's turn each opened, until hands answers the press:
+    # with the clip it opened, or that it opened none.
     # [LAW:one-source-of-truth] the channel is ordered and reliable, so the call counts every press the page counts.
     presses: int = 0
     pressing: dict[int, int] = field(default_factory=dict[int, int])
@@ -529,7 +543,13 @@ class Phone:
                     case ClipOpened():
                         # A clip no press of the page's opened, the desk's: nothing of the page's.
                         pass
-                    case ClipReleased() | str():
+                    case TurnUnopened(turn=turn, why=why) if turn in call.pressing:
+                        channel.send(wire(Unopened(call.pressing.pop(turn), why)))
+                        call.told += 1
+                    case TurnUnopened():
+                        # A turn no press of the page's made, the desk's: nothing of the page's.
+                        pass
+                    case ClipReleased() | ClipDiscarded() | str():
                         channel.send(wire(told))
                         call.told += 1
                     case line:
