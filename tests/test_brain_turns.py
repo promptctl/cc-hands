@@ -24,7 +24,7 @@ from hands.core.effects import Allow, Deny, HookReply, Submitted, Summarise, Tol
 from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
-from hands.sessions.audit import Entry
+from hands.sessions.audit import Entry, LoginReported
 from conftest import Unstarting, events, laid_out, patiently, settled, taken
 from fixtures.pins import LAID_OUT
 from hands.core.session import Runnable
@@ -1084,9 +1084,11 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
     assert (checked(), len(asked)) == (readiness.Missing("brain cannot reach its model", "hands has no model to talk with", "asked"), 1)
 
 
-async def test_a_turn_only_the_transcripts_record_told_leaves_the_report_as_it_was() -> None:
+async def test_a_turn_only_the_transcripts_record_told_leaves_the_report_as_it_was_and_each_change_is_a_line() -> None:
     """An interrupt's record, whoever pressed the key, says nothing of how Claude Code would have ended the turn."""
+    recorded: list[Entry] = []
     brain = _owning(VirtualClock())
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     reports: list[LoginExpired | None] = []
     _took(brain, "n1", NOTICE)
     _told(brain, "n1", ("n1",), ending=ToldByStop("Done.", UNREFRESHED))
@@ -1097,6 +1099,7 @@ async def test_a_turn_only_the_transcripts_record_told_leaves_the_report_as_it_w
     _told(brain, "n3", ("n3",))
     reports.append(brain.login)
     assert reports == [LoginExpired(UNREFRESHED), None]
+    assert [entry for entry in recorded if isinstance(entry, LoginReported)] == [LoginReported(("n1",), str(LoginExpired(UNREFRESHED))), LoginReported(("n3",), None)]
 
 
 async def test_a_task_result_ctrl_c_cleared_from_claude_codes_queue_ends_its_turn_unran_and_holds_no_turn_after_it() -> None:
