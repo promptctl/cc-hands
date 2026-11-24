@@ -13,7 +13,8 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.virtualclock import VirtualClock
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level, Leveled, Made
-from hands.voice.engaged import Ears, Hears, drive
+from hands.voice.engaged import Hears, drive
+from hands.voice.turnlife import Ears
 from hands.voice.trigger import Choice
 from hands.voice.shortcut import KeyEvent, Move, Pressed, Released, Ripe
 

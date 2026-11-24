@@ -4,7 +4,7 @@ The desk listens at one of three levels. Off, the start's, the microphone is clo
 saying it opens a turn. Engaged, speech alone opens each turn. At every level Right Shift held alone opens a turn and its
 release sends it (`hands.voice.shortcut`). A triple tap of Right Command toggles the wake word, and one of Right Shift
 toggles engaged conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools choose
-a level as a tap does. A turn the voice opened is closed by end-of-turn detection (`hands.voice.engaged`).
+a level as a tap does. A turn the voice opened is closed by end-of-turn detection, by the rules of any voice turn's life (`hands.voice.voiceturn`).
 
 [LAW:types-are-the-program] the desk is one value whose variants carry the level, so whether it listens, which trigger has
 the turn, and whether the key is down are each said once: a key turn and a voice turn are never open together, and the
@@ -14,9 +14,11 @@ level never says the desk is deaf while a variant says it listens.
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from hands.voice import voiceturn
 from hands.voice.clips import Trigger
-from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, TURN_LIMIT_SECONDS, Typing, step as shortcut_step
+from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, Typing, step as shortcut_step
 from hands.voice.taps import TapKey, Taps, counted
+from hands.voice.voiceturn import Ended, Going, NothingAsked, SpeechStarted, SpeechStarting, SpeechStopped, Speaking, Told, Turn, TurnEnded, TurnTooLong, Waiting
 
 # The levels the desk listens at between turns; it is deaf under "off" alone.
 Listens = Literal["wake word", "engaged"]
@@ -24,36 +26,8 @@ Listens = Literal["wake word", "engaged"]
 Level = Literal["off", "wake word", "engaged"]
 LEVELS: tuple[Level, ...] = ("off", "wake word", "engaged")
 
-# How long after the wake word what is asked may take to start: past it, the wake is taken for a word misheard.
-ASK_SECONDS = 8.0
-
 # Who chose a level: a triple tap, or the brain's tool, asked by voice.
 Chooser = Literal["tap", "tool"]
-
-
-@dataclass(frozen=True)
-class SpeechStarting:
-    """The detector heard what may be speech, and is making sure."""
-
-
-@dataclass(frozen=True)
-class SpeechStarted:
-    """The detector is sure: the user is speaking, since `at`."""
-
-    at: Instant
-
-
-@dataclass(frozen=True)
-class SpeechStopped:
-    """The detector hears no speech: a start that came to nothing, or speech that has stopped."""
-
-
-@dataclass(frozen=True)
-class TurnEnded:
-    """The turn is over, `by` Smart Turn judging the speech complete, or by the silence after it running past
-    `stop_secs`."""
-
-    by: Literal["verdict", "silence"]
 
 
 @dataclass(frozen=True)
@@ -64,27 +38,13 @@ class Woken:
 
 
 @dataclass(frozen=True)
-class TurnTooLong:
-    """`TURN_LIMIT_SECONDS` have passed since the turn opened at `opened_at`."""
-
-    opened_at: Instant
-
-
-@dataclass(frozen=True)
-class NothingAsked:
-    """`ASK_SECONDS` have passed since the wake word opened the turn at `woke_at`."""
-
-    woke_at: Instant
-
-
-@dataclass(frozen=True)
 class Chosen:
     """The brain's tool chose `level`."""
 
     level: Level
 
 
-Heard = SpeechStarting | SpeechStarted | SpeechStopped | Woken | TurnEnded | TurnTooLong | NothingAsked
+Heard = SpeechStarting | Woken | Told
 Event = KeyEvent | Heard | Chosen
 
 
@@ -108,19 +68,18 @@ class Starting:
 
 @dataclass(frozen=True)
 class Woke:
-    """The wake word opened a turn, since `since`, and what is asked has yet to start: a stop now is the end of the wake
-    word, not of the turn."""
+    """The wake word opened a turn, which waits for what is asked to start (`hands.voice.voiceturn`)."""
 
-    since: Instant
+    turn: Waiting
     key: VoiceKey = Idle()
 
 
 @dataclass(frozen=True)
 class Voiced:
-    """A turn the voice opened, since `since`: said after the wake word, or opened by speech, engaged."""
+    """A turn the voice opened, with speech in it: said after the wake word, or opened by speech, engaged."""
 
     level: Listens
-    since: Instant
+    turn: Speaking
     key: VoiceKey = Idle()
 
 
@@ -281,44 +240,40 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
 def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
     match phase, heard:
         case Resting(level="wake word"), Woken(at=at):
-            return Woke(at), (Made("arm", "wake word"), Made("start", "wake word"))
+            return Woke(Waiting(at)), (Made("arm", "wake word"), Made("start", "wake word"))
         case Resting(level="engaged"), SpeechStarting():
             return Starting(), (Made("arm", "engaged conversation"),)
         case Resting(level="engaged"), SpeechStarted(at=at):
-            return Voiced("engaged", at), (Made("arm", "engaged conversation"), Made("start", "engaged conversation"))
+            return Voiced("engaged", Speaking(at)), (Made("arm", "engaged conversation"), Made("start", "engaged conversation"))
         case Starting(key=key), SpeechStarted(at=at):
-            return Voiced("engaged", at, key), (Made("start", "engaged conversation"),)
+            return Voiced("engaged", Speaking(at), key), (Made("start", "engaged conversation"),)
         case Starting(key=key), SpeechStopped():
             return _rest("engaged", key, Made("disarm", "engaged conversation"))
-        # [LAW:types-are-the-program] the pause after the wake word is no end of the turn: Smart Turn judges the wake
-        # word complete, so only once what is asked has started does a stop go to it.
-        case Woke(since=since, key=key), SpeechStarted():
-            return Voiced("wake word", since, key), ()
-        case Woke() as turn, TurnTooLong():
-            return _in_turn(turn, heard)
-        # [LAW:no-ambient-temporal-coupling] a wake that nothing asked after, a word misheard in a quiet room, is
-        # thrown away, counted only for the wake it was set for.
-        case Woke(since=since, key=key), NothingAsked(woke_at=woke_at) if woke_at == since:
-            return _rest("wake word", key, Made("drop", "wake word"))
-        case Voiced() as turn, SpeechStopped() | TurnEnded() | TurnTooLong():
-            return _in_turn(turn, heard)
+        case Woke() | Voiced(), SpeechStarted() | SpeechStopped() | TurnEnded() | TurnTooLong() | NothingAsked():
+            return _in_turn(phase, heard)
         case _:
             return phase, ()
 
 
-def _in_turn(turn: Woke | Voiced, heard: SpeechStopped | TurnEnded | TurnTooLong) -> tuple[Phase, tuple[Act, ...]]:
-    """How a turn the voice opened ends: Smart Turn's verdict on a stop, the silence after it, or the limit, which sends
-    it as it stands."""
-    match heard:
-        case SpeechStopped():
-            return turn, ("judge",)
-        case TurnEnded():
-            return _rest(level_of(turn), turn.key, Made("stop", _voice(turn)))
-        # [LAW:no-ambient-temporal-coupling] a limit counts only for the turn it was set for.
-        case TurnTooLong(opened_at=opened_at) if opened_at == turn.since:
-            return _rest(level_of(turn), turn.key, Made("timeout", _voice(turn)))
-        case TurnTooLong():
-            return turn, ()
+def _in_turn(phase: Woke | Voiced, told: Told) -> tuple[Phase, tuple[Act, ...]]:
+    """What a turn the voice opened is told, by the rules of its life (`voiceturn.step`): what they decide the desk makes
+    of it, ending it by the move that names how, with the trigger that opened it."""
+    match voiceturn.step(phase.turn, told):
+        case Going(turn=Speaking() as speaking, judge=judge) if isinstance(phase, Woke):
+            return Voiced("wake word", speaking, phase.key), ("judge",) if judge else ()
+        case Going(judge=judge):
+            return phase, ("judge",) if judge else ()
+        case Ended(how=how):
+            return _rest(level_of(phase), phase.key, Made(how, _voice(phase)))
+
+
+def turn_of(phase: Phase) -> Turn | None:
+    """The turn the voice has open at `phase`, if it has one."""
+    match phase:
+        case Woke(turn=turn) | Voiced(turn=turn):
+            return turn
+        case _:
+            return None
 
 
 def _voice(turn: Woke | Voiced) -> Trigger:
@@ -337,21 +292,6 @@ def _voice_of(level: Listens) -> Trigger:
             return "wake word"
         case "engaged":
             return "engaged conversation"
-
-
-def deadline(was: Phase, now: Phase) -> tuple[tuple[Instant, TurnTooLong | NothingAsked], ...]:
-    """What the desk moving from `was` to `now` asks to be told later: a turn the voice just opened, once it has been
-    open `TURN_LIMIT_SECONDS`, and one the wake word opened, once `ASK_SECONDS` have passed with nothing asked. A turn of
-    the key's has the shortcut's own limit."""
-    match now, was:
-        case Woke(since=since) | Voiced(since=since), Woke(since=opened) | Voiced(since=opened) if since == opened:
-            return ()
-        case Woke(since=since), _:
-            return (since + TURN_LIMIT_SECONDS, TurnTooLong(since)), (since + ASK_SECONDS, NothingAsked(since))
-        case Voiced(since=since), _:
-            return ((since + TURN_LIMIT_SECONDS, TurnTooLong(since)),)
-        case _:
-            return ()
 
 
 def listens(level: Level) -> bool:

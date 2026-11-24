@@ -2017,11 +2017,25 @@ while hands speaks as much as while it is quiet, so the wake word said over a re
 it off. Each hearing records `while_speaking`, whether hands was speaking as its audio arrived; a wake on the echo's tail, after hands stops, reads as one it was not. The
 pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
-The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
+The life hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
 again and Smart Turn holds none, so what is asked starts as any speech does, after a
 pause or in the same breath, and Smart Turn judges it alone. The desk listens for as
 long as it is at the wake word's level, so the wake word is in the turn's audio for
 Whisper.
+
+**A voice turn's life is one piece of code, whoever runs it.** How a turn the voice opened
+ends, and every number in it, is `hands.voice.voiceturn`: the step (the pause after the
+wake word that ends nothing, `ASK_SECONDS` for something to be asked, Smart Turn's verdict,
+the limit, which is the shortcut's own `TURN_LIMIT_SECONDS`), and the deadlines a turn
+that has just opened asks to be told. The work around the models that goes with it is
+`hands.voice.turnlife.Life`: hearing afresh from a wake, what Smart Turn is fed, judging,
+clearing as a turn ends. It holds no turn. The turn is its runner's: the desk's phase, or
+`turnlife.Runner.turn` for a runner with no desk, and a verdict names the turn it judged
+(`TurnEnded.of`), so one that comes after its turn is over ends nothing of the turn open
+by then. While a judge is in flight `Life` holds off the next buffer and defers any reset
+of the models, so Smart Turn is never cleared under its own judge and nothing of a new
+turn is lost to a stale verdict. The desk's driver (`hands.voice.engaged.drive`) runs it
+on the desk's microphone and keeps the talk key, the taps and the level, which are its own.
 
 **The desk is one mode, at one of three levels** (`hands.voice.desk`). The phone's
 button is there for every call. At the desk, one driver (`hands.voice.engaged.drive`)
