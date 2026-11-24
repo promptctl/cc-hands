@@ -36,8 +36,8 @@ def stuck() -> None:
 
 
 def hung(*arguments: object) -> None:
-    heart = arguments[5]
-    assert isinstance(heart, cli.heartbeat.Heart)
+    # The run's own heart, found by its type: none of the run's other arguments is one, wherever it is passed.
+    [heart] = [argument for argument in arguments if isinstance(argument, cli.heartbeat.Heart)]
     heart.beat("starting", None, 0, listening=False, degraded=())
     stuck()
 

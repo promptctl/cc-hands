@@ -235,7 +235,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     # Every start of a claude, the brain's, an aside's, a login's, runs the cached Claude Code, the pin itself, held
     # offline as the run is (conftest): a connection it or anything it starts makes around the mock is refused by the OS,
     # and one through its proxy is in the mock's log.
-    placed(brain, claude_code)
+    placed(brain, pinned.PIN, claude_code)
     recorded: list[Entry] = []
     sent: list[Sent] = []
     wire = Wire(SYSTEM, lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)

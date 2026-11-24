@@ -141,7 +141,7 @@ async def edited(home: Home, pin: pinned.Pin, record: Record, running: Settings,
                 continue
             match (await off_loop(partial(preflight, home, pin), "weighing a settings edit")).verdict:
                 # [LAW:escape-local-minima] exception: a login lost since the start passes here, until
-                # promptctl-phone-app-9d9y.h4s (blocked by promptctl-brain-uoz0.gi7) weighs it with no Claude Code started.
+                # promptctl-phone-app-9d9y.h4s (blocked by promptctl-brain-uoz0.quv) weighs it with no Claude Code started.
                 case Startable():
                     if _held(home) == now:
                         return SettingsEdited(path=str(home.config), refused=None)

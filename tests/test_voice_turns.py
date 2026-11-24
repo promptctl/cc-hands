@@ -299,7 +299,7 @@ async def rigged(
 
     voice = built.build_voice(
         SYSTEM,
-        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(pinned.PIN.claude(tmp_path), None)), voice=voicechoice.DEFAULT),
+        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(pinned.PIN.claude(tmp_path), pinned.PIN.version, None)), voice=voicechoice.DEFAULT),
         llm=llm,
         key=PushToTalk(SYSTEM, recorded.append),
         player=Player(recorded.append),

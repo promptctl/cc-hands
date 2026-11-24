@@ -69,7 +69,8 @@ jobs:
         if: matrix.fetches
         id: e2e
         run: |
-          claude=$(sed -n 's/^PIN = Pin("\([0-9.]*\)", {$/\1/p' src/hands/brain/pinned.py)
+          # PIN's version, as Python parses the module: no import, so nothing is installed for it, and no line shape to keep.
+          claude=$(python3 -I -c 'import ast, sys; print(next(k.value.value for n in ast.parse(open(sys.argv[1]).read()).body if isinstance(n, ast.Assign) and [t.id for t in n.targets if isinstance(t, ast.Name)] == ["PIN"] for k in n.value.keywords if k.arg == "version"))' src/hands/brain/pinned.py)
           mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/fetches.py)
           test -n "$claude" || { echo "src/hands/brain/pinned.py pins no version this step can read" >&2; exit 1; }
           test -n "$mock" || { echo "tests/fetches.py names no MOCK_RELEASE this step can read" >&2; exit 1; }

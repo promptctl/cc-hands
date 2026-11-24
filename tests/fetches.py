@@ -137,7 +137,7 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     """Every fetch the run makes, as `fetches` says, each named by `write` as it goes."""
     # The line each fetch writes says what the run is fetching; the hub's bars would break it.
     disable_progress_bars()
-    fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
+    fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, partial(pinned.download, pinned.STALL_SECONDS))))
     # The echo canceller's model, which the unit layer's tests of the canceller run for real, so it is read there too.
     fetching(write, f"DTLN-aec's models at {dtln.REVISION[:12]}", (OSError, HTTPException, Mismatch), partial(dtln.fetched, fetches.dtln))
     if fetches.unit:

@@ -36,7 +36,6 @@ from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
 from hands.sessions.wrapper import shim_script
-from hands.brain import pinned
 from hands.core.session import Runnable
 from hands.voice.backends import Account, ClaudeCodeBackend
 
@@ -905,8 +904,9 @@ def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
-    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(Path("/h/brain/pinned-claude/claude"), None)), pinned.PIN)
-    assert found == Ready("brain logged in as brain@example.com (claude.ai)", f"the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5 on Claude Code {pinned.PIN.version}, hands' own copy: /h/brain/pinned-claude/claude")
+    # The version is the one the brain's claude was verified at.
+    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(Path("/h/brain/pinned-claude/9.9.9/claude"), "9.9.9", None)))
+    assert found == Ready("brain logged in as brain@example.com (claude.ai)", "the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5 on Claude Code 9.9.9, hands' own copy: /h/brain/pinned-claude/9.9.9/claude")
 
 
 # hands running
@@ -1012,7 +1012,7 @@ def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def unpinned(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
-    pinned.PIN.claude(home.brain).unlink()
+    LAID_OUT.claude(home.brain).unlink()
 
 
 def ungranted(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:

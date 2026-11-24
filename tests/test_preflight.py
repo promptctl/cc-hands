@@ -3,6 +3,7 @@ an edit or a model chosen by voice, starting no Claude Code."""
 
 import json
 import os
+import platform
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -10,8 +11,9 @@ from typing import cast
 import pytest
 
 from conftest import children_on, laid_out, new_sessions
+from fixtures import pins
 from fixtures.pins import LAID_OUT
-from hands.brain import pinned, process
+from hands.brain import process
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
@@ -50,7 +52,7 @@ def _stale_shim(home: Home) -> None:
 
 
 def _unpinned(home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
-    pinned.PIN.claude(home.brain).unlink()
+    LAID_OUT.claude(home.brain).unlink()
 
 
 def _untrusted(home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,8 +78,8 @@ def _unreadable_shim(home: Home) -> None:
 
 # One row a refusal: what breaks the home, and what the refusal says.
 FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
-    ("pin missing", _unpinned, f"Claude Code {pinned.PIN.version}, the brain's, is not installed at "),
-    ("pin wrong", lambda home, _: pinned.PIN.claude(home.brain).write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {pinned.PIN.version}, the brain's: run `hands install-brain` to fetch it again"),
+    ("pin missing", _unpinned, f"Claude Code {LAID_OUT.version}, the brain's, is not installed at "),
+    ("pin wrong", lambda home, _: LAID_OUT.claude(home.brain).write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {LAID_OUT.version}, the brain's: run `hands install-brain` to fetch it again"),
     ("hands built without its fritter", lambda home, monkeypatch: monkeypatch.setattr(wrapper, "PACKAGED", home.root / "package" / "bin" / "fritter"), "/package/bin/fritter: install hands again"),
     ("stale fritter copy", lambda home, _: (home.bin.mkdir(), home.fritter.write_bytes(b"#!/bin/sh\n")), "is not the fritter this hands carries"),
     ("fritter copy unreadable", lambda home, _: _dangling_fritter(home), "/fritter'): run `hands install-fritter` to copy it again"),
@@ -142,7 +144,7 @@ def test_a_start_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path,
     assert str(refused.value).endswith("; then run hands again")
     # An unreadable settings.json is its own refusal, never also a first screen unanswered.
     assert "first screens" not in str(refused.value)
-    assert checked.facts() == {"fritter": "absent", "shim": "stale"}
+    assert checked.facts() == {"fritter": "absent", "shim": "stale", "claude_code": LAID_OUT.version}
 
 
 async def test_the_start_records_what_its_preflight_found_before_its_configuration_is_read(tmp_path: Path) -> None:
@@ -260,7 +262,24 @@ def test_a_home_with_the_fritter_and_shim_this_hands_installs_passes(tmp_path: P
     wrapper.install(home)
     checked = preflight(home, LAID_OUT)
     assert isinstance(checked.verdict, Startable)
-    assert checked.facts() == {"fritter": "current", "shim": "current"}
+    assert checked.facts() == {"fritter": "current", "shim": "current", "claude_code": LAID_OUT.version}
+
+
+def test_two_starts_in_one_process_each_weigh_the_brain_against_the_pin_they_are_handed(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    laid_out(home)
+    wrapper.install(home)
+    # Another release of the same version: the brain's claude in the place both pins put it, the build of only one of them.
+    other = pins.of(b"#!/bin/sh\nexit 0\n")
+    assert other.claude(home.brain) == LAID_OUT.claude(home.brain)
+    # Each start weighs the one build against its own pin, whichever was weighed before it.
+    assert isinstance(preflight(home, LAID_OUT).verdict, Startable)
+    match preflight(home, other).verdict:
+        case Refused(refusals=(unpinned,)):
+            assert f"not the {other.build(platform.machine()).checksum} of Claude Code {other.version}, the brain's: run `hands install-brain` to fetch it again" in unpinned
+        case verdict:
+            raise AssertionError(f"{verdict} is not the brain refused on the other pin's digest alone")
+    assert isinstance(preflight(home, LAID_OUT).verdict, Startable)
 
 
 def _api_key(home: Home, key: str, answered: list[str]) -> None:

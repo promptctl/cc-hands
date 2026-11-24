@@ -787,24 +787,26 @@ def fritter() -> Path:
 def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}', trusted: bool = True) -> None:
     """A brain home Claude Code has been through its onboarding on, holding `settings`; the directory it runs in trusted, as
     Claude Code trusts it, by a directory above it, unless not `trusted`."""
-    brain.mkdir(parents=True)
+    # A brain whose pinned claude is already in place is onboarded the same.
+    brain.mkdir(parents=True, exist_ok=True)
     projects = {str(brain.resolve().parent): {"hasTrustDialogAccepted": trusted}}
     (brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": projects}))
     (brain / "settings.json").write_bytes(settings)
 
 
-def placed(config_dir: Path, claude: Path) -> None:
-    """Links `claude` in the pinned claude's place of the brain on `config_dir`."""
-    place = pinned.PIN.claude(config_dir)
+def placed(config_dir: Path, pin: pinned.Pin, claude: Path) -> None:
+    """Links `claude` in `pin`'s claude's place of the brain on `config_dir`."""
+    place = pin.claude(config_dir)
     place.parent.mkdir(parents=True, exist_ok=True)
     place.symlink_to(claude)
 
 
 def pin(config_dir: Path, script: Path) -> pinned.Pin:
-    """`script`, as its bytes are now, as the pinned claude of the brain on `config_dir`: placed there, and the pin whose
-    every build it is. Nothing on PATH is ever the brain's."""
-    placed(config_dir, script)
-    return pins.of(script.read_bytes())
+    """`script`, as its bytes are now, as the pinned claude of the brain on `config_dir`: the pin whose every build it is,
+    and placed where that pin puts it. Nothing on PATH is ever the brain's."""
+    made = pins.of(script.read_bytes())
+    placed(config_dir, made, script)
+    return made
 
 
 def laid_out(home: Home) -> Path:
@@ -812,11 +814,11 @@ def laid_out(home: Home) -> Path:
     syncs out, and in its pinned claude's place the script that only leaves a mark. The mark's path, which exists once
     anything has run it."""
     onboard(home.brain)
-    script = pinned.PIN.claude(home.brain)
+    script = pins.LAID_OUT.claude(home.brain)
     script.parent.mkdir(parents=True)
     script.write_bytes(pins.MARKING)
     script.chmod(0o755)
-    return Path(f"{script}.ran")
+    return pins.ran(script)
 
 
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
@@ -1202,6 +1204,12 @@ while True:
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
     monkeypatch.setenv("ANSWERED", str(tmp_path / "answered"))
     return script
+
+
+@pytest.fixture
+def brain_pin(tmp_path: Path, fake_claude: Path) -> pinned.Pin:
+    """fake_claude as the pinned claude of the brain on tmp_path / "brain", and the pin it is."""
+    return pin(tmp_path / "brain", fake_claude)
 
 
 async def unedited() -> SettingsEdited:

@@ -207,9 +207,9 @@ def entry() -> int:
     return main()
 
 
-# [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, and the pin of the Claude
-# Code its brain runs, each bound here alone.
-def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN) -> int:
+# [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, the pin of the Claude
+# Code its brain runs, and where `hands install-brain` fetches that pin's builds from, each bound here for every command.
+def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -262,7 +262,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
             case "tmux-status":
                 return show_segment(clock, home)
             case _:
-                return commanded(clock, home, pin, audit_log.record, arguments)
+                return commanded(clock, home, pin, release, audit_log.record, arguments)
 
 
 def model_id(text: str) -> str:
@@ -330,7 +330,7 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
                     execv(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(clock: Clock, home: Home, pin: pinned.Pin, record: audit.Record, arguments: argparse.Namespace) -> int:
+def commanded(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -342,7 +342,7 @@ def commanded(clock: Clock, home: Home, pin: pinned.Pin, record: audit.Record, a
     with wide.unit("hands.command", record, wide.begun(clock)):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        ended = dispatch(clock, home, pin, arguments, record)
+        ended = dispatch(clock, home, pin, release, arguments, record)
         wide.annotate(exit_code=exits.code_of(ended))
         match ended:
             case exits.Failed(code=code, why=why):
@@ -370,7 +370,7 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(clock: Clock, home: Home, pin: pinned.Pin, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
+def dispatch(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
     # What starts the command's children: on its clock, each child's event recorded with its own.
     children = Children(clock, record)
@@ -396,7 +396,7 @@ def dispatch(clock: Clock, home: Home, pin: pinned.Pin, arguments: argparse.Name
         case "install-fritter":
             return install_fritter(clock, home, record)
         case "install-brain":
-            return install_brain(clock, home, pin, record)
+            return install_brain(clock, home, pin, release, record)
         case "restart":
             return asked_to_restart(clock, home)
         case "update":
@@ -624,7 +624,7 @@ def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart:
     def surveyed(read: Configured | CannotStart) -> None:
         match read:
             case Configured(voice=voice):
-                reached: readiness.Finding = readiness.reaching(voice.llm, pin)
+                reached: readiness.Finding = readiness.reaching(voice.llm)
             case CannotStart() as error:
                 # Refused on its home's files, its login, or its kept voice's fetch: the reason names each, so the line claims none.
                 reached = readiness.unstartable(str(error))
@@ -974,14 +974,14 @@ def install_fritter(clock: Clock, home: Home, record: audit.Record) -> exits.Exi
                 return exits.Failed(wrapper.Installing.UNFOUND, said)
 
 
-def install_brain(clock: Clock, home: Home, pin: pinned.Pin, record: audit.Record) -> exits.Exit:
+def install_brain(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, record: audit.Record) -> exits.Exit:
     # [LAW:nothing-unseen] an install is a unit of work: the release it pins, the build of it this Mac runs, where it put
     # it, whether it fetched it, and, where it did, why the copy there was not the pin.
     with wide.unit("brain.install", record, wide.begun(clock)):
         wide.annotate(version=pin.version)
         try:
-            wide.annotate(build=pin.build(platform.machine()))
-            installed = asyncio.run(pinned.install(home.brain, pin, pinned.RELEASE))
+            wide.annotate(build=pin.build(platform.machine()).name)
+            installed = asyncio.run(pinned.install(home.brain, pin, release))
         except pinned.Uninstallable as error:
             wide.fail(str(error))
             return refused("hands install-brain", 1, str(error))

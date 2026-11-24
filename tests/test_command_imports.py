@@ -32,7 +32,7 @@ async def untailed(_clock):
     from hands.voice.phoneaddress import Untailed
     return Untailed("a stand-in for Tailscale")
 
-def logged_in(children, config_dir, base_url, inherited, method):
+def logged_in(children, config_dir, pin, base_url, inherited, method):
     from hands.brain.process import Login
     from hands.voice.backends import Account
     return Login(Account("claude.ai", "someone@example.com"), None)

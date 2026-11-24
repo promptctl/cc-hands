@@ -178,7 +178,7 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
     if brain is None:
         # The run that asks would load what the brain's own settings keep out.
         return unstartable("; ".join(refusals))
-    match _reached(children, config.llm, home, pin, environment, brain):
+    match _reached(children, config.llm, home, environment, brain):
         case reached if not refusals:
             return reached
         case Missing(fix=fix) | Unknown(detail=fix):
@@ -187,9 +187,9 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
             return unstartable("; ".join(refusals))
 
 
-def _reached(children: Children, llm: Claude, home: Home, pin: pinned.Pin, environment: Mapping[str, str], brain: Runnable) -> Finding:
+def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Finding:
     try:
-        reached: Finding = reaching(resolve(children, llm, home, environment, brain), pin)
+        reached: Finding = reaching(resolve(children, llm, home, environment, brain))
     except Rejected as error:
         # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
         # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
@@ -201,9 +201,9 @@ def _reached(children: Children, llm: Claude, home: Home, pin: pinned.Pin, envir
     return reached
 
 
-def reaching(reached: backends.ClaudeCodeBackend, pin: pinned.Pin) -> Ready:
-    """What a brain that has its login reaches, and the Claude Code it runs, `pin`'s."""
-    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model} on Claude Code {pin.version}, hands' own copy: {reached.brain.claude}")
+def reaching(reached: backends.ClaudeCodeBackend) -> Ready:
+    """What a brain that has its login reaches, and the Claude Code it runs."""
+    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model} on Claude Code {reached.brain.version}, hands' own copy: {reached.brain.claude}")
 
 
 def unstartable(reason: str) -> Missing:

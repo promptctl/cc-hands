@@ -44,16 +44,17 @@ class Refused:
 
 @dataclass(frozen=True)
 class Preflight:
-    """What a start finds in its home's files: the states of its fritter copy and its shim, which the start's event
-    records, and whether it starts on them."""
+    """What a start finds in its home's files: the states of its fritter copy and its shim, and the version of Claude Code
+    its brain was weighed against, which the start's event records, and whether it starts on them."""
 
     fritter: FritterState
     shim: ShimState
+    claude_code: str
     verdict: Startable | Refused
 
     def facts(self) -> dict[str, str]:
-        """The states as the start's event records them."""
-        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim)}
+        """What the start's event records of them."""
+        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim), "claude_code": self.claude_code}
 
 
 def _fact(state: FritterState | ShimState) -> str:
@@ -84,9 +85,9 @@ def preflight(home: Home, pin: pinned.Pin) -> Preflight:
     )
     match brain, voice:
         case Runnable(), (str() | voicechoice.LibraryVoice()) as kept if not refusals:
-            return Preflight(fritter, shim, Startable(brain, kept))
+            return Preflight(fritter, shim, pin.version, Startable(brain, kept))
         case _:
-            return Preflight(fritter, shim, Refused(refusals, brain if isinstance(brain, Runnable) else None))
+            return Preflight(fritter, shim, pin.version, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
 def beside(home: Home, pin: pinned.Pin, unread: Rejected) -> tuple[str, ...]:

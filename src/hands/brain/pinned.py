@@ -13,7 +13,7 @@ import hashlib
 import os
 import platform
 import tempfile
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -22,8 +22,8 @@ import aiohttp
 
 RELEASES = "https://downloads.claude.ai/claude-code-releases"
 INSTALL = "hands install-brain"
-# How long the fetch waits on a connection, or on the next bytes of the download, before failing the install rather than
-# hang it: a stall, never a slow link, which takes as long as 230 MB takes on it.
+# How long the fetch from Anthropic's releases waits on a connection, or on the next bytes of the download, before failing
+# the install rather than hang it: a stall, never a slow link, which takes as long as 230 MB takes on it.
 STALL_SECONDS = 60
 _CHUNK = 1 << 20
 
@@ -77,22 +77,32 @@ class Installed:
 
 
 @dataclass(frozen=True)
+class Build:
+    """One macOS build of a pin: its name in Anthropic's releases, and the SHA-256 its bytes hash to."""
+
+    name: str
+    checksum: str
+
+
+@dataclass(frozen=True)
 class Pin:
-    """A Claude Code release the brain runs: its version, and the SHA-256 each macOS build of it hashes to, by build.
+    """A Claude Code release the brain runs: its version, and the SHA-256 each macOS build of it hashes to.
 
     [LAW:no-shared-mutable-globals] a value each start is handed, so any number of pins can be weighed in one process and
-    nothing rebinds the one hands runs, PIN."""
+    nothing rebinds the one hands runs, PIN. [LAW:types-are-the-program] a checksum for each build hands runs on, so no
+    pin lacks the build of the Mac it is weighed on."""
 
     version: str
-    checksums: Mapping[str, str]
+    arm64: str
+    x64: str
 
-    def build(self, machine: str) -> str:
+    def build(self, machine: str) -> Build:
         """The build of the pin a Mac with this `platform.machine()` runs; raises Uninstallable for any other."""
         match machine:
             case "arm64":
-                return "darwin-arm64"
+                return Build("darwin-arm64", self.arm64)
             case "x86_64":
-                return "darwin-x64"
+                return Build("darwin-x64", self.x64)
             case other:
                 raise Uninstallable(f"Claude Code {self.version} has no macOS build for a {other!r} machine")
 
@@ -106,7 +116,7 @@ class Pin:
         that installs it, when it is not there, cannot be read, is not the pin, or cannot be run."""
         found = self.claude(config_dir)
         try:
-            expected = self.checksums[self.build(platform.machine())]
+            expected = self.build(platform.machine()).checksum
         except Uninstallable as error:
             raise Unpinned(str(error)) from None
         try:
@@ -126,12 +136,13 @@ class Pin:
 
 # [LAW:one-source-of-truth] the pin hands runs: the version, and the SHA-256 Anthropic's manifest for it gives each macOS
 # build (the manifest of the release the version names). Moving the pin is one commit that changes both, after measuring
-# again what docs/claude-code-behavior.md and the comments that name the old version say. CI reads the version off this
-# first line, as its cache key for the pinned Claude Code the end-to-end tests run (.github/workflows/test.yml).
-PIN = Pin("2.1.308", {
-    "darwin-arm64": "ca923c86ac84b30574a82331a05b6e066c27477a926ceaffe46a845a33e4dd37",
-    "darwin-x64": "9a0bc140f5fb06e6366624d770371ef290e6731d1e84c4def5daf4df946d1b59",
-})
+# again what docs/claude-code-behavior.md and the comments that name the old version say. CI reads its version as its
+# cache key for the pinned Claude Code the end-to-end tests run (.github/workflows/test.yml).
+PIN = Pin(
+    version="2.1.308",
+    arm64="ca923c86ac84b30574a82331a05b6e066c27477a926ceaffe46a845a33e4dd37",
+    x64="9a0bc140f5fb06e6366624d770371ef290e6731d1e84c4def5daf4df946d1b59",
+)
 
 
 @functools.cache
@@ -157,7 +168,7 @@ async def install(config_dir: Path, pin: Pin, source: Source) -> Installed:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise Uninstallable(f"could not make {target.parent} for Claude Code {pin.version}: {error!r}") from error
-    url = source.url(pin.version, built)
+    url = source.url(pin.version, built.name)
     try:
         # A name of this install's own: two at once never write, rename, or remove each other's download.
         handle, name = tempfile.mkstemp(dir=target.parent, prefix=f"{target.name}.", suffix=".partial")
@@ -175,8 +186,8 @@ async def install(config_dir: Path, pin: Pin, source: Source) -> Installed:
 
             await source.fetch(url, write)
         # [LAW:single-enforcer] whatever the source, the bytes are the pin's before they are put in its place.
-        if digest.hexdigest() != pin.checksums[built]:
-            raise Uninstallable(f"{url} hashes to {digest.hexdigest()}, not the {pin.checksums[built]} Claude Code {pin.version} is pinned to")
+        if digest.hexdigest() != built.checksum:
+            raise Uninstallable(f"{url} hashes to {digest.hexdigest()}, not the {built.checksum} Claude Code {pin.version} is pinned to")
         os.chmod(partial, 0o755)
         # [LAW:one-source-of-truth] a file under its own name is the whole of it: a copy that is not the pin is replaced whole.
         partial.replace(target)
@@ -197,18 +208,18 @@ async def install(config_dir: Path, pin: Pin, source: Source) -> Installed:
 DOWNLOAD_FAILURES = (aiohttp.ClientError, TimeoutError)
 
 
-async def download(url: str, write: Write) -> None:
-    """The body at `url`, written as it arrives, failing on a stall rather than hanging."""
-    timeout = aiohttp.ClientTimeout(total=None, sock_connect=STALL_SECONDS, sock_read=STALL_SECONDS)
+async def download(stall: float, url: str, write: Write) -> None:
+    """The body at `url`, written as it arrives, failing on a `stall` of that many seconds rather than hanging."""
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=stall, sock_read=stall)
     async with aiohttp.ClientSession(timeout=timeout, raise_for_status=True) as http, http.get(url) as response:
         async for chunk in response.content.iter_chunked(_CHUNK):
             write(chunk)
 
 
-def released(base: str) -> Source:
-    """The releases served under `base` as Anthropic serves its own."""
-    return Source(url=lambda version, built: f"{base}/{version}/{built}/claude", fetch=download, failures=DOWNLOAD_FAILURES)
+def released(base: str, stall: float) -> Source:
+    """The releases served under `base` as Anthropic serves its own, fetched failing on a `stall` of that many seconds."""
+    return Source(url=lambda version, built: f"{base}/{version}/{built}/claude", fetch=functools.partial(download, stall), failures=DOWNLOAD_FAILURES)
 
 
 # The release as Anthropic serves it, the one `hands install-brain` fetches.
-RELEASE = released(RELEASES)
+RELEASE = released(RELEASES, STALL_SECONDS)
