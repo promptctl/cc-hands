@@ -151,7 +151,7 @@ const NOTHING = "Heard nothing from that press.";
 const OWN = {
   "held": {text: () => "Listening…"},
   "sent": {text: () => "Sent. Waiting for hands…", counts: true},
-  // hands said the press opened no clip, as its turn was over before hands heard any of it.
+  // Not told as a milestone: entered on hands' `unopened` for the press, which opened no clip, so nothing is coming to wait for.
   "unopened": {text: () => NOTHING, bad: true},
 };
 // The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. The release names the

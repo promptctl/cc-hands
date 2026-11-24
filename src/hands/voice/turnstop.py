@@ -67,7 +67,8 @@ class ClipDiscarded(VADUserStoppedSpeakingFrame):
 class TurnUnheard(SystemFrame):
     """The gate ended this turn, numbered as it numbers them (`hands.voice.ptt.Gate.turn`), and the clip owner heard none of it:
     it began and ended between two of the microphone's frames, so no clip of it was opened. A tap shorter than a frame is
-    one. Pushed by the clip owner alone, once for each such turn, in the order the gate ended them."""
+    one. Pushed by the clip owner alone, once for each such turn, in the order the gate ended them. A system frame, as the VAD
+    frames `ClipSent` and `ClipDiscarded` are, so it keeps its order with them."""
 
     turn: int
 

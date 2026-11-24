@@ -76,7 +76,7 @@ class Gate:
     listens: bool = False
     # [LAW:no-ambient-temporal-coupling] how each turn ended is recorded in order, not left in a key position: a frame is
     # captured every 20 ms and several turns can end between two of them, so the clip owner reads each turn's end, and which
-    # it was, off this record as it grows. [LAW:one-source-of-truth] the counts of each are derived from it.
+    # it was, off this record as it grows.
     ended: tuple[Fate, ...] = ()
     # [LAW:no-ambient-temporal-coupling] the trigger that opened the last turn travels with the audio, as the key does, so
     # what reads a clip's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
@@ -126,13 +126,13 @@ class Gate:
             case "stop" | "timeout":
                 return replace(self, key=rest, place=at, ended=(*self.ended, "sent"))
             case "drop":
-                return replace(self, key=rest, place=at, ended=(*self.ended, "dropped") if self.key == "down" else self.ended)
+                return replace(self, key=rest, place=at, ended=(*self.ended, "dropped"))
 
     def moved(self, to: Place) -> "Gate":
         """The gate once hands is at `to`: a clip open at the place it leaves is sent as it stands."""
         if to == self.place:
             return self
-        return replace(self, key=self._rest(to, self.listens), place=to, ended=(*self.ended, "sent") if self.key == "down" else self.ended)
+        return replace(self, key=self._rest(to, self.listens), place=to, ended=(*self.ended, "sent") if self.turn_open else self.ended)
 
     def called(self, to: Place) -> "Gate":
         """The gate once a call has come, `to` the phone, or gone, `to` the desk.

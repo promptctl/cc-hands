@@ -146,6 +146,15 @@ class Unopened:
     why: str
 
 
+def answer(press: int, told: ClipOpened | TurnUnopened) -> Opened | Unopened:
+    """What the page is told of its press `press`, from what hands told of the turn the press opened."""
+    match told:
+        case ClipOpened(clip=clip):
+            return Opened(press, clip.number)
+        case TurnUnopened(why=why):
+            return Unopened(press, why)
+
+
 def wire(told: Opened | Unopened | ClipReleased | ClipDiscarded | Milestone | Line) -> str:
     """[LAW:single-enforcer] what the page is told, as it reads it: one JSON object, its `kind` saying which."""
     match told:
@@ -537,18 +546,15 @@ class Phone:
         match self._call:
             case _Call(channel=RTCDataChannel(readyState="open") as channel) as call:
                 match told:
-                    case ClipOpened(clip=clip, turn=turn) if turn in call.pressing:
-                        channel.send(wire(Opened(call.pressing.pop(turn), clip.number)))
-                        call.told += 1
-                    case ClipOpened():
-                        # A clip no press of the page's opened, the desk's: nothing of the page's.
-                        pass
-                    case TurnUnopened(turn=turn, why=why) if turn in call.pressing:
-                        channel.send(wire(Unopened(call.pressing.pop(turn), why)))
-                        call.told += 1
-                    case TurnUnopened():
-                        # A turn no press of the page's made, the desk's: nothing of the page's.
-                        pass
+                    case ClipOpened(turn=turn) | TurnUnopened(turn=turn):
+                        # [LAW:single-enforcer] a press leaves `pressing` as it is answered, so it is answered once. A turn no
+                        # press of the page's made, the desk's, is nothing of the page's.
+                        match call.pressing.pop(turn, None):
+                            case None:
+                                pass
+                            case press:
+                                channel.send(wire(answer(press, told)))
+                                call.told += 1
                     case ClipReleased() | ClipDiscarded() | str():
                         channel.send(wire(told))
                         call.told += 1

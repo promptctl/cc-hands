@@ -35,7 +35,7 @@ from hands.voice.clips import Clip
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
-from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, Quiet, kind, parse_said, quiet_message
+from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Opened, Phone, Quiet, Unopened, answer, kind, parse_said, quiet_message
 from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -348,6 +348,11 @@ async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:
     """A turn taken at the desk passes the same milestones, and no page is waiting on it."""
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
     phone.tell(ClipReleased(Clip(1, "shortcut")))
+
+
+def test_a_press_is_answered_with_the_clip_its_turn_opened_or_with_why_it_opened_none() -> None:
+    assert answer(2, ClipOpened(Clip(5, "phone button"), 1)) == Opened(2, 5)
+    assert answer(1, TurnUnopened(0, UNHEARD)) == Unopened(1, UNHEARD)
 
 
 def test_the_page_knows_every_milestone_hands_tells_it() -> None:
