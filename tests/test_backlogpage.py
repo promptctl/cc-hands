@@ -24,7 +24,7 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry, Record
 from hands.sessions.child import Children, NeverStarted, Outcome as Ended, Ran
-from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
+from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Lit, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun, unit
@@ -32,7 +32,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from conftest import SYSTEM_PATH, Faked, children_on, events, executable, exited
-from litcontract import LitContract
+from litcontract import LitContract, Refusal, answered, refusing
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
@@ -270,11 +270,6 @@ def test_a_level_the_page_sends_is_its_project_its_ticket_and_one_of_the_levels(
 # --- the routes, with lit faked where hands runs it
 
 
-# [LAW:one-source-of-truth] the codes lit gives the reasons these fakes fail on (docs/cli-reference.md in links, "Every
-# reason"): each of the first two may follow a commit, and code 6 is a write whose asked state already holds.
-CODES = {"command_failed": 1, "workspace_busy": 1, "workspace_not_initialized": 3, "state_already_holds": 6}
-
-
 @dataclass(frozen=True)
 class Outcome:
     """How the fake lit answers a write: whether it makes it, what another writer does first, the reason it fails on
@@ -284,7 +279,7 @@ class Outcome:
     writes: bool = True
     meanwhile: Callable[["FakeLit"], object] = lambda _: None
     reason: str | None = None
-    exports: Ended | None = None
+    exports: "Ended | Refusal | None" = None
     # Set as lit is asked; lit answers only once `answer` is.
     asked: asyncio.Event | None = None
     answer: asyncio.Event | None = None
@@ -296,7 +291,7 @@ class FakeLit:
     writes it, each write saying what lit says, held to lit by the contract in litcontract.py; each write of a
     subcommand answers as its `Outcome` scripts it."""
 
-    def __init__(self, backlog: "Held", outcomes: Mapping[str, Outcome], exports: Ended | None = None) -> None:
+    def __init__(self, backlog: "Held", outcomes: Mapping[str, Outcome], exports: "Ended | Refusal | None" = None) -> None:
         issues, relations = backlog
         self.issues = list(issues)
         self.relations = list(relations)
@@ -328,9 +323,10 @@ class FakeLit:
         self.gone |= outcome.gone
         if self.gone:
             return NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory", "lit"))
+        assert env is not None and cwd is not None, "hands runs lit in a directory and an environment it names, its trace among it"
         if command == "export":
             if self.exports is not None:
-                return self.exports
+                return answered(self.exports, env, cwd, f"lit {command}")
             ranked = [{**each, "rank": f"{at:04d}"} for at, each in enumerate(self.issues)]
             return exited(0, export(ranked, self.relations, self.comments))
         if outcome.asked is not None and outcome.answer is not None:
@@ -341,11 +337,11 @@ class FakeLit:
         self.exports = outcome.exports or self.exports
         match outcome.reason:
             case None:
-                return ran
+                return answered(ran, env, cwd, f"lit {command}")
             case reason:
-                return refused(reason, f"the fake's {command} stopped")
+                return answered(Refusal(reason, f"the fake's {command} stopped"), env, cwd, f"lit {command}")
 
-    def written(self, command: str, rest: list[str]) -> Ended:
+    def written(self, command: str, rest: list[str]) -> "Ended | Refusal":
         """Make the write lit is asked for, and answer as lit answers it."""
         flags = {flag: value for flag, value in zip(rest, rest[1:]) if flag.startswith("--")}
         match command, rest:
@@ -366,7 +362,7 @@ class FakeLit:
             case "parent", ["set", *_]:
                 child, epic = flags["--child"], flags["--parent"]
                 if self.parent(child) == epic:
-                    return refused("state_already_holds", f"relation src={child} dst={epic} type=parent-child already exists, so there is nothing to add")
+                    return Refusal("state_already_holds", f"relation src={child} dst={epic} type=parent-child already exists, so there is nothing to add")
                 self.relations = [each for each in self.relations if each["src_id"] != child] + [inside(epic, child)]
                 return said(f"{child} child of {epic}")
             case "comment", ["add", ticket, *_]:
@@ -380,14 +376,9 @@ def said(words: str) -> Ran:
     return exited(0, f"{words}\ndeeper guidance: lit quickstart update\n".encode())
 
 
-def refused(reason: str, why: str) -> Ran:
-    """lit's answer to a write it stopped short of, on the code it gives `reason`."""
-    return exited(CODES[reason], err=f"error (code={CODES[reason]}, reason={reason}): {why}\nremediation: retry\n".encode())
-
-
 # What lit's export answers while another lit holds its store, and in a directory it has no workspace in.
-BUSY = refused("workspace_busy", "another lit holds the store")
-UNTRACKED = refused("workspace_not_initialized", "no lit workspace here")
+BUSY = Refusal("workspace_busy", "another lit holds the store")
+UNTRACKED = Refusal("workspace_not_initialized", "no lit workspace here")
 
 
 @dataclass
@@ -418,12 +409,12 @@ class Routes:
         return event
 
 
-def routed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lit: FakeLit) -> Routes:
+def routed(tmp_path: Path, lit: FakeLit) -> Routes:
     project = tmp_path / "project"
     project.mkdir()
     recorded: list[Entry] = []
     app = web.Application()
-    app.add_routes(backlog_routes(lit.children(VirtualClock()), SummaryStore(Summaries(tmp_path / "summaries.db")), KEY, recorded.append, os.environ))
+    app.add_routes(backlog_routes(Lit(lit.children(VirtualClock()), os.environ), SummaryStore(Summaries(tmp_path / "summaries.db")), KEY, recorded.append))
     return Routes(app, recorded, lit, project)
 
 
@@ -479,8 +470,8 @@ WRITES = [
 
 
 @pytest.mark.parametrize("write", WRITES)
-async def test_a_write_lit_fails_having_made_it_is_one_that_landed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: Case) -> None:
-    routes = routed(tmp_path, monkeypatch, FakeLit(write.backlog, {write.command: write.landed}))
+async def test_a_write_lit_fails_having_made_it_is_one_that_landed(tmp_path: Path, write: Case) -> None:
+    routes = routed(tmp_path, FakeLit(write.backlog, {write.command: write.landed}))
     answered, body = await routes.post(write.path, **write.sent)
     assert answered == write.status, body
     assert routes.fact(write.event, write.step) == "yes" and f"exited {write.exits}" in str(routes.fact(write.event, f"{write.step}_said"))
@@ -488,8 +479,8 @@ async def test_a_write_lit_fails_having_made_it_is_one_that_landed(tmp_path: Pat
 
 @pytest.mark.parametrize("write", WRITES)
 @pytest.mark.parametrize("refused", [Outcome(writes=False, reason="workspace_busy"), Outcome(writes=False)], ids=["failed", "exited 0"])
-async def test_a_write_the_backlog_after_does_not_have_is_not_done_whatever_lit_exited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: Case, refused: Outcome) -> None:
-    routes = routed(tmp_path, monkeypatch, FakeLit(write.backlog, {write.command: refused}))
+async def test_a_write_the_backlog_after_does_not_have_is_not_done_whatever_lit_exited(tmp_path: Path, write: Case, refused: Outcome) -> None:
+    routes = routed(tmp_path, FakeLit(write.backlog, {write.command: refused}))
     answered, body = await routes.post(write.path, **write.sent)
     assert answered == 409 and "the backlog lit holds after does not have" in body
     assert ("workspace_busy" in body) == (refused.reason == "workspace_busy")
@@ -499,8 +490,8 @@ async def test_a_write_the_backlog_after_does_not_have_is_not_done_whatever_lit_
 
 @pytest.mark.parametrize("write", WRITES)
 @pytest.mark.parametrize(("exports", "unseen"), [(BUSY, "could not be read: lit export"), (UNTRACKED, "lit no longer tracks")], ids=["unreadable", "untracked"])
-async def test_a_write_whose_backlog_cannot_be_read_again_is_not_known(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: Case, exports: Ran, unseen: str) -> None:
-    routes = routed(tmp_path, monkeypatch, FakeLit(write.backlog, {write.command: Outcome(reason="command_failed", exports=exports)}))
+async def test_a_write_whose_backlog_cannot_be_read_again_is_not_known(tmp_path: Path, write: Case, exports: Ran, unseen: str) -> None:
+    routes = routed(tmp_path, FakeLit(write.backlog, {write.command: Outcome(reason="command_failed", exports=exports)}))
     answered, body = await routes.post(write.path, **write.sent)
     # lit may have written, so the answer says what is not known and never that nothing was done.
     assert answered == 502 and body.startswith("whether lit holds ") and "is not known" in body and "command_failed" in body and unseen in body
@@ -509,9 +500,9 @@ async def test_a_write_whose_backlog_cannot_be_read_again_is_not_known(tmp_path:
 
 
 @pytest.mark.parametrize("write", WRITES)
-async def test_a_write_whose_request_is_cancelled_while_lit_is_asked_is_not_known(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: Case) -> None:
+async def test_a_write_whose_request_is_cancelled_while_lit_is_asked_is_not_known(tmp_path: Path, write: Case) -> None:
     asked = asyncio.Event()
-    routes = routed(tmp_path, monkeypatch, FakeLit(write.backlog, {write.command: Outcome(asked=asked, answer=asyncio.Event())}))
+    routes = routed(tmp_path, FakeLit(write.backlog, {write.command: Outcome(asked=asked, answer=asyncio.Event())}))
     request = asyncio.create_task(routes.post(write.path, **write.sent))
     await asked.wait()
     request.cancel()
@@ -522,25 +513,25 @@ async def test_a_write_whose_request_is_cancelled_while_lit_is_asked_is_not_know
 
 
 @pytest.mark.parametrize("write", WRITES)
-async def test_a_write_lit_cannot_be_started_for_is_not_done_and_no_read_is_made_after_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: Case) -> None:
+async def test_a_write_lit_cannot_be_started_for_is_not_done_and_no_read_is_made_after_it(tmp_path: Path, write: Case) -> None:
     lit = FakeLit(write.backlog, {write.command: Outcome(gone=True)})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     answered, body = await routes.post(write.path, **write.sent)
     assert answered == 502 and "lit could not be started" in body and "the backlog" not in body
     assert lit.calls[-1] == write.command, f"a read was made after a write no lit ran for: {lit.calls}"
     assert routes.fact(write.event, write.step) == "no"
 
 
-async def test_a_drop_the_page_cannot_send_is_refused_before_lit_is_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_drop_the_page_cannot_send_is_refused_before_lit_is_asked(tmp_path: Path) -> None:
     lit = FakeLit(DROP, {})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     status, body = await routes.post("/backlog/rank", ticket="e.b")
     assert status == 400 and body.startswith("not moved: a move is ") and lit.calls == []
 
 
-async def test_a_drop_in_a_project_lit_does_not_track_is_refused_before_anything_is_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_drop_in_a_project_lit_does_not_track_is_refused_before_anything_is_written(tmp_path: Path) -> None:
     lit = FakeLit(DROP, {}, exports=UNTRACKED)
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     assert await routes.post("/backlog/rank", ticket="e.b", above="e.a") == (404, f"not moved: {routes.project} has no backlog: lit has no workspace there")
     assert lit.calls == ["export"] and "ranked" not in routes.event("backlog.ranked").facts
 
@@ -550,27 +541,27 @@ def unranked_target(lit: FakeLit) -> None:
     lit.issues = [each for each in lit.issues if each["id"] != "w"]
 
 
-async def test_an_epic_made_that_cannot_be_ranked_where_asked_is_said_made_at_the_bottom_of_its_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_epic_made_that_cannot_be_ranked_where_asked_is_said_made_at_the_bottom_of_its_frame(tmp_path: Path) -> None:
     lit = FakeLit(MADE, {"new": Outcome(meanwhile=unranked_target)})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     status, body = await routes.post("/backlog/level", ticket="w.a", level="high")
     event = routes.event("backlog.leveled")
     assert (status, body) == (409, f"lit made {event.facts['epic']}, wake word - high, at the bottom of its frame, and it cannot be ranked above w: the backlog has no ticket w")
     assert event.facts["created"] == "yes" and not {"ranked", "moved", "placed"} & event.facts.keys() and lit.calls == ["export", "new", "export"]
 
 
-async def test_a_drop_reads_the_backlog_once_after_its_rank_and_answers_with_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_drop_reads_the_backlog_once_after_its_rank_and_answers_with_it(tmp_path: Path) -> None:
     lit = FakeLit(DROP, {})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     status, body = await routes.post("/backlog/rank", ticket="e.b", above="e.a")
     assert status == 200 and [child["id"] for child in json.loads(body)["items"][0]["children"]] == ["e.b", "e.a"]
     assert lit.calls == ["export", "rank", "export"]
     assert routes.fact("backlog.ranked", "ranked") == "yes" and str(routes.fact("backlog.ranked", "ranked_said")).startswith("lit exited 0: e.b ")
 
 
-async def test_a_leveling_reads_the_backlog_once_after_each_write_and_says_a_rank_it_did_not_need(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_leveling_reads_the_backlog_once_after_each_write_and_says_a_rank_it_did_not_need(tmp_path: Path) -> None:
     lit = FakeLit(MADE, {})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     assert await routes.post("/backlog/level", ticket="w.a", level="high") == (204, "")
     assert lit.calls == ["export", "new", "export", "rank", "export", "parent", "export"]
     event = routes.event("backlog.leveled")
@@ -580,23 +571,23 @@ async def test_a_leveling_reads_the_backlog_once_after_each_write_and_says_a_ran
     assert lit.parent("w.a") == "made-2" and event.facts["epic"] == "made-2"
 
 
-async def test_a_leveling_into_an_epic_lit_holds_makes_none_and_ranks_the_ticket_last_there(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_leveling_into_an_epic_lit_holds_makes_none_and_ranks_the_ticket_last_there(tmp_path: Path) -> None:
     lit = FakeLit(HELD, {})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     assert await routes.post("/backlog/level", ticket="w.a", level="high") == (204, "")
     event = routes.event("backlog.leveled")
     assert (event.facts["created"], event.facts["ranked"], event.facts["moved"], event.facts["placed"]) == ("unneeded", "unneeded", "yes", "yes")
     assert lit.parent("w.a") == "wh" and lit.order().index("wh.a") < lit.order().index("w.a")
 
 
-async def test_a_ticket_lit_moves_in_last_among_its_epics_open_tickets_needs_no_rank(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_ticket_lit_moves_in_last_among_its_epics_open_tickets_needs_no_rank(tmp_path: Path) -> None:
     # The ticket ranks below the high epic's one ticket, and lit keeps that rank when it moves it.
     below: Held = (
         [issue("wh", "", "wake word - high", status=None, kind="epic", topic="wake-word"), issue("wh.a", "", "Custom word", topic="wake-word"), issue("w", "", "Train", status=None, kind="epic", topic="wake-word"), issue("w.a", "", "Hey hands", topic="wake-word")],
         [inside("wh", "wh.a"), inside("w", "w.a")],
     )
     lit = FakeLit(below, {})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     assert await routes.post("/backlog/level", ticket="w.a", level="high") == (204, "")
     assert lit.calls == ["export", "parent", "export"] and routes.fact("backlog.leveled", "placed") == "unneeded"
 
@@ -607,9 +598,9 @@ def filed_last_in_high(lit: FakeLit) -> None:
     lit.relations.append(inside("wh", "wh.z"))
 
 
-async def test_a_ticket_ranked_below_the_last_and_not_last_after_is_not_placed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_ticket_ranked_below_the_last_and_not_last_after_is_not_placed(tmp_path: Path) -> None:
     lit = FakeLit(HELD, {"rank": Outcome(meanwhile=filed_last_in_high)})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     status, body = await routes.post("/backlog/level", ticket="w.a", level="high")
     # Directly below the ticket that was last, and not last there.
     assert lit.order()[lit.order().index("wh.a") + 1] == "w.a"
@@ -617,18 +608,18 @@ async def test_a_ticket_ranked_below_the_last_and_not_last_after_is_not_placed(t
     assert routes.fact("backlog.leveled", "placed") == "no"
 
 
-async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_before_anything_is_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_before_anything_is_written(tmp_path: Path) -> None:
     lit = FakeLit(MADE, {})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     status, body = await routes.post("/backlog/note", ticket="page-nope", text="Split it")
     assert (status, body) == (404, f"not noted: lit holds no ticket page-nope in {routes.project}")
     assert lit.calls == ["export"] and "noted" not in routes.event("backlog.noted").facts
 
 
-async def test_a_note_is_kept_only_where_the_page_signed_the_comment_that_says_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_note_is_kept_only_where_the_page_signed_the_comment_that_says_it(tmp_path: Path) -> None:
     # lit refuses the page's comment while a session leaves the same words on the ticket.
     lit = FakeLit(MADE, {"comment": Outcome(writes=False, meanwhile=lambda lit: lit.note("w.a", "Split it", "claude_a-session"), reason="workspace_busy")})
-    routes = routed(tmp_path, monkeypatch, lit)
+    routes = routed(tmp_path, lit)
     status, body = await routes.post("/backlog/note", ticket="w.a", text="Split it")
     assert status == 409 and body.startswith("the backlog lit holds after does not have the note on w.a; ") and routes.fact("backlog.noted", "noted") == "no"
 
@@ -667,13 +658,34 @@ def test_a_note_the_page_sends_is_its_project_resolved_its_ticket_and_its_words_
 
 
 @pytest.fixture
-async def page(tmp_path: Path) -> AsyncGenerator[Page]:
+def session() -> str | None:
+    """The Claude Code session hands was started inside: none, unless a test names one (`INSIDE_A_SESSION`)."""
+    return None
+
+
+# hands started from inside a Claude Code session: its environment carries the session's id, which lit would take for
+# who acts before any `--by`.
+INSIDE_A_SESSION = pytest.mark.parametrize("session", ["a-session"], ids=["inside a session"])
+
+
+@pytest.fixture
+def started_in(environment: dict[str, str], session: str | None) -> Mapping[str, str]:
+    """The environment hands was started in, which the page's lit runs in: the test's own (conftest's `environment`),
+    inside `session` where there is one."""
+    return environment if session is None else {**environment, "CLAUDE_CODE_SESSION_ID": session}
+
+
+@pytest.fixture
+async def page(tmp_path: Path, started_in: Mapping[str, str]) -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     app = web.Application()
     # [LAW:no-ambient-temporal-coupling] a clock nobody moves unless a test does, so no lit the page runs is ended by the machine being slow.
     clock = VirtualClock()
-    app.add_routes(backlog_routes(Children(clock, recorded.append), store, KEY, recorded.append, os.environ))
+    # The page's lit is the one in the test's own bin, lit itself until a test stubs it (`stub_lit`), and none once a
+    # stub removes itself: no other lit is on the page's PATH.
+    unstub_lit(tmp_path)
+    app.add_routes(backlog_routes(Lit(Children(clock, recorded.append), {**started_in, "PATH": f"{tmp_path / 'bin'}:{SYSTEM_PATH}"}), store, KEY, recorded.append))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded, clock)
@@ -705,13 +717,18 @@ def workspace(tmp_path: Path) -> Workspace:
     return Workspace(root)
 
 
-def stub_lit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **before: str) -> None:
-    """Put a `lit` first on PATH that runs each script in `before` ahead of the lit subcommand it is named for, then runs lit itself."""
-    stubs = tmp_path / "bin"
-    assert not (stubs / "lit").exists(), "a second stub lit would replace the first without a word"
+def unstub_lit(tmp_path: Path) -> None:
+    """Make the page's lit lit itself again."""
+    (tmp_path / "bin").mkdir(exist_ok=True)
+    executable(tmp_path / "bin" / "lit", f'#!/bin/sh\nexec {LIT} "$@"\n')
+
+
+def stub_lit(tmp_path: Path, **before: str) -> None:
+    """Make the page's lit one that runs each script in `before` ahead of the lit subcommand it is named for, then runs lit itself."""
+    stub = tmp_path / "bin" / "lit"
+    assert stub.read_text() == f'#!/bin/sh\nexec {LIT} "$@"\n', "a second stub lit would replace the first without a word"
     branches = "".join(f'if [ "$1" = {subcommand} ]; then\n{script}\nfi\n' for subcommand, script in before.items())
-    executable(stubs / "lit", f'#!/bin/sh\n{branches}exec {LIT} "$@"\n')
-    monkeypatch.setenv("PATH", f"{stubs}:{SYSTEM_PATH}")
+    executable(stub, f'#!/bin/sh\n{branches}exec {LIT} "$@"\n')
 
 
 def epic(workspace: Workspace, title: str, *children: str, topic: str = "page") -> tuple[str, ...]:
@@ -778,7 +795,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    read = await sighted(children_on(page.clock), page.store, workspace.root)
+    read = await sighted(Lit(children_on(page.clock), os.environ), page.store, workspace.root)
     assert isinstance(read, Sighted)
     # The leaves are said first; the epic waits on them.
     page.store.keep({due.digest: f"Said of {due.id}." for due in page.store.reckon(read.backlog.thing()).due})
@@ -859,11 +876,11 @@ async def test_an_archived_epics_child_is_not_moved_among_the_roots(page: Page, 
 
 @pytest.mark.outside
 @real_lit
-async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_is_a_conflict(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_is_a_conflict(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     wire, *_ = epic(workspace, "Wire", "Tap it")
     # An agent puts the parser in the Wire epic between the page's read and its rank: lit ranks the Wire epic instead.
-    stub_lit(tmp_path, monkeypatch, rank=f"{LIT} parent set --child {parser} --parent {wire} >/dev/null")
+    stub_lit(tmp_path, rank=f"{LIT} parent set --child {parser} --parent {wire} >/dev/null")
     status, body = await moved(page, workspace, parser, above=mic)
     # What lit ranked instead is said in lit's own words, to the page and on the event; nothing is undone.
     assert status == 409 and f"does not have {parser} above {mic}" in body and f"ranked the epic {wire} instead" in body
@@ -875,9 +892,9 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
 
 @pytest.mark.outside
 @real_lit
-async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    stub_lit(tmp_path, monkeypatch, rank='echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1')
+    stub_lit(tmp_path, rank=refusing("workspace_busy", "the store is locked"))
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 409 and body.startswith(f"the backlog lit holds after does not have {parser} above {mic}; lit rank") and "workspace_busy" in body
     assert workspace.order(mic, parser) == [mic, parser]
@@ -886,10 +903,10 @@ async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, w
 
 
 @pytest.mark.outside
-async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page, tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    stub_lit(tmp_path, monkeypatch, export="exec sleep 600")
+    stub_lit(tmp_path, export="exec sleep 600")
     read = asyncio.create_task(page.client.get("/backlog/tickets", params={"project": str(project)}, headers=KEYED))
     # The bound is waited out on the page's clock, so it comes due as the test moves the clock to it and no sooner.
     waiting = asyncio.create_task(page.clock.sleeping(page.clock.at + LIT_TIMEOUT_SECONDS))
@@ -905,10 +922,10 @@ async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page
 
 @pytest.mark.outside
 @real_lit
-async def test_a_rank_in_a_project_lit_then_no_longer_tracks_is_not_known_and_says_why(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_rank_in_a_project_lit_then_no_longer_tracks_is_not_known_and_says_why(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     # lit ranks, and the workspace is gone before the read after.
-    stub_lit(tmp_path, monkeypatch, rank=f'{LIT} "$@" || exit\nrm -rf .git\nexit 0')
+    stub_lit(tmp_path, rank=f'{LIT} "$@" || exit\nrm -rf .git\nexit 0')
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 502 and body.startswith(f"whether lit holds {parser} above {mic} is not known; lit exited 0: ") and body.endswith(f"; and lit no longer tracks {workspace.root}: lit has no workspace there")
     [event] = page.events("backlog.ranked")
@@ -917,11 +934,11 @@ async def test_a_rank_in_a_project_lit_then_no_longer_tracks_is_not_known_and_sa
 
 @pytest.mark.outside
 @real_lit
-async def test_a_rank_whose_backlog_could_not_be_read_again_is_not_known(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_rank_whose_backlog_could_not_be_read_again_is_not_known(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     ranked = tmp_path / "ranked"
     # lit ranks, and every export after it fails.
-    stub_lit(tmp_path, monkeypatch, export=f'if [ -e {ranked} ]; then\necho "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1\nfi', rank=f"touch {ranked}")
+    stub_lit(tmp_path, export=f'if [ -e {ranked} ]; then\n{refusing("workspace_busy", "the store is locked")}\nfi', rank=f"touch {ranked}")
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 502 and body.startswith(f"whether lit holds {parser} above {mic} is not known; lit exited 0: ") and f"the backlog in {workspace.root} could not be read" in body and "workspace_busy" in body
     assert workspace.order(mic, parser) == [parser, mic]
@@ -931,10 +948,10 @@ async def test_a_rank_whose_backlog_could_not_be_read_again_is_not_known(page: P
 
 @pytest.mark.outside
 @real_lit
-async def test_a_rank_lit_is_killed_on_after_writing_it_is_a_drop_that_landed(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_rank_lit_is_killed_on_after_writing_it_is_a_drop_that_landed(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     # lit writes the rank, then is killed before it can say so.
-    stub_lit(tmp_path, monkeypatch, rank=f'{LIT} "$@" >/dev/null\nkill -9 $$')
+    stub_lit(tmp_path, rank=f'{LIT} "$@" >/dev/null\nkill -9 $$')
     status, _ = await moved(page, workspace, parser, above=mic)
     assert status == 200 and workspace.order(mic, parser) == [parser, mic]
     [event] = page.events("backlog.ranked")
@@ -943,9 +960,9 @@ async def test_a_rank_lit_is_killed_on_after_writing_it_is_a_drop_that_landed(pa
 
 @pytest.mark.outside
 @real_lit
-@pytest.mark.parametrize("export, why", [('echo "error (code=1, reason=workspace_busy): locked" >&2; exit 1', "workspace_busy"), ("echo not json", "JSON")])
-async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, export: str, why: str) -> None:
-    stub_lit(tmp_path, monkeypatch, export=export)
+@pytest.mark.parametrize("export, why", [(refusing("workspace_busy", "locked"), "workspace_busy"), ("echo not json", "JSON")])
+async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(page: Page, workspace: Workspace, tmp_path: Path, export: str, why: str) -> None:
+    stub_lit(tmp_path, export=export)
     response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)
     body = await response.text()
     assert response.status == 502 and body.startswith(f"the backlog in {workspace.root} could not be read") and why in body
@@ -967,13 +984,13 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
-    read = await sighted(children_on(page.clock), page.store, workspace.root)
+    read = await sighted(Lit(children_on(page.clock), os.environ), page.store, workspace.root)
     assert isinstance(read, Sighted)
     assert await page.store.wanted()
     # Every ticket said, round by round, as the summarising task says them.
     while due := page.store.reckon(read.backlog.thing()).due:
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
-    again = await sighted(children_on(page.clock), page.store, workspace.root)
+    again = await sighted(Lit(children_on(page.clock), os.environ), page.store, workspace.root)
     assert isinstance(again, Sighted) and len(again.said) == 3
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(page.store.wanted(), 0.2)
@@ -1019,15 +1036,15 @@ async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_mo
 
 @pytest.mark.outside
 @real_lit
-async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_and_the_ticket_was_not_moved(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_and_the_ticket_was_not_moved(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, parent='echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1')
+    stub_lit(tmp_path, parent=refusing("workspace_busy", "the store is locked"))
     status, body = await leveled(page, workspace, hey, "high")
     [event] = page.events("backlog.leveled")
     assert status == 409 and body.startswith(f"the backlog lit holds after does not have {hey} in {event.facts['epic']}; lit parent") and "workspace_busy" in body
     assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("yes", "no")
     # The epic stands made and empty, and the next press puts the ticket in it rather than making another.
-    monkeypatch.undo()
+    unstub_lit(tmp_path)
     items = await level(page, workspace, hey, "high")
     # The epic it was in holds nothing open now, and is drawn no more.
     assert titled(items) == [("wake word - high", [hey])]
@@ -1036,9 +1053,9 @@ async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_a
 
 @pytest.mark.outside
 @real_lit
-async def test_a_move_lit_is_killed_on_after_writing_it_finishes_the_leveling(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_move_lit_is_killed_on_after_writing_it_finishes_the_leveling(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, parent=f'{LIT} "$@" >/dev/null\nkill -9 $$')
+    stub_lit(tmp_path, parent=f'{LIT} "$@" >/dev/null\nkill -9 $$')
     assert await leveled(page, workspace, hey, "low") == (204, "")
     [event] = page.events("backlog.leveled")
     assert event.outcome == "ok" and (event.facts["created"], event.facts["moved"], event.facts["placed"]) == ("yes", "yes", "unneeded")
@@ -1091,16 +1108,16 @@ async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_p
 @pytest.mark.parametrize(
     "before_rank, status, ranked, moved",
     [
-        ('echo "error (code=1, reason=workspace_busy): the store is locked" >&2\nexit 1', 409, "no", None),
+        (refusing("workspace_busy", "the store is locked"), 409, "no", None),
         (f'{LIT} "$@" >/dev/null\nkill -9 $$', 204, "yes", "yes"),
     ],
     ids=["refused", "killed after writing"],
 )
 async def test_a_rank_lit_fails_after_the_epic_is_made_is_settled_by_the_backlog_after_it(
-    page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_rank: str, status: int, ranked: str, moved: str | None
+    page: Page, workspace: Workspace, tmp_path: Path, before_rank: str, status: int, ranked: str, moved: str | None
 ) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, rank=before_rank)
+    stub_lit(tmp_path, rank=before_rank)
     answered, body = await leveled(page, workspace, hey, "high")
     [event] = page.events("backlog.leveled")
     assert answered == status, body
@@ -1177,11 +1194,11 @@ async def test_a_topic_in_two_frames_has_its_own_level_epics_in_each(page: Page,
 
 @pytest.mark.outside
 @real_lit
-async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked_is_a_failure(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked_is_a_failure(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     other, *_ = epic(workspace, "Other", "Keep it", topic="other")
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     # lit files the new epic inside another one than it was asked to.
-    stub_lit(tmp_path, monkeypatch, new=f'exec {LIT} "$@" --parent {other}')
+    stub_lit(tmp_path, new=f'exec {LIT} "$@" --parent {other}')
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 409 and body.startswith("the backlog lit holds after does not have the epic wake word - high; lit exited 0: ")
     [event] = page.events("backlog.leveled")
@@ -1190,10 +1207,10 @@ async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked
 
 @pytest.mark.outside
 @real_lit
-async def test_a_project_lit_stops_tracking_once_the_epic_is_made_is_said_as_such(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_project_lit_stops_tracking_once_the_epic_is_made_is_said_as_such(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     made = tmp_path / "made"
-    stub_lit(tmp_path, monkeypatch, export=f'if [ -e {made} ]; then\necho "error (code=3, reason=workspace_not_initialized): no workspace" >&2\nexit 3\nfi', new=f"touch {made}")
+    stub_lit(tmp_path, export=f'if [ -e {made} ]; then\n{refusing("workspace_not_initialized", "no workspace")}\nfi', new=f"touch {made}")
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 502 and body.startswith("whether lit holds the epic wake word - high is not known; lit exited 0: ") and body.endswith(f"; and lit no longer tracks {workspace.root}: lit has no workspace there")
     [event] = page.events("backlog.leveled")
@@ -1207,10 +1224,9 @@ async def noted(page: Page, workspace: Workspace, ticket: str, text: str) -> tup
 
 @pytest.mark.outside
 @real_lit
-async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_session(page: Page, workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+@INSIDE_A_SESSION
+async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_session(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    # A hands started from inside a Claude Code session carries its id, which lit would sign the note with.
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "a-session")
     assert await noted(page, workspace, hey, "  Say which word wakes it \n") == (204, "")
     shown = subprocess.run([str(LIT), "show", hey], cwd=workspace.root, check=True, capture_output=True, text=True).stdout
     assert f"[{getpass.getuser()}] Say which word wakes it" in shown
@@ -1244,10 +1260,10 @@ def actors(workspace: Workspace) -> list[tuple[str, str]]:
 
 @pytest.mark.outside
 @real_lit
-async def test_a_level_press_is_signed_by_the_person_even_inside_a_session(page: Page, workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+@INSIDE_A_SESSION
+async def test_a_level_press_is_signed_by_the_person_even_inside_a_session(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     before = len(actors(workspace))
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", str(uuid.uuid4()))
     await level(page, workspace, hey, "high")
     # The epic it made and the move into it are the person's.
     made = actors(workspace)[before:]
@@ -1261,7 +1277,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(children_on(VirtualClock()), workspace.root, hey, "Seen again.", Inherited())
+    await comment(Lit(children_on(VirtualClock()), os.environ), workspace.root, hey, "Seen again.", Inherited())
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
@@ -1269,25 +1285,25 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
 
 @pytest.mark.outside
 @real_lit
-async def test_a_note_lit_is_killed_on_after_keeping_it_is_kept(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_note_lit_is_killed_on_after_keeping_it_is_kept(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     # lit keeps the comment, then dies before it can say so.
-    stub_lit(tmp_path, monkeypatch, comment=f'{LIT} "$@" >/dev/null\nkill -9 $$')
+    stub_lit(tmp_path, comment=f'{LIT} "$@" >/dev/null\nkill -9 $$')
     assert await noted(page, workspace, hey, "Split it") == (204, "")
     [event] = page.events("backlog.noted")
     assert event.outcome == "ok" and event.facts["noted"] == "yes"
 
 
-def lit_gone_after_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def lit_gone_after_export(tmp_path: Path) -> None:
     """lit answers the page's read of the backlog and is gone from PATH for whatever the page asks it next."""
-    stub_lit(tmp_path, monkeypatch, export='rm -f "$0"')
+    stub_lit(tmp_path, export='rm -f "$0"')
 
 
 @pytest.mark.outside
 @real_lit
-async def test_a_note_whose_lit_is_gone_for_the_write_says_nothing_was_noted(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_note_whose_lit_is_gone_for_the_write_says_nothing_was_noted(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    lit_gone_after_export(tmp_path, monkeypatch)
+    lit_gone_after_export(tmp_path)
     status, body = await noted(page, workspace, hey, "Split it")
     assert status == 502 and body.startswith(f"not noted: lit could not be started in {workspace.root}: ")
     [event] = page.events("backlog.noted")
@@ -1296,9 +1312,9 @@ async def test_a_note_whose_lit_is_gone_for_the_write_says_nothing_was_noted(pag
 
 @pytest.mark.outside
 @real_lit
-async def test_a_rank_whose_lit_is_gone_for_the_write_says_nothing_was_moved(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_rank_whose_lit_is_gone_for_the_write_says_nothing_was_moved(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    lit_gone_after_export(tmp_path, monkeypatch)
+    lit_gone_after_export(tmp_path)
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 502 and body.startswith(f"not moved: lit could not be started in {workspace.root}: ")
     assert workspace.order(mic, parser) == [mic, parser]
@@ -1308,9 +1324,9 @@ async def test_a_rank_whose_lit_is_gone_for_the_write_says_nothing_was_moved(pag
 
 @pytest.mark.outside
 @real_lit
-async def test_a_level_whose_lit_is_gone_for_its_first_write_says_nothing_was_leveled(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_level_whose_lit_is_gone_for_its_first_write_says_nothing_was_leveled(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    lit_gone_after_export(tmp_path, monkeypatch)
+    lit_gone_after_export(tmp_path)
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 502 and body.startswith(f"not leveled: lit could not be started in {workspace.root}: ")
     [event] = page.events("backlog.leveled")
@@ -1319,12 +1335,12 @@ async def test_a_level_whose_lit_is_gone_for_its_first_write_says_nothing_was_le
 
 @pytest.mark.outside
 @real_lit
-async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_in(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@INSIDE_A_SESSION
+async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_in(page: Page, workspace: Workspace, tmp_path: Path) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     seen = tmp_path / "seen"
     # lit rank takes no --by, and still runs in the person's environment, not the session's.
-    stub_lit(tmp_path, monkeypatch, rank=f'echo "session=$CLAUDE_CODE_SESSION_ID" > {seen}')
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", str(uuid.uuid4()))
+    stub_lit(tmp_path, rank=f'echo "session=$CLAUDE_CODE_SESSION_ID" > {seen}')
     status, _ = await moved(page, workspace, parser, above=mic)
     assert status == 200 and seen.read_text() == "session=\n"
 

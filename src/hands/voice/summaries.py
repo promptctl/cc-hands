@@ -9,7 +9,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.sessions.child import Children
 from hands.core.session import SessionId
 from hands.core.summaries import Digest, Due, Reckoning, Thing, reckon
 from hands.sessions import backlog as tracker
@@ -92,10 +91,10 @@ class Sighted:
     said: Mapping[str, str]
 
 
-async def sighted(children: Children, store: SummaryStore, project: Path) -> Sighted | tracker.Untracked:
+async def sighted(lit: tracker.Lit, store: SummaryStore, project: Path) -> Sighted | tracker.Untracked:
     """The backlog in `project` read fresh with every summary already said of it, or that lit has no workspace there;
     raises LitFailed when lit cannot say, and Rejected when what it said does not parse."""
-    match await tracker.read_backlog(children, project):
+    match await tracker.read_backlog(lit, project):
         case tracker.Untracked() as untracked:
             return untracked
         case backlog:

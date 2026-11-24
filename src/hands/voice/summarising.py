@@ -16,8 +16,7 @@ from typing import Literal
 from hands.clock import Clock
 from hands.core.summaries import Due, Thing, answered, page
 from hands.sessions.audit import Record
-from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, read_backlog
-from hands.sessions.child import Children
+from hands.sessions.backlog import BACKLOG, Lit, LitFailed, Untracked, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, WideEvent, annotate, begun, count, fail, unit
 from hands.voice.summaries import Backlog, SummaryStore, Turns
@@ -33,12 +32,12 @@ TEXT_LIMIT = 4000
 # The time a slim Claude Code takes to write BATCH lines of about thirty words each.
 SUMMARIES_TIMEOUT_SECONDS = 180.0
 
-async def keep_summarising(clock: Clock, store: SummaryStore, summarise: Summariser, record: Record) -> None:
+async def keep_summarising(clock: Clock, store: SummaryStore, summarise: Summariser, record: Record, lit: Lit) -> None:
     """Say each wanted backlog and each session's wanted turns, one at a time, until cancelled."""
     while True:
         match await store.wanted():
             case Backlog(project=project):
-                await summarise_backlog(clock, project, store, summarise, record)
+                await summarise_backlog(clock, lit, project, store, summarise, record)
             case Turns() as turns:
                 await summarise_turns(clock, turns, store, summarise, record)
 
@@ -108,8 +107,9 @@ async def summarise_turns(clock: Clock, turns: Turns, store: SummaryStore, summa
         await _say(unsaid, store, summarise, missed, batch)
 
 
-async def summarise_backlog(clock: Clock, project: Path, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
-    """Make every summary the backlog in `project` is missing under its current content, as one unit of work."""
+async def summarise_backlog(clock: Clock, lit: Lit, project: Path, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
+    """Make every summary the backlog `lit` holds for `project` is missing under its current content, as
+    one unit of work."""
     # [LAW:nothing-unseen] `unsaid` is what is still without a summary when the pass ends: what the summariser failed
     # on or left out, and the parents above them. `left_out` names what a reply gave no summary for, and `stray`
     # counts the reply lines that named nothing asked, so a model that skips items reads apart from one whose calls
@@ -117,7 +117,7 @@ async def summarise_backlog(clock: Clock, project: Path, store: SummaryStore, su
     # backlog's own summary: what the terminal is told of the pass.
     with _pass(clock, BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
-            backlog = await read_backlog(Children(clock, record), project)
+            backlog = await read_backlog(lit, project)
         except (LitFailed, Rejected) as error:
             # [LAW:no-silent-failure] a project hands cannot read fails its pass, saying why.
             fail(f"cannot read the backlog, so none of it is summarised: {error}")

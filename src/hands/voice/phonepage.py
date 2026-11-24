@@ -20,6 +20,7 @@ from aiohttp import web
 
 from hands.clock import Clock
 from hands.core.bearer import bears
+from hands.sessions.backlog import Lit
 from hands.sessions.child import Children
 from hands.sessions.audit import Record
 from hands.sessions.home import Home
@@ -100,7 +101,7 @@ def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str
     app.add_routes(brain_routes(clock, brain, key, record))
     app.add_routes(conversation_routes(clock, Conversation(audit), typed, key, record))
     # What runs lit for the page: on the phone's clock, each lit's event recorded with the page's.
-    app.add_routes(backlog_routes(Children(clock, record), store, key, record, environment))
+    app.add_routes(backlog_routes(Lit(Children(clock, record), environment), store, key, record))
     app.add_routes(gallery_routes(clock, gallery, key, record))
     app.add_routes(wake_routes(clock, gallery.wake, models, runtime, key, record))
     return app
