@@ -23,7 +23,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+
+	"github.com/bmf/cc-hands/fritter/intercept"
 )
 
 const usage = "usage: fritter [--socket-dir DIR] [--tap UPSTREAM --tap-ca VARIABLE --tap-to SOCKET] -- COMMAND [ARGS...]"
@@ -78,7 +81,7 @@ func run(args []string, stdin *os.File, stdout io.Writer) int {
 			return failed
 		}
 		defer tap.close()
-		env = append(env, tap.env(options.tap.trust)...)
+		env = append(env, tap.env()...)
 	}
 
 	wrapped, err := start(options.argv, env)
@@ -107,7 +110,9 @@ type options struct {
 // flag fritter also has is never mistaken for fritter's own.
 func parse(args []string) (options, error) {
 	parsed := options{dir: os.TempDir()}
-	tap, trust, to := "", "", ""
+	// [LAW:parse-dont-validate] each flag given once, with a value: a flag left empty or
+	// given twice is refused, never taken for one not given or for its last spelling.
+	given := map[string]string{}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
@@ -115,41 +120,56 @@ func parse(args []string) (options, error) {
 			if len(parsed.argv) == 0 {
 				return options{}, fmt.Errorf("no command after --")
 			}
-			// [LAW:types-are-the-program] a tap is all of its parts or none: a copy with
-			// nowhere to go, a socket with nothing tapped, or an upstream answered with a
-			// certificate the child was never given, is refused here and never run.
-			if (tap == "") != (to == "") || (tap == "") != (trust == "") {
-				return options{}, fmt.Errorf("--tap, --tap-ca and --tap-to go together")
+			if dir, ok := given["--socket-dir"]; ok {
+				parsed.dir = dir
 			}
-			if tap != "" {
-				upstream, err := parseUpstream(tap)
-				if err != nil {
-					return options{}, err
-				}
-				parsed.tap = &tapping{upstream: upstream, trust: trust, to: to}
-			}
-			return parsed, nil
+			tap, err := tapOf(given)
+			parsed.tap = tap
+			return parsed, err
 		case "--socket-dir", "--tap", "--tap-ca", "--tap-to":
-			if i+1 >= len(args) {
-				return options{}, fmt.Errorf("%s needs a value", args[i])
+			flag := args[i]
+			if i+1 >= len(args) || args[i+1] == "" {
+				return options{}, fmt.Errorf("%s needs a value", flag)
 			}
-			value := args[i+1]
-			switch args[i] {
-			case "--socket-dir":
-				parsed.dir = value
-			case "--tap":
-				tap = value
-			case "--tap-ca":
-				trust = value
-			case "--tap-to":
-				to = value
+			if _, twice := given[flag]; twice {
+				return options{}, fmt.Errorf("%s is given twice", flag)
 			}
+			given[flag] = args[i+1]
 			i++
 		default:
 			return options{}, fmt.Errorf("unknown argument %q", args[i])
 		}
 	}
 	return options{}, fmt.Errorf("no -- separating fritter's arguments from the command")
+}
+
+// tapOf is the tap the flags given ask for, nil where they ask for none.
+//
+// [LAW:types-are-the-program] a tap is all of its parts or none: a copy with nowhere to
+// go, a socket with nothing tapped, or an upstream answered with a certificate the child
+// was never given, is refused here and never run.
+func tapOf(given map[string]string) (*tapping, error) {
+	tap, tapped := given["--tap"]
+	trust, trusting := given["--tap-ca"]
+	to, copying := given["--tap-to"]
+	if tapped != copying || tapped != trusting {
+		return nil, fmt.Errorf("--tap, --tap-ca and --tap-to go together")
+	}
+	if !tapped {
+		return nil, nil
+	}
+	upstream, err := intercept.ParseOrigin(tap)
+	if err != nil {
+		return nil, fmt.Errorf("--tap: %w", err)
+	}
+	variable, err := intercept.ParseTrustVariable(trust)
+	if err == nil && strings.HasPrefix(trust, "FRITTER_") {
+		err = fmt.Errorf("%q is a variable fritter sets itself", trust)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("--tap-ca: %w", err)
+	}
+	return &tapping{upstream: upstream, trust: variable, to: to}, nil
 }
 
 // warn reports something fritter could not do, without stopping what it was doing.

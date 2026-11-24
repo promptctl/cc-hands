@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bmf/cc-hands/fritter/intercept"
 	"github.com/creack/pty"
 )
 
@@ -85,11 +87,15 @@ func tapped(t *testing.T, upstream string, to string) *Tap {
 // tappedTrusting is tapped by a fritter that trusts the upstream's certificate with roots.
 func tappedTrusting(t *testing.T, upstream string, to string, roots *x509.CertPool) *Tap {
 	t.Helper()
-	parsed, err := parseUpstream(upstream)
+	parsed, err := intercept.ParseOrigin(upstream)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tap, err := startTap(tapping{upstream: parsed, trust: "EXTRA_CA", to: to, roots: roots}, shortTempDir(t))
+	trust, err := intercept.ParseTrustVariable("EXTRA_CA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tap, err := startTap(tapping{upstream: parsed, trust: trust, to: to, roots: roots}, shortTempDir(t))
 	if err != nil {
 		t.Fatalf("startTap: %v", err)
 	}
@@ -97,12 +103,25 @@ func tappedTrusting(t *testing.T, upstream string, to string, roots *x509.CertPo
 	return tap
 }
 
+// trustedBy is the file of certificates the child is given to trust, as its environment
+// names it.
+func trustedBy(t *testing.T, tap *Tap) string {
+	t.Helper()
+	for _, variable := range tap.env() {
+		if named, found := strings.CutPrefix(variable, "EXTRA_CA="); found {
+			return named
+		}
+	}
+	t.Fatalf("the child is given %q, which names no file of certificates to trust", tap.env())
+	return ""
+}
+
 // child is an HTTP client as the child is one: fritter its proxy, and trusting what the
 // tap gave it to trust and nothing else.
 func child(t *testing.T, tap *Tap) *http.Client {
 	t.Helper()
-	proxy, _ := url.Parse(tap.address)
-	given, err := os.ReadFile(tap.trusted)
+	proxy, _ := url.Parse(tap.door.Address())
+	given, err := os.ReadFile(trustedBy(t, tap))
 	if err != nil {
 		t.Fatalf("the child was given no certificates it can read: %v", err)
 	}
@@ -249,13 +268,19 @@ func TestATapIsAllItsPartsOrNone(t *testing.T) {
 		{"--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 		{"--tap", "example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 		{"--tap", "ftp://example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "https://:8443", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "https://example.com", "--tap-ca", "EXTRA_CA=x", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "https://example.com", "--tap-ca", "NO_PROXY", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "https://example.com", "--tap-ca", "FRITTER_SOCKET", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "", "--tap-ca", "", "--tap-to", "", "--", "true"},
+		{"--tap", "https://example.com", "--tap", "https://other.example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 	} {
 		if _, err := parse(args); err == nil {
 			t.Errorf("parse(%q) took a tap it cannot run", args)
 		}
 	}
 	parsed, err := parse([]string{"--tap", "https://example.com/v1", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"})
-	if err != nil || parsed.tap == nil || parsed.tap.upstream.String() != "https://example.com" || parsed.tap.trust != "EXTRA_CA" || parsed.tap.to != "/tmp/x.sock" {
+	if err != nil || parsed.tap == nil || parsed.tap.upstream.String() != "https://example.com" || parsed.tap.trust.String() != "EXTRA_CA" || parsed.tap.to != "/tmp/x.sock" {
 		t.Errorf("parse of a whole tap gave %+v, %v", parsed.tap, err)
 	}
 }
@@ -377,7 +402,7 @@ func TestAnUpgradedExchangeJoinsTheChildToTheUpstreamAndIsCopiedToItsHead(t *tes
 	t.Cleanup(upstream.Close)
 	tap := tapped(t, upstream.URL, to)
 
-	connection, err := net.Dial("tcp", strings.TrimPrefix(tap.address, "http://"))
+	connection, err := net.Dial("tcp", strings.TrimPrefix(tap.door.Address(), "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +494,7 @@ func TestTheChildStillTrustsWhatItWasGivenToTrustBefore(t *testing.T) {
 	}
 	t.Setenv("EXTRA_CA", outer)
 	tap := tapped(t, "https://api.example.com", filepath.Join(shortTempDir(t), "wire.sock"))
-	given, err := os.ReadFile(tap.trusted)
+	given, err := os.ReadFile(trustedBy(t, tap))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +506,7 @@ func TestTheChildStillTrustsWhatItWasGivenToTrustBefore(t *testing.T) {
 func TestTheUpstreamsHostIsOpenedWhateverCaseItIsNamedIn(t *testing.T) {
 	to := filepath.Join(shortTempDir(t), "wire.sock")
 	tap := tapped(t, "https://API.Example.com", to)
-	connection, err := net.Dial("tcp", strings.TrimPrefix(tap.address, "http://"))
+	connection, err := net.Dial("tcp", strings.TrimPrefix(tap.door.Address(), "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,11 +516,87 @@ func TestTheUpstreamsHostIsOpenedWhateverCaseItIsNamedIn(t *testing.T) {
 	if response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect}); err != nil || response.StatusCode != 200 {
 		t.Fatalf("the CONNECT came back %v, %v", response, err)
 	}
-	opened := tls.Client(&read{Conn: connection, from: reader}, &tls.Config{ServerName: "api.example.com", InsecureSkipVerify: true})
+	// Nothing follows the CONNECT's answer until the client speaks: the reader holds nothing more.
+	opened := tls.Client(connection, &tls.Config{ServerName: "api.example.com", InsecureSkipVerify: true})
 	if err := opened.Handshake(); err != nil {
 		t.Fatalf("the connection was not answered over TLS: %v", err)
 	}
 	if issuer := opened.ConnectionState().PeerCertificates[0].Issuer.CommonName; !strings.HasPrefix(issuer, "fritter ") {
 		t.Errorf("api.example.com was answered by %q, want the tap's own certificate", issuer)
+	}
+}
+
+func TestCopiesLostAfterTheLastOneTakenAreSaidOnceTheChildHasGone(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("needs curl to be the child")
+	}
+	dir := shortTempDir(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {}))
+	t.Cleanup(upstream.Close)
+	// Nobody listens where the copies go: the child's one exchange is never heard.
+	printed := fritterAround(t, dir, upstream.URL, filepath.Join(dir, "wire.sock"), `curl -s "`+upstream.URL+`/v1/messages"`)
+	if !strings.Contains(string(printed), "fritter: 1 copies of the child's exchanges with "+upstream.URL+" never reached ") {
+		t.Errorf("fritter said %q at the end, want the copy it lost", printed)
+	}
+}
+
+func TestARequestWhoseBodyCannotBeReadIsRefusedAndCopiedAsUnreached(t *testing.T) {
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	copies := listening(t, to)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		t.Error("a request fritter could not read reached the upstream")
+	}))
+	t.Cleanup(upstream.Close)
+	tap := tapped(t, upstream.URL, to)
+	connection, err := net.Dial("tcp", strings.TrimPrefix(tap.door.Address(), "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	// A body shorter than the length it was sent with, and then no more.
+	if _, err := connection.Write([]byte("POST " + upstream.URL + "/v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc")); err != nil {
+		t.Fatal(err)
+	}
+	connection.(*net.TCPConn).CloseWrite()
+	lines := <-copies
+	if len(lines) != 2 || lines[0].Kind != "request" || string(lines[0].Body) != "abc" || lines[1].Kind != "unreached" || !strings.HasPrefix(lines[1].Error, "fritter could not read the request") {
+		t.Errorf("the copy is %+v, want the request as far as it was read, then unreached", lines)
+	}
+}
+
+func TestAChildThatRefusesTheTapsCertificateIsSaidToHaveRefusedIt(t *testing.T) {
+	tap := tapped(t, "https://api.example.com", filepath.Join(shortTempDir(t), "wire.sock"))
+	said, written, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = written
+	t.Cleanup(func() { os.Stderr = stderr })
+	proxy, _ := url.Parse(tap.door.Address())
+	// A child that trusts the system's certificates alone, as it would if it never read the file it was given.
+	stranger := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxy)}}
+	if _, err := stranger.Get("https://api.example.com/v1/models"); err == nil {
+		t.Fatal("a child that trusts no tap took its certificate")
+	}
+	reader := bufio.NewReader(said)
+	said.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if warned, err := reader.ReadString('\n'); err != nil || !strings.HasPrefix(warned, "fritter: the child refused fritter's answer for api.example.com:443: ") {
+		t.Errorf("fritter said %q, %v, want the child's refusal", warned, err)
+	}
+}
+
+func TestADoorThatStoppedServingIsSaidToHaveStoppedTakingTheChildsRequests(t *testing.T) {
+	said, written, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = written
+	t.Cleanup(func() { os.Stderr = stderr })
+	told(intercept.Stopped{Err: errors.New("the socket is lost")})
+	written.Close()
+	if warned, err := io.ReadAll(said); err != nil || string(warned) != "fritter: stopped taking the child's requests: the socket is lost\r\n" {
+		t.Errorf("fritter said %q, %v, want the door's stop", warned, err)
 	}
 }

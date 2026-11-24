@@ -113,6 +113,10 @@ An `http` UPSTREAM is tapped the same way, from the child's plain requests to it
 other connection goes through fritter unopened, through the proxy fritter itself was
 given if there was one.
 
+How a connection is told apart, answered or joined, and how the child is given a
+certificate to trust, lives in `intercept/`, which brioche, the brain's proxy, shares. A
+change there is a change to fritter, and so to every session that runs under it.
+
 A copy of each exchange with UPSTREAM goes to `SOCKET`, one connection per exchange, as
 JSON lines in the order it happened:
 
@@ -191,8 +195,8 @@ go build -o fritter .
 
 The tests wrap a shell, or the test binary itself reading its terminal raw and recording
 each read, rather than Claude Code, so they need no session and no network, and they are
-held to none: before the first test the test binary puts itself in macOS's sandbox with the
-repository's `tests/offline.sb`, as hands' own test run is held, so a test that connects
+held to none: before the first test every package's test binary puts itself in macOS's
+sandbox with the repository's `tests/offline.sb` (`testrun`), as hands' own test run is held, so a test that connects
 past loopback fails. That needs macOS 15 or later, cgo, which Go turns off on a Mac without
 Xcode's command line tools, and a shell that is not sandboxed already.
 They use short temporary directories on purpose: `t.TempDir()` names the directory after
