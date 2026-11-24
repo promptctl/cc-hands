@@ -335,6 +335,12 @@ def test_a_title_is_one_line_whatever_the_cause_said() -> None:
     assert filing.title(group) == "tool.call: request failed: <text> again"
 
 
+def test_a_title_cut_to_its_length_is_cut_between_two_characters_and_never_inside_an_escape() -> None:
+    group = grouping.Group("o", "x" * 113 + "\x1b[2J", (grouping.Sighting("o", "c", START, "o"),))
+    title = filing.title(group)
+    assert title == "o: " + "x" * 113 + "…" and len(title) <= filing.TITLE_CHARS
+
+
 def test_what_the_log_said_is_written_in_its_ticket_with_what_lit_cannot_be_handed_or_a_terminal_would_act_on_as_its_escape() -> None:
     # A NUL and a lone surrogate are no argument the OS can hand lit; an ESC or an RLO would rewrite the terminal the
     # ticket is read in.

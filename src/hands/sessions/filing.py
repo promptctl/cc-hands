@@ -95,8 +95,17 @@ def _told(group: Group, ticket: Ticket, backlog: Backlog) -> Iterable[datetime]:
 
 def title(group: Group) -> str:
     """Where the group came from, as a ticket names it, and its cause, on one line, cut to TITLE_CHARS."""
-    whole = _ticketed(" ".join(f"{group.named}: {group.cause}".split()))
-    return whole if len(whole) <= TITLE_CHARS else f"{whole[: TITLE_CHARS - 1]}…"
+    # Each character as it is written, so a cut falls between two of them and never inside an escape.
+    written = [_ticketed(character) for character in " ".join(f"{group.named}: {group.cause}".split())]
+    if sum(map(len, written)) <= TITLE_CHARS:
+        return "".join(written)
+    kept, length = list[str](), 0
+    for each in written:
+        if length + len(each) > TITLE_CHARS - 1:
+            break
+        kept.append(each)
+        length += len(each)
+    return f"{''.join(kept)}…"
 
 
 def _ticketed(said: str) -> str:
