@@ -493,14 +493,13 @@ async def test_a_call_that_sends_only_quiet_messages_is_not_hung_up_for_sending_
         assert left(calls(up.recorded)[0]).reason == "went quiet"
 
 
-# What one `quiet` of a page may count at a call's rate: the page cuts a message at the first 128-sample block that reaches
-# 20 ms, so at 48 kHz it holds 1024 samples, at 44.1 kHz 896, at 16 kHz 384.
-LARGEST_QUIET = [(48000, 1024), (44100, 896), (16000, 384)]
+# What one message of the page's may hold, or count in a `quiet`, at a call's rate: 100 ms.
+LARGEST_MESSAGE = [(48000, 4800), (44100, 4410), (16000, 1600)]
 UNREADABLE_QUIETS = [
     json.dumps({"kind": "quiet", "samples": samples})
-    for samples in (0, -1, 1.5, 1024.0, "1024", True, None, [1024], 1025, 144000)
-] + ['{"kind": "quiet"}', '{"kind": "loud", "samples": 1024}', '{"samples": 1024}', "[1024]", "1024", "quiet", "{", f'{{"kind": "quiet", "samples": {"9" * 5000}}}']
-UNREADABLE_AUDIO = [b"", b"\x01", b"\x01\x02\x03"]
+    for samples in (0, -1, 1.5, 1024.0, "1024", True, None, [1024], 4801, 144000)
+] + ['{"kind": "quiet"}', '{"kind": "loud", "samples": 1024}', '{"samples": 1024}', "[1024]", "1024", "quiet", "{", f'{{"kind": "quiet", "samples": {"9" * 5000}}}', "[" * 100000]
+UNREADABLE_AUDIO = [b"", b"\x01", b"\x01\x02\x03", bytes(2 * 4801)]
 
 
 @pytest.mark.parametrize("said", [*UNREADABLE_QUIETS, *UNREADABLE_AUDIO, 7, None])
@@ -509,18 +508,21 @@ def test_what_the_page_sends_that_is_not_audio_a_quiet_or_the_button_is_not_read
         parse_said(said, 48000)
 
 
-@pytest.mark.parametrize(("rate", "most"), LARGEST_QUIET)
-def test_a_quiet_is_read_from_one_sample_up_to_what_one_message_of_the_page_holds(rate: int, most: int) -> None:
+@pytest.mark.parametrize(("rate", "most"), LARGEST_MESSAGE)
+def test_audio_and_a_quiet_are_read_from_one_sample_up_to_what_one_message_may_hold(rate: int, most: int) -> None:
     for samples in (1, most):
-        assert parse_said(quiet_message(samples), rate) == Quiet(samples, rate)
+        assert parse_said(quiet_message(samples), rate) == Quiet(samples)
+        assert parse_said(bytes(2 * samples), rate) == bytes(2 * samples)
     with pytest.raises(Rejected):
         parse_said(quiet_message(most + 1), rate)
-
-
-@pytest.mark.parametrize("samples", [0, -1, 1025])
-def test_a_quiet_that_counts_what_a_message_cannot_hold_is_not_made(samples: int) -> None:
     with pytest.raises(Rejected):
-        Quiet(samples, 48000)
+        parse_said(bytes(2 * (most + 1)), rate)
+
+
+@pytest.mark.parametrize("samples", [0, -1])
+def test_a_quiet_that_counts_no_samples_is_not_made(samples: int) -> None:
+    with pytest.raises(Rejected):
+        Quiet(samples)
 
 
 def test_audio_is_read_whole_and_the_button_as_the_moves_it_makes() -> None:
@@ -529,7 +531,7 @@ def test_audio_is_read_whole_and_the_button_as_the_moves_it_makes() -> None:
 
 
 @pytest.mark.outside
-@pytest.mark.parametrize("said", ["wave", quiet_message(1025), quiet_message(0), b"\x01\x02\x03"])
+@pytest.mark.parametrize("said", ["wave", quiet_message(4801), quiet_message(0), b"\x01\x02\x03"])
 async def test_what_hands_cannot_read_is_said_makes_no_silence_and_is_counted_on_the_call(call: Call, said: bytes | str) -> None:
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
@@ -570,19 +572,19 @@ async def test_the_call_says_how_many_samples_its_page_held_back() -> None:
 @pytest.mark.outside
 async def test_a_quiet_hands_cannot_read_leaves_what_is_heard_as_if_it_had_not_been_sent() -> None:
     readable = [*map(quiet_message, HELD_BACK)]
-    assert await heard_from([quiet_message(1025), *readable]) == await heard_from(readable)
+    assert await heard_from([quiet_message(4801), *readable]) == await heard_from(readable)
 
 
 def an_offer(rate: object) -> dict[str, object]:
     return {"sdp": "v=0", "type": "offer", "rate": rate, "page": "a page", "claim": "take"}
 
 
-@pytest.mark.parametrize("rate", [8000, 44100, 48000, 192000])
+@pytest.mark.parametrize("rate", [3000, 44100, 48000, 768000])
 def test_an_offer_is_read_at_the_rates_a_browsers_microphone_runs_at(rate: int) -> None:
     assert phonepage.parse_offer(an_offer(rate)).rate == rate
 
 
-@pytest.mark.parametrize("rate", [True, 0, -48000, 7999, 192001, 1_000_000_000, 48000.0, "48000", None])
+@pytest.mark.parametrize("rate", [True, 0, -48000, 2999, 768001, 1_000_000_000, 48000.0, "48000", None])
 def test_an_offer_at_any_other_rate_is_not_read(rate: object) -> None:
     with pytest.raises(Rejected):
         phonepage.parse_offer(an_offer(rate))

@@ -17,14 +17,15 @@ from aiohttp.test_utils import BaseTestServer, TestServer
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
 from hands.clock import SYSTEM
-from hands.sessions.audit import AuditLog, Replied, Transcribed
+from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed
 from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
+from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import KEPT_SECONDS
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
-from hands.voice.phone import Phone
+from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
 from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
@@ -69,6 +70,8 @@ class Hands:
     voices: Voicing
     # The path of every request hands took, in the order it took them.
     requests: list[str]
+    # What the phone recorded, as its calls end.
+    recorded: list[Entry]
 
     def address(self, path: str, **query: str) -> str:
         """`path` on this server, carrying the phone's key as `hands phone` prints it."""
@@ -87,7 +90,8 @@ def wake_models(request: pytest.FixtureRequest, models: Path, tmp_path: Path) ->
 async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> AsyncGenerator[Hands]:
     home = Home(tmp_path / "hands")
     key = phone_key(SYSTEM, home)
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
+    recorded = list[Entry]()
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
     brain, typed, voices = Brain(), list[str](), Voicing()
 
     async def typing(text: str) -> None:
@@ -105,7 +109,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
 
     pages.middlewares.append(taken)
     async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, recorded)
         await phone.stop()
 
 
@@ -332,6 +336,11 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
             while not hands.phone.heard.empty():
                 frames.append(hands.phone.heard.get_nowait())
     assert any(any(frame.audio) for frame in frames if frame.key == "down")
+    # And hands could read every message the page sent: it counted what the page held back and rejected nothing.
+    await hands.phone.stop()
+    [event] = [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "phone.call"]
+    ended = event.facts["ended"]
+    assert isinstance(ended, CallLeft) and ended.rejected == 0 and ended.held_back > 0
 
 
 

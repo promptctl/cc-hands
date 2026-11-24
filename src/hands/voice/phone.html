@@ -333,14 +333,14 @@ async function connect(claim) {
   // An edge of a turn waits for the mark to come back through the tap, so every block the tap had when the button moved
   // has been gathered, and it is flushed as the side of the edge it was gathered on: a count before a press, audio before
   // a release. Then the word goes, and the turn opens or closes.
-  const edge = (word, entering) => { sent = sent.then(() => new Promise((done) => {
-    marked = () => { try { channel.send(word); } finally { inTurn = entering; done(); } };
+  const edge = (word) => { sent = sent.then(() => new Promise((done) => {
+    marked = () => { try { channel.send(word); inTurn = word === "press"; } finally { done(); } };
     tap.port.postMessage(tag);
   })); };
   // Each press is numbered in the call, as hands numbers the presses it hears over the ordered channel.
   const made = call = {pc, channel, ended: false, presses: 0,
-    press() { edge("press", true); return ++this.presses; },
-    release() { edge("release", false); },
+    press() { edge("press"); return ++this.presses; },
+    release() { edge("release"); },
   };
   channel.onopen = () => {
     wanted = true; tries = 0;

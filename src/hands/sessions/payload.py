@@ -129,5 +129,5 @@ class Payload:
 def _decoded(raw: bytes) -> object:
     try:
         return json.loads(raw)
-    except ValueError as error:  # a JSONDecodeError or UnicodeDecodeError, or an integer too long to read
+    except (ValueError, RecursionError) as error:  # a JSONDecodeError or UnicodeDecodeError, an integer too long to read, or nesting too deep
         raise Rejected(f"not JSON: {error}") from error

@@ -25,10 +25,9 @@ the phone back and forth between them; only a press takes it from another page.
 import asyncio
 import fractions
 import json
-import math
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from typing import Literal
+from typing import Literal, NewType
 
 import numpy as np
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerConnection, RTCSessionDescription
@@ -223,31 +222,36 @@ class Offer:
     asked: Asked
 
 
-# The sample rates a page's microphone comes at: the range the Web Audio API runs an AudioContext within.
-PAGE_RATES = range(8000, 192001)
-# The audio worklet's render quantum: the page's microphone arrives in blocks of this many samples.
-BLOCK_SAMPLES = 128
+# The sample rates hands answers a page at: the range Chrome runs an AudioContext within. The top of it bounds what a
+# bad offer can make hands build from one message, by `largest_message`.
+PAGE_RATES = range(3000, 768001)
+# The longest one message of the page's may be, audio or count: five of the 20 ms it sends. hands' own limit, wide
+# enough that a page cutting its messages another way is still read, and the one place a message that holds or claims
+# more is refused before hands builds anything from it.
+MESSAGE_MS = 100
 
 
-def largest_quiet(rate: int) -> int:
-    """The most samples one `quiet` of a correct page counts at `rate`: the page cuts a message at the first block that
-    reaches 20 ms, and a turn's edge only cuts one sooner, so no message holds more."""
-    return math.ceil(math.ceil(rate / 50) / BLOCK_SAMPLES) * BLOCK_SAMPLES
+def largest_message(rate: int) -> int:
+    """The most samples one message of the page's may hold, or count in a `quiet`, at `rate`."""
+    return rate * MESSAGE_MS // 1000
+
+
+# The page's microphone as the pipeline is fed it: 16-bit mono samples at the call's rate, whole, and no more than one
+# message may hold. Made only by `parse_said`, or for the silence a `Quiet` counts.
+Pcm = NewType("Pcm", bytes)
 
 
 @dataclass(frozen=True)
 class Quiet:
-    """The samples of its microphone, at `rate`, that the page held back because no turn was open: heard as that much
-    silence, so the page's messages stay the pipeline's clock. A count from 1 to what one message of the page holds, so a
-    page cannot make hands build silence faster than the page's microphone makes it."""
+    """The samples of its microphone, at the call's rate, that the page held back because no turn was open: heard as that
+    much silence, so the page's messages stay the pipeline's clock. At least one, and no more than one message may hold,
+    which `parse_said` has checked against the call's rate."""
 
     samples: int
-    rate: int
 
     def __post_init__(self) -> None:
-        # [LAW:parse-dont-validate] a Quiet that exists has passed this, whoever built it.
-        if not 1 <= self.samples <= largest_quiet(self.rate):
-            raise Rejected(f"the phone's page held back {self.samples} samples, which is not a count from 1 to {largest_quiet(self.rate)}")
+        if self.samples < 1:
+            raise Rejected(f"the phone's page held back {self.samples} samples, which is not a count of at least 1")
 
 
 def quiet_message(samples: int) -> str:
@@ -257,17 +261,18 @@ def quiet_message(samples: int) -> str:
 
 
 # What the page sends over the call's data channel: its microphone, the samples it held back, and its button.
-Said = bytes | Quiet | Move
+Said = Pcm | Quiet | Move
 
 
 def parse_said(message: object, rate: int) -> Said:
     """One message of the page's: 16-bit mono audio at the offer's rate `rate`, a `quiet`, or the button pressed or
-    released; raises Rejected for anything else."""
+    released; raises Rejected for anything else, and for audio or a count of more than one message may hold."""
+    most = largest_message(rate)
     match message:
         case bytes():
-            if not message or len(message) % 2:
-                raise Rejected(f"the phone's page sent audio of {len(message)} bytes, which is not a whole number of 16-bit samples")
-            return message
+            if not message or len(message) % 2 or len(message) > 2 * most:
+                raise Rejected(f"the phone's page sent audio of {len(message)} bytes, which is not from 1 to {most} whole 16-bit samples")
+            return Pcm(message)
         case "press":
             return "start"
         case "release":
@@ -277,7 +282,10 @@ def parse_said(message: object, rate: int) -> Said:
                 said = Payload.parse(message.encode())
                 if said.text("kind") != "quiet":
                     raise Rejected("its kind is not quiet")
-                return Quiet(said.integer("samples"), rate)
+                samples = said.integer("samples")
+                if samples > most:
+                    raise Rejected(f"it counts {samples} samples, and one message may count {most} at most")
+                return Quiet(samples)
             except Rejected as error:
                 raise Rejected(f"the phone's page sent {message[:80]!r}, which hands cannot read: {error}") from error
         case _:
@@ -452,7 +460,7 @@ class Phone:
             case Quiet(samples=samples):
                 call.held_back += samples
                 # [LAW:dataflow-not-control-flow] silence is the audio it stands for: it takes the path audio takes.
-                self._heard(call, bytes(2 * samples))
+                self._heard(call, Pcm(bytes(2 * samples)))
             case move:
                 taken = self._key.move(move, "phone button")
                 match move:
@@ -469,7 +477,7 @@ class Phone:
                     case taken:
                         self.moves.put_nowait(taken)
 
-    def _heard(self, call: _Call, audio: bytes) -> None:
+    def _heard(self, call: _Call, audio: Pcm) -> None:
         frame = AudioFrame.from_ndarray(np.frombuffer(audio, dtype=np.int16)[None, :], format="s16", layout="mono")
         frame.sample_rate = call.rate
         for out in call.resampler.resample(frame):

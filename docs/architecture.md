@@ -2288,9 +2288,9 @@ what is in one depends on whether a turn is open: inside a turn, the microphone 
 hears as that much silence at the call's rate, through the path audio takes. No microphone sample leaves the phone outside
 a turn: a press and a release each wait for the tap's mark to come back, which ends the message being gathered, so what
 was gathered before a press goes as a count and what was gathered before a release goes as audio, ahead of `release`. A
-message that hands cannot read (a count of no samples or more than one message holds, audio that is not whole samples,
-anything else) is rejected, logged, and counted on the call's event, and does not count as the page being alive: a page
-that sends only those is hung up as one that sends nothing. The page does the same the
+message that hands cannot read (audio or a count of more than 100 ms, which is five of the page's messages, a count of
+no samples, audio that is not whole samples, anything else) is rejected, logged, and counted on the call's event, and does
+not count as the page being alive: a page that sends only those is hung up as one that sends nothing. The page does the same the
 other way: hands sends its voice every 20 ms, silence and all, so a page that has received
 none for 3 s, or whose channel closes or connection fails, takes its call as dropped and
 calls again on its own, after 1 s, then doubling to every 8 s, at once when the page is
