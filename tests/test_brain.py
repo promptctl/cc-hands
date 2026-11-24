@@ -1805,7 +1805,7 @@ async def test_the_run_says_the_brains_login_expired_in_every_beat_once_a_turn_s
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=list[Entry]().append), Home(tmp_path), list[Entry]().append)
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
-    async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", list[Entry]().append, os.environ, never_barged_in, Attention) as minded:
+    async with mind(SYSTEM, claude, [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", list[Entry]().append, os.environ, never_barged_in, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         brain = minded.llm._brain  # pyright: ignore[reportPrivateUsage]
         degraded = [minded.degraded()]
