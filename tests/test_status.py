@@ -323,6 +323,8 @@ async def test_the_heartbeat_is_rewritten_every_period() -> None:
         assert beats == [beat * 10 for beat in range(period)]
         clock.advance(10)
     beating.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await beating
 
 
 async def test_work_off_the_loop_returns_its_result_or_raises_its_error() -> None:
