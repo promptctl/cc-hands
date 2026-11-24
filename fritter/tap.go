@@ -121,14 +121,12 @@ func now() float64 {
 // Tap is a running tap: the proxy the child is given, and the count of copies lost.
 type Tap struct {
 	upstream intercept.Origin
-	trusted  intercept.Trusted
 	door     *intercept.Door
 	lost     atomic.Int64
-	// [LAW:no-ambient-temporal-coupling] mu orders opening a copy against the close: once
-	// closed, no copy is delivered, and underway is the count, carried losses included, of
-	// those still being delivered.
+	// underway is the count, carried losses included, of the copies still being delivered.
+	// [LAW:no-ambient-temporal-coupling] every copy is opened before close waits for them:
+	// opened by the door's handlers, which its Close returns after.
 	mu         sync.Mutex
-	closed     bool
 	underway   int64
 	to         string
 	deliveries sync.WaitGroup
@@ -149,7 +147,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot listen for the child's requests to %s: %w", t.upstream, err)
 	}
-	tap := &Tap{upstream: t.upstream, trusted: trusted, to: t.to}
+	tap := &Tap{upstream: t.upstream, to: t.to}
 	// [LAW:no-silent-failure] Every error the proxies meet reaches the child, as a 502 or
 	// a reply cut short, and the listener, in the copy. Their own log would write into the
 	// child's terminal, which fritter holds in raw mode under its interface.
@@ -255,9 +253,6 @@ func told(event intercept.Event) {
 // child has gone, and what they still hold is how its last exchanges ended.
 func (tap *Tap) close() {
 	tap.door.Close()
-	tap.mu.Lock()
-	tap.closed = true
-	tap.mu.Unlock()
 	drained := make(chan struct{})
 	go func() {
 		tap.deliveries.Wait()
@@ -290,11 +285,6 @@ func (tap *Tap) open(request requested) *exchangeCopy {
 	request.Lost = tap.lost.Swap(0)
 	copied.put(request)
 	carried := request.Lost + 1
-	if tap.closed {
-		// The child has gone, and nothing more is delivered.
-		tap.lost.Add(carried)
-		return copied
-	}
 	tap.underway += carried
 	tap.deliveries.Add(1)
 	go func() {

@@ -103,12 +103,25 @@ func tappedTrusting(t *testing.T, upstream string, to string, roots *x509.CertPo
 	return tap
 }
 
+// trustedBy is the file of certificates the child is given to trust, as its environment
+// names it.
+func trustedBy(t *testing.T, tap *Tap) string {
+	t.Helper()
+	for _, variable := range tap.env() {
+		if named, found := strings.CutPrefix(variable, "EXTRA_CA="); found {
+			return named
+		}
+	}
+	t.Fatalf("the child is given %q, which names no file of certificates to trust", tap.env())
+	return ""
+}
+
 // child is an HTTP client as the child is one: fritter its proxy, and trusting what the
 // tap gave it to trust and nothing else.
 func child(t *testing.T, tap *Tap) *http.Client {
 	t.Helper()
 	proxy, _ := url.Parse(tap.door.Address())
-	given, err := os.ReadFile(tap.trusted.Path())
+	given, err := os.ReadFile(trustedBy(t, tap))
 	if err != nil {
 		t.Fatalf("the child was given no certificates it can read: %v", err)
 	}
@@ -481,7 +494,7 @@ func TestTheChildStillTrustsWhatItWasGivenToTrustBefore(t *testing.T) {
 	}
 	t.Setenv("EXTRA_CA", outer)
 	tap := tapped(t, "https://api.example.com", filepath.Join(shortTempDir(t), "wire.sock"))
-	given, err := os.ReadFile(tap.trusted.Path())
+	given, err := os.ReadFile(trustedBy(t, tap))
 	if err != nil {
 		t.Fatal(err)
 	}

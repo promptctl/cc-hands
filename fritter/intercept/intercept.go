@@ -10,6 +10,7 @@ package intercept
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -29,6 +30,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -363,15 +365,19 @@ type Door struct {
 	address string
 	outer   *http.Server
 	inner   *http.Server // serves the client's intercepted connections, once TLS is ended
-	// The connections taken from the servers to tunnel or intercept, and those dialled to
-	// tunnel to, which neither server tracks: Close ends them. And the door's own work, its
-	// servers and each request they handed it: Close waits for it.
+	log     *log.Logger  // the servers' log, each line of it Seen
+	// The connections taken from the servers, by the door or by a handler, and those dialled
+	// to tunnel to, which neither server tracks: Close ends them. And the door's own work,
+	// its servers and each request they handed it: Close waits for it, and every connection
+	// that work can wait on is one Close ends, or a dial Close cancels with `closing`.
 	// [LAW:no-ambient-temporal-coupling] once closed is set, no connection is taken and no
 	// work begins.
-	mu     sync.Mutex
-	closed bool
-	taken  map[net.Conn]struct{}
-	work   sync.WaitGroup
+	mu      sync.Mutex
+	closed  bool
+	taken   map[net.Conn]struct{}
+	work    sync.WaitGroup
+	closing context.Context
+	close   context.CancelFunc
 }
 
 // Open serves `o` on listener. A CONNECT to the origin's host, where it is https, is
@@ -387,7 +393,8 @@ func Open(listener net.Listener, o Opening) (*Door, error) {
 		return nil, errors.New("a door needs a Trusted, Intercepted, Forwarded, Proxy and Seen")
 	}
 	serving := log.New(lines(func(line string) { o.Seen(Logged{line}) }), "", 0)
-	door := &Door{opening: o, address: "http://" + listener.Addr().String(), taken: map[net.Conn]struct{}{}}
+	door := &Door{opening: o, address: "http://" + listener.Addr().String(), log: serving, taken: map[net.Conn]struct{}{}}
+	door.closing, door.close = context.WithCancel(context.Background())
 	origin := o.Trusted.interception.origin
 	door.inner = &http.Server{
 		Handler: door.handles(func(writer http.ResponseWriter, request *http.Request) {
@@ -424,7 +431,9 @@ func (l lines) Write(p []byte) (int, error) {
 }
 
 // handles has handler take each request the door is handed, as work Close waits for: a
-// request handed it once it is closed is answered that it is.
+// request handed it once it is closed is answered that it is. A handler's panic is logged
+// here, within that work, as net/http would log it, and net/http is then told only that the
+// handler gave up, which it ends the connection for and does not log.
 func (door *Door) handles(handler http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		door.mu.Lock()
@@ -438,6 +447,14 @@ func (door *Door) handles(handler http.HandlerFunc) http.Handler {
 			return
 		}
 		defer door.work.Done()
+		defer func() {
+			if cut := recover(); cut != nil {
+				if cut != http.ErrAbortHandler {
+					door.log.Printf("http: panic serving %v: %v\n%s", request.RemoteAddr, cut, debug.Stack())
+				}
+				panic(http.ErrAbortHandler)
+			}
+		}()
 		handler(writer, request)
 	})
 }
@@ -474,7 +491,13 @@ func (door *Door) route(ended *handed) http.Handler {
 
 // answer has request taken by handler, and says how it was answered once it was.
 func (door *Door) answer(route Route, handler http.Handler, asked string, writer http.ResponseWriter, request *http.Request) {
-	answering := &answering{ResponseWriter: writer}
+	answering := &answering{ResponseWriter: writer, door: door}
+	defer func() {
+		// The handler ended what it took, or is ending it: the door gives it up.
+		if answering.taken != nil {
+			door.forget(answering.taken)
+		}
+	}()
 	defer func() {
 		// The server ends the connection, and logs what is no http.ErrAbortHandler.
 		if cut := recover(); cut != nil {
@@ -486,11 +509,13 @@ func (door *Door) answer(route Route, handler http.Handler, asked string, writer
 	door.opening.Seen(Answered{Route: route, URL: asked, Status: answering.answered()})
 }
 
-// answering is a ResponseWriter that keeps the status it answered with.
+// answering is a ResponseWriter that keeps the status it answered with, and the
+// connection its handler took, which the door holds.
 type answering struct {
 	http.ResponseWriter
+	door   *Door
 	status int
-	taken  bool
+	taken  net.Conn
 }
 
 func (a *answering) WriteHeader(code int) {
@@ -513,17 +538,25 @@ func (a *answering) Unwrap() http.ResponseWriter {
 	return a.ResponseWriter
 }
 
+// Hijack takes the connection for the handler, and holds it for the door to end: a handler
+// joining it to another, as a ReverseProxy does an upgrade, ends once it is.
 func (a *answering) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	connection, read, err := http.NewResponseController(a.ResponseWriter).Hijack()
-	a.taken = err == nil
-	return connection, read, err
+	if err == nil {
+		err = a.door.hold(connection)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	a.taken = connection
+	return connection, read, nil
 }
 
 // answered is the status the answer went with: net/http's 200 where nothing was written,
 // and 0 where the connection was taken.
 func (a *answering) answered() int {
 	switch {
-	case a.taken:
+	case a.taken != nil:
 		return 0
 	case a.status == 0:
 		return http.StatusOK
@@ -587,7 +620,7 @@ func handshakeEnded(target string, err error) Event {
 // tunnel joins the client to target, through the outer proxy the door was given, if any,
 // each way until its sender ends it.
 func (door *Door) tunnel(writer http.ResponseWriter, target string) {
-	far, err := dial(door.opening.Proxy, target)
+	far, err := dial(door.closing, door.opening.Proxy, target)
 	if err == nil {
 		err = door.hold(far)
 	}
@@ -701,6 +734,7 @@ func (door *Door) Close() {
 	taken := door.taken
 	door.taken = map[net.Conn]struct{}{}
 	door.mu.Unlock()
+	door.close()
 	door.outer.Close()
 	door.inner.Close()
 	for connection := range taken {
@@ -724,23 +758,36 @@ func (b *buffered) CloseWrite() error {
 	return nil
 }
 
-// dial is a connection to target, through the proxy `proxy` names for it, if any.
-func dial(proxy Proxy, target string) (net.Conn, error) {
+// dial is a connection to target, through the proxy `proxy` names for it, if any, until
+// `closing` is done: then net.ErrClosed, the door having closed.
+func dial(closing context.Context, proxy Proxy, target string) (net.Conn, error) {
+	connection, err := dialing(closing, proxy, target)
+	if err != nil && closing.Err() != nil {
+		return nil, net.ErrClosed
+	}
+	return connection, err
+}
+
+func dialing(closing context.Context, proxy Proxy, target string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	// A CONNECT is a tunnel for TLS, and is routed as https is, whatever its port.
 	via, err := proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: target}})
 	if err != nil {
 		return nil, err
 	}
 	if via == nil {
-		return net.DialTimeout("tcp", target, 10*time.Second)
+		return dialer.DialContext(closing, "tcp", target)
 	}
 	if via.Scheme != "http" && via.Scheme != "https" {
 		return nil, fmt.Errorf("a tunnel goes only through an http or https proxy, and the proxy given is %s", via.Redacted())
 	}
-	connection, err := net.DialTimeout("tcp", hostPort(via), 10*time.Second)
+	connection, err := dialer.DialContext(closing, "tcp", hostPort(via))
 	if err != nil {
 		return nil, err
 	}
+	// The proxy's answer is waited for only until the door closes.
+	stop := context.AfterFunc(closing, func() { connection.Close() })
+	defer stop()
 	if via.Scheme == "https" {
 		// As net/http's own Transport reaches an https proxy: over TLS, trusting what the
 		// machine trusts. The handshake is made under the deadline set below.

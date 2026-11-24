@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -695,4 +696,137 @@ func TestAnAnswerWhoseConnectionCouldNotBeTakenIsTheStatusItWentWith(t *testing.
 	if status := answering.answered(); status != http.StatusInternalServerError {
 		t.Errorf("an answer whose connection was not taken went with %d, want the status it was answered with", status)
 	}
+}
+
+// closes is whether Close returns within five seconds: a door's Close returns once what it
+// ends has ended, and a dial's own timeout is ten.
+func closes(door *Door) bool {
+	closed := make(chan struct{})
+	go func() {
+		door.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		return true
+	case <-time.After(5 * time.Second):
+		return false
+	}
+}
+
+func TestClosingTheDoorEndsAConnectionAHandlerTookAndIsWaitingOn(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := make(chan struct{})
+	door, err := Open(listener, Opening{
+		Trusted:     trusted(t, "https://api.example.com"),
+		Intercepted: http.NotFoundHandler(),
+		// As a ReverseProxy joins an upgraded connection to the upstream's: until it ends.
+		Forwarded: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			connection, _, err := http.NewResponseController(writer).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			close(taken)
+			io.Copy(io.Discard, connection)
+			connection.Close()
+		}),
+		Proxy: unproxied,
+		Seen:  func(Event) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("GET http://elsewhere.example.com/socket HTTP/1.1\r\nHost: elsewhere.example.com\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	<-taken
+	if !closes(door) {
+		t.Fatal("the door did not close while a handler waited on the connection it took")
+	}
+}
+
+func TestClosingTheDoorEndsATunnelStillWaitingOnTheOuterProxyAndSaysTheDoorClosed(t *testing.T) {
+	// An outer proxy that takes the connection and never answers it.
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	asked := make(chan net.Conn, 1)
+	go func() {
+		if connection, err := silent.Accept(); err == nil {
+			asked <- connection
+		}
+	}()
+	outer := &url.URL{Scheme: "http", Host: silent.Addr().String()}
+	door := open(t, "https://api.example.com", func(*http.Request) (*url.URL, error) { return outer, nil })
+	client, err := net.Dial("tcp", door.address.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("CONNECT elsewhere.example.com:443 HTTP/1.1\r\nHost: elsewhere.example.com:443\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	defer (<-asked).Close()
+	if !closes(door.door) {
+		t.Fatal("the door did not close while a tunnel waited on the outer proxy")
+	}
+	if event, ok := (<-door.seen).(Unreached); !ok || !errors.Is(event.Err, net.ErrClosed) {
+		t.Errorf("the door saw %+v, want the tunnel unreached because the door closed", event)
+	}
+}
+
+func TestAHandlersPanicIsSeenLoggedBeforeTheDoorCloses(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logging, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	door, err := Open(listener, Opening{
+		Trusted:     trusted(t, "https://api.example.com"),
+		Intercepted: http.NotFoundHandler(),
+		Forwarded:   http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }),
+		Proxy:       unproxied,
+		// The first line of the panic's log is held until let go.
+		Seen: func(event Event) {
+			if logged, ok := event.(Logged); ok && strings.HasPrefix(logged.Line, "http: panic serving") && strings.HasSuffix(logged.Line, ": boom") {
+				once.Do(func() {
+					close(logging)
+					<-release
+				})
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := url.Parse(door.Address())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go (&http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(address)}}).Get("http://elsewhere.example.com/page")
+	<-logging
+	closed := make(chan struct{})
+	go func() {
+		door.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Error("the door closed while the panic it met was still being said")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-closed
 }
