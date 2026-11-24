@@ -22,12 +22,12 @@ from fixtures import pins
 
 RELEASE = b"#!/bin/sh\necho 'the pinned release'\n"
 OTHER = b"#!/bin/sh\necho 'another release'\n"
-# Releases that are never the pin, whatever version it is moved to.
-ANOTHER_VERSION = f"{pinned.PIN.version}.1"
-AN_OLDER_VERSION = f"{pinned.PIN.version}.0"
-# RELEASE's bytes pinned in place of the real release's, under the real version.
+# RELEASE as a release of its own, at the version its digest names.
 PIN = pins.of(RELEASE)
 VERSION = PIN.version
+# Releases that are never the pin.
+ANOTHER_VERSION = f"{VERSION}.1"
+AN_OLDER_VERSION = f"{VERSION}.0"
 
 
 def copied(path: Path, content: bytes) -> Path:
