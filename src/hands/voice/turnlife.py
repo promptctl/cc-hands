@@ -20,7 +20,7 @@ from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.clock import Clock
 from hands.sessions import wide
-from hands.sessions.wide import WideEvent, annotate, count, unit
+from hands.sessions.wide import WideEvent, annotate, unit
 from hands.voice import voiceturn
 from hands.voice.voiceturn import Ended, Going, SpeechStarted, SpeechStarting, SpeechStopped, Told, Turn, TurnEnded
 
@@ -35,18 +35,18 @@ class Ears(Protocol):
     def afresh(self) -> None: ...
 
 
-# The counts a life makes on the event of the unit of work open where it runs, which that unit declares.
-COUNTED: tuple[str, ...] = ("held_open", "ended_on_silence")
-
-
 @dataclass(frozen=True)
-class Buffer:
+class Detected:
     """What one buffer of audio said: where the detector's state moved, and whether Smart Turn's silence ran out in a turn
-    that was open. They are apart so a runner puts what else it heard of the buffer between them, in the order the desk
-    always has."""
+    that was open."""
 
-    changes: tuple[SpeechStarting | SpeechStarted | SpeechStopped, ...]
+    changes: tuple[Told, ...]
     silence: TurnEnded | None
+
+    def told[Between](self, between: tuple[Between, ...] = ()) -> tuple[Told | Between, ...]:
+        """What the buffer said, in the one order it is stepped in: the speech, then what else a runner heard of the buffer
+        (the desk's wake word), then the silence."""
+        return (*self.changes, *between, *([self.silence] if self.silence else []))
 
 
 class Life:
@@ -83,12 +83,9 @@ class Life:
         """Forget the silence the last buffer was heard in, so the speech the next buffer says starts as any speech does."""
         self._detected = VADState.QUIET
 
-    def opened(self, was: Turn | None, now: Turn | None) -> None:
-        """The turn going from `was` to `now`: one that has just opened is heard afresh from where it opened, if a wake
+    def opened(self, turn: Turn) -> None:
+        """A turn has just opened (`voiceturn.opened` says which): it is heard afresh from where it opened, if a wake
         opened it, and its deadlines are set."""
-        # [LAW:single-enforcer] one place says a turn has just opened, and what follows.
-        if (turn := voiceturn.opened(was, now)) is None:
-            return
         # [LAW:types-are-the-program] the wake word's own speech is no part of what is asked: heard afresh from where it
         # opened the turn, what is asked starts as any speech does, and Smart Turn judges it alone.
         if isinstance(turn, voiceturn.Waiting):
@@ -96,7 +93,7 @@ class Life:
         for at, told in voiceturn.deadlines(turn):
             self._clock.call_at(at, partial(self._later, told))
 
-    async def hear(self, audio: bytes, speech_allowed: bool, turn: Turn | None) -> Buffer:
+    async def hear(self, audio: bytes, speech_allowed: bool, turn: Turn | None) -> Detected:
         """Hear a buffer: detect, and feed Smart Turn where the detector is sure of speech and `speech_allowed`, as Pipecat
         feeds it, so the room heard otherwise is trimmed as silence is. `turn` is the one open as it is heard."""
         async with self._models:
@@ -105,34 +102,31 @@ class Life:
             silent_too_long = self._ears.heard(audio, speech_allowed and state == VADState.SPEAKING)
         changes = _changed(self._detected, state, self._clock)
         self._detected = state
-        return Buffer(changes, TurnEnded("silence", turn.since) if silent_too_long and turn is not None else None)
+        return Detected(changes, TurnEnded("silence", turn.since) if silent_too_long and turn is not None else None)
 
     async def judge(self, turn: Turn) -> TurnEnded | None:
         """Ask Smart Turn whether the speech that just stopped ends `turn`: its own unit of work, with its verdict. The
         answer names the turn it was asked for, and says nothing of the one open when it comes."""
         async with self._models:
+            self._settle()
             with unit(f"{self._name}.judged", self._emit, wide.begun(self._clock)):
                 complete, metrics = await self._ears.judge()
                 # [LAW:nothing-unseen] the verdict, and how sure of it the model was; no metrics is a segment with no audio
                 # in it.
                 annotate(complete=complete, probability=None if metrics is None else metrics.probability, inference_ms=None if metrics is None else metrics.e2e_processing_time_ms)
-        if complete:
-            return TurnEnded("verdict", turn.since)
-        count(held_open=1)
-        return None
+        return TurnEnded("verdict", turn.since) if complete else None
 
-    def ended(self, cause: object) -> None:
-        """A voice turn is over, by `cause`, or by something outside its life, a gate that took it: Smart Turn starts the
-        next with no speech of this one in it, as Pipecat clears it as each turn ends."""
-        if isinstance(cause, TurnEnded) and cause.by == "silence":
-            count(ended_on_silence=1)
+    def ended(self) -> None:
+        """A voice turn is over, by its own rules or by something outside its life, a gate that took it: Smart Turn starts
+        the next with no speech of this one in it. Pipecat clears it only as a verdict or the silence completes a turn, so a
+        turn thrown away or sent at the limit is cleared here."""
         if self._models.locked():
             self._clear_pending = True
         else:
             self._ears.clear()
 
     def _settle(self) -> None:
-        """Do the resets that waited for the models, before a buffer is heard with them."""
+        """Do the resets that waited for the models, before they are used again."""
         if self._afresh_pending:
             self._afresh_pending = False
             self._afresh_now()
@@ -143,31 +137,42 @@ class Life:
 
 class Runner:
     """The one turn open for a runner with no desk, and its life: handed a turn already open, as a wake opens one, it ends
-    the turn by the rules of any voice turn's life, or is told by whoever owns the gate that something else did."""
+    the turn by the rules of any voice turn's life, or is told by whoever owns the gate that something else did. Its
+    methods may run from different tasks while one awaits the models; what is heard, and what a verdict says, is stepped
+    only against the turn it was heard or judged for."""
 
     def __init__(self, life: Life) -> None:
         self._life = life
-        self.turn: Turn | None = None
+        self._turn: Turn | None = None
+
+    @property
+    def turn(self) -> Turn | None:
+        return self._turn
 
     def open(self, turn: Turn) -> None:
         # [LAW:no-silent-failure] a turn opened over another means the runner and the gate disagree about which is open.
-        if self.turn is not None:
-            raise ValueError(f"a turn opened at {turn.since} while the one opened at {self.turn.since} is open")
-        self.turn = turn
-        self._life.opened(None, turn)
+        if self._turn is not None:
+            raise ValueError(f"a turn opened at {turn.since} while the one opened at {self._turn.since} is open")
+        self._turn = turn
+        self._life.opened(turn)
 
     def cut(self) -> None:
-        """The turn was ended by something outside its life: the life ends with it, and clears the models as any end does."""
-        if self.turn is not None:
-            self.turn = None
-            self._life.ended(None)
+        """The turn was ended by something outside its life: the life ends with it, and clears the models as any end does.
+        A turn the runner ended itself first is already over, and the gate's cut for it ends nothing."""
+        if self._turn is not None:
+            self._turn = None
+            self._life.ended()
 
     async def hear(self, audio: bytes, speech_allowed: bool = True) -> Ended | None:
-        """Hear a buffer, and step what it said, in order, while the turn is open."""
-        buffer = await self._life.hear(audio, speech_allowed, self.turn)
-        for told in (*buffer.changes, *([buffer.silence] if buffer.silence else [])):
-            if isinstance(told, SpeechStarting):
-                continue
+        """Hear a buffer, and step what it said, in order, for the turn it was heard in."""
+        heard_in = self._turn
+        detected = await self._life.hear(audio, speech_allowed, heard_in)
+        for told in detected.told():
+            # [LAW:no-ambient-temporal-coupling] what a buffer said is of the turn it was heard in; a turn that opened since,
+            # while the models were in use, is none of it. One that ended since is left to `advance`, which steps nothing
+            # for no turn.
+            if voiceturn.opened(heard_in, self._turn) is not None:
+                return None
             if (ended := await self.advance(told)) is not None:
                 return ended
         return None
@@ -175,22 +180,22 @@ class Runner:
     async def advance(self, told: Told) -> Ended | None:
         """Step the open turn with `told`, asking Smart Turn when the speech stopped, and stepping its verdict at once
         against the turn open when it answers. How the turn ended, if it did."""
-        asked = self.turn
+        asked = self._turn
         if asked is None:
             return None
         match voiceturn.step(asked, told):
             case Ended() as ended:
-                self.turn = None
-                self._life.ended(told)
+                self._turn = None
+                self._life.ended()
                 return ended
             case Going(turn=turn, judge=judge):
-                self.turn = turn
+                self._turn = turn
                 if judge and (verdict := await self._life.judge(turn)) is not None:
                     return await self.advance(verdict)
                 return None
 
 
-def _changed(was: VADState, now: VADState, clock: Clock) -> tuple[SpeechStarting | SpeechStarted | SpeechStopped, ...]:
+def _changed(was: VADState, now: VADState, clock: Clock) -> tuple[Told, ...]:
     """What the detector's state moving from `was` to `now` says of the speech."""
     match was, now:
         case VADState.QUIET, VADState.STARTING:

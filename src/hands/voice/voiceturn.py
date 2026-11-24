@@ -5,16 +5,15 @@ by the silence that runs on past it, by the limit, or, for a wake that nothing w
 desk (`hands.voice.desk`) runs this life on its own ears, and so does anything else that hears a person speak.
 
 This module is the step, which is pure: a turn and what was heard make the turn after it, or its end. The work around the
-models that goes with it, hearing afresh, feeding Smart Turn, judging, clearing as a turn ends, is `Life`, and the owner of
-the one turn open for a runner with no desk is `Runner`.
+models that goes with it, hearing afresh, feeding Smart Turn, judging, clearing as a turn ends, is `Life`
+(`hands.voice.turnlife`), and the owner of the one turn open for a runner with no desk is its `Runner`.
 """
 
 from dataclasses import dataclass
 from typing import Literal
 
 from hands.voice import shortcut
-
-Instant = shortcut.Instant
+from hands.voice.shortcut import Instant
 
 # How long after the wake word what is asked may take to start: past it, the wake is taken for a word misheard.
 ASK_SECONDS = 8.0
@@ -61,7 +60,7 @@ class NothingAsked:
 
 
 # What a turn the voice has open is told: the speech, its end, and the deadlines it set itself.
-Told = SpeechStarted | SpeechStopped | TurnEnded | TurnTooLong | NothingAsked
+Told = SpeechStarting | SpeechStarted | SpeechStopped | TurnEnded | TurnTooLong | NothingAsked
 
 
 @dataclass(frozen=True)
@@ -105,8 +104,6 @@ def step(turn: Turn, told: Told) -> Going | Ended:
     match turn, told:
         case Waiting(since=since), SpeechStarted():
             return Going(Speaking(since))
-        # [LAW:types-are-the-program] the pause after the wake word is no end of the turn: Smart Turn judges the wake word
-        # complete, so only once what is asked has started does a stop go to it.
         # [LAW:no-ambient-temporal-coupling] a wake that nothing asked after, a word misheard in a quiet room, is thrown
         # away, counted only for the wake it was set for; a limit and a verdict count only for the turn they name.
         case Waiting(since=since), NothingAsked(woke_at=woke_at) if woke_at == since:
@@ -117,7 +114,13 @@ def step(turn: Turn, told: Told) -> Going | Ended:
             return Ended("stop")
         case Waiting(since=since) | Speaking(since=since), TurnTooLong(opened_at=opened_at) if opened_at == since:
             return Ended("timeout")
-        case _:
+        # [LAW:types-are-the-program] every other pair is named, so a new turn or a new thing told is a pair the checker
+        # reports until it is decided. The pause after the wake word is no end of the turn: Smart Turn judges the wake
+        # word complete, so only once what is asked has started does a stop go to it. A verdict, a limit or an ask that
+        # names a turn that is not this one leaves this one as it is.
+        case Waiting(), SpeechStarting() | SpeechStopped() | TurnEnded() | TurnTooLong() | NothingAsked():
+            return Going(turn)
+        case Speaking(), SpeechStarting() | SpeechStarted() | TurnEnded() | TurnTooLong() | NothingAsked():
             return Going(turn)
 
 

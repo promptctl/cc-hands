@@ -44,7 +44,7 @@ class Chosen:
     level: Level
 
 
-Heard = SpeechStarting | Woken | Told
+Heard = Woken | Told
 Event = KeyEvent | Heard | Chosen
 
 
@@ -249,7 +249,7 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
             return Voiced("engaged", Speaking(at), key), (Made("start", "engaged conversation"),)
         case Starting(key=key), SpeechStopped():
             return _rest("engaged", key, Made("disarm", "engaged conversation"))
-        case Woke() | Voiced(), SpeechStarted() | SpeechStopped() | TurnEnded() | TurnTooLong() | NothingAsked():
+        case Woke() | Voiced(), SpeechStarting() | SpeechStarted() | SpeechStopped() | TurnEnded() | TurnTooLong() | NothingAsked():
             return _in_turn(phase, heard)
         case _:
             return phase, ()

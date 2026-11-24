@@ -33,13 +33,14 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
-from hands.voice import loads
+from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
 from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Keyed, Leveled, Made, Woken, listens, step, turn_of
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
-from hands.voice.turnlife import COUNTED, Ears, Life
+from hands.voice.turnlife import Ears, Life
+from hands.voice.voiceturn import TurnEnded
 
 
 # The silence that ends speech: a pause between words is shorter, so it is inside the speech. At Pipecat's 0.2 s, tuned
@@ -172,7 +173,7 @@ _COUNTED: tuple[str, ...] = (
     *(name for literal in get_args(Move) for name in get_args(literal)),
     *(f"by_{trigger.replace(' ', '_')}" for trigger in get_args(Trigger)),
     *(f"to_{level.replace(' ', '_')}" for level in LEVELS),
-    *COUNTED, "heard",
+    "held_open", "ended_on_silence", "heard",
 )
 
 # Whether a buffer of the desk's microphone ends with the wake word (`hands.voice.wake`), heard afresh from it when its
@@ -251,10 +252,10 @@ async def drive(
                                     life.afresh()
                                 # Smart Turn hears speech only with no key down, so the room it hears otherwise is
                                 # trimmed as silence is.
-                                buffer = await life.hear(audio, not isinstance(desk.phase, Keyed), turn_of(desk.phase))
+                                detected = await life.hear(audio, not isinstance(desk.phase, Keyed), turn_of(desk.phase))
                                 # The wake word's model is run only where it can open a turn.
                                 word = desk.level == "wake word" and await woken(audio, begun)
-                                heard.extend([*buffer.changes, *([Woken(clock.now())] if word else []), *([buffer.silence] if buffer.silence else [])])
+                                heard.extend(detected.told((Woken(clock.now()),) if word else ()))
                             case Choice(level=chose, was=was_level):
                                 # A tool call cancelled while it waited, the user cutting the brain off, is answered by
                                 # no one; its choice is the user's all the same.
@@ -267,13 +268,14 @@ async def drive(
                     each = heard.popleft()
                     was = desk
                     desk, acts = step(desk, each)
-                    # Before the models load nothing the voice hears has opened a turn, so no turn has just opened.
-                    if life is not None:
-                        life.opened(turn_of(was.phase), turn_of(desk.phase))
-                        # Speech the desk ignored while the key was down starts for it as the key comes up, so a tap of
-                        # Shift as the user began does not lose what they say.
-                        if isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed):
-                            life.quiet()
+                    if (opened := voiceturn.opened(turn_of(was.phase), turn_of(desk.phase))) is not None:
+                        # Only a buffer heard with the models opens a voice turn.
+                        assert life is not None
+                        life.opened(opened)
+                    # Speech the desk ignored while the key was down starts for it as the key comes up, so a tap of Shift
+                    # as the user began does not lose what they say; before the models load there is none to forget.
+                    if life is not None and isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed):
+                        life.quiet()
                     for act in acts:
                         match act:
                             case "judge":
@@ -284,12 +286,16 @@ async def drive(
                                 assert turn is not None
                                 if (verdict := await life.judge(turn)) is not None:
                                     heard.appendleft(verdict)
+                                else:
+                                    count(held_open=1)
                             case Made(move=move, by=by):
                                 count(**{move: 1, f"by_{by.replace(' ', '_')}": 1})
+                                if move == "stop" and isinstance(each, TurnEnded) and each.by == "silence":
+                                    count(ended_on_silence=1)
                                 # [LAW:no-ambient-temporal-coupling] Smart Turn starts each turn with no speech of the
-                                # last one in it; before the models load it has heard none.
-                                if move in ("stop", "drop", "timeout") and life is not None:
-                                    life.ended(each)
+                                # last one in it, whoever ended it; before the models load it has heard none.
+                                if move in get_args(voiceturn.How) and life is not None:
+                                    life.ended()
                                 await on_move(act)
                             case Leveled(was=was_level, now=now, by=chooser):
                                 count(**{f"to_{now.replace(' ', '_')}": 1})
