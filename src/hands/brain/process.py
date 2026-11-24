@@ -972,6 +972,7 @@ class Brain:
         self,
         claude: InTmux,
         fritter: int,
+        shell: int,
         session: BrainSession,
         typist: Typist,
         listener: web.AppRunner,
@@ -984,6 +985,7 @@ class Brain:
     ) -> None:
         self._claude = claude
         self._fritter = fritter
+        self._shell = shell
         self._config_dir = config_dir
         self._session = session
         # [LAW:no-ambient-temporal-coupling] the launch's own start, once applied. The launch is up only once it is (`start`).
@@ -1039,9 +1041,10 @@ class Brain:
         return self._fritter
 
     @property
-    def shell(self) -> int | None:
-        """The pane's shell, which runs fritter and outlives it to write its status into the brain's socket dir."""
-        return self._claude.shell
+    def shell(self) -> int:
+        """The pane's shell, which runs fritter and outlives it to write what the pane showed and fritter's status into
+        the brain's socket dir."""
+        return self._shell
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         """One turn of the brain's, from its typing to its end; `asks` is told of each permission the turn holds for the user."""
@@ -1919,9 +1922,9 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         try:
             running = await in_tmux(Children(clock, record), station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
-            typist, wrapper = await _until(clock, running, by, partial(_typist, running, sockets))
+            typist, wrapper, shell = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)
-            brain = Brain(running, wrapper, session, typist, listener, sockets, station.config_dir, station.cwd, record, here(), clock)
+            brain = Brain(running, wrapper, shell, session, typist, listener, sockets, station.config_dir, station.cwd, record, here(), clock)
             posting.set_result(brain.posted)
             # [LAW:no-ambient-temporal-coupling] up once its input is and its own start is applied, the conversation it
             # launched in held, so the next start resumes what this one says. The brain answers every hook from here,
@@ -1989,14 +1992,14 @@ async def _until[T](clock: Clock, running: InTmux, by: float, ready: Callable[[]
     raise _unstarted(running, waiting)
 
 
-async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int]:
-    """The brain as fritter types into it: the socket fritter opened under `sockets`, and the claude it started; and that
-    fritter's pid."""
+async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int, int]:
+    """The brain as fritter types into it: the socket fritter opened under `sockets`, and the claude it started; that
+    fritter's pid; and the pane shell's, which the shell wrote before it started fritter."""
     found = [path for path in sockets.rglob("*") if path.is_socket()]
-    wrapper = running.fritter
+    wrapper, shell = running.fritter, running.shell
     child = None if wrapper is None else _child_of(wrapper)
-    if found and wrapper is not None and child is not None:
-        return Typist(found[0], child), wrapper
+    if found and wrapper is not None and shell is not None and child is not None:
+        return Typist(found[0], child), wrapper, shell
     raise _NotYet("fritter had not started the brain and opened its socket")
 
 
