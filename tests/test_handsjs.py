@@ -5,11 +5,10 @@ What hands answers a read is built as hands builds it (hands.voice.longpoll.Read
 
 import json
 from dataclasses import dataclass
-from importlib import resources
 from typing import cast
 
 import pytest
-import quickjs
+from jsmodule import JsModule
 
 from hands.voice.longpoll import WAIT_SECONDS, Read
 
@@ -55,23 +54,18 @@ class Page:
     """A page holding the script, and the fake hands it asks."""
 
     def __init__(self, fragment: str = "#the%20key") -> None:
-        self._js = quickjs.Context()
-        self._js.eval(f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}")
-        # QuickJS here loads no module a module imports, so what the module exports is handed to the test as a page's
-        # import would be.
-        module = resources.files("hands.voice").joinpath("hands.js").read_text()
-        self._js.module(f"{module}\nObject.assign(globalThis, {{asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS}});")
+        self._js = JsModule(
+            "hands.js", "asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
+        )
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
         self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
 
     def run(self, code: str) -> None:
-        self._js.eval(code)
-        self.settle()
+        self._js.run(code)
 
     def settle(self) -> None:
         """Every job the script has to run before it next waits on hands or a timer."""
-        while self._js.execute_pending_job():
-            pass
+        self._js.settle()
 
     def asking(self) -> list[Asked]:
         return [Asked(**each) for each in json.loads(cast(str, self._js.eval("asking()")))]
@@ -83,10 +77,10 @@ class Page:
         self.answer(200, json.dumps(Read(seen=seen, waits=WAIT_SECONDS, now=now, shown=shown)))
 
     def timers(self) -> list[int]:
-        return json.loads(cast(str, self._js.eval("JSON.stringify(timers.map(timer => timer.ms))")))
+        return cast(list[int], self._js.value("timers.map(timer => timer.ms)"))
 
     def seen(self, name: str) -> list[object]:
-        return json.loads(cast(str, self._js.eval(f"JSON.stringify({name})")))
+        return cast(list[object], self._js.value(name))
 
 
 @pytest.fixture

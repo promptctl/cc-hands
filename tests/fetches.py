@@ -28,11 +28,11 @@ from huggingface_hub.utils.tqdm import disable_progress_bars
 from mlx_audio.utils import get_model_path
 
 from hands.brain import pinned
+from hands.clock import SYSTEM
 from hands.voice import dtln, engaged, streaming, transcription, voiceprints
 from hands.voice import ortweb
-from hands.voice.ortweb import Runtime
-from hands.voice.pinnedfile import Mismatch, Unserved
-from hands.voice.wakemodels import Unheard, WakeModels
+from hands.voice.pinnedfile import Mismatch, Release, Unserved
+from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from npm_registry import REGISTRY
 from sentences import INSTALL_FAILURES, PUNKT_TAB, install
@@ -146,9 +146,9 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
         # The hub's failures are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
         fetching(write, f"{weights.what} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), weights.fetch)
     for word in WAKE_WORDS:
-        fetching(write, f"the {word.phrase} wake word's models", (Unheard,), partial(asyncio.run, WakeModels(fetches.wake_word).ensured(word)))
+        fetching(write, f"the {word.phrase} wake word's models", (Unserved,), partial(asyncio.run, WakeModels(fetches.wake_word, SYSTEM).ensured(word)))
     # The runtime the phone's page runs the wake word on, which its page test has the page fetch from hands.
-    fetching(write, f"ONNX Runtime Web {ortweb.VERSION}", (Unserved,), partial(asyncio.run, Runtime(fetches.runtime).ensured()))
+    fetching(write, f"ONNX Runtime Web {ortweb.VERSION}", (Unserved,), partial(asyncio.run, Release(fetches.runtime, SYSTEM).ensured(file.pin for file in ortweb.FILES)))
     fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, REGISTRY)))
     fetching(write, f"{MOCK_MODULE}@{MOCK_RELEASE}", (subprocess.CalledProcessError, OSError), partial(installed_mock, fetches.mock_binary(), fetches.machine))
 

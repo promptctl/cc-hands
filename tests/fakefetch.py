@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.voice.pinnedfile import Pin
+from hands.voice.pinnedfile import Kept, Pin
 
 
 class Fetching:
@@ -27,7 +27,7 @@ class Fetching:
     def names(self) -> list[str]:
         return [pin.name for _, pin in self.calls]
 
-    async def __call__(self, directory: Path, pin: Pin) -> Path:
+    async def __call__(self, directory: Path, pin: Pin) -> Kept:
         self.calls.append((directory, pin))
         self.begun.set()
         await self.release.wait()
@@ -35,7 +35,7 @@ class Fetching:
             raise self.failure
         directory.mkdir(parents=True, exist_ok=True)
         (directory / pin.name).write_bytes(self._contents.get(pin.name, f"the contents of {pin.name}".encode()))
-        return directory / pin.name
+        return Kept(directory / pin.name, "fetched")
 
 
 class Network:

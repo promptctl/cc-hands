@@ -4,13 +4,11 @@ steps: how audio is chunked, what each model is given, what a score is made of, 
 real models score the real recordings is the Chrome test's (tests/test_pages.py).
 """
 
-import json
-from importlib import resources
 from typing import cast
 
 import numpy as np
 import pytest
-import quickjs
+from jsmodule import JsModule
 
 FRAMES = 16
 THRESHOLD = 0.5
@@ -56,21 +54,15 @@ class Stream:
     """The module run in QuickJS, a stream of it over the stand-in models, and what the models were asked."""
 
     def __init__(self, threshold: float = THRESHOLD) -> None:
-        self._js = quickjs.Context()
-        # QuickJS here loads no module a module imports, so what the module exports is handed to the test as a page's
-        # import would be.
-        module = resources.files("hands.voice").joinpath("wakestream.js").read_text()
-        self._js.module(f"{module}\nObject.assign(globalThis, {{wakeStream, resampler, CHUNK}});")
+        self._js = JsModule("wakestream.js", "wakeStream, resampler, CHUNK")
         self._js.eval(STANDINS.replace("FRAMES", str(FRAMES)))
         self.run(f"start({threshold})")
 
     def run(self, code: str) -> None:
-        self._js.eval(code)
-        while self._js.execute_pending_job():
-            pass
+        self._js.run(code)
 
     def value(self, expression: str) -> object:
-        return json.loads(cast(str, self._js.eval(f"JSON.stringify({expression})")))
+        return self._js.value(expression)
 
     def fed(self, samples: int, *, start: int = 0) -> dict[str, object]:
         """What the stream answers `samples` samples of a rising count from `start`, at a level the models can tell apart."""

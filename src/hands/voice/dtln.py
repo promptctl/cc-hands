@@ -98,7 +98,7 @@ def fetched(directory: Path) -> tuple[Path, Path]:
     nothing to say why, so a file that is not the one pinned is refused by name (`hands.voice.pinnedfile`)."""
     directory.mkdir(parents=True, exist_ok=True)
     first, second = (
-        pinnedfile.fetched(directory, Pin(name, f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", digest, REVISION))
+        pinnedfile.fetched(directory, Pin(name, f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", digest, REVISION)).path
         for name, digest in PARTS
     )
     return first, second

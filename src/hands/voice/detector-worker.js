@@ -17,9 +17,11 @@ const onHands = value => typeof value === "string" && /^\/(?![/\\])/.test(value)
 // [LAW:parse-dont-validate] hands' answer as the settings it is, or thrown.
 function settingsOf(body) {
   const { phrase, threshold, kept_seconds, runtime, models } = body ?? {};
-  const ok = typeof phrase === "string" && typeof threshold === "number" && typeof kept_seconds === "number"
-    && onHands(runtime) && typeof models === "object" && models !== null && ROLES.every(role => onHands(models[role]));
+  const ok = typeof phrase === "string" && typeof threshold === "number" && typeof kept_seconds === "number" && onHands(runtime);
   if (!ok) throw new Error("hands' answer is not the wake word's settings");
+  for (const role of ROLES) {
+    if (!onHands(models?.[role])) throw new Error(`hands' answer for the wake word's settings names no model for the ${role}`);
+  }
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
 
@@ -49,10 +51,24 @@ async function load() {
     throw new Error(`the wake word's model does not take vectors of ${EMBEDDING_SIZE}, some number at a time: ${JSON.stringify(word.inputMetadata[0].shape)}`);
   }
   const run = async (model, data, dims) => (await model.run({ [model.inputNames[0]]: new ort.Tensor("float32", data, dims) }))[model.outputNames[0]].data;
+  // [LAW:parse-dont-validate] a model's answer is the size it is heard as, or thrown where it was given: the desk refuses a
+  // model that scores more than one word as this does (hands.voice.wake), and a wrong-width vector is not carried on to fail
+  // in the word model's words.
+  const sized = (model, answer, size) => {
+    if (answer.length !== size) throw new Error(`the ${model} model answered ${answer.length} numbers, and ${size} are heard`);
+    return answer;
+  };
+  const scored = async features => {
+    const answer = await run(word, features, [1, frames, EMBEDDING_SIZE]);
+    if (answer.length !== 1) throw new Error(`the wake word model scores ${answer.length} words, and a wake word is one`);
+    return answer[0];
+  };
+  // Asked once, before it is heard with, so a model that scores several words is refused here and not at its first hearing.
+  await scored(new Float32Array(frames * EMBEDDING_SIZE));
   const stream = await wakeStream({
     melspectrogram: samples => run(melspectrogram, samples, [1, samples.length]),
-    embedding: window => run(embedding, window, [1, MEL_WINDOW, BANDS, 1]),
-    word: async features => (await run(word, features, [1, frames, EMBEDDING_SIZE]))[0],
+    embedding: async window => sized("embedding", await run(embedding, window, [1, MEL_WINDOW, BANDS, 1]), EMBEDDING_SIZE),
+    word: scored,
     frames,
     threshold: settings.threshold,
   });

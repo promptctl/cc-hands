@@ -77,10 +77,15 @@ async def serve_desk(
         # [LAW:no-silent-failure] the models every level hears with are fetched and loaded once, beside the talk key as
         # the desk starts: one that cannot be is the run's failure, said with what could not be loaded, never a level
         # that fails as it is chosen.
-        # [LAW:nothing-unseen] the fetch is its own unit of work, naming the files the wake word is heard with.
+        # [LAW:nothing-unseen] the fetch is its own unit of work, naming the files the wake word is heard with, those it
+        # fetched, none once they are kept, and those it wrote over for bytes that were not the pinned ones.
         with unit("desk.fetched", record, begun(clock)):
             files = await models.ensured(word)
-            annotate(files=", ".join(path.name for path in files.by_role().values()))
+            annotate(
+                files=", ".join(path.name for path in files.by_role().values()),
+                fetched=", ".join(name for name, how in models.how.items() if how == "fetched"),
+                replaced=", ".join(name for name, how in models.how.items() if how == "replaced"),
+            )
         async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
 

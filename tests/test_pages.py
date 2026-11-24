@@ -4,7 +4,7 @@ the route tests' fakes: a choice made on each page as a person makes it, and wha
 import base64
 import os
 import subprocess
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,19 +22,18 @@ from hands.virtualclock import VirtualClock
 from hands.voice.clips import KEPT_SECONDS
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
-from hands.voice.ortweb import Runtime
-from hands.voice.pinnedfile import Fetch, Pin
 from hands.voice.phone import Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
+from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
 from hands.voice.ptt import PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.tool import tool
 from hands.voice.tools import audited
 from hands.voice.voicechoice import VOICES, Voice
 from hands.voice.wake import WakeWord
-from hands.voice.wakemodels import ROLES, THRESHOLD, Files, WakeModels
-from hands.voice.wakeword import Pretrained
+from hands.voice.wakemodels import PRETRAINED, ROLES, Files, WakeModels
+from hands.voice.wakeword import THRESHOLD, Pretrained
 from speech import RATE, quiet, spoken
 from test_backlogpage import LIT, Workspace, epic, real_lit, workspace  # pyright: ignore[reportUnusedImport]  (a fixture, found by its name)
 from test_brainpage import SLEEPING, Brain
@@ -42,6 +41,9 @@ from test_conversationpage import a_log, set_trigger
 from test_gallerypage import MODELS, Desk, Listening, Own, Speaker, Voicing
 
 pytestmark = pytest.mark.outside
+
+# A model of two words, as openWakeWord scores them, which no wake word is: tests/test_trigger.py has it too.
+TWO_WORDS = Path(__file__).parent / "fixtures" / "two_words.onnx"
 
 # A microphone Chrome makes up, granted without asking: the phone's call takes one, and no test has a person to allow it.
 FAKE_MICROPHONE = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
@@ -73,10 +75,10 @@ class Hands:
 
 @pytest.fixture
 def wake_models(request: pytest.FixtureRequest, models: Path, tmp_path: Path) -> WakeModels:
-    """The models hands serves the wake word's page: the run's own, already fetched, unless a test parametrizes this with a
-    fetch of its own, which then fetches into a directory that holds none."""
-    fetch: Fetch | None = getattr(request, "param", None)
-    return WakeModels(models) if fetch is None else WakeModels(tmp_path / "unfetched", fetch)
+    """The models hands serves the wake word's page: the run's own, already fetched, unless a test parametrizes this with
+    the fetch it wants given the run's models, which then fetches into a directory that holds none."""
+    fetch: Callable[[Path], Fetch] | None = getattr(request, "param", None)
+    return WakeModels(models, SYSTEM) if fetch is None else WakeModels(tmp_path / "unfetched", SYSTEM, fetch(models))
 
 
 @pytest.fixture
@@ -91,7 +93,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(VirtualClock()), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
-    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Runtime(onnx_runtime))
+    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
     requests = list[str]()
 
     @web.middleware
@@ -340,7 +342,7 @@ async def test_the_phone_hears_the_wake_word_where_the_mac_does_and_asks_nothing
     # Not in the sentence that names Jarvis in passing, but in the one that says the word: and where the Mac hears it, to
     # within what the phone's chunks and its own resampling move it by.
     assert len(before) / (RATE * 2) < heard["at"]
-    assert abs(heard["at"] - mac_hears_at(await WakeModels(models).ensured(Pretrained()), before + said)) < 0.5
+    assert abs(heard["at"] - mac_hears_at(await WakeModels(models, SYSTEM).ensured(Pretrained()), before + said)) < 0.5
     # Everything the page and its worker loaded came from hands, the runtime and the models among it.
     origin = str(hands.server.make_url("/"))
     assert [url for url in asked_of if not url.startswith(origin)] == []
@@ -361,15 +363,38 @@ async def test_a_second_page_runs_the_runtime_from_the_browsers_copy(keeping_bro
 class Unreachable:
     """A fetch that cannot reach the release."""
 
-    async def __call__(self, directory: Path, pin: Pin) -> Path:
+    async def __call__(self, directory: Path, pin: Pin) -> Kept:
         raise OSError("the network is down")
 
 
-@pytest.mark.parametrize("wake_models", [Unreachable()], indirect=True)
+class WithTwoWords:
+    """A fetch that gives the run's own models, but for Hey Jarvis's, which it gives a model that scores two words."""
+
+    def __init__(self, models: Path) -> None:
+        self._models = models
+
+    async def __call__(self, directory: Path, pin: Pin) -> Kept:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / pin.name).write_bytes((TWO_WORDS if pin == PRETRAINED["Hey Jarvis"] else self._models / pin.name).read_bytes())
+        return Kept(directory / pin.name, "fetched")
+
+
+def unreachable(_models: Path) -> Fetch:
+    return Unreachable()
+
+
+@pytest.mark.parametrize("wake_models", [unreachable], indirect=True)
 async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_cannot_listen_in_hands_words(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
     await detecting(page)
     assert await page.evaluate("events") == [{"kind": "failed", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
+
+
+@pytest.mark.parametrize("wake_models", [WithTwoWords], indirect=True)
+async def test_a_model_that_scores_two_words_is_refused_by_the_phone_as_the_desk_refuses_it(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(hands.address("/"))
+    await detecting(page)
+    assert await page.evaluate("events") == [{"kind": "failed", "why": "the wake word model scores 2 words, and a wake word is one"}]
 
 
 async def test_a_rate_that_is_not_a_rate_is_refused_by_the_detector_in_words(browser: Opened, hands: Hands) -> None:

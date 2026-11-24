@@ -14,11 +14,11 @@ from hands.sessions.wide import annotate, begun, fail, unit
 from hands.voice import ortweb
 from hands.voice.clips import KEPT_SECONDS
 from hands.voice.keyed import keyed
-from hands.voice.ortweb import Runtime
+from hands.voice.ortweb import File
 from hands.voice.pagescript import script_route
-from hands.voice.pinnedfile import Unserved
-from hands.voice.wakemodels import ROLES, THRESHOLD, Unheard, WakeModels
-from hands.voice.wakeword import Word
+from hands.voice.pinnedfile import Release, Unserved
+from hands.voice.wakemodels import ROLES, WakeModels
+from hands.voice.wakeword import THRESHOLD, Word
 
 # The scripts the page runs the detector with.
 SCRIPTS = ("wakestream.js", "detector.js", "detector-worker.js")
@@ -31,13 +31,13 @@ KEPT_A_YEAR = "public, max-age=31536000, immutable"
 MODEL_PREFIX = "/wake/models/"
 
 
-def unavailable(error: Unheard | Unserved) -> web.Response:
+def unavailable(error: Unserved) -> web.Response:
     """What cannot be had, said to the page that asked for it in hands' words, and recorded as the unit's failure."""
     fail(str(error))
     return web.Response(status=503, text=str(error))
 
 
-def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Runtime, key: str, record: Record) -> list[web.RouteDef]:
+def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Release, key: str, record: Record) -> list[web.RouteDef]:
     """The detector's scripts and the runtime it runs on, open as the phone's page is; and the word's settings and its
     models, under the phone's `key`, because the phone's own models are its owner's.
 
@@ -45,27 +45,26 @@ def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Runtime, 
     and the phrase the gallery shows are one.
     """
 
-    async def ran(request: web.Request) -> web.StreamResponse:
-        with unit("phone.wake.runtime", record, begun(clock)):
-            name = request.match_info["name"]
-            if request.match_info["version"] != ortweb.VERSION or name not in runtime.files:
-                fail(f"no such file in onnxruntime-web {ortweb.VERSION}")
-                return web.Response(status=404, text=f"hands serves onnxruntime-web {ortweb.VERSION}, and only its {', '.join(runtime.files)}")
-            annotate(file=name)
-            try:
-                path = await runtime.path(name)
-            except Unserved as error:
-                return unavailable(error)
-            response = web.FileResponse(path, headers={"Cache-Control": KEPT_A_YEAR})
-            response.content_type = runtime.files[name].content_type
-            return response
+    def ran(file: File) -> web.RouteDef:
+        async def serve(_request: web.Request) -> web.StreamResponse:
+            with unit("phone.wake.runtime", record, begun(clock)):
+                try:
+                    path = await runtime.path(file.pin)
+                except Unserved as error:
+                    return unavailable(error)
+                # [LAW:nothing-unseen] a request that made hands fetch the file, or write over one with other bytes, says so.
+                annotate(file=file.pin.name, source=runtime.how[file.pin.name])
+                response = web.FileResponse(path, headers={"Cache-Control": KEPT_A_YEAR})
+                response.content_type = file.content_type
+                return response
+
+        return web.get(f"{ortweb.PREFIX}{file.pin.name}", serve)
 
     @keyed(clock, "phone.wake.settings", record, key)
     async def settings(_request: web.Request) -> web.StreamResponse:
         try:
             await models.ensured(word)
-            await runtime.ensured()
-        except (Unheard, Unserved) as error:
+        except Unserved as error:
             return unavailable(error)
         # No-store, as the models are: the phone runs the word the Mac names now, never the one a browser kept.
         return web.json_response(
@@ -73,28 +72,27 @@ def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Runtime, 
                 "phrase": word.phrase,
                 "threshold": THRESHOLD,
                 "kept_seconds": KEPT_SECONDS,
-                "runtime": f"{ortweb.PREFIX}{ortweb.SCRIPT}",
+                "runtime": f"{ortweb.PREFIX}{ortweb.SCRIPT.pin.name}",
                 "models": {role: f"{MODEL_PREFIX}{role}" for role in ROLES},
             },
             headers={"Cache-Control": "no-store"},
         )
 
-    @keyed(clock, "phone.wake.model", record, key)
-    async def model(request: web.Request) -> web.StreamResponse:
-        role = request.match_info["role"]
-        if role not in ROLES:
-            fail(f"no such model: {role}")
-            return web.Response(status=404, text=f"the models are {', '.join(ROLES)}")
-        annotate(model=role)
-        try:
-            files = await models.ensured(word)
-        except Unheard as error:
-            return unavailable(error)
-        return web.FileResponse(files.by_role()[role], headers={"Cache-Control": "no-store"})
+    def model(role: str) -> web.RouteDef:
+        @keyed(clock, "phone.wake.model", record, key)
+        async def serve(_request: web.Request) -> web.StreamResponse:
+            annotate(model=role)
+            try:
+                files = await models.ensured(word)
+            except Unserved as error:
+                return unavailable(error)
+            return web.FileResponse(files.by_role()[role], headers={"Cache-Control": "no-store"})
+
+        return web.get(f"{MODEL_PREFIX}{role}", serve)
 
     return [
         *(script_route(name) for name in SCRIPTS),
-        web.get(f"{ortweb.ROOT}{{version}}/{{name}}", ran),
+        *(ran(file) for file in ortweb.FILES),
         web.get("/wake/settings", settings),
-        web.get(f"{MODEL_PREFIX}{{role}}", model),
+        *(model(role) for role in ROLES),
     ]

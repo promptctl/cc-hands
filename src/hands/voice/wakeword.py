@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-# openWakeWord's own wake words, by how each is said, and the file of each in its release.
+# openWakeWord's own wake words, by how each is said.
 type Phrase = Literal["Hey Jarvis", "Hey Mycroft", "Hey Rhasspy", "Alexa"]
-PRETRAINED: dict[Phrase, str] = {"Hey Jarvis": "hey_jarvis_v0.1.onnx", "Hey Mycroft": "hey_mycroft_v0.1.onnx", "Hey Rhasspy": "hey_rhasspy_v0.1.onnx", "Alexa": "alexa_v0.1.onnx"}
+
+
+# openWakeWord's own default: its pretrained models are tuned to score a wake word above it and little else.
+THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)

@@ -24,11 +24,15 @@ from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
-from hands.voice.wakemodels import THRESHOLD, Files, Unheard
-from hands.voice.wakeword import Word
+from hands.voice.wakemodels import Files
+from hands.voice.wakeword import THRESHOLD, Word
 
 # The only rate openWakeWord's models hear.
 SAMPLE_RATE = 16_000
+
+
+class Unheard(Exception):
+    """A model the wake word cannot be heard with, and why."""
 
 
 class WakeWord:

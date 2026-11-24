@@ -18,11 +18,11 @@ from hands.virtualclock import VirtualClock
 from hands.voice import ortweb
 from hands.voice.clips import KEPT_SECONDS
 from hands.voice.keyed import UNKEYED
-from hands.voice.ortweb import FILES, Runtime
-from hands.voice.pinnedfile import Mismatch
+from hands.voice.ortweb import FILES
 from hands.voice.phonewake import KEPT_A_YEAR, SCRIPTS, wake_routes
-from hands.voice.wakemodels import EMBEDDING, MELSPECTROGRAM, ROLES, THRESHOLD, WakeModels
-from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
+from hands.voice.pinnedfile import Mismatch, Release
+from hands.voice.wakemodels import EMBEDDING, MELSPECTROGRAM, PRETRAINED, ROLES, WakeModels
+from hands.voice.wakeword import THRESHOLD, Pretrained, Trained, Word
 from conftest import events
 
 pytestmark = pytest.mark.outside
@@ -31,7 +31,8 @@ KEY = "the-phones-key"
 JARVIS = PRETRAINED["Hey Jarvis"]
 AUTHORISED = {"Authorization": f"Bearer {KEY}"}
 # What each file is, as the stand-in fetch writes it: the bytes say which file it is.
-RUNTIME = {name: f"the contents of {name}".encode() for name in FILES}
+RUNTIME = {file.pin.name: f"the contents of {file.pin.name}".encode() for file in FILES}
+SCRIPT, WASM = (file.pin.name for file in FILES)
 
 
 @dataclass
@@ -49,7 +50,7 @@ async def serving(tmp_path: Path, word: Word) -> AsyncGenerator[Served]:
     recorded: list[Entry] = []
     runtime, models = Fetching(), Fetching()
     app = web.Application()
-    app.add_routes(wake_routes(VirtualClock(), word, WakeModels(tmp_path / "models", models), Runtime(tmp_path / "runtime", FILES, runtime), KEY, recorded.append))
+    app.add_routes(wake_routes(VirtualClock(), word, WakeModels(tmp_path / "models", VirtualClock(), models), Release(tmp_path / "runtime", VirtualClock(), runtime), KEY, recorded.append))
     async with TestClient(TestServer(app)) as client:
         yield Served(client, runtime, models, recorded)
 
@@ -68,24 +69,24 @@ async def test_the_detectors_scripts_are_served_to_anyone_and_kept_by_no_browser
 
 
 async def test_a_file_of_the_runtime_is_served_to_anyone_for_a_year_as_what_it_is(served: Served) -> None:
-    script = await served.client.get(f"/ort/{ortweb.VERSION}/{ortweb.SCRIPT}")
-    wasm = await served.client.get(f"/ort/{ortweb.VERSION}/{ortweb.WASM}")
-    assert (script.status, script.content_type, script.headers["Cache-Control"], await script.read()) == (200, "text/javascript", KEPT_A_YEAR, RUNTIME[ortweb.SCRIPT])
-    assert (wasm.status, wasm.content_type, wasm.headers["Cache-Control"], await wasm.read()) == (200, "application/wasm", KEPT_A_YEAR, RUNTIME[ortweb.WASM])
+    script = await served.client.get(f"/ort/{ortweb.VERSION}/{SCRIPT}")
+    wasm = await served.client.get(f"/ort/{ortweb.VERSION}/{WASM}")
+    assert (script.status, script.content_type, script.headers["Cache-Control"], await script.read()) == (200, "text/javascript", KEPT_A_YEAR, RUNTIME[SCRIPT])
+    assert (wasm.status, wasm.content_type, wasm.headers["Cache-Control"], await wasm.read()) == (200, "application/wasm", KEPT_A_YEAR, RUNTIME[WASM])
+    # [LAW:nothing-unseen] each request says it made hands fetch the file.
+    assert [(event.facts["file"], event.facts["source"]) for event in served.events("phone.wake.runtime")] == [(SCRIPT, "fetched"), (WASM, "fetched")]
 
 
-@pytest.mark.parametrize("path", [f"/ort/1.0.0/{ortweb.SCRIPT}", f"/ort/{ortweb.VERSION}/anything-else.js", f"/ort/{ortweb.VERSION}/..%2Fsecret"])
-async def test_a_version_or_a_file_hands_does_not_serve_is_told_there_is_none(served: Served, path: str) -> None:
-    response = await served.client.get(path)
+@pytest.mark.parametrize("path", [f"/ort/1.0.0/{SCRIPT}", f"/ort/{ortweb.VERSION}/anything-else.js", f"/ort/{ortweb.VERSION}/..%2Fsecret", "/wake/models/passwd"])
+async def test_a_version_or_a_file_hands_does_not_serve_is_not_found_and_nothing_is_fetched_for_it(served: Served, path: str) -> None:
+    response = await served.client.get(path, headers=AUTHORISED)
     assert response.status == 404
-    assert ortweb.VERSION in await response.text()
-    assert served.runtime.calls == []
-    assert [event.outcome for event in served.events("phone.wake.runtime")] == ["failed"]
+    assert (served.runtime.calls, served.models.calls) == ([], [])
 
 
 async def test_a_runtime_hands_cannot_fetch_is_refused_in_hands_words_and_never_served(served: Served) -> None:
     served.runtime.failure = Mismatch("ort.wasm.bundle.min.mjs at onnxruntime-web 1.31.1 is aaa, not the bbb pinned")
-    response = await served.client.get(f"/ort/{ortweb.VERSION}/{ortweb.SCRIPT}")
+    response = await served.client.get(f"/ort/{ortweb.VERSION}/{SCRIPT}")
     assert response.status == 503
     assert "is aaa, not the bbb pinned" in await response.text()
     [event] = served.events("phone.wake.runtime")
@@ -108,25 +109,20 @@ async def test_the_settings_are_the_macs_word_and_threshold_the_second_kept_and_
         "phrase": "Hey Jarvis",
         "threshold": THRESHOLD,
         "kept_seconds": KEPT_SECONDS,
-        "runtime": f"/ort/{ortweb.VERSION}/{ortweb.SCRIPT}",
+        "runtime": f"/ort/{ortweb.VERSION}/{SCRIPT}",
         "models": {"melspectrogram": "/wake/models/melspectrogram", "embedding": "/wake/models/embedding", "word": "/wake/models/word"},
     }
-    # Every file is held to its digest before the page is told where it is.
-    assert (sorted(served.runtime.names), served.models.names) == (sorted(FILES), [MELSPECTROGRAM, EMBEDDING, JARVIS])
+    # The models are held to their digests before the page is told where they are; the runtime is fetched when the page asks
+    # for it, which is the one ask that waits as long as the file takes.
+    assert (served.runtime.names, served.models.names) == ([], [MELSPECTROGRAM.name, EMBEDDING.name, JARVIS.name])
 
 
 async def test_each_model_is_the_file_the_mac_runs_and_is_kept_by_no_browser(served: Served) -> None:
-    for role, file in zip(ROLES, (MELSPECTROGRAM, EMBEDDING, JARVIS), strict=True):
+    for role, pin in zip(ROLES, (MELSPECTROGRAM, EMBEDDING, JARVIS), strict=True):
         response = await served.client.get(f"/wake/models/{role}", headers=AUTHORISED)
-        assert (response.status, response.headers["Cache-Control"], await response.read()) == (200, "no-store", f"the contents of {file}".encode())
+        assert (response.status, response.headers["Cache-Control"], await response.read()) == (200, "no-store", f"the contents of {pin.name}".encode())
     # Fetched once for the three asks, and not again for the asks after.
-    assert served.models.names == [MELSPECTROGRAM, EMBEDDING, JARVIS]
-
-
-async def test_a_model_hands_does_not_have_is_told_there_is_none(served: Served) -> None:
-    response = await served.client.get("/wake/models/passwd", headers=AUTHORISED)
-    assert response.status == 404
-    assert "melspectrogram" in await response.text()
+    assert served.models.names == [MELSPECTROGRAM.name, EMBEDDING.name, JARVIS.name]
 
 
 async def test_a_word_the_user_trained_is_served_from_where_they_keep_it_under_the_same_name(tmp_path: Path) -> None:
@@ -157,9 +153,3 @@ async def test_models_hands_cannot_fetch_are_refused_in_hands_words_naming_why(s
     [event] = served.events("phone.wake.model")
     assert (event.outcome, event.error) == ("failed", said)
 
-
-async def test_the_settings_are_refused_when_the_runtime_cannot_be_had(served: Served) -> None:
-    served.runtime.failure = OSError("the network is down")
-    response = await served.client.get("/wake/settings", headers=AUTHORISED)
-    assert response.status == 503
-    assert "the network is down" in await response.text()

@@ -21,8 +21,8 @@ from hands.voice.trigger import Choice
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
 from hands.voice.wake import SAMPLE_RATE, WakeWord, listening, loaded
-from hands.voice.wakemodels import THRESHOLD, Files, WakeModels
-from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
+from hands.voice.wakemodels import PRETRAINED, Files, WakeModels
+from hands.voice.wakeword import THRESHOLD, Pretrained, Trained, Word
 
 
 class ScriptedEars:
@@ -150,7 +150,7 @@ def test_the_detector_hears_the_room_while_hands_speaks_and_each_waking_says_whe
 
 async def files_of(models: Path, word: Word) -> Files:
     """The files `word` is heard with, from the models the run fetched."""
-    return await WakeModels(models).ensured(word)
+    return await WakeModels(models, SYSTEM).ensured(word)
 
 
 def said(asked: str) -> bytes:
@@ -179,7 +179,7 @@ async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(models: P
     async with loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained("Hey Mycroft")), Pretrained("Hey Mycroft"), events.append) as word:
         assert wakes(word, said("Hey Mycroft. What is the status of the build?"))
         assert not wakes(word, said("Hey Jarvis. What is the status of the build?"))
-    assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Mycroft", str(models / PRETRAINED["Hey Mycroft"]))]
+    assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Mycroft", str(models / PRETRAINED["Hey Mycroft"].name))]
 
 
 @pytest.mark.outside
@@ -187,7 +187,7 @@ async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_t
     # openWakeWord's Hey Mycroft model stands in for one the user trained, under a name of their own.
     trained = tmp_path / "mine" / "hey_computer.onnx"
     trained.parent.mkdir()
-    trained.write_bytes((models / PRETRAINED["Hey Mycroft"]).read_bytes())
+    trained.write_bytes((models / PRETRAINED["Hey Mycroft"].name).read_bytes())
     events: list[WideEvent] = []
     word_trained = Trained("Hey Computer", trained)
     async with loaded(SYSTEM, SAMPLE_RATE, await files_of(models, word_trained), word_trained, events.append) as word:
