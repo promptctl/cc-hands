@@ -31,6 +31,14 @@ Chosen = Voice | LibraryVoice
 
 
 @dataclass(frozen=True)
+class SampleLine:
+    """The line a voice says when it is heard, and the key the file keeps it under: the voice as the file spells it."""
+
+    key: str
+    line: str
+
+
+@dataclass(frozen=True)
 class Saved:
     """A line kept for a voice: what the voice will say, and the key the file keeps it under, which is the spelling of
     the voice the file already held where it held one."""

@@ -30,7 +30,7 @@ from hands.voice.echo import seconds
 from hands.voice.library import Found, Library, address
 from hands.voice.player import LineFrame, LineText, Lines, Unsaid, line_frame
 from hands.voice.synthesis import Made, SpeakingIn, Synthesis
-from hands.voice.voicechoice import VOICES, Chosen, LibraryVoice, Saved, keep, spoken
+from hands.voice.voicechoice import VOICES, Chosen, LibraryVoice, SampleLine, Saved, keep, spoken
 
 # The language the TTS service speaks, which picks the set of embeddings a voice's name resolves to.
 LANGUAGE = Language.EN
@@ -98,7 +98,7 @@ class SampleLines(Protocol):
 
     def read(self) -> Mapping[Chosen, str]: ...
 
-    def keep(self, voice: Chosen, line: str) -> str: ...
+    def keep(self, voice: Chosen, line: str) -> SampleLine: ...
 
 
 class Voices:
@@ -147,9 +147,10 @@ class Voices:
         return await self._hear(((voice, said(voice, line)),))
 
     async def keep_line(self, voice: Chosen, line: str) -> Saved:
-        """From its next hearing on, `voice` says `line`, or hands' own where it is blank; returns what it will say."""
-        key = await asyncio.to_thread(self._samples.keep, voice, line)
-        return Saved(key, said(voice, line))
+        """From its next hearing on, `voice` says `line`, or hands' own where it is blank; returns what it will say, and the
+        key the file keeps its line under."""
+        kept = await asyncio.to_thread(self._samples.keep, voice, line)
+        return Saved(kept.key, said(voice, kept.line))
 
     async def _hear(self, lines: tuple[tuple[Chosen, str], ...]) -> Chosen:
         async with self._changing:

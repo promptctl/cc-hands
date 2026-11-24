@@ -51,7 +51,7 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
-from hands.voice.voicechoice import Chosen, parse_voice
+from hands.voice.voicechoice import Chosen, SampleLine, parse_voice
 from hands.voice.wakemodels import PRETRAINED
 from hands.voice.wakeword import Pretrained, Trained, Word
 
@@ -222,8 +222,9 @@ def _with_model(held: bytes | None, model: str) -> bytes:
 
 
 def _keep(home: Home, held: bytes | None, edited: bytes) -> None:
-    # [LAW:one-source-of-truth] a save by hand since the choice was weighed is the user's, and is not written over where
-    # it is seen here; the file has no lock, so one landing between this read and the write below is not.
+    # [LAW:one-source-of-truth] exception: a save by hand since the choice was weighed is not written over where it is
+    # seen here, but the file has no lock, so one landing between this read and the write below is, as is an edit made
+    # at the same moment by the gallery or a model switch (promptctl-phone-app-9d9y.r8p).
     if _held(home) != held:
         raise Rejected(f"{home.config} was saved after the choice was made, so the choice was not written over it")
     # Through a link to the file, as dotfiles keep one, so the link stays and the file it names takes the edit.
@@ -284,15 +285,7 @@ def _toml(text: str) -> dict[str, object]:
         raise Rejected(f"not TOML: {error}") from error
 
 
-@dataclass(frozen=True)
-class Kept:
-    """The line a voice says when it is heard, and the key the file keeps it under: the voice as the file spells it."""
-
-    key: str
-    line: str
-
-
-def _crossed(text: str, model: str | None) -> tuple[Config, dict[Chosen, Kept]]:
+def _crossed(text: str, model: str | None) -> tuple[Config, dict[Chosen, SampleLine]]:
     """The settings `text` holds, and the lines it keeps for voices, which Config holds none of: a line edited is no
     edit, since it is read where it is said."""
     # [LAW:parse-dont-validate] the one crossing from the file: past it, a setting is a variant that holds exactly its fields.
@@ -310,13 +303,13 @@ def _crossed(text: str, model: str | None) -> tuple[Config, dict[Chosen, Kept]]:
     return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk), devices=devices), lines
 
 
-def _sample_lines(top: Mapping[str, object]) -> dict[Chosen, Kept]:
+def _sample_lines(top: Mapping[str, object]) -> dict[Chosen, SampleLine]:
     """The line each voice says when it is heard. A key is a voice's name said as a person says it, or a library voice's
     path, so one that is neither is refused here, where the file is read, and not when a voice is heard; two keys for one
     voice are refused, since which of their lines it says would be a guess."""
     where = "[sample_lines]"
     table = _table(top, "sample_lines")
-    kept: dict[Chosen, Kept] = {}
+    kept: dict[Chosen, SampleLine] = {}
     for key in table:
         try:
             voice = parse_voice(key)
@@ -324,7 +317,7 @@ def _sample_lines(top: Mapping[str, object]) -> dict[Chosen, Kept]:
             raise Rejected(f"{where} {error}") from error
         if voice in kept:
             raise Rejected(f"{where} names one voice twice, spelled two ways: {kept[voice].key!r} and {key!r}")
-        kept[voice] = Kept(key, _text(table, where, key, ""))
+        kept[voice] = SampleLine(key, _text(table, where, key, ""))
     return kept
 
 
@@ -341,13 +334,15 @@ class SampleLines:
         self._running = running
 
     def read(self) -> dict[Chosen, str]:
+        # Only the lines are read, so a hearing is refused for what the lines hold and not for the rest of the file.
         held = _readable(self._home, _held(self._home))
         kept = _file(self._home, held, lambda text: _sample_lines(_toml(text)))
         return {voice: each.line for voice, each in kept.items()}
 
-    def keep(self, voice: Chosen, line: str) -> str:
+    def keep(self, voice: Chosen, line: str) -> SampleLine:
         """`voice` says `line` from its next hearing on, replacing the one the file keeps for it under whatever spelling
-        it holds; a blank line takes its line out, so it says hands' own again. Returns the key the file kept it under."""
+        it holds; a blank line takes its line out, so it says hands' own again. Returns the line as written, blank where
+        it was taken out, and the key the file keeps or kept it under."""
         held = _readable(self._home, _held(self._home))
         # The file is taken whole first, on the run's --model as a start takes it, so an edit is only ever made to
         # settings a start would take.
@@ -357,7 +352,7 @@ class SampleLines:
         # What is written is taken as a start takes it, so the file never holds a key the next start refuses.
         _settings(self._home, edited, self._running.model)
         _keep(self._home, held, edited)
-        return key
+        return SampleLine(key, line.strip())
 
 
 def _with_line(held: bytes | None, key: str, line: str) -> bytes:
