@@ -41,7 +41,7 @@ from hands.brain.pinned import ENV as PINNED
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
 from hands.clock import Clock, wait
-from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HeardBy, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
+from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, ToldByRecord, ToldByStop, TurnEnding, Withdraw
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
@@ -668,8 +668,6 @@ class BrainAnswered:
     # What its StopFailure said failed it, read once as it ended (`ClaudeTurns.end`): an expired login, or the failure as
     # Claude Code said it.
     error: StopFailed | LoginExpired | None
-    # How its end was heard (`Summarise.heard_by`): by Claude Code's own account of it, or by a record the transcript keeps.
-    heard_by: HeardBy = "stop"
 
 
 @dataclass(frozen=True)
@@ -844,8 +842,9 @@ class ClaudeTurns:
     goes by. Both rest on the brain's hooks being waited on (hookconfig's brain table); when one is not, every turn
     open is `failed` (`Brain._lost`), and none is guessed."""
 
-    def __init__(self, ended: Callable[[ClaudeTurn], None]) -> None:
-        # Told of each turn as it ends, in the step it ends: what rides it ends with it (`Brain._settle`).
+    def __init__(self, ended: Callable[[ClaudeTurn, TurnEnding | None], None]) -> None:
+        # Told of each turn as it ends, in the step it ends, with how its telling heard its end, or None where no telling
+        # ended it: what rides it ends with it (`Brain._settle`).
         self._on_end = ended
         self._open: list[ClaudeTurn] = []
         # The turn Claude Code runs now: the last one opened, while it is open, or the turn behind once the one ahead ends.
@@ -915,8 +914,13 @@ class ClaudeTurns:
     def end(self, running: ClaudeTurn, told: Summarise) -> None:
         """Ends `running` as `told` tells it."""
         self._end(running)
-        running.ended.set_result(BrainAnswered(told.turn, None if told.failure is None else expired(told.failure), told.heard_by))
-        self._on_end(running)
+        match told.ending:
+            case ToldByStop(failure=StopFailed() as failure):
+                error = expired(failure)
+            case ToldByStop() | ToldByRecord():
+                error = None
+        running.ended.set_result(BrainAnswered(told.turn, error))
+        self._on_end(running, told.ending)
 
     def lost(self, error: BaseException) -> tuple[ClaudeTurn, ...]:
         """Ends every open turn with `error`, as `failed`, where Claude Code may still run one of them: which it runs is
@@ -937,7 +941,7 @@ class ClaudeTurns:
         running.ended.set_exception(error)
         # Said by whoever waits on it, or by the brain itself: not again by asyncio.
         running.ended.exception()
-        self._on_end(running)
+        self._on_end(running, None)
 
     def _run(self, running: ClaudeTurn) -> ClaudeTurn:
         self._open.append(running)
@@ -952,15 +956,15 @@ class ClaudeTurns:
             self._current = None if self._unknown else next((behind for behind in self._open if not behind.ids), None)
 
 
-def reported(was: LoginExpired | None, running: ClaudeTurn) -> LoginExpired | None:
-    """What the brain's turns say of its login once `running` has ended, given what they said before: an expired login
-    where Claude Code ended it saying so, and nothing where it ended it otherwise. A turn no telling ended, or one only
-    the transcript's record told (an interrupt, whoever pressed the key), shows nothing of the login, so what was said
-    before stands."""
-    match running.ended.exception() or running.ended.result():
-        case BrainAnswered(error=LoginExpired() as login):
+def reported(was: LoginExpired | None, running: ClaudeTurn, ending: TurnEnding | None) -> LoginExpired | None:
+    """What the brain's turns say of its login once `running` has ended as `ending` heard it, given what they said
+    before: an expired login where Claude Code ended it saying so, and nothing where its Stop ended it otherwise. A turn
+    no telling ended, or one only the transcript's record told (an interrupt, whoever pressed the key), shows nothing of
+    the login, so what was said before stands."""
+    match (running.ended.exception() or running.ended.result(), ending):
+        case (BrainAnswered(error=LoginExpired() as login), _):
             return login
-        case BrainAnswered(heard_by="stop"):
+        case (_, ToldByStop()):
             return None
         case _:
             return was
@@ -1864,11 +1868,11 @@ class Brain:
         """The expired login the brain's turns last reported, or None where none has: which is no proof the login works."""
         return self._login
 
-    def _settle(self, running: ClaudeTurn) -> None:
+    def _settle(self, running: ClaudeTurn, ending: TurnEnding | None) -> None:
         """[LAW:single-enforcer] the turn in flight that rides `running` ends with it, whatever ended it: its telling, a
         clear, the order lost, the brain's exit. A turn stopped is `_stopping`'s to end. Every turn of Claude Code's ends
         here, one it opened itself included, so here is where what its end says of the login is heard."""
-        was, self._login = self._login, reported(self._login, running)
+        was, self._login = self._login, reported(self._login, running, ending)
         # [LAW:nothing-unseen] each change of what the brain reports of its login is a line, with the turn that changed it.
         if self._login != was:
             self._record(LoginReported(tuple(sorted(running.ids)), None if self._login is None else str(self._login)))

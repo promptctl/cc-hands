@@ -20,7 +20,7 @@ from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
 from hands.brain.session import BrainSession
 from hands.brain.process import ClaudeTurns, BROKEN, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Untaken, _listen, _Turn, model  # pyright: ignore[reportPrivateUsage]
-from hands.core.effects import Allow, Deny, HeardBy, HookReply, Submitted, Summarise
+from hands.core.effects import Allow, Deny, HookReply, Submitted, Summarise, ToldByRecord, ToldByStop, TurnEnding
 from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
@@ -644,8 +644,8 @@ def _took(brain: Brain, prompt: str, words: str, queued: bool = False) -> None:
     brain._took(Submitted(SessionId("b1"), PromptId(prompt), words, queued))  # pyright: ignore[reportPrivateUsage]
 
 
-def _told(brain: Brain, prompt: str | None, ids: Sequence[str], waiting: tuple[str, ...] = (), failure: StopFailed | None = None, heard_by: HeardBy = "stop") -> None:
-    brain._told(Summarise(SessionId("b1"), None if prompt is None else PromptId(prompt), "Done.", waiting, failure, ids=frozenset(map(PromptId, ids)), heard_by=heard_by))  # pyright: ignore[reportPrivateUsage]
+def _told(brain: Brain, prompt: str | None, ids: Sequence[str], waiting: tuple[str, ...] = (), ending: TurnEnding = ToldByStop("Done.")) -> None:
+    brain._told(Summarise(SessionId("b1"), None if prompt is None else PromptId(prompt), ending, waiting, ids=frozenset(map(PromptId, ids))))  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_turn_told_under_an_id_its_hook_did_not_name_ends_its_own_turn_by_the_ids_its_telling_carries() -> None:
@@ -1018,7 +1018,7 @@ async def test_a_turn_told_with_an_expired_login_ends_as_one_and_the_brain_repor
     brain = _owning(VirtualClock())
     turn = _typed_turn(brain, "hello")
     _took(brain, "p1", "hello")
-    _told(brain, "p1", ("p1",), failure=stop)
+    _told(brain, "p1", ("p1",), ending=ToldByStop("Done.", stop))
     assert (turn.answered.result(), brain.login) == (BrainAnswered(PromptId("p1"), LoginExpired(stop)), LoginExpired(stop))
 
 
@@ -1026,7 +1026,7 @@ async def test_a_turn_told_with_another_failure_ends_with_it_as_claude_code_said
     brain = _owning(VirtualClock())
     turn = _typed_turn(brain, "hello")
     _took(brain, "p1", "hello")
-    _told(brain, "p1", ("p1",), failure=(lost := StopFailed("server_error", "API Error: Connection lost mid-response.")))
+    _told(brain, "p1", ("p1",), ending=ToldByStop("Done.", lost := StopFailed("server_error", "API Error: Connection lost mid-response.")))
     assert (turn.answered.result(), brain.login) == (BrainAnswered(PromptId("p1"), lost), None)
 
 
@@ -1036,20 +1036,20 @@ async def test_the_brain_reports_the_login_as_the_latest_turn_claude_code_ended_
     brain = _owning(VirtualClock())
     reports: list[LoginExpired | None] = []
     _took(brain, "n1", NOTICE)
-    _told(brain, "n1", ("n1",), failure=UNREFRESHED)
+    _told(brain, "n1", ("n1",), ending=ToldByStop("Done.", UNREFRESHED))
     reports.append(brain.login)
     _took(brain, "n2", NOTICE)
     _told(brain, "n2", ("n2",))
     reports.append(brain.login)
     _took(brain, "n3", NOTICE)
-    _told(brain, "n3", ("n3",), failure=REFRESH_REFUSED)
+    _told(brain, "n3", ("n3",), ending=ToldByStop("Done.", REFRESH_REFUSED))
     reports.append(brain.login)
     # Ended with no telling, as the brain's exit ends every turn open.
     _took(brain, "n4", NOTICE)
     brain._claude_turns.failed(BrainGone("the brain exited"))  # pyright: ignore[reportPrivateUsage]
     reports.append(brain.login)
     _took(brain, "n5", NOTICE)
-    _told(brain, "n5", ("n5",), failure=StopFailed("server_error", "API Error: 529 Overloaded"))
+    _told(brain, "n5", ("n5",), ending=ToldByStop("Done.", StopFailed("server_error", "API Error: 529 Overloaded")))
     reports.append(brain.login)
     assert reports == [LoginExpired(UNREFRESHED), None, LoginExpired(REFRESH_REFUSED), LoginExpired(REFRESH_REFUSED), None]
 
@@ -1069,7 +1069,7 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
         return readiness.configured(Unstarting(clock, lambda _: None), home, LAID_OUT, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
 
     _took(brain, "n1", NOTICE)
-    _told(brain, "n1", ("n1",), failure=REFRESH_REFUSED)
+    _told(brain, "n1", ("n1",), ending=ToldByStop("Done.", REFRESH_REFUSED))
     assert checked() == readiness.Missing("brain's login expired", "the brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
     # Answered since: its Claude Code is asked again, as with no hands running.
     asked: list[Runnable] = []
@@ -1089,9 +1089,9 @@ async def test_a_turn_only_the_transcripts_record_told_leaves_the_report_as_it_w
     brain = _owning(VirtualClock())
     reports: list[LoginExpired | None] = []
     _took(brain, "n1", NOTICE)
-    _told(brain, "n1", ("n1",), failure=UNREFRESHED)
+    _told(brain, "n1", ("n1",), ending=ToldByStop("Done.", UNREFRESHED))
     _took(brain, "n2", NOTICE)
-    _told(brain, "n2", ("n2",), heard_by="record")
+    _told(brain, "n2", ("n2",), ending=ToldByRecord())
     reports.append(brain.login)
     _took(brain, "n3", NOTICE)
     _told(brain, "n3", ("n3",))

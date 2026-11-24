@@ -244,7 +244,26 @@ class Tell:
 Heard = Narrate | Progress | Tell
 
 
-HeardBy = Literal["stop", "record"]
+@dataclass(frozen=True)
+class ToldByStop:
+    """A turn's end as Claude Code itself gave it: its Stop or StopFailure, or the reply's close on the wire that its
+    Stop would tell."""
+
+    # The reply the turn closed with; None where there was none.
+    closing: str | None
+    # What failed the turn, where the API did: its StopFailure's account, which ends the turn as a Stop does.
+    failure: StopFailed | None = None
+
+
+@dataclass(frozen=True)
+class ToldByRecord:
+    """A turn's end as only a record the transcript keeps tells it: an interrupt, a command carried out, a reading through
+    where its end would be, or the next turn opening. It carries no reply, and says nothing of how Claude Code would have
+    ended the turn."""
+
+
+# [LAW:types-are-the-program] how a turn's end was heard: a reply or a failure only ever comes with Claude Code's own Stop.
+TurnEnding = ToldByStop | ToldByRecord
 
 
 @dataclass(frozen=True)
@@ -259,19 +278,22 @@ class Summarise:
     # the next prompt by the time this is told, and the turn it is on then is not this one. None where nothing named
     # it, and the tail tells the turn it is on.
     turn: PromptId | None
-    closing: str | None
+    ending: TurnEnding
     # The words that still wait in Claude Code's queue as the turn is told, oldest first: they run after it, so this
     # telling is not theirs. [LAW:no-ambient-temporal-coupling] said as of the telling, whatever is read after it.
     waiting: tuple[str, ...] = ()
-    # What failed the turn, where the API did: its StopFailure's account, which ends the turn as a Stop does.
-    failure: StopFailed | None = None
     # [LAW:one-source-of-truth] every id the told turn went by as it was decided (`ids(told)`): which turn of Claude
     # Code's this telling ends, said by the telling itself, never re-read from a model that may have moved on since.
     ids: frozenset[PromptId] = frozenset()
-    # How its end was heard: by Claude Code's own account of it, its Stop or StopFailure, or the reply's close on the
-    # wire that its Stop would tell; or by a record the transcript keeps of it alone (an interrupt, a command carried out,
-    # a reading through where its end would be), which says nothing of how Claude Code would have ended it.
-    heard_by: HeardBy = "stop"
+
+    @property
+    def closing(self) -> str | None:
+        """The reply the turn closed with, which only Claude Code's own Stop carries."""
+        match self.ending:
+            case ToldByStop(closing=closing):
+                return closing
+            case ToldByRecord():
+                return None
 
 
 @dataclass(frozen=True)

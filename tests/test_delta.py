@@ -18,7 +18,7 @@ import pytest
 from loguru import logger
 
 from hands.core.delta import Branched, Delta, PullRequested, Pushed
-from hands.core.effects import SessionGone, Summarise
+from hands.core.effects import SessionGone, Summarise, ToldByRecord, ToldByStop
 from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, Stopped, Taken, Read, Unqueued, Dequeued
 from hands.core import status
 from hands.core.status import Report, Stamp
@@ -1232,9 +1232,9 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     (root / "second.py").write_text("turn two\n")
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}), heard_by="record")
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), ToldByRecord(), ids=frozenset({PromptId("p1")}))
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p2")}))
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), ToldByStop("Done."), ids=frozenset({PromptId("p2")}))
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
 
 
@@ -1258,9 +1258,9 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     (root / "queued.py").write_text("the queued turn\n")
     await sessions.apply(Stopped(SID, "Two.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "One.", ("Also this.",), ids=frozenset({PromptId("p1")}))
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), ToldByStop("One."), ("Also this.",), ids=frozenset({PromptId("p1")}))
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Two.", ids=frozenset({PromptId("p2")}))
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), ToldByStop("Two."), ids=frozenset({PromptId("p2")}))
     assert [file.path for file in (await deltas.taken(SID)).files] == ["queued.py"]
 
 
@@ -1304,7 +1304,7 @@ async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_words
     assert not done, "the Stop's hook was let go while the queued turn was still being baselined"
     repository.release.set()
     await asyncio.wait_for(stopping, 2.0)
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.", ("Also this.",), ids=frozenset({PromptId("p1")}))
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), ToldByStop("Done."), ("Also this.",), ids=frozenset({PromptId("p1")}))
 
 
 class Reading:
@@ -1332,7 +1332,7 @@ async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tm
     await asyncio.wait_for(repository.started.wait(), 2.0)
     sessions.hear(Ended(SID, "other"))
     repository.release.set()
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.", ids=frozenset({PromptId("p1")}))
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), ToldByStop("Done."), ids=frozenset({PromptId("p1")}))
     assert await asyncio.wait_for(sessions.story(), 2.0) == SessionGone(SID)
 
 

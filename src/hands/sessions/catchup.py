@@ -102,7 +102,13 @@ def _fold(entries: Iterable[Mapping[str, object]], since: datetime | None, unrea
                 for performed in cast(list[object], effects):
                     match performed:
                         # A turn is told once however its telling went: one whose summary failed still finished.
+                        case {"outcome": "ok" | "failed", "effect": {"type": "Summarise", "session": str(session), "ending": {"type": "ToldByStop", "closing": str() | None as closing}}}:
+                            closings.setdefault(SessionId(session), []).append(closing)
+                        case {"outcome": "ok" | "failed", "effect": {"type": "Summarise", "session": str(session), "ending": {"type": "ToldByRecord"}}}:
+                            # Told by the transcript's record alone, which carries no reply.
+                            closings.setdefault(SessionId(session), []).append(None)
                         case {"outcome": "ok" | "failed", "effect": {"type": "Summarise", "session": str(session), "closing": str() | None as closing}}:
+                            # Written by a hands from before a telling said how its end was heard, which the log still holds.
                             closings.setdefault(SessionId(session), []).append(closing)
                         case {"outcome": "ok" | "failed", "effect": {"type": "SessionGone", "session": str(session)}}:
                             ended[SessionId(session)] = None
