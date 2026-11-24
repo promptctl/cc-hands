@@ -755,34 +755,72 @@ func TestClosingTheDoorEndsAConnectionAHandlerTookAndIsWaitingOn(t *testing.T) {
 }
 
 func TestClosingTheDoorEndsATunnelStillWaitingOnTheOuterProxyAndSaysTheDoorClosed(t *testing.T) {
-	// An outer proxy that takes the connection and never answers it.
-	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	// An http proxy that never answers the CONNECT, and an https one that never answers the
+	// handshake before it.
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			silent, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer silent.Close()
+			asked := make(chan net.Conn, 1)
+			go func() {
+				if connection, err := silent.Accept(); err == nil {
+					asked <- connection
+				}
+			}()
+			outer := &url.URL{Scheme: scheme, Host: silent.Addr().String()}
+			door := open(t, "https://api.example.com", func(*http.Request) (*url.URL, error) { return outer, nil })
+			client, err := net.Dial("tcp", door.address.Host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			if _, err := client.Write([]byte("CONNECT elsewhere.example.com:443 HTTP/1.1\r\nHost: elsewhere.example.com:443\r\n\r\n")); err != nil {
+				t.Fatal(err)
+			}
+			defer (<-asked).Close()
+			if !closes(door.door) {
+				t.Fatal("the door did not close while a tunnel waited on the outer proxy")
+			}
+			if event, ok := (<-door.seen).(Unreached); !ok || !errors.Is(event.Err, net.ErrClosed) {
+				t.Errorf("the door saw %+v, want the tunnel unreached because the door closed", event)
+			}
+		})
+	}
+}
+
+func TestAHandlerThatTookItsConnectionAndPanickedHasItEnded(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer silent.Close()
-	asked := make(chan net.Conn, 1)
-	go func() {
-		if connection, err := silent.Accept(); err == nil {
-			asked <- connection
-		}
-	}()
-	outer := &url.URL{Scheme: "http", Host: silent.Addr().String()}
-	door := open(t, "https://api.example.com", func(*http.Request) (*url.URL, error) { return outer, nil })
-	client, err := net.Dial("tcp", door.address.Host)
+	door, err := Open(listener, Opening{
+		Trusted:     trusted(t, "https://api.example.com"),
+		Intercepted: http.NotFoundHandler(),
+		Forwarded: http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			http.NewResponseController(writer).Hijack()
+			panic("boom")
+		}),
+		Proxy: unproxied,
+		Seen:  func(Event) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer door.Close()
+	client, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if _, err := client.Write([]byte("CONNECT elsewhere.example.com:443 HTTP/1.1\r\nHost: elsewhere.example.com:443\r\n\r\n")); err != nil {
+	if _, err := client.Write([]byte("GET http://elsewhere.example.com/socket HTTP/1.1\r\nHost: elsewhere.example.com\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
-	defer (<-asked).Close()
-	if !closes(door.door) {
-		t.Fatal("the door did not close while a tunnel waited on the outer proxy")
-	}
-	if event, ok := (<-door.seen).(Unreached); !ok || !errors.Is(event.Err, net.ErrClosed) {
-		t.Errorf("the door saw %+v, want the tunnel unreached because the door closed", event)
+	client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Errorf("the client read %v, want its connection ended", err)
 	}
 }
 
