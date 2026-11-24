@@ -32,7 +32,7 @@ from hands.voice import engaged, streaming
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import RATE, Clip, Fate, Hearings, Sound
 from hands.voice.desk import Leveled, Made
-from hands.voice.engaged import Ears
+from hands.voice.turnlife import Ears
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice

@@ -14,10 +14,11 @@ from hands.voice import wake
 from hands.voice.wakemodels import WakeModels
 from hands.voice.cues import Cue, Played, level_cue
 from hands.voice.desk import Leveled, Made
-from hands.voice.engaged import Ears, Hears, drive, loaded
+from hands.voice.engaged import Hears, drive, loaded
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Levels
+from hands.voice.turnlife import Ears
 from hands.voice.wakeword import Word
 
 

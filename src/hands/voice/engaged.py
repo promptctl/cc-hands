@@ -6,7 +6,9 @@ activity detector says where speech starts and stops, a silence shorter than `ST
 at each stop Smart Turn says whether it is the end of the turn or a pause inside it, from how the speech ended. A pause
 it judges a thought still going holds the turn open; if the silence then runs on to Smart Turn's own `stop_secs`, the
 turn ends there. They hear for engaged conversation and for the wake word alike, and the wake word's own model beside
-them (`hands.voice.wake`).
+them (`hands.voice.wake`). What is done with the two models for a turn the voice opened is `hands.voice.turnlife`, which
+the desk runs and anything else that hears a person speak can; this module is the desk's own part, its key, its taps and
+its level.
 
 The desk moves the gate with the shortcut's own moves, so the gate, the clip owner, and the cues take a turn the voice
 opened as they take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was
@@ -19,8 +21,7 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from functools import partial
-from typing import Any, Protocol, cast, get_args
+from typing import Any, cast, get_args
 
 import numpy as np
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
@@ -32,22 +33,14 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
-from hands.voice import loads
+from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
-from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Heard, Keyed, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, Woke, Woken, deadline, listens, step
+from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Keyed, Leveled, Made, Woken, listens, step, turn_of
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
-
-
-class Ears(Protocol):
-    """What the trigger asks of the models that listen: Silero's detector and Smart Turn, in one."""
-
-    async def detect(self, audio: bytes) -> VADState: ...
-    def heard(self, audio: bytes, speech: bool) -> bool: ...
-    async def judge(self) -> tuple[bool, TurnMetricsData | None]: ...
-    def clear(self) -> None: ...
-    def afresh(self) -> None: ...
+from hands.voice.turnlife import Ears, Life
+from hands.voice.voiceturn import Judging, TurnEnded
 
 
 # The silence that ends speech: a pause between words is shorter, so it is inside the speech. At Pipecat's 0.2 s, tuned
@@ -190,11 +183,20 @@ Hears = Callable[[bytes, bool], Awaitable[bool]]
 
 @dataclass(frozen=True)
 class Overheard:
-    """A buffer of the desk's microphone, with the models it is heard with."""
+    """A buffer of the desk's microphone, with the life of the models it is heard with."""
 
     audio: bytes
-    ears: Ears
+    life: Life
     woken: Hears
+
+
+def _models(life: Life | None) -> Life:
+    """The life of the models a voice turn is made of: what it is heard and judged with is heard with them, so none opens
+    or is judged before they are loaded."""
+    # [LAW:no-silent-failure] a turn that moved with no models loaded is a desk that was stepped wrongly, and says so.
+    if life is None:
+        raise RuntimeError("a voice turn moved or was judged before the models that hear it were loaded")
+    return life
 
 
 async def drive(
@@ -216,24 +218,27 @@ async def drive(
     drive.
     """
     events: asyncio.Queue[Event | Overheard | Choice] = asyncio.Queue()
+    # What has been told and is yet to be stepped, in the order it is stepped.
+    heard: deque[Event] = deque()
 
     async def overhearing() -> None:
-        # [LAW:no-ambient-temporal-coupling] each buffer carries the models it is heard with, so none is heard before
-        # they are loaded, and the key never waits on them.
-        async with hearing() as (ears, woken), overheard() as heard:
-            async for audio in heard:
-                events.put_nowait(Overheard(audio, ears, woken))
+        # [LAW:no-ambient-temporal-coupling] each buffer carries the life of the models it is heard with, so none is heard
+        # before they are loaded, and the key never waits on them.
+        async with hearing() as (ears, woken), overheard() as room:
+            life = Life(clock, ears, events.put_nowait, heard.appendleft, emit, "desk")
+            async for audio in room:
+                events.put_nowait(Overheard(audio, life, woken))
 
     async def choosing() -> None:
         while True:
             events.put_nowait(await chosen.get())
 
     desk = Desk()
-    # The silence the last buffer was heard in, as the detector said it.
-    detected = VADState.QUIET
-    # The models the last buffer was heard with: None until they are loaded, while Smart Turn has heard nothing.
-    ears: Ears | None = None
-    heard: deque[Event] = deque()
+    # The life of the models the last buffer was heard with: None until they are loaded, while Smart Turn has heard nothing.
+    life: Life | None = None
+    # Whether the key has come up since the last buffer was heard: speech the desk ignored while it was down starts for it
+    # as the key comes up, so a tap of Shift as the user began does not lose what they say.
+    key_came_up = False
     # The level the last buffer was heard at: off, where nothing has heard it, as the desk starts.
     overheard_at: Level = "off"
     async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
@@ -252,21 +257,22 @@ async def drive(
                             # hears the room.
                             case Overheard() if not listens(desk.level):
                                 overheard_at = desk.level
-                            case Overheard(audio=audio, ears=ears, woken=woken):
+                            case Overheard(audio=audio, life=life, woken=woken):
+                                count(heard=1)
                                 # Each model hears from where its level started, with nothing of the room before it.
                                 begun = desk.level != overheard_at
                                 overheard_at = desk.level
                                 if begun:
-                                    ears.afresh()
-                                    detected = VADState.QUIET
-                                state = await ears.detect(audio)
-                                # Smart Turn hears speech only where the detector is sure of it, as Pipecat feeds it,
-                                # and only with no key down, so the room it hears otherwise is trimmed as silence is.
-                                silent_too_long = ears.heard(audio, not isinstance(desk.phase, Keyed) and state == VADState.SPEAKING)
+                                    life.afresh()
+                                if key_came_up:
+                                    life.quiet()
+                                key_came_up = False
+                                # Smart Turn hears speech only with no key down, so the room it hears otherwise is
+                                # trimmed as silence is.
+                                detected = await life.hear(audio, not isinstance(desk.phase, Keyed), turn_of(desk.phase))
                                 # The wake word's model is run only where it can open a turn.
                                 word = desk.level == "wake word" and await woken(audio, begun)
-                                heard.extend([*_changed(detected, state, clock), *([Woken(clock.now())] if word else []), *([TurnEnded("silence")] if silent_too_long else [])])
-                                detected = state
+                                heard.extend(detected.told((Woken(clock.now()),) if word else ()))
                             case Choice(level=chose, was=was_level):
                                 # A tool call cancelled while it waited, the user cutting the brain off, is answered by
                                 # no one; its choice is the user's all the same.
@@ -279,35 +285,20 @@ async def drive(
                     each = heard.popleft()
                     was = desk
                     desk, acts = step(desk, each)
-                    # [LAW:types-are-the-program] the wake word's own speech is no part of what is asked: heard afresh
-                    # from where it opened the turn, what is asked starts as any speech does, and Smart Turn judges it alone.
-                    if isinstance(desk.phase, Woke) and not isinstance(was.phase, Woke):
-                        # Only a buffer heard with the models wakes the desk.
-                        assert ears is not None
-                        ears.afresh()
-                        detected = VADState.QUIET
-                    # Speech the desk ignored while the key was down starts for it as the key comes up, so a tap of
-                    # Shift as the user began does not lose what they say.
-                    if isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed):
-                        detected = VADState.QUIET
+                    was_turn, turn = turn_of(was.phase), turn_of(desk.phase)
+                    if was_turn != turn:
+                        _models(life).moved(was_turn, turn)
+                        if voiceturn.closed(was_turn, turn) is not None and isinstance(each, TurnEnded) and each.by == "silence":
+                            count(ended_on_silence=1)
+                    key_came_up = key_came_up or (isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed))
                     for act in acts:
                         match act:
-                            case "judge":
+                            case Judging(turn=judged):
                                 # Only speech the detector heard is judged, and it is heard with the models.
-                                assert ears is not None
-                                if await _judged(clock, ears, emit):
-                                    heard.appendleft(TurnEnded("verdict"))
-                                else:
+                                if not await _models(life).judge(judged):
                                     count(held_open=1)
                             case Made(move=move, by=by):
                                 count(**{move: 1, f"by_{by.replace(' ', '_')}": 1})
-                                if move == "stop" and each == TurnEnded("silence"):
-                                    count(ended_on_silence=1)
-                                # [LAW:no-ambient-temporal-coupling] Smart Turn starts each turn with no speech of the
-                                # last one in it, as Pipecat clears it as each turn ends; before the models load it has
-                                # heard none.
-                                if move in ("stop", "drop", "timeout") and ears is not None:
-                                    ears.clear()
                                 await on_move(act)
                             case Leveled(was=was_level, now=now, by=chooser):
                                 count(**{f"to_{now.replace(' ', '_')}": 1})
@@ -315,27 +306,3 @@ async def drive(
                                 with unit("desk.leveled", emit, wide.begun(clock)):
                                     annotate(was=was_level, now=now, by=chooser)
                                 await on_level(act)
-                    for at, later in deadline(was.phase, desk.phase):
-                        clock.call_at(at, partial(events.put_nowait, later))
-
-
-def _changed(was: VADState, now: VADState, clock: Clock) -> tuple[Heard, ...]:
-    """What the detector's state moving from `was` to `now` says of the speech."""
-    match was, now:
-        case VADState.QUIET, VADState.STARTING:
-            return (SpeechStarting(),)
-        case VADState.QUIET | VADState.STARTING, VADState.SPEAKING:
-            return (SpeechStarted(clock.now()),)
-        case VADState.STARTING | VADState.SPEAKING | VADState.STOPPING, VADState.QUIET:
-            return (SpeechStopped(),)
-        case _:
-            return ()
-
-
-async def _judged(clock: Clock, ears: Ears, emit: Callable[[WideEvent], None]) -> bool:
-    """Ask Smart Turn whether the speech that just stopped ends the turn: its own unit of work, with its verdict."""
-    with unit("desk.judged", emit, wide.begun(clock)):
-        complete, metrics = await ears.judge()
-        # [LAW:nothing-unseen] the verdict, and how sure of it the model was; no metrics is a segment with no audio in it.
-        annotate(complete=complete, probability=None if metrics is None else metrics.probability, inference_ms=None if metrics is None else metrics.e2e_processing_time_ms)
-        return complete

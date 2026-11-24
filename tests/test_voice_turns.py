@@ -62,7 +62,7 @@ from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import clipowner, desk, shortcut, streaming
+from hands.voice import clipowner, desk, shortcut, streaming, voiceturn
 from hands.voice.desk import Act
 from hands.voice.clipowner import ClipOwner
 from hands.voice.shortcut import Idle, KeyEvent, Move, Pressed, Released
@@ -824,7 +824,7 @@ def play_out[S, E](
                 heapq.heappush(due, (at, next(arrival), later))
             for act in acts:
                 match act:
-                    case "judge" | desk.Leveled():
+                    case voiceturn.Judging() | desk.Leveled():
                         pass
                     case desk.Made(move=move, by=trigger):
                         moves.append(move)
@@ -846,7 +846,7 @@ def engaged_conversation(told: Sequence[tuple[float, desk.Event]], seconds: floa
     `engaged.drive` tells it."""
 
     def asked(was: desk.Desk, event: desk.Event, now: desk.Desk) -> tuple[tuple[float, desk.Event], ...]:
-        return (*(shortcut.asked(event) if isinstance(event, KeyEvent) else ()), *desk.deadline(was.phase, now.phase))
+        return (*(shortcut.asked(event) if isinstance(event, KeyEvent) else ()), *voiceturn.asked(desk.turn_of(was.phase), desk.turn_of(now.phase)))
 
     return play_out(desk.step, desk.Desk(), asked, told, seconds, "engaged conversation")
 
@@ -864,7 +864,7 @@ async def test_a_shortcut_turn_of_three_minutes_of_speech_reaches_the_brain_whol
 
 async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
     engage = [(1.0, desk.Chosen("engaged"))]
-    timeline = engaged_conversation([*engage, (2.0, desk.SpeechStarted(2.0)), (182.0, desk.TurnEnded("verdict"))], 183.0)
+    timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0)), (182.0, voiceturn.TurnEnded("verdict", voiceturn.TurnId(1)))], 183.0)
     assert timeline.moves == ["listen", "arm", "start", "stop"]
     await rig.play(timeline)
     await rig.texts.put("three minutes of conversation")
@@ -889,11 +889,10 @@ async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it
 
 
 async def test_an_engaged_turn_that_never_ends_is_sent_at_the_limit_with_all_it_recorded(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The limit as the desk schedules it: desk.deadline reads its own name for it.
-    monkeypatch.setattr("hands.voice.desk.TURN_LIMIT_SECONDS", 3.0)
+    monkeypatch.setattr("hands.voice.shortcut.TURN_LIMIT_SECONDS", 3.0)
     engage = [(1.0, desk.Chosen("engaged"))]
     # Speech that never stops and is never judged ended.
-    timeline = engaged_conversation([*engage, (2.0, desk.SpeechStarted(2.0))], 6.0)
+    timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0))], 6.0)
     assert timeline.moves == ["listen", "arm", "start", "timeout"]
     await rig.play(timeline)
     await rig.texts.put("what I said before the limit")
