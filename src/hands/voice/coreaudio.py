@@ -101,10 +101,19 @@ def _name(device: int) -> str:
         CoreFoundation.CFRelease(named)
 
 
-def _on_source(address: object, source: int, device: int) -> bool:
+# A four-byte property of a device, read: CoreAudio's status, and the bytes it read.
+type _Read = Callable[[int, object], tuple[int, bytes]]
+
+
+def _read(device: int, address: object) -> tuple[int, bytes]:
+    status, _size, data = CoreAudio.AudioObjectGetPropertyData(device, address, 0, b"", 4, None)
+    return status, data
+
+
+def _on_source(read: _Read, address: object, source: int, device: int) -> bool:
     """Whether `device` is on the data source `source` now: read as it is asked, since a headphone plug can move it with
     no new device. A device with no data source, Bluetooth's or a virtual one, is on none, and so is one gone."""
-    status, _size, data = CoreAudio.AudioObjectGetPropertyData(device, address, 0, b"", 4, None)
+    status, data = read(device, address)
     if status == CoreAudio.kAudioHardwareUnknownPropertyError:
         return False
     try:
@@ -114,8 +123,12 @@ def _on_source(address: object, source: int, device: int) -> bool:
     return struct.unpack("I", data)[0] == source
 
 
-# The Mac's own microphone and speakers, by the data source each device is on as it is asked.
-BUILT_INS = BuiltIns(partial(_on_source, _INPUT_SOURCE, _INTERNAL_MICROPHONE), partial(_on_source, _OUTPUT_SOURCE, _INTERNAL_SPEAKERS))
+def _built_ins(read: _Read) -> BuiltIns:
+    """The Mac's own microphone and speakers, by the data source each device is on as `read` reads it."""
+    return BuiltIns(partial(_on_source, read, _INPUT_SOURCE, _INTERNAL_MICROPHONE), partial(_on_source, read, _OUTPUT_SOURCE, _INTERNAL_SPEAKERS))
+
+
+BUILT_INS = _built_ins(_read)
 
 
 def _has_streams(device: int, scope: object) -> bool:
@@ -124,9 +137,9 @@ def _has_streams(device: int, scope: object) -> bool:
     return size > 0
 
 
-# [LAW:no-shared-mutable-globals] owned by device_changes alone, which adds a target when it registers its
-# listener and deletes it once the listener is removed; a notice CoreAudio sent before then finds no target, and
-# _listener logs it. CoreAudio carries only an integer to the listener, so the token is how a call finds its target.
+# [LAW:no-shared-mutable-globals] exception: CoreAudio carries only an integer to its listener, a module-level
+# function, so a call finds its target here by token. device_changes alone writes it, adding a target as it starts
+# listening and deleting it as it stops.
 _targets: dict[int, Callable[[], object]] = {}
 _tokens = itertools.count(1)
 
@@ -135,11 +148,15 @@ _tokens = itertools.count(1)
 def _listener(_object: int, _count: int, _addresses: object, token: int) -> int:
     # A module-level function and not a block: PyObjC makes a new block for every call it is passed to, so a
     # block cannot be removed again (measured: it went on being called after its removal returned 0).
+    # [LAW:no-defensive-null-guards] a typed absence at the boundary: a notice that arrives after its listening stopped,
+    # already in flight or from a listener CoreAudio would not remove, is for nobody, and the stop said which.
+    if (target := _targets.get(token)) is None:
+        return 0
     try:
-        _targets[token]()
+        target()
     except Exception:
-        # [LAW:no-silent-failure] this runs on CoreAudio's thread, under C frames an exception must not cross: a notice
-        # already in flight when listening stopped, or one after the loop closed, is logged where it happened.
+        # [LAW:no-silent-failure] this runs on CoreAudio's thread, under C frames an exception must not cross, so it is
+        # logged where it happened.
         logger.exception("an audio device change could not be passed on")
     return 0
 
@@ -162,14 +179,13 @@ def device_changes(changed: Callable[[], object]) -> Iterator[None]:
         yield
     finally:
         # Only what was added is removed, so a refused registration is the error that is reported.
-        removed = [CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token) for address in listening]
-        if refused := [status for status in removed if status]:
-            # [LAW:no-silent-failure] logged, not raised: hands leaves this context only as a cancel or a failure is
-            # raised through it (voice/devices.py follows until cancelled), and a raise here would take that one's
-            # place. The target stays, so a listener CoreAudio kept still finds where to call.
-            logger.error(f"CoreAudio would not stop listening for changes to the audio devices: OSStatus {refused}")
-        else:
-            del _targets[token]
+        statuses = [CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token) for address in listening]
+        del _targets[token]
+        if any(statuses):
+            # [LAW:no-silent-failure] exception: logged, not raised. hands leaves this context only as a cancel or a
+            # failure is raised through it (voice/devices.py follows until cancelled), and a raise here would take
+            # that one's place.
+            logger.error(f"CoreAudio would not stop listening for changes to the audio devices: OSStatus {statuses}, for the default input, the default output and the device list in turn")
 
 
 def _check(status: int, doing: str) -> None:
