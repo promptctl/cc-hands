@@ -19,8 +19,9 @@ microphone's wait for the room to go quiet: a clip of its button holds what was 
 its wake begins with the second the page kept from before its detector fired.
 
 The page also tells hands when its detector heard the wake word (`wake`), which of its two levels the phone listens at
-(`level`, `off` at the start of every call), and whether its detector loaded (`detector`). A wake is a press the page
-numbered, which the gate may refuse: it opens a turn made by no hand, or is answered `unopened` with the gate's reason.
+(`level`, `off` at the start of every call), what became of its detector (`detector`: loaded, waiting on hands, hands having answered, or failed), each
+word it heard that opened no turn because one was open (`ignored`), and whether the screen stays on (`screen`). A wake is a
+press the page numbered, which the gate may refuse: it opens a turn made by no hand, or is answered `unopened` with the reason.
 
 A page whose call drops calls again on its own, and says so in its offer: it resumes the phone, where a press of its
 Connect takes it. A resume is declined while another page has the call or an offer in, so two pages left open never take
@@ -45,7 +46,7 @@ from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import Begun, Fact, begun, continuing, ended, since
-from hands.voice.milestone import ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
+from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
 from hands.voice.ptt import KeyedAudio, PushToTalk, Refusal
 from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
@@ -146,13 +147,42 @@ class Opened:
     clip: int
 
 
+# Why a press or a wake of the page's opened no clip: where hands is, that the phone is not listening, that a turn is open, that
+# the wake could not be read, or that the turn was over before hands heard any of it.
+UnopenedReason = Refusal | Literal["unreadable", "unheard"]
+
+@dataclass(frozen=True)
+class Why:
+    """What a reason says: hands' words for it, which the page is told beside the reason itself, and whether the page should
+    not have asked, for hands being at the desk and the turn being over before it was heard are things the page cannot know."""
+
+    words: str
+    mistake: bool
+
+
+def _why(reason: UnopenedReason) -> Why:
+    """[LAW:one-source-of-truth] each reason's words and whether it is the page's mistake, decided for every reason in one
+    place: a reason added to the set is a type error here until it is."""
+    match reason:
+        case "elsewhere":
+            return Why("hands is at the desk", False)
+        case "deaf":
+            return Why("the phone is not listening for the wake word", True)
+        case "busy":
+            return Why("a turn is open", True)
+        case "unreadable":
+            return Why("the page's wake could not be read", True)
+        case "unheard":
+            return Why(UNHEARD, False)
+
+
 @dataclass(frozen=True)
 class Unopened:
     """A press of the page's that opened no clip, and why: the page's number for it, which hands answers once, here or as
     `Opened`."""
 
     press: int
-    why: str
+    reason: UnopenedReason
 
 
 def answer(press: int, told: ClipOpened | TurnUnopened) -> Opened | Unopened:
@@ -160,8 +190,8 @@ def answer(press: int, told: ClipOpened | TurnUnopened) -> Opened | Unopened:
     match told:
         case ClipOpened(clip=clip):
             return Opened(press, clip.number)
-        case TurnUnopened(why=why):
-            return Unopened(press, why)
+        case TurnUnopened():
+            return Unopened(press, "unheard")
 
 
 def wire(told: Opened | Unopened | ClipReleased | ClipDiscarded | Milestone | Line) -> str:
@@ -169,8 +199,8 @@ def wire(told: Opened | Unopened | ClipReleased | ClipDiscarded | Milestone | Li
     match told:
         case Opened(press=press, clip=clip):
             return json.dumps({"kind": "opened", "press": press, "clip": clip})
-        case Unopened(press=press, why=why):
-            return json.dumps({"kind": "unopened", "press": press, "why": why})
+        case Unopened(press=press, reason=reason):
+            return json.dumps({"kind": "unopened", "press": press, "reason": reason, "why": _why(reason).words})
         case ClipReleased(clip=clip):
             return json.dumps({"kind": "milestone", "milestone": "released", "clip": clip.number})
         case ClipDiscarded(clip=clip):
@@ -325,6 +355,22 @@ class DetectorLoaded:
 
 
 @dataclass(frozen=True)
+class DetectorWaiting:
+    """The page's detector has had no answer from hands for what it asks, `why`, and asks again until it has one: said as the
+    wait begins. Neither loaded nor failed, so a detector that waits is told apart from one that never ran."""
+
+    browser: str
+    why: str
+
+
+@dataclass(frozen=True)
+class DetectorAnswered:
+    """hands answered the page's detector after a wait: it is loading its models, which is no longer a wait on hands."""
+
+    browser: str
+
+
+@dataclass(frozen=True)
 class DetectorFailed:
     """The page's detector could not load, and why, in the browser the page said it is in."""
 
@@ -332,15 +378,36 @@ class DetectorFailed:
     why: str
 
 
+@dataclass(frozen=True)
+class Ignored:
+    """The page's detector heard the word, at `score`, and the page opened no turn for it, for a turn of its own was open or
+    its edge was on the way: a hearing is a fact whether or not it came to a wake."""
+
+    score: float
+
+
+@dataclass(frozen=True)
+class ScreenKept:
+    """The page holds a screen wake lock, so the phone's screen stays on while it listens."""
+
+
+@dataclass(frozen=True)
+class ScreenUnkept:
+    """The page could not get a screen wake lock, and why: the screen may sleep, and a page that sleeps hears nothing."""
+
+    why: str
+
+
 # What the page sends over the call's data channel: its microphone, the samples it held back, its button, and what its
-# detector heard and is set to.
-Said = Pcm | Quiet | Button | Wake | Unreadable | Level | DetectorLoaded | DetectorFailed
+# detector heard and is set to, and whether its screen stays on.
+Said = Pcm | Quiet | Button | Wake | Unreadable | Level | DetectorLoaded | DetectorWaiting | DetectorAnswered | DetectorFailed | Ignored | ScreenKept | ScreenUnkept
 
 
 def parse_said(message: object, rate: int) -> Said:
     """One message of the page's: 16-bit mono audio at the offer's rate `rate`, a `quiet`, the button pressed or released,
-    a `wake`, a `level`, or a `detector`; raises Rejected for anything else, and for audio or a count of more than one
-    message may hold. A `wake` whose score is not a probability is still a wake, returned as `Unreadable`."""
+    a `wake`, an `ignored` hearing, a `level`, a `detector`, or the `screen`; raises Rejected for anything else, and for
+    audio or a count of more than one message may hold. A `wake` whose score is not a probability is still a wake, returned
+    as `Unreadable`."""
     most = largest_message(rate)
     match message:
         case bytes():
@@ -368,9 +435,29 @@ def parse_said(message: object, rate: int) -> Said:
                                 return Level(level)
                             case other:
                                 raise Rejected(f"its level is {other!r}, which is neither off nor wake word")
+                    case "ignored":
+                        return Ignored(_probability(said.number("score")))
                     case "detector":
-                        browser, why = said.text("browser"), said.optional_text("why")
-                        return DetectorLoaded(browser) if said.flag("loaded") else DetectorFailed(browser, "no reason given" if why is None else why)
+                        browser = said.text("browser")
+                        match said.text("state"):
+                            case "loaded":
+                                return DetectorLoaded(browser)
+                            case "waiting":
+                                return DetectorWaiting(browser, said.text("why"))
+                            case "answered":
+                                return DetectorAnswered(browser)
+                            case "failed":
+                                return DetectorFailed(browser, said.text("why"))
+                            case other:
+                                raise Rejected(f"its detector's state is {other!r}, which is none of loaded, waiting, answered or failed")
+                    case "screen":
+                        match said.text("state"):
+                            case "kept":
+                                return ScreenKept()
+                            case "unkept":
+                                return ScreenUnkept(said.text("why"))
+                            case other:
+                                raise Rejected(f"its screen's state is {other!r}, which is neither kept nor unkept")
                     case other:
                         raise Rejected(f"its kind is {other!r}, which is not one hands reads")
             except Rejected as error:
@@ -379,25 +466,19 @@ def parse_said(message: object, rate: int) -> Said:
             raise Rejected(f"the phone's page sent {message!r}, which is neither audio, a quiet, nor a message hands reads")
 
 
+def _probability(score: float) -> float:
+    """`score`, or Rejected if it is no probability: NaN is none either, and compares false to both ends."""
+    if not 0.0 <= score <= 1.0:
+        raise Rejected(f"its score {score} is not a probability")
+    return score
+
+
 def _wake(said: Payload) -> Wake | Unreadable:
     """A wake, with its score if the score is a probability, else as one hands counts and cannot read."""
     try:
-        score = said.number("score")
+        return Wake(_probability(said.number("score")))
     except Rejected as error:
         return Unreadable(str(error))
-    # NaN is no probability either, and compares false to both ends.
-    return Wake(score) if 0.0 <= score <= 1.0 else Unreadable(f"its score {score} is not a probability")
-
-
-def _why(refusal: Refusal) -> str:
-    """What the page is told of a wake the gate refused: where hands is, that the phone is not listening, or that a turn is open."""
-    match refusal:
-        case "elsewhere":
-            return "hands is at the desk"
-        case "deaf":
-            return "the phone is not listening for the wake word"
-        case "busy":
-            return "a turn is open"
 
 
 @dataclass
@@ -597,37 +678,52 @@ class Phone:
                     self._wake(call, said)
                 case Level(level=level):
                     self._level(level)
+                # [LAW:nothing-unseen] each fact the page tells of its detector is its own event, so a detector that never ran, one
+                # that waits on hands, one that failed and one that ran and heard nothing are four different records.
                 case DetectorLoaded(browser=browser):
-                    ended("phone.detector", self._record, begun(self._clock), None, browser=browser, loaded=True)
+                    ended("phone.detector", self._record, begun(self._clock), None, browser=browser, state="loaded")
+                case DetectorWaiting(browser=browser, why=why):
+                    ended("phone.detector", self._record, begun(self._clock), None, browser=browser, state="waiting", why=why)
+                case DetectorAnswered(browser=browser):
+                    ended("phone.detector", self._record, begun(self._clock), None, browser=browser, state="answered")
                 case DetectorFailed(browser=browser, why=why):
-                    ended("phone.detector", self._record, begun(self._clock), None, why, browser=browser, loaded=False)
+                    ended("phone.detector", self._record, begun(self._clock), None, why, browser=browser, state="failed")
+                case Ignored(score=score):
+                    ended("phone.ignored", self._record, begun(self._clock), None, score=score, threshold=THRESHOLD)
+                case ScreenKept():
+                    ended("phone.screen", self._record, begun(self._clock), None, state="kept")
+                case ScreenUnkept(why=why):
+                    ended("phone.screen", self._record, begun(self._clock), None, why, state="unkept")
 
     def _wake(self, call: Call, wake: Wake | Unreadable) -> None:
         """The page's detector heard the word: a press the page numbered, which the gate takes or refuses, and either is told to
         the page at once, a refusal as `unopened` with its reason. A wake the page should not have sent is the page's mistake,
         the failure of its event; one that hands being at the desk refused is no mistake, for the page cannot know."""
         press = self._press(call)
+        reason: UnopenedReason | None
         match wake:
             case Wake():
-                refusal = self._key.gate.refusal(PHONE_WAKE)
-                why, mistake = (None, False) if refusal is None else (_why(refusal), refusal != "elsewhere")
-            case Unreadable(why=unreadable):
-                why, mistake = unreadable, True
-        match why:
+                reason = self._key.gate.refusal(PHONE_WAKE)
+            case Unreadable():
+                reason = "unreadable"
+        match reason:
             case None:
                 self.took(self._key.move("arm", PHONE_WAKE))
                 self._open(call, press, PHONE_WAKE)
             case _:
-                self._unopened(call, press, why)
+                self._unopened(call, press, reason)
         score = wake.score if isinstance(wake, Wake) else None
-        failure = f"the page's wake opened nothing: {why}" if mistake else None
-        ended("phone.wake", self._record, begun(self._clock), None, failure, score=score, threshold=THRESHOLD, while_speaking=self._speaking(), opened=why is None, press=press)
+        failure = None
+        if reason is not None and (why := _why(reason)).mistake:
+            # An unreadable wake says what could not be read of it, which is more than the page is told.
+            failure = f"the page's wake opened nothing: {wake.why if isinstance(wake, Unreadable) else why.words}"
+        ended("phone.wake", self._record, begun(self._clock), None, failure, score=score, threshold=THRESHOLD, while_speaking=self._speaking(), opened=reason is None, press=press)
 
-    def _unopened(self, call: Call, press: int, why: str) -> None:
+    def _unopened(self, call: Call, press: int, reason: UnopenedReason) -> None:
         """A press of the page's that hands answers at once, for it opened no clip."""
         match call.channel:
             case RTCDataChannel(readyState="open") as channel:
-                channel.send(wire(Unopened(press, why)))
+                channel.send(wire(Unopened(press, reason)))
                 call.told += 1
             case _:
                 pass
@@ -661,7 +757,7 @@ class Phone:
             # clip exactly, however late either reaches it.
             call.pressing[self._key.gate.turn] = press
         else:
-            self._unopened(call, press, _why("busy"))
+            self._unopened(call, press, "busy")
         self.took(taken)
 
     def _heard(self, call: Call, audio: Pcm) -> None:

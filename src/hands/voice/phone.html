@@ -35,8 +35,17 @@
   #talk.held { background: var(--live); transform: scale(.96); }
   #told { color: var(--muted); text-align: center; max-width: 30ch; }
   #told p { margin: 0; min-height: 1.4em; }
-  #state.bad { color: var(--bad); }
+  #state.bad, #wake-note.bad { color: var(--bad); }
   #count { font-variant-numeric: tabular-nums; }
+  /* One small toggle in the corner: the dot is filled while the wake word is on. */
+  #wake {
+    position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: 12px; display: flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 13px; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  #wake .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); }
+  #wake[aria-pressed="true"] .dot { background: var(--live); border-color: var(--live); }
+  #wake-note:empty { display: none; }
   #shown { font: inherit; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px; padding: 6px 16px; cursor: pointer; }
   #conversation { color: var(--muted); }
   #transcript {
@@ -67,10 +76,13 @@
 </style>
 </head>
 <body>
+<!-- Whether the wake word may open a turn: on unless the user turned it off, before Connect or after. -->
+<button id="wake" type="button" aria-pressed="true"><span class="dot" aria-hidden="true"></span>Phone wake word</button>
 <button id="talk" type="button">Connect</button>
 <!-- The count changes ten times a second, so it sits outside the live region: a screen reader says each line once. -->
 <div id="told">
   <p id="state" role="status" aria-live="polite"></p>
+  <p id="wake-note" role="status" aria-live="polite"></p>
   <p id="count" aria-hidden="true"></p>
 </div>
 <button id="shown" type="button" aria-controls="transcript" aria-expanded="false">Show transcript</button>
@@ -91,7 +103,7 @@
 </section>
 <audio id="out" autoplay playsinline></audio>
 <script type="module">
-import {asked, carriesKey, handsNow, reading, unanswered} from "/hands.js";
+import {asked, carriesKey, handsNow, reading, unanswered, wording} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
@@ -105,6 +117,8 @@ const FIRST_RETRY_MS = 1000, LAST_RETRY_MS = 8000;
 const OFFER_MS = 10000;
 const talk = document.getElementById("talk");
 const state = document.getElementById("state");
+const wakeButton = document.getElementById("wake");
+const wakeNote = document.getElementById("wake-note");
 const count = document.getElementById("count");
 const out = document.getElementById("out");
 const shown = document.getElementById("shown");
@@ -131,7 +145,7 @@ registerProcessor("tap", class extends AudioWorkletProcessor {
 // The microphone, opened at the first Connect pressed and kept across every call made again after it, which no press
 // starts: a browser opens the microphone for a press, not for a page calling on its own.
 let media = null;  // {stream, audio, tap}
-let call = null;  // {pc, channel, ended, presses, press, release}
+let call = null;  // {pc, channel, ended, presses, tell, turn, listening (the detector's phase), listen, retire, unlisten, press, release, close}
 let held = false;
 // Whether the page means to be on a call: from its first call's opening after Connect is pressed until hands gives the
 // phone to another page, the page cannot call at all, or it goes. While it does, a call that drops is made again; a
@@ -142,27 +156,45 @@ let retry = null, tries = 0;
 // for the next call's.
 let tags = 0;
 
-function say(text, bad = false) { state.textContent = text; state.classList.toggle("bad", bad); }
+// Whether the line is the one that says how the call stands between turns: it is said again as that changes, and no other is.
+let idle = false;
 
-// What the page says of the clip it shows, by the last milestone of it. Two milestones are the page's own: `held`, the button
-// down, and `sent`, the button let go with hands yet to say it took the clip. A milestone that `counts` is waited on: the
-// time since the button was let go counts beside its line.
-const NOTHING = "Heard nothing from that press.";
+function say(text, bad = false) { state.textContent = text; state.classList.toggle("bad", bad); idle = false; }
+
+// Whether the wake word may open a turn: the user's choice, kept in the browser, and on until they turn it off. A browser that
+// will not keep it is said beside the button, so a choice that is gone on the next load is not taken for one that was kept.
+let wakeOn = true;
+let keptWhy = null;
+try { wakeOn = localStorage.getItem("wake word") !== "off"; } catch (error) { keptWhy = wording(error); }
+
+// What the page says of the clip it shows, by the last milestone of it. Three milestones are the page's own: `held`, the button
+// down, `woken`, the detector hearing the word, and `sent`, the button let go with hands yet to say it took the clip. A
+// milestone that `counts` is waited on: the time since the button was let go counts beside its line. A clip a wake opened
+// carries the phrase that woke it, which its lines say, so they are said as they were whatever the detector has become since.
+const nothing = (clip) => clip.wake ? `Heard nothing after "${clip.wake}".` : "Heard nothing from that press.";
+const listeningLine = {text: () => "Listening…"};
 const OWN = {
-  "held": {text: () => "Listening…"},
+  "held": listeningLine,
+  "woken": listeningLine,
   "sent": {text: () => "Sent. Waiting for hands…", counts: true},
-  // Not told as a milestone: entered on hands' `unopened` for the press, which opened no clip, so nothing is coming to wait for.
-  "unopened": {text: () => NOTHING, bad: true},
+  // Not told as milestones: each entered on hands' `unopened` for the press, which opened no clip, so nothing is coming to wait
+  // for. By its reason: the turn was over before hands heard any of it, hands was at the desk, which opens no clip for a wake
+  // and only the button brings it, or hands refused it in its own words, which the clip carries.
+  "unopened": {text: nothing, bad: true},
+  "desk": {text: () => "hands is at the desk. Hold the button to bring it here.", bad: true},
+  "refused": {text: (clip) => `hands opened no turn for that: ${clip.why}.`, bad: true},
 };
+// What an end of the clip may come after: the button down, a wake heard, or the button let go.
+const OPEN = ["held", "woken", "sent"];
 // The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. The release names the
 // clip it took, so the page takes only its own press's: let go, or still held as a hand at the desk took hands there and
 // sent it, which the page says, since hands hears the desk from then on. The milestones after it are of the turn and carry no clip, so what places them is where they fall: one that
 // cannot come after the shown clip's last is of a clip the page has let go of, and until hands says it took this clip,
 // nothing else told is of it.
 const TOLD = {
-  "released": {after: ["held", "sent"], text: () => held ? "Sent: hands went to the desk, and hears you there now." : "Received. Transcribing…", counts: true},
+  "released": {after: OPEN, text: () => held ? "Sent: hands went to the desk, and hears you there now." : "Received. Transcribing…", counts: true},
   // The clip was thrown away, so nothing of it was sent: it ends as a release ends it, and no reply is coming.
-  "discarded": {after: ["held", "sent"], text: () => NOTHING, bad: true},
+  "discarded": {after: OPEN, text: nothing, bad: true},
   "transcript": {after: ["released"], text: () => "Heard. Waiting for a reply…", counts: true},
   "no words": {after: ["released"], text: (clip) => `No words heard, after ${secs(clip.at - clip.released)}.`, bad: true},
   "failed": {after: ["released", "transcript", "first LLM token"], text: (clip) => `hands failed, after ${secs(clip.at - clip.released)}.`, bad: true},
@@ -209,9 +241,12 @@ function opened(message) {
 }
 
 // hands' word that a press of the page's opened no clip, by the press's number: the shown press's own or none of it.
+const UNOPENED = {"elsewhere": "desk", "unheard": "unopened", "deaf": "refused", "busy": "refused", "unreadable": "refused"};
 function unopened(message) {
   if (clip?.press !== message.press) return;
-  show({...clip, milestone: "unopened", at: performance.now()});
+  // [LAW:no-silent-failure] a reason this page does not know is said on its face, not worded as another.
+  if (!Object.hasOwn(UNOPENED, message.reason)) { letGo(); say(`hands said it opened nothing for "${message.reason}", which this page does not know.`, true); return; }
+  show({...clip, milestone: UNOPENED[message.reason], why: message.why, at: performance.now()});
 }
 
 // Lets go of the clip shown: no milestone told from here is of it, and its count stops.
@@ -278,8 +313,26 @@ const LINES = {
   "bargein": () => stop(bargedIn),
 };
 
-// Everything hands tells the page, by its kind: a clip opened, a milestone of the clip shown, or a line of the transcript.
-function told(message) {
+// [LAW:single-enforcer] the wake's turn is open until hands says it is over, and the page never guesses: its press `unopened`, or
+// its clip `released` or `discarded`. Nothing else closes it, and a turn the button took over has no word of the wake's to wait on.
+function turnTold(made, message) {
+  const turn = made.turn;
+  switch (turn.kind) {
+    // The wake is heard and not yet answered: with its clip, or with none.
+    case "waking":
+      if (message.kind === "opened" && message.press === turn.press) made.turn = {kind: "wake", press: turn.press, clip: message.clip};
+      else if (message.kind === "unopened" && message.press === turn.press) made.close();
+      return;
+    case "wake":
+      if (message.kind === "milestone" && (message.milestone === "released" || message.milestone === "discarded") && message.clip === turn.clip) made.close();
+      return;
+  }
+}
+
+// Everything hands tells the page over `made`'s channel, by its kind: a clip opened, a milestone of the clip shown, or a line
+// of the transcript.
+function told(made, message) {
+  turnTold(made, message);
   if (message.kind === "milestone") { milestone(message.milestone, message.clip); return; }
   if (message.kind === "opened") { opened(message); return; }
   if (message.kind === "unopened") { unopened(message); return; }
@@ -294,6 +347,107 @@ function pcm(blocks) {
   let i = 0;
   for (const block of blocks) for (const s of block) samples[i++] = Math.max(-32768, Math.min(32767, Math.round(s * 32767)));
   return samples.buffer;
+}
+
+// `blocks` as messages of audio of `per` samples each, the last what is left.
+function cut(blocks, per) {
+  const all = new Float32Array(blocks.reduce((n, b) => n + b.length, 0));
+  let at = 0;
+  for (const block of blocks) { all.set(block, at); at += block.length; }
+  const messages = [];
+  for (let from = 0; from < all.length; from += per) messages.push(pcm([all.subarray(from, from + per)]));
+  return messages;
+}
+
+// The browser the page is in, as it says it: what tells an iPhone's Safari from a desktop's Chrome in hands' events.
+const BROWSER = navigator.userAgent;
+
+// The line that says how the call stands between turns: said again as that changes, and no other line is.
+function sayIdle() {
+  const listening = call?.listening;
+  say(listening?.phase === "ready" ? `Connected. Say "${listening.phrase}", or hold the button.` : "Connected. Hold the button and speak.");
+  idle = true;
+}
+
+// The wake word's own state, which no turn's line says: why it is not listening, or that hands has not answered it, why the
+// screen may go to sleep, and that the choice is not kept.
+let lockWhy = null;
+function drawNote() {
+  const listening = call?.listening;
+  const notes = [];
+  if (listening?.phase === "failed") notes.push(`The wake word is not listening: ${listening.why}.`);
+  else if (listening?.phase === "loading" && listening.waiting !== null) notes.push(`The wake word is waiting on hands: ${listening.waiting}.`);
+  if (lockWhy !== null) notes.push(`The screen may go to sleep, which stops the wake word: ${lockWhy}.`);
+  if (keptWhy !== null) notes.push(`This browser will not keep the wake word's choice: ${keptWhy}.`);
+  wakeNote.textContent = notes.join(" ");
+  wakeNote.classList.toggle("bad", listening?.phase === "failed");
+}
+
+function refresh() {
+  if (idle) sayIdle();
+  drawNote();
+}
+
+// The screen stays on while the wake word is on and the call is up, which a browser ends when the page leaves the front: the
+// lock is asked for again as it comes back, and what came of each ask, and a lock the browser takes back while the page stays in
+// front, is told to hands. One change at a time, so a lock asked for as it is no longer wanted is let go.
+let lock = null;
+let locking = Promise.resolve();
+function syncLock() {
+  locking = locking.then(async () => {
+    const mine = call;
+    const wanted = wakeOn && mine?.channel.readyState === "open" && !document.hidden;
+    try {
+      if (wanted && lock === null) {
+        if (navigator.wakeLock === undefined) throw new Error("this browser has no screen wake lock");
+        const got = await navigator.wakeLock.request("screen");
+        // A lock this page let go is not `lock` by then, so only one the browser took back is told, and is asked for again at
+        // the next change of the page's front, as one the page left is.
+        got.addEventListener("release", () => {
+          if (lock !== got) return;
+          lock = null;
+          // A page that left the front loses its lock as the browser's rule, which is no taking back: it is asked for again as
+          // the page returns.
+          if (document.hidden) return;
+          lockWhy = "the browser let go of it";
+          mine.tell({kind: "screen", state: "unkept", why: lockWhy});
+          drawNote();
+        });
+        lock = got;
+        lockWhy = null;
+        mine.tell({kind: "screen", state: "kept"});
+      } else if (!wanted) {
+        lockWhy = null;
+        if (lock !== null) {
+          const held = lock;
+          lock = null;
+          await held.release();
+        }
+      }
+    } catch (error) {
+      // A lock that was asked for and not had is the wake word's trouble, told on its call; one that would not let go is
+      // nothing the wake word is waiting on, and the browser lets go of it as the page leaves.
+      if (wanted) {
+        lockWhy = wording(error);
+        mine.tell({kind: "screen", state: "unkept", why: lockWhy});
+      } else {
+        console.error(error);
+      }
+    }
+    drawNote();
+  });
+}
+
+function drawWake() { wakeButton.setAttribute("aria-pressed", String(wakeOn)); }
+
+// The user's choice, kept, and acted on at once by a call that is up: before Connect it changes nothing but what the next call does.
+function setWake(on) {
+  wakeOn = on;
+  try { localStorage.setItem("wake word", on ? "on" : "off"); keptWhy = null; } catch (error) { keptWhy = wording(error); }
+  drawWake();
+  if (call?.channel.readyState === "open") { if (on) call.listen(); else call.unlisten(); }
+  refresh();
+  syncLock();
 }
 
 async function open() {
@@ -328,38 +482,145 @@ async function connect(claim) {
   // samples were gathered goes, as a `quiet`, which hands hears as that much silence: a message every 20 ms either way is
   // what hands' clock and its watch on this call run on (hands.voice.phone). The turn's edges end the message being
   // gathered, in the order the button's messages go out, so no sample of one side rides in a message of the other.
-  let inTurn = false;
   const tag = ++tags;
   tap.port.onmessage = ({data}) => {
     if (typeof data === "number") { if (data === tag) { flush(); marked(); } return; }
+    // The detector hears the microphone for as long as it is on, turns included, so the word said as a turn ends is heard. It
+    // is fed from ready on: the models may load for minutes on a cold first run, and audio fed meanwhile is held in the worker
+    // for as long as that takes, while the ring a wake sends from exists only once the detector has said how long it is.
+    const listening = made.listening;
+    if (listening?.phase === "ready") {
+      listening.started.feed(data);
+      if (made.turn.kind === "waiting") listening.ring.push(data);
+    }
     pending.push(data); count += data.length;
     if (count >= per) flush();
   };
+  // [LAW:single-enforcer] everything the page sends goes out here: a channel no longer open is a call that is ending, which
+  // its own close says, so what was to go over it has nowhere to go.
+  function send(data) { if (channel.readyState === "open") channel.send(data); }
+  function tell(message) { send(JSON.stringify(message)); }
   function flush() {
-    if (count && channel.readyState === "open") channel.send(inTurn ? pcm(pending) : JSON.stringify({kind: "quiet", samples: count}));
+    if (count) send(made.turn.kind === "waiting" ? JSON.stringify({kind: "quiet", samples: count}) : pcm(pending));
     pending = []; count = 0;
   }
-  // Each press and release goes out after the one before it has: a press made while a release still waits on its mark
-  // is sent after that release, so hands hears them in the order the button made them, and one mark is out at a time.
+  // Each edge of a turn goes out after the one before it has: a press made while a release still waits on its mark is sent
+  // after that release, so hands hears them in the order the button made them, and one mark is out at a time.
   let sent = Promise.resolve();
-  // An edge of a turn waits for the mark to come back through the tap, so every block the tap had when the button moved
-  // has been gathered, and it is flushed as the side of the edge it was gathered on: a count before a press, audio before
-  // a release. Then the word goes, and the turn opens or closes.
-  const edge = (word) => { sent = sent.then(() => new Promise((done) => {
-    marked = () => { try { channel.send(word); inTurn = word === "press"; } finally { done(); } };
+  // The edges made and not yet gone out. A press is numbered as the button goes down and a wake as it is sent, and hands
+  // numbers both as it hears them, so a word heard with an edge ahead of it would be numbered after a press that is already
+  // numbered: it is not sent, and is told to hands as heard.
+  let edges = 0;
+  // An edge of a turn waits for the mark to come back through the tap, so every block the tap had when the turn moved has
+  // been gathered, and it is flushed as the side of the edge it was gathered on: a count before a press, audio before a
+  // release or before hands' word that a wake's turn is over. Then `act` moves the turn.
+  const edge = (act) => { edges += 1; sent = sent.then(() => new Promise((done) => {
+    marked = () => { try { act(); } finally { edges -= 1; done(); } };
     tap.port.postMessage(tag);
   })); };
+  // The turn closes: the ring is emptied, so it holds only what the microphone made after it, as the Mac's clip owner clears
+  // what it kept as a clip ends.
+  const waiting = () => {
+    made.turn = {kind: "waiting"};
+    const listening = made.listening;
+    if (listening?.phase === "ready") listening.ring.empty();
+  };
+  // The word the detector heard, at `score`. If no turn is open the page sends the second kept before it, the wake, then the
+  // microphone as it comes; else it tells hands it heard the word and sent none, so every hearing is in hands' record while the
+  // page's own turn state alone decides what leaves the phone.
+  function heardWord(score) {
+    if (made.turn.kind !== "waiting" || edges > 0) { tell({kind: "ignored", score}); return; }
+    const listening = made.listening;
+    // What was gathered since the last message is in the ring, so it goes ahead of the wake and is not sent again.
+    for (const kept of cut(listening.ring.empty(), per)) send(kept);
+    pending = []; count = 0;
+    tell({kind: "wake", score});
+    // A wake is a press hands numbers, in the order it hears them.
+    const press = ++made.presses;
+    made.turn = {kind: "waking", press};
+    show({press, number: null, milestone: "woken", at: null, released: null, heard: null, wake: listening.phrase});
+  }
+  // [LAW:types-are-the-program] The detector of this call is what is true of it and nothing else: `importing`, its script on its
+  // way; `loading`, its worker up and its models not, `waiting` on why hands has not answered it; `ready`, listening, with the
+  // ring it keeps the second before a word in and the phrase it listens for; `failed`, and why. Null is the wake word off. Every
+  // phase stops by `stop()`, so a call that ends, a detector that fails and the button turned off end it one way, and a worker
+  // is never left running that no phase holds. A worker stopped is heard from no more, so no message here is of a detector
+  // that is no longer the call's; only the script's arrival, which has no worker to stop, asks.
+  async function listen() {
+    const importing = made.listening = {phase: "importing", stop() {}};
+    let detector;
+    try {
+      detector = await import("/detector.js");
+    } catch (error) {
+      if (made.listening === importing) failed(`its script could not be loaded: ${wording(error)}`);
+      return;
+    }
+    if (made.listening !== importing) return;
+    const started = detector.startDetector({
+      rate: audio.sampleRate,
+      onReady: (word) => ready(started, word, detector.Ring),
+      onFailed: failed,
+      onHeard: heardWord,
+      onWaiting: waitingOn,
+    });
+    made.listening = {phase: "loading", stop: started.stop, waiting: null};
+  }
+  function ready(started, word, Ring) {
+    made.listening = {phase: "ready", stop: started.stop, started, ring: new Ring(Math.round(word.keptSeconds * audio.sampleRate)), phrase: word.phrase};
+    tell({kind: "detector", state: "loaded", browser: BROWSER});
+    tell({kind: "level", level: "wake word"});
+    refresh();
+  }
+  // hands is told as a wait begins and as it ends, not each time it asks again: a null `why` is hands having answered, after
+  // which the models load, which is no wait on hands.
+  function waitingOn(why) {
+    const loading = made.listening;
+    if (why === null) {
+      loading.waiting = null;
+      tell({kind: "detector", state: "answered", browser: BROWSER});
+    } else {
+      if (loading.waiting === null) tell({kind: "detector", state: "waiting", browser: BROWSER, why});
+      loading.waiting = why;
+    }
+    drawNote();
+  }
+  // [LAW:single-enforcer] the one way out of a detector's life while the call goes on: it is stopped, and a detector that was
+  // listening tells hands the phone no longer is, for hands holds the level the page last told it for as long as the call lasts.
+  // A call that ends is retired instead, for hands is at the desk again as that call goes.
+  function leave(next) {
+    const was = made.listening;
+    was.stop();
+    made.listening = next;
+    if (was.phase === "ready") tell({kind: "level", level: "off"});
+    refresh();
+  }
+  function failed(why) {
+    tell({kind: "detector", state: "failed", browser: BROWSER, why});
+    leave({phase: "failed", stop() {}, why});
+  }
   // Each press is numbered in the call, as hands numbers the presses it hears over the ordered channel.
-  const made = call = {pc, channel, ended: false, presses: 0,
-    press() { edge("press"); return ++this.presses; },
-    release() { edge("release"); },
+  const made = call = {pc, channel, ended: false, presses: 0, tell,
+    // What the microphone is going to: `waiting` for a turn, `waking` and `wake` for the wake's, or the button's.
+    turn: {kind: "waiting"},
+    listening: null,
+    listen,
+    // The detector ended with the call, which says nothing: hands is at the desk again as the call goes.
+    retire() { this.listening?.stop(); this.listening = null; },
+    // The wake word turned off: no detector, while the call goes on.
+    unlisten() { if (this.listening !== null) leave(null); },
+    press() { edge(() => { send("press"); made.turn = {kind: "button"}; }); return ++this.presses; },
+    release() { edge(() => { send("release"); waiting(); }); },
+    // The wake's turn is over on hands' word, unless a press has taken it over in the meantime.
+    close() { const turn = this.turn; edge(() => { if (made.turn === turn) waiting(); }); },
   };
   channel.onopen = () => {
     wanted = true; tries = 0;
-    talk.disabled = false; talk.textContent = "Hold to talk"; say("Connected. Hold the button and speak.");
+    talk.disabled = false; talk.textContent = "Hold to talk"; sayIdle();
     watch(made);
+    syncLock();
+    if (wakeOn) made.listen();
   };
-  channel.onmessage = ({data}) => told(JSON.parse(data));
+  channel.onmessage = ({data}) => told(made, JSON.parse(data));
   channel.onclose = () => dropped(made, "hands hung up.");
   pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") dropped(made, "The connection to hands failed."); };
 
@@ -408,9 +669,11 @@ async function watch(made) {
 // What a call that ended leaves behind: the microphone, kept for the next, and nothing else.
 function hangUp() {
   clearTimeout(retry); retry = null;
-  if (call) { call.ended = true; call.channel.close(); call.pc.close(); call = null; }
+  if (call) { call.ended = true; call.retire(); call.channel.close(); call.pc.close(); call = null; }
   held = false;
   letGo();
+  drawNote();
+  syncLock();
   // The rest of what was playing never reaches this page.
   stop(bargedIn);
   talk.classList.remove("held");
@@ -485,9 +748,13 @@ talk.addEventListener("contextmenu", (event) => event.preventDefault());
 // A page put away mid-press lets go of the button; brought back, a call that dropped while it was away is made again at
 // once rather than after the wait.
 document.addEventListener("visibilitychange", () => {
+  syncLock();
   if (document.hidden) { up(); return; }
   if (retry) { clearTimeout(retry); retry = null; place("resume"); }
 });
+wakeButton.addEventListener("click", () => setWake(!wakeOn));
+drawWake();
+drawNote();
 // One closed hangs up.
 addEventListener("pagehide", () => end("This page hung up."));
 

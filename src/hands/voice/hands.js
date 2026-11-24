@@ -62,6 +62,9 @@ export const askedForBytes = (path, within = ANSWER_MS) => crossed("GET", path, 
 // What a request hands did not answer says: its refusal, or why no answer came.
 export const unanswered = outcome => outcome.kind === "refused" ? outcome.text : outcome.why;
 
+// What a thrown value says: a promise can be rejected with any value, and a thing with no message says what it is.
+export const wording = error => error?.message || String(error);
+
 // [LAW:parse-dont-validate] a read's answer (hands.voice.longpoll.Read) as the page reads it, or thrown: one that does not
 // say what it shows would be asked for again at once, and again, never waiting at hands.
 function readOf(body) {
@@ -79,8 +82,8 @@ let ahead = 0;
 // The time on hands' clock now, in seconds, as hands' reads last said it.
 export const handsNow = () => Date.now() / 1000 + ahead;
 
-// How long the page waits to read hands again after a read that failed.
-const AGAIN_MS = 2000;
+// How long a page, or its worker, waits to ask hands again after an ask that got no answer.
+export const AGAIN_MS = 2000;
 
 // Read `path` for as long as the page is open: each read says what it last saw and waits at hands until what it shows
 // changes from it (hands.voice.longpoll), bounded by the wait hands said; a read that has seen nothing is answered at once.

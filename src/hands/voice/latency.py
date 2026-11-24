@@ -28,7 +28,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 
 from hands.clock import Clock
 from hands.voice import turnstop
-from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
+from hands.voice.milestone import ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
 from hands.voice.turnstop import ClipSent, KeyOpened, Words
 
 # The first arrival of each of these frame types in an open window is a milestone. `first audio` is not among them:
@@ -109,7 +109,7 @@ class LatencyObserver(BaseObserver):
                 self._told(ClipDiscarded(clip))
                 return
             case turnstop.TurnUnheard(turn=turn) if data.source is self._clips:
-                self._told(TurnUnopened(turn, UNHEARD))
+                self._told(TurnUnopened(turn))
                 return
             case ClipSent(clip=clip) if data.source is self._clips:
                 # The release is what the window's numbers are measured from, so it is also what opens the window.

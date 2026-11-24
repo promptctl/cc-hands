@@ -25,7 +25,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.clips import KEPT_SECONDS, Clip
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
-from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, TurnUnopened
+from hands.voice.milestone import ClipDiscarded, ClipOpened, TurnUnopened
 from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
@@ -52,6 +52,10 @@ TWO_WORDS = Path(__file__).parent / "fixtures" / "two_words.onnx"
 # A microphone Chrome makes up, granted without asking: the phone's call takes one, and no test has a person to allow it.
 FAKE_MICROPHONE = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
 
+# The choice of a person who turned the phone wake word off, as the page keeps it: a page of the button alone, which the tests of the
+# button run on.
+WAKE_OFF = 'if (location.protocol.startsWith("http")) localStorage.setItem("wake word", "off")'
+
 # What starts every line a page's own code says with console.error, set before any of the page's code runs: Chrome
 # says its own lines, a failed fetch's among them, on the same console.
 FAULT_MARK = "page fault:"
@@ -73,6 +77,8 @@ class Hands:
     requests: list[str]
     # What the phone recorded, as its calls end.
     recorded: list[Entry]
+    # The gate the phone moves, which a test moves as the desk's key or the pipeline would.
+    gate: PushToTalk
 
     def address(self, path: str, **query: str) -> str:
         """`path` on this server, carrying the phone's key as `hands phone` prints it."""
@@ -92,7 +98,8 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
     home = Home(tmp_path / "hands")
     key = phone_key(SYSTEM, home)
     recorded = list[Entry]()
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
+    gate = PushToTalk(SYSTEM, lambda _: None)
+    phone = Phone(SYSTEM, gate, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     brain, typed, voices = Brain(), list[str](), Voicing()
 
     async def typing(text: str) -> None:
@@ -110,7 +117,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
 
     pages.middlewares.append(taken)
     async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, recorded)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, recorded, gate)
         await phone.stop()
 
 
@@ -209,6 +216,7 @@ async def test_a_fault_in_a_pages_own_code_is_caught_by_the_check(chrome: Browse
 
 @pytest.mark.quarantined("promptctl-phone-app-9d9y.yrr", until="2026-11-29")
 async def test_connect_calls_hands_and_the_page_says_it_is_on_the_call(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(WAKE_OFF)
     page = await browser.open(hands.address("/"))
     await page.get_by_role("button", name="Connect").click()
     await expect(page.locator("#state")).to_have_text("Connected. Hold the button and speak.")
@@ -216,6 +224,7 @@ async def test_connect_calls_hands_and_the_page_says_it_is_on_the_call(browser: 
 
 
 async def test_a_second_page_takes_the_phone_and_the_first_says_so(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(WAKE_OFF)
     first = await browser.open(hands.address("/"))
     await first.get_by_role("button", name="Connect").click()
     await expect(first.locator("#state")).to_have_text("Connected. Hold the button and speak.")
@@ -295,6 +304,7 @@ async def at_the_edge(page: Page, act: Callable[[], Awaitable[None]]) -> None:
 
 
 async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_it_held_back_outside_one(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(WAKE_OFF)
     await browser.context.add_init_script(NEVER_SILENT)
     page = await browser.open(hands.address("/"))
     await page.get_by_role("button", name="Connect").click()
@@ -347,6 +357,7 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
 
 
 async def test_the_page_says_it_heard_nothing_from_a_press_hands_opened_no_clip_for_and_from_a_clip_hands_threw_away(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(WAKE_OFF)
     page = await browser.open(hands.address("/"))
     await page.get_by_role("button", name="Connect").click()
     await expect(page.locator("#state")).to_have_text("Connected. Hold the button and speak.")
@@ -362,7 +373,7 @@ async def test_the_page_says_it_heard_nothing_from_a_press_hands_opened_no_clip_
     # hands numbers the call's presses as the page does: the first press opened the gate's turn 0, and says no clip came of it.
     await page.mouse.down()
     await until_moved(1)
-    hands.phone.tell(TurnUnopened(0, UNHEARD))
+    hands.phone.tell(TurnUnopened(0))
     await expect(page.locator("#state")).to_have_text("Heard nothing from that press.")
     await page.mouse.up()
     await until_moved(2)
@@ -449,6 +460,7 @@ async rate => {
     onReady: ready => events.push({ kind: "ready", ...ready }),
     onFailed: why => events.push({ kind: "failed", why }),
     onHeard: (score, at) => events.push({ kind: "heard", score, at }),
+    onWaiting: why => events.push({ kind: "waiting", why }),
   });
 }
 """

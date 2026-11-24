@@ -2116,10 +2116,14 @@ at the place hands is not at keeps none of the words said before it opened a tur
 and typing at the desk never takes a call's replies off the phone. The phone listens between turns
 when its page says so: `level` is `off` or `wake word`, held for the call and `off` as each call
 starts, and the page's `wake` opens a turn only where hands is at the phone and it listens, or is
-answered `unopened` with the gate's reason (hands is at the desk is no mistake of the page's, the
-phone not listening or a turn being open is). Each `wake` is a `phone.wake` event, each change of
+answered `unopened` with the gate's reason, which the page shows in hands' words (hands is at the desk is no
+mistake of the page's, the phone not listening or a turn being open is). Each `wake` is a `phone.wake` event, each change of
 level a `phone.leveled` event, from and to and what made it, the page's word or a call that came or went,
-and each `detector` a `phone.detector` event. The phone has ears of
+and each `detector` a `phone.detector` event, its `state` `loaded`, `waiting` (hands gave it no answer, with why),
+`answered` (hands did, after a wait) or `failed`. A word the detector heard that opened no turn, for a turn of
+the page's own was open or its edge was on the way, is a `phone.ignored` event with its score, so every hearing is in the record; and
+each outcome of the page's asks to keep its screen on, or of the browser taking the lock back, is a `phone.screen` event,
+`kept` or `unkept` with why. The phone has ears of
 its own, a second Silero and Smart Turn loaded before its page is answered (`phone.loaded`), and a
 driver (`hands.voice.atphone`) that runs the shared life of a voice turn on the audio of a wake's
 turn: it hears from the wake on, never the second the page sent before it, and asks the gate to end
