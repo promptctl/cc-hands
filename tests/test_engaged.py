@@ -12,7 +12,7 @@ from hands.clock import Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import engaged
 from hands.sessions.wide import WideEvent
-from hands.voice.desk import Leveled, Made
+from hands.voice.desk import Leveled, Made, Woken
 from hands.voice.listening import Level, Levels
 from hands.voice.clips import Trigger
 from hands.voice.engaged import Hears, drive
@@ -116,8 +116,8 @@ class Rig:
         await self.until(lambda: not self.audio.qsize())
 
 
-async def unwoken(audio: bytes, begun: bool) -> bool:
-    return False
+async def unwoken(audio: bytes, begun: bool) -> Woken | None:
+    return None
 
 
 async def stopped(driving: asyncio.Task[None]) -> None:
@@ -304,9 +304,9 @@ async def test_each_level_hears_from_where_it_started() -> None:
     rig = Rig(verdicts=[])
     begun: list[bool] = []
 
-    async def woken(audio: bytes, afresh: bool) -> bool:
+    async def woken(audio: bytes, afresh: bool) -> Woken | None:
         begun.append(afresh)
-        return False
+        return None
 
     driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.owner, rig.on_move, rig.on_level, rig.events.append))
     # Off, nothing hears the room; the wake word's model hears from its level's first buffer, afresh each time it starts.
@@ -359,9 +359,9 @@ async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out(mo
     rig = Rig(verdicts=[])
     spoke = [False]
 
-    async def woken(audio: bytes, begun: bool) -> bool:
+    async def woken(audio: bytes, begun: bool) -> Woken | None:
         said, spoke[0] = not spoke[0], True
-        return said
+        return Woken(rig.clock.now(), echo=False) if said else None
 
     driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.owner, rig.on_move, rig.on_level, rig.events.append))
     await rig.choose("wake word")

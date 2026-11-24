@@ -112,6 +112,33 @@ def _place(choice: Choice, default: int, find: Find) -> Place:
             return Closed()
 
 
+# Whether CoreAudio's device with an id is on the Mac's own microphone, or its own speakers, now. Asked as it is needed:
+# a headphone plug can move a device off its speakers without a new id.
+BuiltIn = Callable[[int], bool]
+
+
+@dataclass(frozen=True)
+class BuiltIns:
+    """How to tell the Mac's own microphone and its own speakers among CoreAudio's devices."""
+
+    microphone: BuiltIn
+    speakers: BuiltIn
+
+
+def built_in(placement: Placement, built_ins: BuiltIns) -> bool:
+    """Whether the sides are on the Mac's own microphone and its own speakers, where the room carries hands' voice from
+    one to the other."""
+    return _on(placement.input, built_ins.microphone) and _on(placement.output, built_ins.speakers)
+
+
+def _on(place: Place, side: BuiltIn) -> bool:
+    match place:
+        case OnDefault(device=device) | OnNamed(device=device):
+            return side(device)
+        case Closed():
+            return False
+
+
 @dataclass(frozen=True)
 class Instead:
     """The default device, opened in place of the one config.toml names, which is missing."""

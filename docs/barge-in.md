@@ -81,6 +81,7 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 | the user's hand: the shortcut, the phone's button | as it opens |
 | the voice: the wake word, engaged conversation | once the streaming recognizer decodes words in it, while the clip is open (`streaming.Stream.said`), on the first of them; words it holds until the clip closes, a short "no" or "yes", as it closes, on the words the transcriber heard in it (`clipowner._closing`), ahead of them |
 | the voice, where nobody spoke | nothing, so nothing has to be undone |
+| the wake word, said over hands on the Mac's own microphone and speakers | nothing, and opens no turn (`voice/wake.py`) |
 
 What is heard decides the cut, and nothing about whose voice it is: the sound every model hears has hands' voice taken out of it
 (`voice/echo.py`), so the words left in it are a person's, a short "yes" or "no" and words hands is saying itself included. A

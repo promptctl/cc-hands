@@ -12,6 +12,7 @@ from hands.clock import Clock
 from hands.sessions.wide import WideEvent, annotate, begun, unit
 from hands.voice import wake
 from hands.voice.wakemodels import WakeModels
+from hands.voice.clips import Recording, Sound, voices
 from hands.voice.cues import Cue, Played, level_cue
 from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Hears, drive, loaded
@@ -28,14 +29,11 @@ class Microphone(Protocol):
     @property
     def sample_rate(self) -> int: ...
 
-    def overheard(self) -> AbstractAsyncContextManager[AsyncIterator[bytes]]: ...
+    def overheard(self) -> AbstractAsyncContextManager[AsyncIterator[Sound]]: ...
 
 
 class Speaker(Protocol):
-    """The speaker attached now: it plays a cue at once, and says whether hands is speaking."""
-
-    @property
-    def hands_speaking(self) -> bool: ...
+    """The speaker attached now: it plays a cue at once."""
 
     def cue(self, cue: Cue) -> Played: ...
 
@@ -47,6 +45,7 @@ async def serve_desk(
     tapped: Callable[[Clock, Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     microphone: Microphone,
     speaker: Callable[[], Speaker],
+    built_in: Callable[[], bool],
     models: WakeModels,
     word: Word,
     taken: Callable[[Move], Awaitable[None]],
@@ -55,7 +54,11 @@ async def serve_desk(
     clock: Clock,
 ) -> None:
     """Drive the desk until cancelled: each move it makes goes to the gate, and what the gate takes it as to `taken`; each
-    change of level plays its cue and is beaten, the driver having told `levels` of it as it stepped it."""
+    change of level plays its cue and is beaten, the driver having told `levels` of it as it stepped it. `built_in` says
+    whether the desk's streams are on the Mac's own microphone and speakers (`hands.voice.wake.listening`)."""
+    # [LAW:one-source-of-truth] the second a turn opened now would keep, as the clip owner keeps it, of every buffer the
+    # desk overhears at whatever level, so a level chosen as a reply ends still has the reply in it.
+    kept = Recording()
 
     async def at_desk(made: Made) -> None:
         # [LAW:single-enforcer] a clip is ended only through `PushToTalk.end`, which the gate lets only the trigger that opened it do;
@@ -88,6 +91,17 @@ async def serve_desk(
             files = ensured.files
             annotate(**ensured.facts())
         async with loaded(clock, rate, record, "desk.loaded") as ears, wake.loaded(clock, rate, files, word, record) as heard:
-            yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
+            yield ears, wake.listening(clock, heard, lambda: bool(voices(kept.sound)), built_in, record)
 
-    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels, at_desk, at_level, record)
+    @asynccontextmanager
+    async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:
+        async with microphone.overheard() as room:
+
+            async def buffers() -> AsyncIterator[bytes]:
+                async for sound in room:
+                    kept.add(sound, gathering=False)
+                    yield sound.heard
+
+            yield buffers()
+
+    await drive(clock, partial(tapped, clock), overheard, hearing, levels, at_desk, at_level, record)

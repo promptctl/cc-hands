@@ -173,12 +173,12 @@ _COUNTED: tuple[str, ...] = (
     *(name for literal in get_args(Move) for name in get_args(literal)),
     *(f"by_{trigger.replace(' ', '_')}" for trigger in get_args(Trigger)),
     *(f"to_{level.replace(' ', '_')}" for level in LEVELS),
-    "held_open", "ended_on_silence", "heard",
+    "held_open", "ended_on_silence", "heard", "wake_words",
 )
 
-# Whether a buffer of the desk's microphone ends with the wake word (`hands.voice.wake`), heard afresh from it when its
-# level has just started.
-Hears = Callable[[bytes, bool], Awaitable[bool]]
+# The wake word a buffer of the desk's microphone ends with, if it does (`hands.voice.wake`), heard afresh from it when
+# its level has just started.
+Hears = Callable[[bytes, bool], Awaitable[Woken | None]]
 
 
 @dataclass(frozen=True)
@@ -277,8 +277,8 @@ async def drive(
                                 # trimmed as silence is.
                                 detected = await life.hear(audio, not isinstance(desk.phase, Keyed), turn_of(desk.phase))
                                 # The wake word's model is run only where it can open a turn.
-                                word = desk.level == "wake word" and await woken(audio, begun)
-                                heard.extend(detected.told((Woken(clock.now()),) if word else ()))
+                                wake = await woken(audio, begun) if desk.level == "wake word" else None
+                                heard.extend(detected.told(() if wake is None else (wake,)))
                             case Choice(level=chose, by=asker) as choice:
                                 levels.answer(choice)
                                 heard.append(Chosen(chose, asker))

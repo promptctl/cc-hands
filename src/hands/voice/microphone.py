@@ -51,8 +51,8 @@ from pipecat.transports.local.audio import (
 
 from hands.clock import Clock
 from hands.voice import coreaudio
-from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, lost_microphone, placed
-from hands.voice.clips import Playhead
+from hands.voice.devicechoice import Auto, BuiltIns, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, built_in, hears_nothing, lost_microphone, placed
+from hands.voice.clips import Playhead, Sound
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
@@ -644,7 +644,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self.opened: Input | None = None
         # [LAW:no-shared-mutable-globals] who hears the desk whatever the gate says, each with the loop it hears on:
         # replaced whole on the event loop, read whole on the capture thread.
-        self._overhearing: tuple[asyncio.Queue[bytes], ...] = ()
+        self._overhearing: tuple[asyncio.Queue[Sound], ...] = ()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # As for the speaker: the base's setup, then the one way the stream is opened.
@@ -721,13 +721,14 @@ class KeyedMicrophone(LocalAudioInputTransport):
                 count(**opened.echo.counts())
 
     @asynccontextmanager
-    async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
+    async def overheard(self) -> AsyncGenerator[AsyncIterator[Sound]]:
         """Every buffer the desk's microphone captures while open, heard through the echo canceller whatever the key
-        says, and silent while hands is at the phone: what a trigger listens to for when to open and close the turn."""
-        heard: asyncio.Queue[bytes] = asyncio.Queue()
+        says, and silent while hands is at the phone, with what the speaker played as it was captured: what a trigger
+        listens to for when to open and close the turn."""
+        heard: asyncio.Queue[Sound] = asyncio.Queue()
         self._overhearing = (*self._overhearing, heard)
 
-        async def buffers() -> AsyncIterator[bytes]:
+        async def buffers() -> AsyncIterator[Sound]:
             while True:
                 yield await heard.get()
 
@@ -768,7 +769,8 @@ class KeyedMicrophone(LocalAudioInputTransport):
         gate = self._key.gate
         # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the clip owner: while hands is at the
         # phone, the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
-        overheard = cancelled.heard if gate.hears("desk") else bytes(len(cancelled.heard))
+        silence = bytes(len(in_data))
+        overheard = Sound(cancelled.heard, in_data, cancelled.played) if gate.hears("desk") else Sound(silence, silence, cancelled.played)
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches the clip owner; while hands is at the
@@ -808,6 +810,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         record: Record,
         portaudio: Callable[[], PortAudio] = lambda: cast(PortAudio, pyaudio.PyAudio()),
         hardware: Callable[[], Hardware] = coreaudio.hardware,
+        built_ins: BuiltIns = coreaudio.BUILT_INS,
         echo: Callable[[], Echo] = EchoCanceller,
         choices: Choices = Choices(),
     ) -> None:
@@ -816,6 +819,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         # miss an unplug during the model load between this and the pipeline's start.
         self._choices = choices
         self._hardware = hardware
+        self._built_ins = built_ins
         self.opened_on = self.wanted()
         # [LAW:single-enforcer] PortAudio is started by the one factory, here and at every reopen. LocalAudioTransport's
         # own init would start an instance of its own, and while two are alive, ending one lists no devices anew.
@@ -841,6 +845,12 @@ class KeyedAudioTransport(LocalAudioTransport):
     def wanted(self) -> Placement:
         """Where config.toml puts the streams on the devices there are now. Blocking: CoreAudio is asked."""
         return placed(self._choices, self._hardware())
+
+    def built_in(self) -> bool:
+        """Whether the streams are open on the Mac's own microphone and speakers, which hear each other through the room.
+        Blocking: CoreAudio is asked."""
+        # [LAW:one-source-of-truth] the devices the streams opened on, by CoreAudio's ids for them, as the follower reads them.
+        return built_in(self.opened_on, self._built_ins)
 
     async def reopen(self) -> Devices:
         """Close both streams and PortAudio itself, and open them again where config.toml puts them on the devices as they are now."""

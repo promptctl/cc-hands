@@ -31,9 +31,11 @@ Chooser = Literal["start", "tap"] | Asker
 
 @dataclass(frozen=True)
 class Woken:
-    """The wake word was heard, at `at`."""
+    """The wake word was heard, at `at`; an `echo` where hands' own voice, heard back through the room, may have said it
+    (`hands.voice.wake`)."""
 
     at: Instant
+    echo: bool
 
 
 @dataclass(frozen=True)
@@ -325,7 +327,8 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
 def _heard(phase: Phase, heard: Heard, next_turn: TurnId) -> tuple[Phase, tuple[Act, ...]]:
     """The phase after `heard`, and what the desk does: a turn it opens is named `next_turn`."""
     match phase, heard:
-        case Resting(level="wake word"), Woken(at=at):
+        # A turn opened on an echo would cut the reply off on hands' own word and send the brain hands' voice as the user's.
+        case Resting(level="wake word"), Woken(at=at, echo=False):
             return Woke(Waiting(next_turn, at)), (Made("arm", "wake word"), Made("start", "wake word"))
         case Resting(level="engaged"), SpeechStarting():
             return Starting(), (Made("arm", "engaged conversation"),)

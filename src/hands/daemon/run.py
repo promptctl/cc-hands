@@ -482,7 +482,7 @@ async def converse(
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the desk is driven from then on.
         await pipeline.started.wait()
-        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, models=wake_models, word=wake_word, taken=taken_at_desk, beat=beat, record=record, clock=clock)
+        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, built_in=voice.audio.built_in, models=wake_models, word=wake_word, taken=taken_at_desk, beat=beat, record=record, clock=clock)
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.
