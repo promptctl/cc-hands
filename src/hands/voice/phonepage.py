@@ -82,7 +82,7 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
             case answer:
                 return web.json_response({"sdp": answer.sdp, "type": answer.type})
 
-    return [web.get("/", shown), script_route("hands.js"),web.post("/offer", offered)]
+    return [web.get("/", shown), script_route("hands.js"), web.post("/offer", offered)]
 
 
 def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: WakeModels, runtime: Release) -> web.Application:
