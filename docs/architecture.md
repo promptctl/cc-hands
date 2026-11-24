@@ -2017,7 +2017,7 @@ while hands speaks as much as while it is quiet, so the wake word said over a re
 it off. Each hearing records `while_speaking`, whether hands was speaking as its audio arrived; a wake on the echo's tail, after hands stops, reads as one it was not. The
 pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
-The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
+The life of the models hears afresh from the wake (`Life.afresh`): Silero is quiet until sure of speech
 again and Smart Turn holds none, so what is asked starts as any speech does, after a
 pause or in the same breath, and Smart Turn judges it alone. The desk listens for as
 long as it is at the wake word's level, so the wake word is in the turn's audio for
@@ -2038,6 +2038,17 @@ variants carry the level, so a key turn and a voice turn are never open together
 the voice opens nothing while the key is down. Every model the levels hear with, Silero,
 Smart Turn, and the wake word's, is fetched and loaded as the desk starts, and one
 that cannot be fails the run with what could not be loaded.
+
+**How a voice turn ends is one piece of code, whoever owns the turn.** The rules are
+`hands.voice.voiceturn`: a pure step over a turn that is `Waiting` (the wake word opened it
+and what is asked has not started) or `Speaking`, and what it is told, which gives the turn
+after or how it ended: sent, sent at the limit, or thrown away. The work around Silero and Smart
+Turn is `hands.voice.turnlife.Life`: hearing a buffer, judging, clearing as a turn ends, and
+setting the deadlines a turn asks for. The owner of the turn holds which one is open and steps
+it in the order things were told: the desk's phase at the Mac, the gate for the phone. `Life`
+holds no turn, so each end, verdict, limit and ask names the instant its turn opened and
+the owner applies it only to that turn; one for a turn that has since been replaced ends
+nothing. The models take one use at a time, and `Life` refuses a use begun beside another.
 
 **A listening desk listens between turns.** The levels move the gate with the
 shortcut's own moves, plus two of their own: `listen` as the desk leaves `off` and

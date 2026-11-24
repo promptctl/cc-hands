@@ -13,8 +13,10 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.virtualclock import VirtualClock
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level, Leveled, Made
-from hands.voice.engaged import Ears, Hears, drive
+from hands.voice.engaged import Hears, drive
+from hands.voice.turnlife import Ears
 from hands.voice.trigger import Choice
+from hands.voice.voiceturn import ASK_SECONDS
 from hands.voice.shortcut import KeyEvent, Move, Pressed, Released, Ripe
 
 # Right Shift's triple tap: what engages, and what disengages.
@@ -293,3 +295,38 @@ async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks(
     await stopped(driving)
     # The first verdict sends the first turn; the speech heard while it was given opens the next, which is judged too.
     assert rig.made[:7] == ["listen", "arm", "start", "stop", "arm", "start", "stop"]
+
+
+async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out() -> None:
+    rig = Rig(verdicts=[])
+    spoke = [False]
+
+    async def woken(audio: bytes, begun: bool) -> bool:
+        said, spoke[0] = not spoke[0], True
+        return said
+
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    await rig.choose("wake word")
+    await rig.hear(b"q")
+    # The wake word's deadlines are set as it opens the turn, from the instant it was heard.
+    await rig.clock.scheduled(ASK_SECONDS)
+    rig.clock.advance_to(ASK_SECONDS)
+    await rig.settle(4)
+    await stopped(driving)
+    assert rig.made_by == [Made("listen", "wake word"), Made("arm", "wake word"), Made("start", "wake word"), Made("drop", "wake word")]
+    # Smart Turn starts the next turn with none of this one's audio in it.
+    assert rig.ears.cleared == 1
+
+
+async def test_an_engaged_turn_open_to_the_limit_is_sent_as_it_stands(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hands.voice.shortcut.TURN_LIMIT_SECONDS", 3.0)
+    rig = Rig(verdicts=[])
+    driving = rig.start()
+    await rig.choose("engaged")
+    await rig.hear(b"s", b"S")
+    await rig.clock.scheduled(3.0)
+    rig.clock.advance_to(3.0)
+    await rig.settle(4)
+    await stopped(driving)
+    assert rig.made_by == [Made("listen", "engaged conversation"), Made("arm", "engaged conversation"), Made("start", "engaged conversation"), Made("timeout", "engaged conversation")]
+    assert rig.ears.cleared == 1

@@ -30,7 +30,8 @@ import nltk
 import pytest
 from loguru import logger
 from packaging.specifiers import SpecifierSet
-from hands.voice.engaged import Ears, Hears
+from hands.voice.engaged import Hears
+from hands.voice.turnlife import Ears
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.pipeline import Pipeline

@@ -5,8 +5,9 @@ from collections.abc import Sequence
 import pytest
 
 from hands.voice.cues import level_cue
-from hands.voice.desk import ASK_SECONDS, Act, Chosen, NothingAsked, Resting, Woke, deadline, Desk, Event, Level, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, step
+from hands.voice.desk import Act, Chosen, Desk, Event, Level, Leveled, Made, Woken, step
 from hands.voice.shortcut import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
+from hands.voice.voiceturn import ASK_SECONDS, NothingAsked, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Waiting, deadlines
 
 
 def run(events: Sequence[Event], desk: Desk = Desk()) -> tuple[Desk, list[Act]]:
@@ -78,7 +79,7 @@ def test_a_third_press_held_to_talk_is_a_turn_and_no_tap() -> None:
 
 
 def test_under_the_wake_word_the_word_opens_a_turn_and_end_of_turn_closes_it() -> None:
-    desk, made = run([Woken(1.0), SpeechStopped(), SpeechStarted(1.5), SpeechStopped(), TurnEnded("verdict")], at("wake word"))
+    desk, made = run([Woken(1.0), SpeechStopped(), SpeechStarted(1.5), SpeechStopped(), TurnEnded("verdict", 1.0)], at("wake word"))
     assert made == [Made("arm", "wake word"), Made("start", "wake word"), "judge", Made("stop", "wake word")]
     assert desk.level == "wake word"
 
@@ -94,7 +95,7 @@ def test_speech_alone_opens_nothing_but_engaged(level: Level) -> None:
 
 
 def test_engaged_speech_opens_a_turn_and_a_noise_disarms() -> None:
-    _, made = run([SpeechStarting(), SpeechStopped(), SpeechStarted(2.0), SpeechStopped(), TurnEnded("silence")], at("engaged"))
+    _, made = run([SpeechStarting(), SpeechStopped(), SpeechStarted(2.0), SpeechStopped(), TurnEnded("silence", 2.0)], at("engaged"))
     assert made == [Made("arm", "engaged conversation"), Made("disarm", "engaged conversation"), Made("arm", "engaged conversation"), Made("start", "engaged conversation"), "judge", Made("stop", "engaged conversation")]
 
 
@@ -108,23 +109,23 @@ def test_a_shortcut_over_what_the_voice_has_open_sends_or_disarms_it_then_talks(
 @pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])
 def test_shift_typed_over_a_voice_turn_leaves_it_open(level: Level, opening: list[Event]) -> None:
     trigger = "wake word" if level == "wake word" else "engaged conversation"
-    desk, made = run([*opening, SpeechStarted(1.5), Pressed(2.0), Typed(), Released(), SpeechStopped(), TurnEnded("verdict")], at(level))
+    desk, made = run([*opening, SpeechStarted(1.5), Pressed(2.0), Typed(), Released(), SpeechStopped(), TurnEnded("verdict", 1.0)], at(level))
     assert moves(made)[-1] == Made("stop", trigger) and Made("arm", "shortcut") not in made and desk.level == level
 
 
 def test_a_shortcut_begun_under_a_voice_turn_that_ends_opens_its_own() -> None:
-    _, made = run([SpeechStarted(1.0), Pressed(2.0), SpeechStopped(), TurnEnded("verdict"), Ripe(2.0), Released()], at("engaged"))
+    _, made = run([SpeechStarted(1.0), Pressed(2.0), SpeechStopped(), TurnEnded("verdict", 1.0), Ripe(2.0), Released()], at("engaged"))
     assert moves(made)[-4:] == [Made("stop", "engaged conversation"), *KEY_TURN]
 
 
 def test_shift_typing_under_a_voice_turn_that_ends_opens_nothing() -> None:
-    _, made = run([SpeechStarted(1.0), Pressed(2.0), Typed(), SpeechStopped(), TurnEnded("verdict"), Released()], at("engaged"))
+    _, made = run([SpeechStarted(1.0), Pressed(2.0), Typed(), SpeechStopped(), TurnEnded("verdict", 1.0), Released()], at("engaged"))
     assert moves(made)[-1] == Made("stop", "engaged conversation")
 
 
 @pytest.mark.parametrize("level", ["wake word", "engaged"])
 def test_the_voice_opens_nothing_while_the_key_is_down(level: Level) -> None:
-    _, made = run([Pressed(1.0), Ripe(1.0), Woken(1.2), SpeechStarted(1.2), SpeechStopped(), TurnEnded("verdict"), Released()], at(level))
+    _, made = run([Pressed(1.0), Ripe(1.0), Woken(1.2), SpeechStarted(1.2), SpeechStopped(), TurnEnded("verdict", 1.2), Released()], at(level))
     assert made == KEY_TURN
 
 
@@ -154,7 +155,7 @@ def test_a_voice_turn_open_past_the_limit_is_sent_and_a_stale_limit_is_nothing()
     "events",
     [
         # Before what is asked has started, a stop or silence ends nothing: it is the end of the wake word.
-        [Woken(1.0), SpeechStopped(), TurnEnded("silence")],
+        [Woken(1.0), SpeechStopped(), TurnEnded("silence", 1.0)],
         # The wake word said again inside a turn is part of the turn.
         [Woken(1.0), SpeechStarted(1.5), Woken(2.0)],
     ],
@@ -168,7 +169,7 @@ def test_each_level_has_its_own_cue() -> None:
 
 
 def test_a_wake_with_nothing_asked_after_it_is_thrown_away_and_a_stale_one_is_nothing() -> None:
-    assert (ASK_SECONDS + 1.0, NothingAsked(1.0)) in deadline(Resting("wake word"), Woke(1.0))
+    assert (ASK_SECONDS + 1.0, NothingAsked(1.0)) in deadlines(Waiting(1.0))
     desk, made = run([Woken(1.0), NothingAsked(0.5), NothingAsked(1.0)], at("wake word"))
     assert moves(made) == [Made("arm", "wake word"), Made("start", "wake word"), Made("drop", "wake word")] and desk.level == "wake word"
     _, asked = run([Woken(1.0), SpeechStarted(1.5), NothingAsked(1.0)], at("wake word"))
