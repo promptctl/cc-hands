@@ -2026,13 +2026,22 @@ Whisper.
 **The desk is one mode, at one of three levels** (`hands.voice.desk`). The phone's
 button is there for every call. At the desk, one driver (`hands.voice.engaged.drive`)
 runs for the whole run, and Right Shift held alone opens a turn at every level. The
-level says what else does. `off`, the start's, keeps the microphone closed between
+level says what else does. `off`, a cold start's, keeps the microphone closed between
 turns. `wake word` listens for the wake word. `engaged` has speech alone open each turn.
+A restart comes back at the level the run before it was at: the run hands it on as
+`--level`, and the new run's desk is made at it, the start's choice. The desk listens
+at off until the models it hears with are loaded, holding the level last chosen, by the
+start, a tap, a tool or a page, and only then makes the listen move, so the gate hears
+the desk listen and the level's cue plays when the room can be heard. One owner holds
+the level (`hands.voice.listening.Levels`), made before the run so a restart told while
+the models load still carries the level last chosen. Each holder is handed the port it
+uses: the driver alone writes it, after each step; the tools and the pages read it and
+ask; the run's end reads it.
 A triple tap of Right Command toggles `wake word`, and one of Right Shift toggles
 `engaged` (`hands.voice.taps`): three presses of the modifier alone inside a second,
 with no other key between. Either switches straight from the other. The brain's
-`listening_level` says the level, and `set_listening_level` chooses one through the
-same queue the taps step in. Each change of level plays its own cue. A voice turn open
+`listening_level` says the level, and `set_listening_level` chooses one, as a page's
+level button does, through the same queue the taps step in. Each change of level plays its own cue. A voice turn open
 as the level changes is sent, and a key turn goes on. The desk is one value whose
 variants carry the level, so a key turn and a voice turn are never open together, and
 the voice opens nothing while the key is down. Every model the levels hear with, Silero,

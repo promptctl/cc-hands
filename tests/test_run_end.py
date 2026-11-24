@@ -15,6 +15,7 @@ from hands.daemon.cli import launch
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.run import stopping, until_told
 from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, Failing
+from hands.voice.listening import Levels
 from hands.tasks import cancel_and_wait
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import SettingsEdited
@@ -63,7 +64,7 @@ class Launched:
                 do(step, stop)
             return Ended(None, 0)
 
-        self.task = asyncio.create_task(launch(lambda: run, self.heart, lambda: (), unedited, self.recorded.append, run_start, clock))
+        self.task = asyncio.create_task(launch(lambda: run, Levels("off"), self.heart, lambda: (), unedited, self.recorded.append, run_start, clock))
 
 
 def do(step: Step, stop: Stop) -> None:
@@ -151,7 +152,7 @@ async def test_a_run_that_returns_with_no_cause_told_fails_saying_so(tmp_path: P
         return Ended(None, 0)
 
     with pytest.raises(LookupError, match="no cause told"):
-        await launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=clock), clock)
+        await launch(lambda: run, Levels("off"), heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=clock), clock)
     assert ran(recorded) == [("failed", ("escaped",), "failed")]
 
 
@@ -226,6 +227,6 @@ async def test_a_settings_watch_that_raises_as_the_run_ends_fails_it_on_its_even
         return Ended(None, 0)
 
     with pytest.raises(ConnectionError, match="the device went away"):
-        await launch(lambda: run, heart, lambda: (), watch_that_closes_badly, recorded.append, Start(restarted=False, clock=clock), clock)
+        await launch(lambda: run, Levels("off"), heart, lambda: (), watch_that_closes_badly, recorded.append, Start(restarted=False, clock=clock), clock)
     assert ran(recorded) == [("failed", ("q key", "settings unreadable"), "failed")]
     assert not stopped(heart)

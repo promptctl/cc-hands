@@ -5,15 +5,18 @@ from collections.abc import Sequence
 import pytest
 
 from hands.voice.cues import level_cue
-from hands.voice.desk import Act, Chosen, Desk, Event, Level, Leveled, Made, Woken, step
+from hands.voice.desk import Act, Chosen, Desk, Event, Leveled, Loaded, Made, ModelsLoaded, Resting, Woken, step
+from hands.voice.listening import Level
 from hands.voice.shortcut import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
 from hands.voice.voiceturn import ASK_SECONDS, Judging, NothingAsked, Speaking, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, TurnId, Waiting, deadlines
 
 
 T1, T2 = TurnId(1), TurnId(2)
+# The desk once the models it hears with are loaded, as every test but the load's starts.
+LOADED = Desk(Loaded(Resting("off")))
 
 
-def run(events: Sequence[Event], desk: Desk = Desk()) -> tuple[Desk, list[Act]]:
+def run(events: Sequence[Event], desk: Desk = LOADED) -> tuple[Desk, list[Act]]:
     made: list[Act] = []
     for event in events:
         desk, acts = step(desk, event)
@@ -22,7 +25,7 @@ def run(events: Sequence[Event], desk: Desk = Desk()) -> tuple[Desk, list[Act]]:
 
 
 def at(level: Level) -> Desk:
-    return run([Chosen(level)])[0]
+    return run([Chosen(level, "tool")])[0]
 
 
 def held(t: float) -> list[Event]:
@@ -42,8 +45,28 @@ def moves(acts: list[Act]) -> list[Act]:
 
 
 def test_the_desk_starts_off_and_deaf_and_the_held_key_talks() -> None:
-    assert Desk().level == "off"
-    assert run(held(1.0))[1] == KEY_TURN
+    assert Desk.starting("off").level == "off"
+    assert run(held(1.0), Desk.starting("off"))[1] == KEY_TURN
+
+
+def test_a_level_chosen_while_the_models_load_is_listened_at_once_they_are_and_not_before() -> None:
+    loading, made = run(held(1.0), Desk.starting("engaged"))
+    # Nothing hears the room yet: the desk listens at off, holding the level chosen, and only the key moves the gate.
+    assert (loading.level, loading.chosen, made) == ("off", "engaged", KEY_TURN)
+    loaded, made = run([ModelsLoaded()], loading)
+    assert (loaded.level, made) == ("engaged", [Made("listen", "engaged conversation"), Leveled("off", "engaged", "start")])
+    # The models load once a run: told so again, the desk was stepped wrongly, and says so.
+    with pytest.raises(RuntimeError, match="already were"):
+        run([ModelsLoaded()], loaded)
+
+
+def test_the_last_level_chosen_while_the_models_load_is_the_one_listened_at_and_said_by_its_chooser() -> None:
+    # Right Shift's triple tap from the engaged the start chose is off, and the tool then chose the wake word.
+    loading, made = run([*taps(1.0), Chosen("wake word", "tool")], Desk.starting("engaged"))
+    assert (loading.level, loading.chosen, made) == ("off", "wake word", [*TAP_SHIFT, Made("disarm", "shortcut")])
+    assert run([ModelsLoaded()], loading)[1] == [Made("listen", "wake word"), Leveled("off", "wake word", "tool")]
+    # Loaded at off, as chosen, there is nothing to listen for and no change to say.
+    assert run([*taps(1.0), ModelsLoaded()], Desk.starting("engaged"))[1] == [*TAP_SHIFT, Made("disarm", "shortcut")]
 
 
 @pytest.mark.parametrize("level", ["off", "wake word", "engaged"])
@@ -134,19 +157,19 @@ def test_the_voice_opens_nothing_while_the_key_is_down(level: Level) -> None:
 
 @pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])
 def test_a_level_left_with_a_voice_turn_open_sends_it(level: Level, opening: list[Event]) -> None:
-    desk, made = run([*opening, Chosen("off")], at(level))
+    desk, made = run([*opening, Chosen("off", "tool")], at(level))
     trigger = "wake word" if level == "wake word" else "engaged conversation"
     assert made[-3:] == [Made("stop", trigger), Made("deafen", trigger), Leveled(level, "off", "tool")]
     assert desk.level == "off"
 
 
 def test_a_key_turn_goes_on_across_a_change_of_level() -> None:
-    _, made = run([Pressed(1.0), Ripe(1.0), Chosen("engaged"), Released()])
+    _, made = run([Pressed(1.0), Ripe(1.0), Chosen("engaged", "tool"), Released()])
     assert made == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tool"), Made("stop", "shortcut")]
 
 
 def test_a_level_chosen_again_changes_nothing() -> None:
-    assert run([Chosen("off")])[1] == []
+    assert run([Chosen("off", "tool")])[1] == []
 
 
 def test_a_voice_turn_open_past_the_limit_is_sent_and_a_stale_limit_is_nothing() -> None:

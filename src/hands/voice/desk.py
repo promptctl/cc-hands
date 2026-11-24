@@ -1,13 +1,16 @@
 """The desk: how a turn of the user's is opened at the Mac, by the talk key at every level, and by the voice at two.
 
-The desk listens at one of three levels. Off, the start's, the microphone is closed between turns. Under the wake word,
-saying it opens a turn. Engaged, speech alone opens each turn. At every level Right Shift held alone opens a turn and its
-release sends it (`hands.voice.shortcut`). A triple tap of Right Command toggles the wake word, and one of Right Shift
-toggles engaged conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools choose
-a level as a tap does. A turn the voice opened is closed by end-of-turn detection, by the rules of any voice turn's end
-(`hands.voice.voiceturn`).
+The desk listens at one of three levels (`hands.voice.listening`). Off, the microphone is closed between turns; the desk
+listens at off until the models it hears with are loaded, and then at the level last chosen, first by the run's start:
+off on a cold start and, on a restart, the level the run before it was at. Under the wake word, saying it opens a turn.
+Engaged, speech alone opens each turn. At every level Right Shift held alone opens a turn and its release sends it
+(`hands.voice.shortcut`). A triple tap of Right Command toggles the wake word, and one of Right Shift toggles engaged
+conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools and the pages' level
+buttons choose a level as a tap does. A turn the voice opened is closed by end-of-turn detection, by the rules of any voice
+turn's end (`hands.voice.voiceturn`).
 
-[LAW:types-are-the-program] the desk is one value whose variants carry the level, so whether it listens, which trigger has
+[LAW:types-are-the-program] the desk is one value whose variants carry the level, in a field or, for the two that exist at
+one level alone (Starting, engaged; Woke, the wake word), in the variant itself, so whether it listens, which trigger has
 the turn, and whether the key is down are each said once: a key turn and a voice turn are never open together, and the
 level never says the desk is deaf while a variant says it listens.
 """
@@ -17,18 +20,13 @@ from typing import Literal
 
 from hands.voice import voiceturn
 from hands.voice.clips import Trigger
-from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, Typing, step as shortcut_step
+from hands.voice.listening import Asker, Level, Listens
+from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Shortcut, Talking as KeyTalking, Typing, step as shortcut_step
 from hands.voice.taps import TapKey, Taps, counted
 from hands.voice.voiceturn import Ended, Going, Judging, NothingAsked, SpeechStarted, SpeechStarting, SpeechStopped, Speaking, Told, Turn, TurnEnded, TurnId, TurnTooLong, Waiting
 
-# The levels the desk listens at between turns; it is deaf under "off" alone.
-Listens = Literal["wake word", "engaged"]
-# One flat Literal, so a tool argument of it has a schema: "off" and every level of Listens.
-Level = Literal["off", "wake word", "engaged"]
-LEVELS: tuple[Level, ...] = ("off", "wake word", "engaged")
-
-# Who chose a level: a triple tap, or the brain's tool, asked by voice.
-Chooser = Literal["tap", "tool"]
+# Who chose a level: the start, the level the run starts at; a triple tap, toggling it; or whoever asked for it by name.
+Chooser = Literal["start", "tap"] | Asker
 
 
 @dataclass(frozen=True)
@@ -40,13 +38,19 @@ class Woken:
 
 @dataclass(frozen=True)
 class Chosen:
-    """The brain's tool chose `level`."""
+    """`by` chose `level`."""
 
     level: Level
+    by: Asker
+
+
+@dataclass(frozen=True)
+class ModelsLoaded:
+    """The models every level hears with are loaded, and the room is overheard from now."""
 
 
 Heard = Woken | Told
-Event = KeyEvent | Heard | Chosen
+Event = KeyEvent | Heard | Chosen | ModelsLoaded
 
 
 @dataclass(frozen=True)
@@ -99,17 +103,65 @@ Phase = Resting | Starting | Woke | Voiced | Keyed
 
 
 @dataclass(frozen=True)
-class Desk:
-    """Where the desk is, the presses a triple tap has counted so far, and how many turns the voice has opened, which names
-    the next."""
+class Loading:
+    """The models every level hears with are loading, so the desk listens at off whatever is chosen, and only the key is
+    read: `chosen` is the level it listens at once they are loaded, chosen `by`, and `key` where Right Shift is."""
 
-    phase: Phase = Resting("off")
+    chosen: Level
+    by: Chooser
+    key: Shortcut = Idle()
+
+
+@dataclass(frozen=True)
+class Loaded:
+    """The models are loaded: the desk listens at the level its phase is at."""
+
+    phase: Phase
+
+
+@dataclass(frozen=True)
+class Desk:
+    """Whether the models the desk hears with are loaded, and where it is; the presses a triple tap has counted so far;
+    and how many turns the voice has opened, which names the next.
+
+    [LAW:types-are-the-program] a desk whose models load holds no phase of its own but the key's, at off, so it cannot be
+    at a level that listens before anything can hear; and it is made from the level its run starts at.
+    """
+
+    models: Loading | Loaded
     taps: Taps = Taps()
     turns: TurnId = TurnId(0)
 
+    @classmethod
+    def starting(cls, level: Level) -> "Desk":
+        """A run's desk, its models still to load, to listen at `level` once they are: the start's choice."""
+        return cls(Loading(level, "start"))
+
+    @property
+    def phase(self) -> Phase:
+        match self.models:
+            case Loading(key=key):
+                match key:
+                    case Idle():
+                        return Resting("off")
+                    case KeyArming() | KeyTalking() | Typing():
+                        return Keyed("off", key)
+            case Loaded(phase=phase):
+                return phase
+
     @property
     def level(self) -> Level:
+        """The level the desk listens at."""
         return level_of(self.phase)
+
+    @property
+    def chosen(self) -> Level:
+        """The level last chosen: the one the desk listens at, or will once its models are loaded."""
+        match self.models:
+            case Loading(chosen=chosen):
+                return chosen
+            case Loaded():
+                return self.level
 
 
 def level_of(phase: Phase) -> Level:
@@ -132,7 +184,7 @@ class Made:
 
 @dataclass(frozen=True)
 class Leveled:
-    """The level changed, from `was` to `now`, chosen `by` a tap or the tool."""
+    """The level changed, from `was` to `now`, chosen `by`."""
 
     was: Level
     now: Level
@@ -146,26 +198,43 @@ Act = Made | Leveled | Judging
 
 def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
     """The desk after `event`, and what it does."""
-    match event:
-        case Chosen(level=level):
-            phase, acts = _leveled(desk.phase, level, "tool")
-            return replace(desk, phase=phase), acts
-        case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong() | NothingAsked():
-            phase, acts = _heard(desk.phase, event, TurnId(desk.turns + 1))
+    match event, desk.models:
+        case Chosen(level=level, by=by), _:
+            return _chosen(desk, level, by)
+        case ModelsLoaded(), Loading(chosen=chosen, by=by):
+            # [LAW:no-ambient-temporal-coupling] the level chosen while they loaded is listened at from now, its listen
+            # move made and its change said, as any choice's is once they are loaded.
+            phase, acts = _leveled(desk.phase, chosen, by)
+            return replace(desk, models=Loaded(phase)), acts
+        case ModelsLoaded(), Loaded():
+            # [LAW:no-silent-failure] the models load once a run: told so twice, the desk was stepped wrongly.
+            raise RuntimeError("the desk was told its models were loaded once they already were")
+        case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong() | NothingAsked(), Loading():
+            # At off, as a desk whose models load is, the room opens nothing.
+            return desk, ()
+        case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong() | NothingAsked(), Loaded(phase=phase):
+            phase, acts = _heard(phase, event, TurnId(desk.turns + 1))
             # [LAW:one-source-of-truth] the number spent is the one the turn the phase holds now carries, so the count
             # follows the turns and not a second decision of whether one opened.
             turn = turn_of(phase)
-            return replace(desk, phase=phase, turns=desk.turns if turn is None else turn.id), acts
-        case _:
+            return replace(desk, models=Loaded(phase), turns=desk.turns if turn is None else turn.id), acts
+        case _, models:
             taps, tapped = counted(desk.taps, event)
-            phase, acts = _keyed(desk.phase, event)
+            match models:
+                case Loading(key=key):
+                    down, moves = shortcut_step(key, event)
+                    keyed, acts = replace(models, key=down), tuple[Act, ...](Made(move, "shortcut") for move in moves)
+                case Loaded(phase=phase):
+                    phase, acts = _keyed(phase, event)
+                    keyed = Loaded(phase)
             # [LAW:one-source-of-truth] a press held to a turn is no tap: the shortcut that opened it is the one judge.
             if any(act == Made("start", "shortcut") for act in acts):
                 taps = Taps()
-            if tapped is not None:
-                phase, more = _leveled(phase, toggled(level_of(phase), tapped), "tap")
-                acts = (*acts, *more)
-            return replace(desk, phase=phase, taps=taps), acts
+            pressed = replace(desk, models=keyed, taps=taps)
+            if tapped is None:
+                return pressed, acts
+            leveled, more = _chosen(pressed, toggled(pressed.chosen, tapped), "tap")
+            return leveled, (*acts, *more)
 
 
 def toggled(level: Level, key: TapKey) -> Level:
@@ -214,6 +283,17 @@ def _rest(level: Level, key: VoiceKey, left: Act) -> tuple[Resting | Keyed, tupl
             return Keyed(level, key), (left, Made("arm", "shortcut"))
         case Typing():
             return Keyed(level, key), (left,)
+
+
+def _chosen(desk: Desk, now: Level, by: Chooser) -> tuple[Desk, tuple[Act, ...]]:
+    """The desk once `by` chose `now`, and what it does: while its models load, nothing, the choice held until they are
+    loaded, since nothing hears the room before then."""
+    match desk.models:
+        case Loading() as loading:
+            return replace(desk, models=replace(loading, chosen=now, by=by)), ()
+        case Loaded(phase=phase):
+            leveled, acts = _leveled(phase, now, by)
+            return replace(desk, models=Loaded(leveled)), acts
 
 
 def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, ...]]:

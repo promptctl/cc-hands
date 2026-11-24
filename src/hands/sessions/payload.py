@@ -20,6 +20,14 @@ class NotJson(Rejected):
     """Input that is not JSON at all, beside JSON that is not what was asked for."""
 
 
+def one_of[T: str](text: str, names: tuple[T, ...], offered: str) -> T:
+    """[LAW:parse-dont-validate] the one name in `names` that `text` is; raises Rejected naming what is offered."""
+    for name in names:
+        if text == name:
+            return name
+    raise Rejected(f"{offered} {', '.join(names)}, not {text!r}")
+
+
 @dataclass(frozen=True)
 class Payload:
     fields: Mapping[str, object]

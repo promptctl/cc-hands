@@ -22,6 +22,7 @@ from hands.daemon import cli
 from hands.daemon.cli import launch, retire
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import Ended, QuitKey, Start, Stop
+from hands.voice.listening import Levels
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
@@ -150,7 +151,7 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == "restart"
+    assert await launch(lambda: run, Levels("off"), heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == "restart"
     # Told to stop before it was ready, the start ends cancelled.
     assert recorded[0] == EDITED and start_outcomes(recorded) == ["cancelled"] and len(recorded) == 3
     assert ran(recorded) == [("ok", ("settings edited",), "restart")]
@@ -172,7 +173,7 @@ async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_
         return EDITED
 
     recorded: list[audit.Entry] = []
-    assert await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == "quit"
+    assert await launch(lambda: run, Levels("off"), heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM) == "quit"
     assert start_outcomes(recorded) == ["cancelled"] and len(recorded) == 2
     assert ran(recorded) == [("ok", ("q key",), "quit")]
 
@@ -189,7 +190,7 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
 
     recorded: list[audit.Entry] = []
     with pytest.raises(PermissionError, match="config.toml"):
-        await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM)
+        await launch(lambda: run, Levels("off"), heart, lambda: (), edited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM)
     # The run and its start, which it ended raising, are failed, with what it raised.
     failed = "PermissionError: config.toml"
     assert [(entry.event, entry.outcome, entry.error) for entry in recorded if isinstance(entry, WideEvent)] == [("hands.run", "failed", failed), ("hands.start", "failed", failed)]
@@ -232,7 +233,7 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
         return Ended(NOW, 3)
 
     recorded: list[audit.Entry] = []
-    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
+    launched = asyncio.create_task(launch(lambda: run, Levels("off"), heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
     while not told:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), RESTART_SIGNAL)
@@ -255,7 +256,7 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
         return Ended(None, 0)
 
     recorded: list[audit.Entry] = []
-    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
+    launched = asyncio.create_task(launch(lambda: run, Levels("off"), heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM))
     await winding_down.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
     assert await launched == "quit"

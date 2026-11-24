@@ -17,7 +17,7 @@ from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Hears, drive, loaded
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
-from hands.voice.trigger import Levels
+from hands.voice.listening import Driving
 from hands.voice.turnlife import Ears
 from hands.voice.wakeword import Word
 
@@ -43,7 +43,7 @@ class Speaker(Protocol):
 async def serve_desk(
     *,
     key: PushToTalk,
-    levels: Levels,
+    levels: Driving,
     tapped: Callable[[Clock, Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     microphone: Microphone,
     speaker: Callable[[], Speaker],
@@ -55,7 +55,7 @@ async def serve_desk(
     clock: Clock,
 ) -> None:
     """Drive the desk until cancelled: each move it makes goes to the gate, and what the gate takes it as to `taken`; each
-    change of level goes to `levels`, plays its cue, and is beaten."""
+    change of level plays its cue and is beaten, the driver having told `levels` of it as it stepped it."""
 
     async def at_desk(made: Made) -> None:
         match key.move(made.move, made.by):
@@ -66,7 +66,6 @@ async def serve_desk(
                 await taken(move)
 
     async def at_level(leveled: Leveled) -> None:
-        levels.leveled(leveled)
         cue = level_cue(leveled)
         logger.info(cue.line)
         speaker().cue(cue)
@@ -87,4 +86,4 @@ async def serve_desk(
         async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
 
-    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels.chosen, at_desk, at_level, record)
+    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels, at_desk, at_level, record)

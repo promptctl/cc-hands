@@ -15,7 +15,7 @@ from hands.core.playback import Labelled
 from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
-from hands.voice.desk import Level
+from hands.voice.listening import Asker, Level
 from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
 from hands.voice.gallerypage import Gallery, gallery_routes
@@ -75,11 +75,11 @@ class Voicing:
 @dataclass
 class Listening:
     level: Level = "off"
-    chosen: list[Level] = field(default_factory=list[Level])
+    chosen: list[tuple[Level, Asker]] = field(default_factory=list[tuple[Level, Asker]])
 
-    async def choose(self, level: Level) -> Level:
+    async def choose(self, level: Level, by: Asker) -> Level:
         was, self.level = self.level, level
-        self.chosen.append(level)
+        self.chosen.append((level, by))
         return was
 
 
@@ -321,7 +321,7 @@ async def test_a_listening_level_is_chosen_and_its_readback_is_the_one_the_voice
     response = await page.client.post("/gallery/level", headers=KEYED, json={"level": "wake word"})
     body = await response.json()
     assert body == {"level": "wake word", "was": "off", "readback": described("wake word", Pretrained())}
-    assert page.levels.chosen == ["wake word"]
+    assert page.levels.chosen == [("wake word", "page")]
     [choice] = page.events("gallery.level")
     assert (choice.outcome, choice.facts["level"], choice.facts["was"]) == ("ok", "wake word", "off")
 
