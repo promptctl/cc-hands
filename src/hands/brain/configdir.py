@@ -16,7 +16,7 @@ from hands.sessions.payload import Payload, Rejected
 
 
 class Unstartable(Exception):
-    """A Claude Code of hands' own could not be started: no claude to run, a config directory it would not start on, a fritter that never opened its socket, or a brain that never turned its input on."""
+    """A Claude Code of hands' own could not be started or asked: no claude to run, a config directory it would not start on, an `auth status` that gave no answer, a fritter that never opened its socket, or a brain that never turned its input on."""
 
 
 # Each is on unless settings.json says false: they sync the login's account's skills and plugins, which are Brandon's.

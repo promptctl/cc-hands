@@ -895,7 +895,7 @@ def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: P
     ("outcome", "said"),
     [
         (child.NeverStarted(PermissionError(errno.EACCES, "Permission denied", "claude")), "could not be started: Permission denied"),
-        (child.Ran(child.Killed(child.Kill(child.Limit(5))), child.Captured(b""), child.Captured(b"")), "was killed with SIGKILL"),
+        (child.Ran(child.Killed(child.Kill(child.Limit(5))), child.Captured(b""), child.Captured(b"")), child.said(child.Killed(child.Kill(child.Limit(5))))),
     ],
 )
 def test_a_brain_whose_claude_could_not_be_asked_is_a_start_refused_and_not_a_login_to_make(root: Path, outcome: child.Outcome, said: str) -> None:
@@ -903,8 +903,7 @@ def test_a_brain_whose_claude_could_not_be_asked_is_a_start_refused_and_not_a_lo
     laid_out(home)
     found = readiness.configured(answering(outcome), home, LAID_OUT, {})
     # The start refuses on it all the same, so the line says so, with the reason the start gives as its fix.
-    assert isinstance(found, Missing) and found.step == "hands cannot start here"
-    assert "auth status` " + said in found.fix and "hands login" not in found.said
+    assert found == readiness.unstartable(f"`{LAID_OUT.claude(home.brain)} auth status` {said}")
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:

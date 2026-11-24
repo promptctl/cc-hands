@@ -476,6 +476,8 @@ async def test_a_gh_ended_by_a_signal_gave_no_answer_and_is_not_a_forge_that_ref
     delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
     assert [event.facts["forge"] for event in readings(record)] == ["unanswered"]
+    [gh] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "child.run" and Path(str(entry.facts["program"])).name == "gh"]
+    assert (gh.facts["ending"], gh.facts["signal"]) == ("signalled", "SIGKILL")
 
 
 @pytest.mark.outside
