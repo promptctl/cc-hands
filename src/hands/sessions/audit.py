@@ -529,7 +529,7 @@ def tail(directory: Path, count: int) -> tuple[list[str], int]:
     # while they are read is past the offset, and is following's to tell.
     with _held(segment(directory, active)) as log:
         end = _complete(log)
-        older = (line for base in reversed(closed) for line in _newest_first(segment(directory, base)))
+        older = (line for base in reversed(closed) for line in newest_first(segment(directory, base)))
         newest = list(itertools.islice(itertools.chain(_before(log, end), older), max(count, 0)))
     return newest[::-1], active + end
 
@@ -543,7 +543,7 @@ def forwards(directory: Path) -> Iterator[str]:
 def backwards(directory: Path) -> Iterator[str]:
     """Every complete line of the log, newest first, reading no further back than the caller asks."""
     for base in reversed(segments(directory)):
-        yield from _newest_first(segment(directory, base))
+        yield from newest_first(segment(directory, base))
 
 
 def follow(directory: Path, offset: int, poll: Callable[[], None]) -> Iterator[str]:
@@ -597,8 +597,9 @@ def _lines(path: Path, start: int) -> tuple[list[str], int]:
     return [_text(line) for line in data[:end].split(b"\n")[:-1]], start + end
 
 
-def _newest_first(path: Path) -> Iterator[str]:
-    """The complete lines of path, newest first."""
+def newest_first(path: Path) -> Iterator[str]:
+    """The complete lines of path, newest first, read back from its end a block at a time; a path that is gone holds
+    none. A line still being written is not yet among them."""
     # [LAW:no-ambient-temporal-coupling] the end is found in the file the lines are read back from: opened once, it is
     # the same segment for both, whatever its path comes to name.
     with _held(path) as log:

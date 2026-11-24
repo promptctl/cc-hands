@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from hands.core.summaries import Thing
-from hands.sessions import child
+from hands.core.trace import Span
+from hands.sessions import child, wide
+from hands.sessions.audit import newest_first
 from hands.sessions.child import Children
 from hands.sessions.payload import Payload, Rejected
 
@@ -49,38 +51,42 @@ def level_title(topic: str, level: Level) -> str:
 
 
 @dataclass(frozen=True)
+class Lit:
+    """lit as hands runs it: in `environment`, the one hands was started in. [LAW:one-source-of-truth] every lit run for
+    hands is run in it, as its signer has it (`Signer.runs_in`)."""
+
+    environment: Mapping[str, str]
+
+
+@dataclass(frozen=True)
 class Person:
     """A person a write is lit's for, as two facts lit takes apart: the name it signs the write with, on a command that
     takes `--by`, and the environment hands was started in, which every command run for them runs in, one that takes no
     `--by` too."""
 
     name: str
-    environment: Mapping[str, str]
 
     @property
     def signature(self) -> tuple[str, ...]:
         return ("--by", self.name)
 
-    @property
-    def runs_in(self) -> Mapping[str, str]:
-        """The environment without the Claude Code session hands may have been started inside, which lit would take for
+    def runs_in(self, environment: Mapping[str, str]) -> Mapping[str, str]:
+        """`environment` without the Claude Code session hands may have been started inside, which lit would take for
         who acts before any `--by`."""
-        return {name: value for name, value in self.environment.items() if name != "CLAUDE_CODE_SESSION_ID"}
+        return {name: value for name, value in environment.items() if name != "CLAUDE_CODE_SESSION_ID"}
 
 
 @dataclass(frozen=True)
 class Inherited:
-    """A write signed as `environment`, the one hands runs in, says: inside a Claude Code session, by that session."""
-
-    environment: Mapping[str, str]
+    """A write signed as the environment hands runs in says: inside a Claude Code session, by that session; and every
+    read, which no one signs."""
 
     @property
     def signature(self) -> tuple[str, ...]:
         return ()
 
-    @property
-    def runs_in(self) -> Mapping[str, str]:
-        return self.environment
+    def runs_in(self, environment: Mapping[str, str]) -> Mapping[str, str]:
+        return environment
 
 
 # Who a write lit makes is signed by.
@@ -362,11 +368,11 @@ class Backlog:
         return Thing(BACKLOG, "", tuple(of(id) for id in self.roots()))
 
 
-async def read_backlog(children: Children, project: Path, environment: Mapping[str, str]) -> Backlog | Untracked:
-    """The backlog lit run in `environment` holds for `project`, or that it has none (no lit workspace, or the directory is gone); raises LitFailed when lit cannot say, and
-    Rejected when what it said does not parse."""
+async def read_backlog(children: Children, lit: Lit, project: Path) -> Backlog | Untracked:
+    """The backlog `lit` holds for `project`, or that it has none (no lit workspace, or the directory is gone); raises
+    LitFailed when lit cannot say, and Rejected when what it said does not parse."""
     try:
-        out = await _lit(children, project, "export", environment=environment)
+        out = await _lit(children, lit, project, "export", by=Inherited())
     except ProjectGone:
         return Untracked(project, gone=True)
     except LitFailed as failed:
@@ -377,63 +383,67 @@ async def read_backlog(children: Children, project: Path, environment: Mapping[s
     return await asyncio.to_thread(parse_export, out)
 
 
-async def rank(children: Children, project: Path, move: Move, by: Signer) -> str:
+async def rank(children: Children, lit: Lit, project: Path, move: Move, by: Signer) -> str:
     """Have lit in `project` make `move` for `by`, in the environment it runs in for them, and what lit said of what it
     ranked; raises LitFailed when it fails. lit records no one for a rank and takes no `--by` for it.
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    return await _said(children, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)
+    return await _said(children, lit, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, by=by)
 
 
-async def make_epic(children: Children, project: Path, new: NewEpic, by: Signer) -> str:
+async def make_epic(children: Children, lit: Lit, project: Path, new: NewEpic, by: Signer) -> str:
     """Have lit in `project` make `new`, at the bottom of its frame, signed `by`, and what lit said; raises LitFailed when it fails. It is found after by its frame, title, and topic, as every level's epic is (`Backlog.level_epics`)."""
-    return await _said(children, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, environment=by.runs_in)
+    return await _said(children, lit, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, by=by)
 
 
-async def adopt(children: Children, project: Path, ticket: str, epic: str, by: Signer) -> str:
+async def adopt(children: Children, lit: Lit, project: Path, ticket: str, epic: str, by: Signer) -> str:
     """Have lit in `project` move `ticket` inside `epic`, keeping its id, signed `by`, and what lit said; raises LitFailed when it fails."""
-    return await _said(children, project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, environment=by.runs_in)
+    return await _said(children, lit, project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, by=by)
 
 
-async def file_ticket(children: Children, project: Path, epic: str, topic: str, title: str, description: str, label: str, environment: Mapping[str, str]) -> str:
-    """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
-    the first word lit says. Raises LitFailed when it fails, or says no id."""
-    filed = await _said(children, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=environment)
+async def file_ticket(children: Children, lit: Lit, project: Path, epic: str, topic: str, title: str, description: str, label: str, by: Signer) -> str:
+    """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`, signed `by`; the id of the
+    ticket it filed, the first word lit says. Raises LitFailed when it fails, or says no id."""
+    filed = await _said(children, lit, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, *by.signature, by=by)
     said = filed.split()
     if not said:
         raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
     return said[0]
 
 
-async def comment(children: Children, project: Path, ticket: str, body: str, by: Signer) -> str:
+async def comment(children: Children, lit: Lit, project: Path, ticket: str, body: str, by: Signer) -> str:
     """Have lit in `project` add a comment to `ticket`, signed `by`, and what lit said; raises LitFailed when it fails."""
-    return await _said(children, project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
+    return await _said(children, lit, project, "comment", "add", ticket, "--body", body, *by.signature, by=by)
 
 
-async def _said(children: Children, project: Path, *arguments: str, environment: Mapping[str, str]) -> str:
+async def _said(children: Children, lit: Lit, project: Path, *arguments: str, by: Signer) -> str:
     """What lit run as `_lit` runs it said, as text: a write's own account of what it wrote."""
-    return (await _lit(children, project, *arguments, environment=environment)).decode(errors="replace").strip()
+    return (await _lit(children, lit, project, *arguments, by=by)).decode(errors="replace").strip()
 
 
-async def _lit(children: Children, project: Path, *arguments: str, environment: Mapping[str, str]) -> bytes:
-    """What lit run in `project` with `arguments`, in `environment`, wrote out; raises LitNotStarted
-    when it never ran, and LitFailed when it did not answer, exited non-zero, or failed once it was running.
+async def _lit(children: Children, lit: Lit, project: Path, *arguments: str, by: Signer) -> bytes:
+    """What `lit` run in `project` with `arguments`, for `by`, wrote out; raises LitNotStarted when it never ran, and
+    LitFailed when it did not answer, exited non-zero, or failed once it was running.
 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
     command = f"lit {arguments[0]}"
-    traced = _Traced(children.clock.token(16), children.clock.token(8))
-    # [LAW:one-source-of-truth] the one environment lit runs in, and whose events file its line is read from.
-    runs_in = {**environment, "TRACEPARENT": traced.header}
+    # lit joins the trace of the work it is run for, as a span of its own inside it (links docs/events.md, TRACEPARENT):
+    # its line in its events file, which holds a refusal's reason, is found by that span, in that trace.
+    span = wide.begun(children.clock).span
+    runs_in = {**by.runs_in(lit.environment), "TRACEPARENT": span.traceparent}
     ran = await children.run("lit", *arguments, limit=LIT_TIMEOUT_SECONDS, cwd=project, env=runs_in)
     match ran:
         case child.Ran(ending=child.Exited(code=0), out=out):
             return out.data
         case child.Ran(ending=child.Exited()):
             # Off the loop: the events file grows to 8 MiB before lit rotates it.
-            reason = await asyncio.to_thread(_reason, traced, runs_in)
-            raise LitFailed(f"{command} in {project} {child.said(ran)}{'' if reason is None else f' ({reason})'}", reason)
+            match await asyncio.to_thread(_recorded, span, _events(runs_in, project)):
+                case str(reason):
+                    raise LitFailed(f"{command} in {project} {child.said(ran)} ({reason})", reason)
+                case Unrecorded(why=why):
+                    raise LitFailed(f"{command} in {project} {child.said(ran)}; {why}", None)
         case child.Ran() | child.Unreaped() | child.Lost():
             raise LitFailed(f"{command} in {project} {child.said(ran)}", None)
         case child.NeverStarted(error=error):
@@ -444,46 +454,49 @@ async def _lit(children: Children, project: Path, *arguments: str, environment: 
 
 
 @dataclass(frozen=True)
-class _Traced:
-    """The W3C trace a lit run is handed: lit records its invocation under `trace`, as a child of `span`."""
+class Unrecorded:
+    """A refusal whose reason hands could not read off lit's line for it, and why: lit keeps the line only as it can
+    (links docs/events.md), so a lit that could not write it, or a file hands cannot read, leaves a refusal of no reason."""
 
-    trace: str
-    span: str
-
-    @property
-    def header(self) -> str:
-        return f"00-{self.trace}-{self.span}-01"
+    why: str
 
 
-def _events(environment: Mapping[str, str]) -> Path | None:
-    """lit's events file for a run in `environment`: under XDG_STATE_HOME, or ~/.local/state where that is unset or
-    empty; None with neither, where lit has nowhere to write it."""
-    match environment.get("XDG_STATE_HOME") or None, environment.get("HOME"):
-        case str(state), _:
-            return Path(state) / "links-issue-tracker" / "events.jsonl"
-        case None, str(home):
-            return Path(home) / ".local" / "state" / "links-issue-tracker" / "events.jsonl"
-        case _:
+def _events(environment: Mapping[str, str], project: Path) -> Path | None:
+    """lit's events file for a run in `project` in `environment`, where lit finds it (links internal/config/config.go
+    StateDir): under a non-empty XDG_STATE_HOME, else under a non-empty HOME's .local/state, each taken from the
+    directory lit runs in where it is relative; None with neither, where lit writes no line."""
+    match environment.get("XDG_STATE_HOME", ""), environment.get("HOME", ""):
+        case "", "":
             return None
+        case "", str(home):
+            state = project / home / ".local" / "state"
+        case str(xdg), _:
+            state = project / xdg
+    return state / "links-issue-tracker" / "events.jsonl"
 
 
-def _reason(traced: _Traced, environment: Mapping[str, str]) -> str | None:
-    """The reason lit recorded for the run `traced` names, on its line of the per-user events file it appends one line
-    to per invocation (links docs/events.md), in `environment`'s state directory: None where it recorded none.
+def _recorded(span: Span, events: Path | None) -> str | Unrecorded:
+    """The reason lit recorded for its run as `span`, on that run's line of its events file, or why hands has none.
 
-    A line lit spawns a worker for has the run's trace too, and the run's own span as its parent, so the run's line is
-    the one whose parent is `traced`'s span. lit rotates the file to `.1` past 8 MiB, which a run since may have done."""
-    if (events := _events(environment)) is None:
-        return None
+    A worker lit spawns has a line in the trace too, under the run's own span, so the run's line is the one whose
+    parent is `span`; the newest is the nearest, and lit rotates the file to `.1` past 8 MiB, which a run since may
+    have done."""
+    if events is None:
+        return Unrecorded(f"lit had no XDG_STATE_HOME or HOME to keep its line for {span.traceparent} under")
     for path in (events, events.with_name(f"{events.name}.1")):
         try:
-            lines = path.read_bytes().splitlines()
-        except FileNotFoundError:
-            continue
-        for line in reversed(lines):
-            if traced.trace.encode() in line and (event := Payload.parse(line)).optional_text("parent_span_id") == traced.span:
-                return event.optional_text("reason")
-    return None
+            for line in newest_first(path):
+                if span.span_id not in line:
+                    continue
+                try:
+                    event = Payload.parse(line.encode())
+                    if (event.optional_text("trace_id"), event.optional_text("parent_span_id")) == (span.trace_id, span.span_id):
+                        return event.optional_text("reason") or Unrecorded(f"lit's line for {span.traceparent} in {path} names no reason")
+                except Rejected as unparsed:
+                    return Unrecorded(f"lit's line for {span.traceparent} in {path} could not be read: {unparsed}")
+        except OSError as error:
+            return Unrecorded(f"{path} could not be read: {error}")
+    return Unrecorded(f"lit wrote no line for {span.traceparent} in {events}")
 
 
 def parse_export(raw: bytes) -> Backlog:

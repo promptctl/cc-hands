@@ -11,3 +11,8 @@ class Span:
     trace_id: str
     span_id: str
     parent_id: str | None
+
+    @property
+    def traceparent(self) -> str:
+        """The span as W3C Trace Context's traceparent carries it to a process that joins its trace, sampled."""
+        return f"00-{self.trace_id}-{self.span_id}-01"

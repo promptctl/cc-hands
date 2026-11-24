@@ -5,7 +5,6 @@ import asyncio
 import errno
 import getpass
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -32,7 +31,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from conftest import SYSTEM_PATH, Faked, children_on, events, executable, exited
-from litcontract import LitContract, Refusal, answered, refusing
+from litcontract import HANDS_LIT, LitContract, Refusal, answered, refusing
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
@@ -323,10 +322,10 @@ class FakeLit:
         self.gone |= outcome.gone
         if self.gone:
             return NeverStarted(FileNotFoundError(errno.ENOENT, "No such file or directory", "lit"))
-        assert env is not None, "hands runs lit in an environment it names, its trace among it"
+        assert env is not None and cwd is not None, "hands runs lit in a directory and an environment it names, its trace among it"
         if command == "export":
             if self.exports is not None:
-                return answered(self.exports, env)
+                return answered(self.exports, env, cwd, f"lit {command}")
             ranked = [{**each, "rank": f"{at:04d}"} for at, each in enumerate(self.issues)]
             return exited(0, export(ranked, self.relations, self.comments))
         if outcome.asked is not None and outcome.answer is not None:
@@ -337,9 +336,9 @@ class FakeLit:
         self.exports = outcome.exports or self.exports
         match outcome.reason:
             case None:
-                return answered(ran, env)
+                return answered(ran, env, cwd, f"lit {command}")
             case reason:
-                return answered(Refusal(reason, f"the fake's {command} stopped"), env)
+                return answered(Refusal(reason, f"the fake's {command} stopped"), env, cwd, f"lit {command}")
 
     def written(self, command: str, rest: list[str]) -> "Ended | Refusal":
         """Make the write lit is asked for, and answer as lit answers it."""
@@ -414,7 +413,7 @@ def routed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lit: FakeLit) -> Rou
     project.mkdir()
     recorded: list[Entry] = []
     app = web.Application()
-    app.add_routes(backlog_routes(lit.children(VirtualClock()), SummaryStore(Summaries(tmp_path / "summaries.db")), KEY, recorded.append, os.environ))
+    app.add_routes(backlog_routes(lit.children(VirtualClock()), SummaryStore(Summaries(tmp_path / "summaries.db")), KEY, recorded.append, HANDS_LIT))
     return Routes(app, recorded, lit, project)
 
 
@@ -664,7 +663,7 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     app = web.Application()
     # [LAW:no-ambient-temporal-coupling] a clock nobody moves unless a test does, so no lit the page runs is ended by the machine being slow.
     clock = VirtualClock()
-    app.add_routes(backlog_routes(Children(clock, recorded.append), store, KEY, recorded.append, os.environ))
+    app.add_routes(backlog_routes(Children(clock, recorded.append), store, KEY, recorded.append, HANDS_LIT))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded, clock)
@@ -769,7 +768,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    read = await sighted(children_on(page.clock), page.store, workspace.root, os.environ)
+    read = await sighted(children_on(page.clock), HANDS_LIT, page.store, workspace.root)
     assert isinstance(read, Sighted)
     # The leaves are said first; the epic waits on them.
     page.store.keep({due.digest: f"Said of {due.id}." for due in page.store.reckon(read.backlog.thing()).due})
@@ -958,13 +957,13 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
-    read = await sighted(children_on(page.clock), page.store, workspace.root, os.environ)
+    read = await sighted(children_on(page.clock), HANDS_LIT, page.store, workspace.root)
     assert isinstance(read, Sighted)
     assert await page.store.wanted()
     # Every ticket said, round by round, as the summarising task says them.
     while due := page.store.reckon(read.backlog.thing()).due:
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
-    again = await sighted(children_on(page.clock), page.store, workspace.root, os.environ)
+    again = await sighted(children_on(page.clock), HANDS_LIT, page.store, workspace.root)
     assert isinstance(again, Sighted) and len(again.said) == 3
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(page.store.wanted(), 0.2)
@@ -1252,7 +1251,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(children_on(VirtualClock()), workspace.root, hey, "Seen again.", Inherited(os.environ))
+    await comment(children_on(VirtualClock()), HANDS_LIT, workspace.root, hey, "Seen again.", Inherited())
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]

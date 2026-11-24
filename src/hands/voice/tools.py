@@ -36,7 +36,7 @@ from hands.core.spoken import counted
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.child import Children
 from hands.sessions.backfill import Reading, read_transcript
-from hands.sessions.backlog import BACKLOG, Backlog, LitFailed, Untracked
+from hands.sessions.backlog import BACKLOG, Backlog, Lit, LitFailed, Untracked
 from hands.sessions import catchup, closesession, startsession, tmux
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, fail, unit
@@ -136,7 +136,7 @@ def intermediary_tools(
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts, refocus),
         expand_tool(sessions, recounts),
-        *backlog_tools(sessions, store, environment),
+        *backlog_tools(sessions, store, Lit(environment)),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
         read_screen_tool(sessions, environment),
@@ -514,7 +514,7 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     return happenings[:end]
 
 
-def backlog_tools(sessions: Sessions, store: SummaryStore, environment: Mapping[str, str]) -> list[Tool]:
+def backlog_tools(sessions: Sessions, store: SummaryStore, lit: Lit) -> list[Tool]:
     """read_backlog, read_ticket: a session's project backlog, a summary per ticket first and the ticket's own words on request."""
 
     async def read_backlog(session: str) -> Result:
@@ -529,7 +529,7 @@ def backlog_tools(sessions: Sessions, store: SummaryStore, environment: Mapping[
         Args:
             session: The id, from list_sessions, of a session working in the project.
         """
-        match await _backlog(sessions, store, session, environment):
+        match await _backlog(sessions, store, session, lit):
             case str() as error:
                 return {"error": error}
             case Untracked(project) as untracked:
@@ -555,7 +555,7 @@ def backlog_tools(sessions: Sessions, store: SummaryStore, environment: Mapping[
             ticket: The ticket's id, from read_backlog or an earlier read_ticket.
             full: True to be handed the ticket's own words: its description and its comments.
         """
-        match await _backlog(sessions, store, session, environment):
+        match await _backlog(sessions, store, session, lit):
             case str() as error:
                 return {"error": error}
             case Untracked(project) as untracked:
@@ -575,14 +575,14 @@ def backlog_tools(sessions: Sessions, store: SummaryStore, environment: Mapping[
     return [tool(read_backlog), tool(read_ticket)]
 
 
-async def _backlog(sessions: Sessions, store: SummaryStore, session: str, environment: Mapping[str, str]) -> tuple[Path, Sighted] | Untracked | str:
-    """The session's project and its backlog sighted there by lit run in `environment`; that lit has no workspace there, so it has no backlog; or
+async def _backlog(sessions: Sessions, store: SummaryStore, session: str, lit: Lit) -> tuple[Path, Sighted] | Untracked | str:
+    """The session's project and its backlog sighted there by `lit`; that lit has no workspace there, so it has no backlog; or
     why it could not be read."""
     member = sessions.membership(SessionId(session))
     if member is None:
         return f"there is no session {session}"
     try:
-        read = await sighted(sessions.children, store, member.cwd, environment)
+        read = await sighted(sessions.children, lit, store, member.cwd)
     except (LitFailed, Rejected) as error:
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")

@@ -13,13 +13,13 @@ from typing import get_args
 
 import pytest
 
-from conftest import children_on
+from conftest import Faked, exited
 from hands.virtualclock import VirtualClock
-from hands import clock as clocks
 from hands.daemon import cli
 from hands.sessions import audit, backlog, filing, grouping
 from hands.sessions.audit import AuditLog, Entry, Logged, Transcribed
 from hands.sessions.backlog import parse_export
+from hands.sessions.child import Outcome as Ended
 
 LIT = shutil.which("lit")
 real_lit = pytest.mark.skipif(LIT is None, reason="the tickets are lit's, so it is lit that is driven")
@@ -372,13 +372,12 @@ def test_a_ticket_closed_answers_for_every_sighting_before_it_was_closed(tmp_pat
     assert isinstance(new, filing.New) and [sighting.stamp for sighting in new.group.sightings] == ["2026-10-24T12:06:00.000+00:00"]
 
 
-def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def silent(clock: clocks.Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
-        return b"\n"
+def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path) -> None:
+    async def silent(*argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Ended:
+        return exited(0, out=b"\n")
 
-    monkeypatch.setattr(backlog, "_lit", silent)
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
-        asyncio.run(backlog.file_ticket(children_on(VirtualClock()), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab", os.environ))
+        asyncio.run(backlog.file_ticket(Faked(VirtualClock(), lambda _: None, silent), backlog.Lit(os.environ), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab", backlog.Inherited()))
 
 
 def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:

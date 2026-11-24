@@ -6,37 +6,41 @@ longer keeps fails the run against lit, and the fake is changed to match.
 
 The claims: an epic is made at the bottom of its frame and found by its frame, title, and topic; a ticket filed is at the
 top of its epic; a rank puts a ticket beside its target; a move keeps the ticket's rank, and the same move again is code 6,
-state_already_holds, the reason lit records on its line of the events file under the trace hands hands it; a comment is held signed by its signer; each write's first word is the ticket it wrote."""
+state_already_holds, the reason lit records on its line of the events file under the trace hands hands it, wherever lit keeps that file; a comment is held signed by its signer; each write's first word is the ticket it wrote."""
 
-import json
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from hands.sessions.backlog import Backlog, LitFailed, Move, NewEpic, Person, Place, adopt, comment, file_ticket, make_epic, rank, read_backlog
+from hands.sessions.backlog import Backlog, Inherited, Lit, LitFailed, Move, NewEpic, Person, Place, adopt, comment, file_ticket, make_epic, rank, read_backlog
 from hands.sessions.child import Children, Outcome as Ended
 from conftest import exited
+from fixtures import litevents
+from fixtures.litevents import CODES, refused
 
-SIGNER = Person("hands-contract", os.environ)
+SIGNER = Person("hands-contract")
+# lit as hands runs it, in the run's own environment.
+HANDS_LIT = Lit(os.environ)
 
 
 async def read(children: Children, project: Path) -> Backlog:
-    backlog = await read_backlog(children, project, os.environ)
+    backlog = await read_backlog(children, HANDS_LIT, project)
     assert isinstance(backlog, Backlog), backlog
     return backlog
 
 
 async def made(children: Children, project: Path, title: str) -> str:
     """The id of the epic lit made titled `title`, among the roots, the first word it said."""
-    said = await make_epic(children, project, NewEpic("wake-word", title, None, Place("above", "unused")), SIGNER)
+    said = await make_epic(children, HANDS_LIT, project, NewEpic("wake-word", title, None, Place("above", "unused")), SIGNER)
     return said.split()[0]
 
 
 async def filed(children: Children, project: Path, epic: str, title: str) -> str:
-    return await file_ticket(children, project, epic, "wake-word", title, f"The words of {title}.", "contract", os.environ)
+    return await file_ticket(children, HANDS_LIT, project, epic, "wake-word", title, f"The words of {title}.", "contract", Inherited())
 
 
 class LitContract:
@@ -63,7 +67,7 @@ class LitContract:
         first = await filed(children, project, epic, "Hey hands")
         second = await filed(children, project, epic, "Many wake words")
         move = Move(second, Place("below", first))
-        said = await rank(children, project, move, SIGNER)
+        said = await rank(children, HANDS_LIT, project, move, SIGNER)
         assert said.split()[0] == second
         backlog = await read(children, project)
         assert backlog.landed(move) and backlog.children[epic] == (first, second)
@@ -73,26 +77,33 @@ class LitContract:
         ticket = await filed(children, project, epic, "Hey hands")
         high = await made(children, project, "wake word - high")
         order = tuple((await read(children, project)).tickets)
-        said = await adopt(children, project, ticket, high, SIGNER)
+        said = await adopt(children, HANDS_LIT, project, ticket, high, SIGNER)
         assert said.split()[0] == ticket
         backlog = await read(children, project)
         assert backlog.parent[ticket] == high and tuple(backlog.tickets) == order
         with pytest.raises(LitFailed, match="exited 6") as again:
-            await adopt(children, project, ticket, high, SIGNER)
+            await adopt(children, HANDS_LIT, project, ticket, high, SIGNER)
+        assert again.value.reason == "state_already_holds"
+
+    @pytest.mark.parametrize("state", ["", "absolute", "relative"], ids=["under HOME", "under XDG_STATE_HOME", "under a relative XDG_STATE_HOME"])
+    async def test_a_refusal_s_reason_is_read_off_lit_s_line_wherever_lit_keeps_it(self, project: Path, children: Children, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+        # A relative XDG_STATE_HOME is taken from the directory lit runs in.
+        monkeypatch.setenv("XDG_STATE_HOME", {"": "", "absolute": str(tmp_path / "state"), "relative": "state"}[state])
+        epic = await made(children, project, "Train a new wake word")
+        ticket = await filed(children, project, epic, "Hey hands")
+        high = await made(children, project, "wake word - high")
+        await adopt(children, HANDS_LIT, project, ticket, high, SIGNER)
+        with pytest.raises(LitFailed) as again:
+            await adopt(children, HANDS_LIT, project, ticket, high, SIGNER)
         assert again.value.reason == "state_already_holds"
 
     async def test_a_comment_is_held_on_its_ticket_signed_by_its_signer(self, project: Path, children: Children) -> None:
         epic = await made(children, project, "Train a new wake word")
         ticket = await filed(children, project, epic, "Hey hands")
-        said = await comment(children, project, ticket, "Split it", SIGNER)
+        said = await comment(children, HANDS_LIT, project, ticket, "Split it", SIGNER)
         assert said.split()[0] == ticket
         [note] = (await read(children, project)).comments[ticket]
         assert (note.by, note.body) == (SIGNER.name, "Split it")
-
-
-# [LAW:one-source-of-truth] the codes lit gives the reasons the fakes of lit fail on (docs/cli-reference.md in links, "Every
-# reason"): each of the first two may follow a commit, and code 6 is a write whose asked state already holds.
-CODES = {"command_failed": 1, "workspace_busy": 1, "workspace_not_initialized": 3, "state_already_holds": 6}
 
 
 @dataclass(frozen=True)
@@ -104,26 +115,16 @@ class Refusal:
     why: str
 
 
-def answered(answer: "Ended | Refusal", env: Mapping[str, str]) -> Ended:
-    """What a lit run in `env` that ends in `answer` leaves: a refusal's line in the events file, as lit writes it
-    under the trace it was handed (docs/events.md in links), and what it exited with."""
+def answered(answer: "Ended | Refusal", env: Mapping[str, str], cwd: Path, command: str) -> Ended:
+    """What a run of lit's `command` in `cwd`, in `env`, that ends in `answer` leaves: a refusal's line in its events
+    file, and what it exited with."""
     match answer:
         case Refusal(reason=reason, why=why):
-            _, trace, span, _ = env["TRACEPARENT"].split("-")
-            events = Path(env.get("XDG_STATE_HOME") or Path(env["HOME"]) / ".local" / "state") / "links-issue-tracker" / "events.jsonl"
-            events.parent.mkdir(parents=True, exist_ok=True)
-            with events.open("a") as file:
-                file.write(json.dumps({"event": "lit", "trace_id": trace, "parent_span_id": span, "exit_code": CODES[reason], "reason": reason}) + "\n")
-            return exited(CODES[reason], err=f"{why}\nremediation: retry\n".encode())
+            return exited(refused(env, cwd, command, reason), err=f"{why}\nremediation: retry\n".encode())
         case ended:
             return ended
 
 
 def refusing(reason: str, why: str) -> str:
-    """A stub lit's script that refuses as `answered` has the fake refuse: its line in the events file, `why`, its code."""
-    line = f'{{"event":"lit","trace_id":"%s","parent_span_id":"%s","exit_code":{CODES[reason]},"reason":"{reason}"}}\\n'
-    return (
-        'state="${XDG_STATE_HOME:-$HOME/.local/state}/links-issue-tracker"; mkdir -p "$state"\n'
-        f'printf \'{line}\' "$(echo "$TRACEPARENT" | cut -d- -f2)" "$(echo "$TRACEPARENT" | cut -d- -f3)" >> "$state/events.jsonl"\n'
-        f"echo '{why}' >&2\nexit {CODES[reason]}"
-    )
+    """A stub lit's script that refuses as `answered` has the fake refuse, for the subcommand it was run with."""
+    return f'"{sys.executable}" "{litevents.__file__}" {reason} "lit $1"\necho \'{why}\' >&2\nexit {CODES[reason]}'

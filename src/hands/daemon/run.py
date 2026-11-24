@@ -32,6 +32,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from hands.clock import Clock, dashed
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
+from hands.sessions.backlog import Lit
 from hands.sessions import heartbeat, tmux
 from hands.sessions.child import Children
 from hands.sessions.typing import type_into
@@ -446,7 +447,7 @@ async def converse(
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
-        asyncio.create_task(keep_summarising(clock, store, summarise, record, environment), name="the summary store"),
+        asyncio.create_task(keep_summarising(clock, store, summarise, record, Lit(environment)), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
         asyncio.create_task(keep_beating(partial(memory.sample, clock, record), memory.SAMPLE_SECONDS, clock), name="the memory sampler"),
