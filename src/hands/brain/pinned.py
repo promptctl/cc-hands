@@ -5,7 +5,7 @@ moved on purpose, and a move re-measures those claims.
 The person's own claude is never it: their sessions run whatever release their install holds, and its updater moves
 ~/.local/bin/claude and prunes ~/.local/share/claude/versions whenever a release lands.
 
-    hands install-brain     # fetches this release into the brain's directory, checked against its checksum below
+    hands install-brain     # fetches PIN's release into the brain's directory, checked against its checksum
 """
 
 import functools
@@ -20,18 +20,12 @@ from typing import Literal
 
 import aiohttp
 
-# [LAW:one-source-of-truth] the pin: the version, and the SHA-256 Anthropic's manifest for it gives each macOS build
-# (the manifest of the release VERSION names). Moving the pin is one commit that changes both, after
-# measuring again what docs/claude-code-behavior.md and the comments that name the old version say.
-VERSION = "2.1.308"
-CHECKSUMS = {
-    "darwin-arm64": "ca923c86ac84b30574a82331a05b6e066c27477a926ceaffe46a845a33e4dd37",
-    "darwin-x64": "9a0bc140f5fb06e6366624d770371ef290e6731d1e84c4def5daf4df946d1b59",
-}
+from hands.core.session import PinnedClaude
+
 RELEASES = "https://downloads.claude.ai/claude-code-releases"
 INSTALL = "hands install-brain"
-# How long the fetch waits on a connection, or on the next bytes of the download, before failing the install rather than
-# hang it: a stall, never a slow link, which takes as long as 230 MB takes on it.
+# How long the fetch from Anthropic's releases waits on a connection, or on the next bytes of the download, before failing
+# the install rather than hang it: a stall, never a slow link, which takes as long as 230 MB takes on it.
 STALL_SECONDS = 60
 _CHUNK = 1 << 20
 
@@ -62,10 +56,11 @@ Write = Callable[[bytes], object]
 
 @dataclass(frozen=True)
 class Source:
-    """Where a build of the pin is fetched from: the URL of each build, the fetch that writes the bytes at that URL, and
-    the failures that fetch raises when the URL cannot give them. What it wrote is the pin only if it hashes to CHECKSUMS."""
+    """Where a build of a pin is fetched from: the URL of each build of each version, the fetch that writes the bytes at
+    that URL, and the failures that fetch raises when the URL cannot give them. What it wrote is the pin only if it
+    hashes to the pin's checksum."""
 
-    url: Callable[[str], str]
+    url: Callable[[str, str], str]
     fetch: Callable[[str, Write], Awaitable[None]]
     failures: tuple[type[Exception], ...]
 
@@ -83,44 +78,73 @@ class Installed:
         return self.unpinned is not None
 
 
-def claude(config_dir: Path) -> Path:
-    """Where the pinned claude of the brain on `config_dir` is, whether or not it has been installed there."""
-    # Beside the brain's login and settings: everything the brain is, in the one directory hands owns for it.
-    return config_dir / "pinned-claude" / VERSION / "claude"
+@dataclass(frozen=True)
+class Build:
+    """One macOS build of a pin: its name in Anthropic's releases, and the SHA-256 its bytes hash to."""
+
+    name: str
+    checksum: str
 
 
-def build(machine: str) -> str:
-    """The build of the pin a Mac with this `platform.machine()` runs; raises Uninstallable for any other."""
-    match machine:
-        case "arm64":
-            return "darwin-arm64"
-        case "x86_64":
-            return "darwin-x64"
-        case other:
-            raise Uninstallable(f"Claude Code {VERSION} has no macOS build for a {other!r} machine")
+@dataclass(frozen=True)
+class Pin:
+    """A Claude Code release the brain runs: its version, and the SHA-256 each macOS build of it hashes to.
+
+    [LAW:no-shared-mutable-globals] a value each start is handed, so any number of pins can be weighed in one process and
+    nothing rebinds the one hands runs, PIN. [LAW:types-are-the-program] a checksum for each build hands runs on, so no
+    pin lacks the build of the Mac it is weighed on."""
+
+    version: str
+    arm64: str
+    x64: str
+
+    def build(self, machine: str) -> Build:
+        """The build of the pin a Mac with this `platform.machine()` runs; raises Uninstallable for any other."""
+        match machine:
+            case "arm64":
+                return Build("darwin-arm64", self.arm64)
+            case "x86_64":
+                return Build("darwin-x64", self.x64)
+            case other:
+                raise Uninstallable(f"Claude Code {self.version} has no macOS build for a {other!r} machine")
+
+    def claude(self, config_dir: Path) -> Path:
+        """Where the pinned claude of the brain on `config_dir` is, whether or not it has been installed there."""
+        # Beside the brain's login and settings: everything the brain is, in the one directory hands owns for it.
+        return config_dir / "pinned-claude" / self.version / "claude"
+
+    def verified(self, config_dir: Path) -> PinnedClaude:
+        """The brain's pinned claude, once its bytes are the pin's and it can be run; raises Unpinned, naming the command
+        that installs it, when it is not there, cannot be read, is not the pin, or cannot be run."""
+        found = self.claude(config_dir)
+        try:
+            expected = self.build(platform.machine()).checksum
+        except Uninstallable as error:
+            raise Unpinned(str(error)) from None
+        try:
+            held = found.stat()
+            got = _sha256(found, (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns, held.st_ctime_ns))
+        except FileNotFoundError:
+            raise Unpinned(f"Claude Code {self.version}, the brain's, is not installed at {found}: run `{INSTALL}`") from None
+        except OSError as error:
+            raise Unpinned(f"{found} cannot be read as Claude Code {self.version}, the brain's ({error}): run `{INSTALL}` to fetch it again") from None
+        # [LAW:parse-dont-validate] only bytes that hash to the pin, in a file this process can run, are ever the brain.
+        if got != expected:
+            raise Unpinned(f"{found} hashes to {got}, not the {expected} of Claude Code {self.version}, the brain's: run `{INSTALL}` to fetch it again")
+        if not os.access(found, os.X_OK):
+            raise Unpinned(f"{found}, Claude Code {self.version}, the brain's, cannot be run: run `{INSTALL}` to fetch it again")
+        return PinnedClaude(found, self.version)
 
 
-def verified(config_dir: Path) -> Path:
-    """The brain's pinned claude, once its bytes are the pin's and it can be run; raises Unpinned, naming the command
-    that installs it, when it is not there, cannot be read, is not the pin, or cannot be run."""
-    found = claude(config_dir)
-    try:
-        expected = CHECKSUMS[build(platform.machine())]
-    except Uninstallable as error:
-        raise Unpinned(str(error)) from None
-    try:
-        held = found.stat()
-        got = _sha256(found, (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns, held.st_ctime_ns))
-    except FileNotFoundError:
-        raise Unpinned(f"Claude Code {VERSION}, the brain's, is not installed at {found}: run `{INSTALL}`") from None
-    except OSError as error:
-        raise Unpinned(f"{found} cannot be read as Claude Code {VERSION}, the brain's ({error}): run `{INSTALL}` to fetch it again") from None
-    # [LAW:parse-dont-validate] only bytes that hash to the pin, in a file this process can run, are ever the brain.
-    if got != expected:
-        raise Unpinned(f"{found} hashes to {got}, not the {expected} of Claude Code {VERSION}, the brain's: run `{INSTALL}` to fetch it again")
-    if not os.access(found, os.X_OK):
-        raise Unpinned(f"{found}, Claude Code {VERSION}, the brain's, cannot be run: run `{INSTALL}` to fetch it again")
-    return found
+# [LAW:one-source-of-truth] the pin hands runs: the version, and the SHA-256 Anthropic's manifest for it gives each macOS
+# build (the manifest of the release the version names). Moving the pin is one commit that changes both, after measuring
+# again what docs/claude-code-behavior.md and the comments that name the old version say. CI reads its version as its
+# cache key for the pinned Claude Code the end-to-end tests run (.github/workflows/test.yml).
+PIN = Pin(
+    version="2.1.308",
+    arm64="ca923c86ac84b30574a82331a05b6e066c27477a926ceaffe46a845a33e4dd37",
+    x64="9a0bc140f5fb06e6366624d770371ef290e6731d1e84c4def5daf4df946d1b59",
+)
 
 
 @functools.cache
@@ -132,21 +156,21 @@ def _sha256(path: Path, identity: tuple[int, int, int, int, int]) -> str:
         return hashlib.file_digest(held, "sha256").hexdigest()
 
 
-async def install(config_dir: Path, source: Source) -> Installed:
-    """The pinned claude in the brain's directory: fetched from `source` and checked against its checksum unless the pin
-    is there already, and whole or not there at all."""
+async def install(config_dir: Path, pin: Pin, source: Source) -> Installed:
+    """`pin`'s claude in the brain's directory: fetched from `source` and checked against its checksum unless the pin is
+    there already, and whole or not there at all."""
     try:
-        return Installed(verified(config_dir), unpinned=None)
+        return Installed(pin.verified(config_dir).path, unpinned=None)
     except Unpinned as error:
         # [LAW:nothing-unseen] why the copy there is fetched over: missing, unreadable, unrunnable, or bytes not the pin's.
         unpinned = str(error)
-    built = build(platform.machine())
-    target = claude(config_dir)
+    built = pin.build(platform.machine())
+    target = pin.claude(config_dir)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
-        raise Uninstallable(f"could not make {target.parent} for Claude Code {VERSION}: {error!r}") from error
-    url = source.url(built)
+        raise Uninstallable(f"could not make {target.parent} for Claude Code {pin.version}: {error!r}") from error
+    url = source.url(pin.version, built.name)
     try:
         # A name of this install's own: two at once never write, rename, or remove each other's download.
         handle, name = tempfile.mkstemp(dir=target.parent, prefix=f"{target.name}.", suffix=".partial")
@@ -164,8 +188,8 @@ async def install(config_dir: Path, source: Source) -> Installed:
 
             await source.fetch(url, write)
         # [LAW:single-enforcer] whatever the source, the bytes are the pin's before they are put in its place.
-        if digest.hexdigest() != CHECKSUMS[built]:
-            raise Uninstallable(f"{url} hashes to {digest.hexdigest()}, not the {CHECKSUMS[built]} Claude Code {VERSION} is pinned to")
+        if digest.hexdigest() != built.checksum:
+            raise Uninstallable(f"{url} hashes to {digest.hexdigest()}, not the {built.checksum} Claude Code {pin.version} is pinned to")
         os.chmod(partial, 0o755)
         # [LAW:one-source-of-truth] a file under its own name is the whole of it: a copy that is not the pin is replaced whole.
         partial.replace(target)
@@ -186,13 +210,18 @@ async def install(config_dir: Path, source: Source) -> Installed:
 DOWNLOAD_FAILURES = (aiohttp.ClientError, TimeoutError)
 
 
-async def download(url: str, write: Write) -> None:
-    """The body at `url`, written as it arrives, failing on a stall rather than hanging."""
-    timeout = aiohttp.ClientTimeout(total=None, sock_connect=STALL_SECONDS, sock_read=STALL_SECONDS)
+async def download(stall: float, url: str, write: Write) -> None:
+    """The body at `url`, written as it arrives, failing on a `stall` of that many seconds rather than hanging."""
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=stall, sock_read=stall)
     async with aiohttp.ClientSession(timeout=timeout, raise_for_status=True) as http, http.get(url) as response:
         async for chunk in response.content.iter_chunked(_CHUNK):
             write(chunk)
 
 
+def released(base: str, stall: float) -> Source:
+    """The releases served under `base` as Anthropic serves its own, fetched failing on a `stall` of that many seconds."""
+    return Source(url=lambda version, built: f"{base}/{version}/{built}/claude", fetch=functools.partial(download, stall), failures=DOWNLOAD_FAILURES)
+
+
 # The release as Anthropic serves it, the one `hands install-brain` fetches.
-RELEASE = Source(url=lambda built: f"{RELEASES}/{VERSION}/{built}/claude", fetch=download, failures=DOWNLOAD_FAILURES)
+RELEASE = released(RELEASES, STALL_SECONDS)

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
+from hands.brain import pinned
 from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, preflight, readiness, update, watchdog
 from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, Settings, edited, load
@@ -206,8 +207,9 @@ def entry() -> int:
     return main()
 
 
-# [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, bound here alone.
-def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
+# [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, the pin of the Claude
+# Code its brain runs, and where `hands install-brain` fetches that pin's builds from, each bound here for every command.
+def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -256,11 +258,11 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
 
                 if (token := hub_token(Children(clock, audit_log.record), os.environ)) is not None:
                     os.environ["HF_TOKEN"] = token
-                return run_daemon(clock, home, audit_log, arguments.restarted, arguments.model)
+                return run_daemon(clock, home, pin, audit_log, arguments.restarted, arguments.model)
             case "tmux-status":
                 return show_segment(clock, home)
             case _:
-                return commanded(clock, home, audit_log.record, arguments)
+                return commanded(clock, home, pin, release, audit_log.record, arguments)
 
 
 def model_id(text: str) -> str:
@@ -270,7 +272,7 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
+def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -301,13 +303,13 @@ def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: i
                 # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
                 after_crash = restarted is None and crashed_before(clock, home)
                 run_start.heard(after_crash=after_crash)
-                settings = door(home, model)
+                settings = door(home, pin, model, run_start)
             except CannotStart as cannot:
                 run_start.ended(audit_log.record, cannot)
                 refuse(cannot, held)
                 return 1
             try:
-                ran: tuple[Ending, int] | CannotStart = run_here(clock, home, restarted, after_crash, settings, heart, audit_log, run_start)
+                ran: tuple[Ending, int] | CannotStart = run_here(clock, home, pin, restarted, after_crash, settings, heart, audit_log, run_start)
             except* CannotStart as cannot:
                 # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
                 # refused once, and said so even where another error raised with it is raised on past this block.
@@ -328,7 +330,7 @@ def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: i
                     execv(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(clock: Clock, home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:
+def commanded(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -340,7 +342,7 @@ def commanded(clock: Clock, home: Home, record: audit.Record, arguments: argpars
     with wide.unit("hands.command", record, wide.begun(clock)):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        ended = dispatch(clock, home, arguments, record)
+        ended = dispatch(clock, home, pin, release, arguments, record)
         wide.annotate(exit_code=exits.code_of(ended))
         match ended:
             case exits.Failed(code=code, why=why):
@@ -368,7 +370,7 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
+def dispatch(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
     # What starts the command's children: on its clock, each child's event recorded with its own.
     children = Children(clock, record)
@@ -378,7 +380,7 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
         case "check":
             from hands.voice import talkkey
 
-            return check(children, home, talkkey.granted(), arguments.verbose)
+            return check(children, home, pin, talkkey.granted(), arguments.verbose)
         case "log":
             return tail_log(clock, home, arguments.lines)
         case "file-tickets":
@@ -390,11 +392,11 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
         case "devices":
             return list_devices(open_portaudio)
         case "login":
-            return login(children, home, arguments.method, record)
+            return login(children, home, pin, arguments.method, record)
         case "install-fritter":
             return install_fritter(clock, home, record)
         case "install-brain":
-            return install_brain(clock, home, record)
+            return install_brain(clock, home, pin, release, record)
         case "restart":
             return asked_to_restart(clock, home)
         case "update":
@@ -416,11 +418,12 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def door(home: Home, model: str | None) -> Settings:
+def door(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant and the
     settings it starts on. CannotStart where either is missing. What the home's files refuse is the start's preflight's
     to say, a step of its own once the run has its heartbeat (hands.daemon.preflight), and said here beside settings
-    that do not parse, since a run whose settings choose where it is recorded never reaches that step."""
+    that do not parse, since a run whose settings choose where it is recorded never reaches that step: what that
+    preflight found reaches `run_start`'s event as the step's would."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -435,7 +438,9 @@ def door(home: Home, model: str | None) -> Settings:
     try:
         return load(home, model)
     except Rejected as error:
-        raise CannotStart("; ".join(preflight.beside(home, error))) from error
+        checked = preflight.preflight(home, pin)
+        run_start.heard(**checked.facts())
+        raise CannotStart("; ".join(preflight.beside(checked, error))) from error
 
 
 @dataclass(frozen=True)
@@ -509,7 +514,7 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
+def run_here(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
     """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
@@ -524,7 +529,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, pin, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, pin, record, settings, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -605,7 +610,7 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
+def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -628,7 +633,7 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings), clock)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, pin, run_start, OwnModel(home, pin, settings), clock)
 
 
 def start_indicator(home: Home) -> int:
@@ -736,8 +741,8 @@ def show_segment(clock: Clock, home: Home) -> int:
     return 0
 
 
-def check(children: Children, home: Home, granted: bool, verbose: bool) -> exits.Exit:
-    reached = readiness.configured(children, home, os.environ)
+def check(children: Children, home: Home, pin: pinned.Pin, granted: bool, verbose: bool) -> exits.Exit:
+    reached = readiness.configured(children, home, pin, os.environ)
     findings = readiness.check(children, home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, children.clock.wall()), partial(keyboards, children))
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
@@ -911,7 +916,7 @@ def audit_log_of(clock: Clock, home: Home) -> audit.AuditLog:
     return audit.AuditLog(home.audit, clock=clock.wall)
 
 
-def login(children: Children, home: Home, method: "Method", record: audit.Record) -> exits.Exit:
+def login(children: Children, home: Home, pin: pinned.Pin, method: "Method", record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.configdir import Unstartable
     from hands.brain.process import LoginFailed, NotLoggedIn, starting_settings
@@ -925,7 +930,7 @@ def login(children: Children, home: Home, method: "Method", record: audit.Record
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(children, home.brain, UPSTREAM, os.environ, method)
+            signed = brain_login(children, home.brain, pin, UPSTREAM, os.environ, method)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             return refused("hands login", 1, str(error))
@@ -972,17 +977,14 @@ def install_fritter(clock: Clock, home: Home, record: audit.Record) -> exits.Exi
                 return exits.Failed(wrapper.Installing.UNFOUND, said)
 
 
-def install_brain(clock: Clock, home: Home, record: audit.Record) -> exits.Exit:
-    # Imported here, so that no other command loads what the fetch needs.
-    from hands.brain import pinned
-
+def install_brain(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, record: audit.Record) -> exits.Exit:
     # [LAW:nothing-unseen] an install is a unit of work: the release it pins, the build of it this Mac runs, where it put
     # it, whether it fetched it, and, where it did, why the copy there was not the pin.
     with wide.unit("brain.install", record, wide.begun(clock)):
-        wide.annotate(version=pinned.VERSION)
+        wide.annotate(version=pin.version)
         try:
-            wide.annotate(build=pinned.build(platform.machine()))
-            installed = asyncio.run(pinned.install(home.brain, pinned.RELEASE))
+            wide.annotate(build=pin.build(platform.machine()).name)
+            installed = asyncio.run(pinned.install(home.brain, pin, release))
         except pinned.Uninstallable as error:
             wide.fail(str(error))
             return refused("hands install-brain", 1, str(error))
@@ -990,7 +992,7 @@ def install_brain(clock: Clock, home: Home, record: audit.Record) -> exits.Exit:
             wide.fail("interrupted")
             return refused("hands install-brain", 1, "interrupted")
         wide.annotate(claude=installed.path, fetched=installed.fetched, unpinned=installed.unpinned)
-        print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pinned.VERSION}, the brain's, at {installed.path}")
+        print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pin.version}, the brain's, at {installed.path}")
         return 0
 
 

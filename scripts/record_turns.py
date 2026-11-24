@@ -119,7 +119,7 @@ class Rig:
             "permissions": {"allow": ["Bash(*)", "mcp__slow__wait"]},
         }
         mcp = {"mcpServers": {"slow": {"type": "stdio", "command": sys.executable, "args": ["-I", str(Path(__file__).resolve()), "--slow-mcp"]}}}
-        command = [str(pinned.verified(default_home(os.environ).brain)), "--model", "haiku", "--setting-sources", "project", "--settings", json.dumps(settings), "--mcp-config", json.dumps(mcp), "--strict-mcp-config"]
+        command = [str(pinned.PIN.verified(default_home(os.environ).brain).path), "--model", "haiku", "--setting-sources", "project", "--settings", json.dumps(settings), "--mcp-config", json.dumps(mcp), "--strict-mcp-config"]
         # The pane gets the tmux server's environment, not this process's: what the session must run under is named.
         # Background tasks on, as the brain will run: the turns recorded here are the ones they open.
         # Claude Code keeps a login for each config directory it is named, so the default is reached by naming none.

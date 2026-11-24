@@ -23,14 +23,14 @@ def claude_of(tarball: IO[bytes], write: pinned.Write) -> None:
 async def unpacked(url: str, write: pinned.Write) -> None:
     """The `package/claude` of npm's package at `url`: the tarball downloaded as the release is, then read out of it."""
     with tempfile.TemporaryFile() as tarball:
-        await pinned.download(url, tarball.write)
+        await pinned.download(pinned.STALL_SECONDS, url, tarball.write)
         tarball.seek(0)
         # Off the event loop: the gunzip of a local file, bounded, never a wait on the network.
         await asyncio.to_thread(claude_of, tarball, write)
 
 
 REGISTRY = pinned.Source(
-    url=lambda built: f"https://registry.npmjs.org/@anthropic-ai/claude-code-{built}/-/claude-code-{built}-{pinned.VERSION}.tgz",
+    url=lambda version, built: f"https://registry.npmjs.org/@anthropic-ai/claude-code-{built}/-/claude-code-{built}-{version}.tgz",
     fetch=unpacked,
     failures=(*pinned.DOWNLOAD_FAILURES, tarfile.TarError),
 )

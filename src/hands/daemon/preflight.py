@@ -10,7 +10,7 @@ it, and a login lost since the start is the brain's own API answers' to say (pro
 from dataclasses import dataclass
 from typing import Literal
 
-from hands.brain import configdir
+from hands.brain import configdir, pinned
 from hands.core.session import Runnable
 from hands.sessions import wrapper
 from hands.sessions.files import Unread
@@ -44,16 +44,17 @@ class Refused:
 
 @dataclass(frozen=True)
 class Preflight:
-    """What a start finds in its home's files: the states of its fritter copy and its shim, which the start's event
-    records, and whether it starts on them."""
+    """What a start finds in its home's files: the states of its fritter copy and its shim, and the version of Claude Code
+    its brain was weighed against, which the start's event records, and whether it starts on them."""
 
     fritter: FritterState
     shim: ShimState
+    claude_code: str
     verdict: Startable | Refused
 
     def facts(self) -> dict[str, str]:
-        """The states as the start's event records them."""
-        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim)}
+        """What the start's event records of them."""
+        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim), "claude_code": self.claude_code}
 
 
 def _fact(state: FritterState | ShimState) -> str:
@@ -64,10 +65,10 @@ def _fact(state: FritterState | ShimState) -> str:
             return state
 
 
-def preflight(home: Home) -> Preflight:
-    """Every refusal a start would make on `home`'s files. Hashes a pinned claude this process has not hashed since it
-    changed, about 230 MB, so it is called off the loop."""
-    config = configdir.read(home.brain)
+def preflight(home: Home, pin: pinned.Pin) -> Preflight:
+    """Every refusal a start whose brain runs `pin` would make on `home`'s files. Hashes a pinned claude this process has
+    not hashed since it changed, about 230 MB, so it is called off the loop."""
+    config = configdir.read(home.brain, pin)
     fritter = _fritter(home)
     shim = _shim(home)
     brain = configdir.runnable(config)
@@ -84,15 +85,15 @@ def preflight(home: Home) -> Preflight:
     )
     match brain, voice:
         case Runnable(), (str() | voicechoice.LibraryVoice()) as kept if not refusals:
-            return Preflight(fritter, shim, Startable(brain, kept))
+            return Preflight(fritter, shim, pin.version, Startable(brain, kept))
         case _:
-            return Preflight(fritter, shim, Refused(refusals, brain if isinstance(brain, Runnable) else None))
+            return Preflight(fritter, shim, pin.version, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
-def beside(home: Home, unread: Rejected) -> tuple[str, ...]:
-    """Every refusal of a start whose settings do not parse: theirs, then every one the preflight finds beside it, so a
-    settings file that cannot be read hides none of the home's other refusals."""
-    match preflight(home).verdict:
+def beside(checked: Preflight, unread: Rejected) -> tuple[str, ...]:
+    """Every refusal of a start whose settings do not parse: theirs, then every one `checked`, the home's preflight, found
+    beside it, so a settings file that cannot be read hides none of the home's other refusals."""
+    match checked.verdict:
         case Refused(refusals=refusals):
             return (str(unread), *refusals)
         case Startable():

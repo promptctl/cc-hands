@@ -34,7 +34,7 @@ def test_each_hung_run_ends_itself_and_the_next_says_where_its_threads_were_befo
     ended = watched(home, "hangs")
     assert ended.returncode == 1, ended.stderr
     hung = home.hang.read_text()
-    assert hung.startswith(f"Timeout ({timedelta(seconds=PATIENCE_SECS)})!")
+    assert hung.startswith(f"Timeout ({timedelta(seconds=PATIENCE_SECS)})!"), ended.stderr
     assert "in stuck_in_a_regex" in hung
     # The next run says so as it begins, then hangs at its door, before any beat, and is ended all the same.
     stalled = watched(home, "stalls")

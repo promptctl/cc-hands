@@ -35,7 +35,7 @@ from typing import Any, Literal
 from aiohttp import web
 from loguru import logger
 
-from hands.brain import configdir
+from hands.brain import configdir, pinned
 from hands.brain.configdir import Unstartable
 from hands.brain.pinned import ENV as PINNED
 from hands.brain.mcp import SERVER_NAME
@@ -45,7 +45,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
-from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Runnable, Session, SessionId, all_told, holds, ids, pasted
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PinnedClaude, PromptId, PromptText, RequestId, Runnable, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -290,7 +290,7 @@ def command(launch: Launch, hooks: str) -> list[str]:
     """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
     mode = launch.brain.mode
     return [
-        *slim(launch.brain.claude, launch.station.model, launch.conversation),
+        *slim(launch.brain.claude.path, launch.station.model, launch.conversation),
         # The instruction as this hands writes it on every request, a resumed conversation's too: Claude Code otherwise
         # sends the system prompt its conversation first had until it is compacted, even for a resume launched with a new
         # --append-system-prompt. Rendered fresh, it is byte-identical request to request.
@@ -572,19 +572,19 @@ type Method = Literal["claudeai", "console"]
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
-def login(children: Children, config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
+def login(children: Children, config_dir: Path, pin: pinned.Pin, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
     account it holds after.
 
     A config directory whose first screens are unanswered gets Claude Code's first run, its screens, its login among
     them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody is at its
-    keyboard. `method` is the login asked for: `claude auth login` makes it, and on the first run's login screen, which
+    keyboard. Its claude is `pin`'s, as the start's. `method` is the login asked for: `claude auth login` makes it, and on the first run's login screen, which
     offers every login, it is the one to pick. Raises LoginFailed when the brain holds another after."""
-    before = configdir.read(config_dir)
+    before = configdir.read(config_dir, pin)
     # [LAW:single-enforcer] what any run of hands' own Claude Code is refused on, the start's included, checked before
     # this one, which would sync what the brain's settings do not keep out. Its first screens are this run's to answer.
     match configdir.runnable(before):
-        case Runnable(claude=claude):
+        case Runnable(claude=PinnedClaude(path=claude)):
             pass
         case refused:
             raise Unstartable("; ".join(refused))
@@ -601,7 +601,7 @@ def login(children: Children, config_dir: Path, base_url: str, inherited: Mappin
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
-    if screens := configdir.first_screens(configdir.read(config_dir)):
+    if screens := configdir.first_screens(configdir.read(config_dir, pin)):
         raise Unstartable("; ".join(screens))
     held = logged_in(children, claude, config_dir, base_url, inherited)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
@@ -1894,7 +1894,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         except Unpackaged as error:
             raise Unstartable(str(error)) from error
         annotate(fritter=fritter)
-        annotate(claude=launch.brain.claude, mode=launch.brain.mode)
+        annotate(claude=launch.brain.claude.path, mode=launch.brain.mode)
         # [LAW:one-source-of-truth] the brain's keybindings are hands' alone, written whole at every start from SUBMIT, the
         # chord hands types: a file that bound it to anything else would leave every turn unsent, or have it say yes.
         # Whole or not at all: Claude Code reloads the file as it changes, and a half-written one binds nothing.

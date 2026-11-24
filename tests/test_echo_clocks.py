@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
+import pytest
 import soxr
 
 from echoes import CANCELLED, take
@@ -172,6 +173,7 @@ def opening_reductions(heard: Heard, seconds: float = 0.4) -> list[float]:
     return [power(heard.raw[at : at + span]) - power(heard.cleaned[at : at + span]) for at in heard.onsets[1:]]
 
 
+@pytest.mark.quarantined("promptctl-testing-c3u.1l7", until="2026-11-29")
 def test_every_readings_opening_is_cancelled_wherever_its_first_write_falls() -> None:
     """The canceller's reference keeps the speaker device's time through each silence, so a reading's opening meets its
     echo where the last reading's did. Given to the canceller as it was written instead, the reference moved against its

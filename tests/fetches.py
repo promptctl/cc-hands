@@ -137,7 +137,7 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     """Every fetch the run makes, as `fetches` says, each named by `write` as it goes."""
     # The line each fetch writes says what the run is fetching; the hub's bars would break it.
     disable_progress_bars()
-    fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
+    fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, partial(pinned.download, pinned.STALL_SECONDS))))
     # The echo canceller's model, which the unit layer's tests of the canceller run for real, so it is read there too.
     fetching(write, f"DTLN-aec's models at {dtln.REVISION[:12]}", (OSError, HTTPException, Mismatch), partial(dtln.fetched, fetches.dtln))
     if fetches.unit:
@@ -149,7 +149,7 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
         fetching(write, f"the {word.phrase} wake word's models", (Unserved,), partial(asyncio.run, WakeModels(fetches.wake_word, SYSTEM).ensured(word)))
     # The runtime the phone's page runs the wake word on, which its page test has the page fetch from hands.
     fetching(write, f"ONNX Runtime Web {ortweb.VERSION}", (Unserved,), partial(asyncio.run, Release(fetches.runtime, SYSTEM).ensured(file.pin for file in ortweb.FILES)))
-    fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, REGISTRY)))
+    fetching(write, f"Claude Code {pinned.PIN.version} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, pinned.PIN, REGISTRY)))
     fetching(write, f"{MOCK_MODULE}@{MOCK_RELEASE}", (subprocess.CalledProcessError, OSError), partial(installed_mock, fetches.mock_binary(), fetches.machine))
 
 
