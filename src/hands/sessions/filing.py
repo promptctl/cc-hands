@@ -95,8 +95,15 @@ def _told(group: Group, ticket: Ticket, backlog: Backlog) -> Iterable[datetime]:
 
 def title(group: Group) -> str:
     """Where the group came from, as a ticket names it, and its cause, on one line, cut to TITLE_CHARS."""
-    whole = " ".join(f"{group.named}: {group.cause}".translate(VISIBLE).split())
+    whole = _ticketed(" ".join(f"{group.named}: {group.cause}".split()))
     return whole if len(whole) <= TITLE_CHARS else f"{whole[: TITLE_CHARS - 1]}…"
+
+
+def _ticketed(said: str) -> str:
+    """What the log said, as a ticket holds it: each control as its escape, as the terminal a ticket is read in shows it
+    (hands.visible), and what UTF-8 cannot encode, a lone surrogate, as its escape too. lit is handed it as an argument,
+    and child.Command refuses one holding either a NUL or what no file name can encode."""
+    return said.translate(VISIBLE).encode("utf-8", "backslashreplace").decode()
 
 
 def where(directory: Path, home: Path) -> str:
@@ -113,15 +120,14 @@ def description(group: Group, logs: str) -> str:
     repository, and the log's lines hold what the user said and what each session did, which is the user's alone
     (audit.AuditLog keeps it so). A ticket carries only where the group came from, no finer than a file, and its cause,
     whose ids, paths, and quoted text are normalised away, and the command that reads its lines where they are, in
-    `logs`. What the log said is written with its controls as their escapes (hands.visible), which lit can be handed and
-    a terminal shows as written.
+    `logs`. What the log said is written as `_ticketed` writes it.
     """
     return f"""hands logged this {_times(group)}, from {group.first.stamp} to {group.last.stamp}, in its audit log. Filed by \
 `hands file-tickets`, which groups the log's warnings and errors by cause: where each came from and what it said, with \
 ids, paths, times, numbers, and quoted text normalised.
 
-Origin: {group.named.translate(VISIBLE)}
-Cause: {group.cause.translate(VISIBLE)}
+Origin: {_ticketed(group.named)}
+Cause: {_ticketed(group.cause)}
 
 {_lines(group, logs)}
 

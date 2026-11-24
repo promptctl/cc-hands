@@ -71,8 +71,9 @@ class Group:
 
     @property
     def fingerprint(self) -> str:
-        """What the group is known by from one run to the next: a digest of its origin and cause."""
-        return hashlib.sha256(f"{self.origin}\n{self.cause}".encode()).hexdigest()[:12]
+        """What the group is known by from one run to the next: a digest of its origin and cause. A lone surrogate the
+        log kept is digested as its own bytes, so every cause has a digest, and one UTF-8 encodes has the one it had."""
+        return hashlib.sha256(f"{self.origin}\n{self.cause}".encode("utf-8", "surrogatepass")).hexdigest()[:12]
 
     @property
     def label(self) -> str:

@@ -499,10 +499,10 @@ async def test_a_clip_the_voice_opened_whose_transcription_does_not_return_is_gi
 
 
 async def test_a_transcription_given_up_on_is_not_run_beside_the_next(monkeypatch: pytest.MonkeyPatch) -> None:
-    returns, begun = threading.Event(), list[None]()
+    returns, ran_on = threading.Event(), list[threading.Thread]()
 
     def stuck(samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
-        begun.append(None)
+        ran_on.append(threading.current_thread())
         returns.wait()
         return []
 
@@ -513,16 +513,21 @@ async def test_a_transcription_given_up_on_is_not_run_beside_the_next(monkeypatc
         async with rigged(Whisper(clock=clock, prompt=unprimed, record=lambda _: None), (), clock) as rig:
             await rig.clip([frame_of(3)])
             # The model is inside the first clip before its bound is spent.
-            await rig.until(lambda: len(begun) == 1)
+            await rig.until(lambda: len(ran_on) == 1)
             clock.advance(bound)
             await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
             await rig.clip([frame_of(4)])
             await clock.scheduled(clock.at + bound)
             clock.advance(bound)
             await rig.until(lambda: ("resolved", 2) in rig.seen.seen)
-            assert [event.facts["transcript"] for event in rig.events("clip")] == ["failed", "failed"]
-            # The second clip's turn failed in its own time without the model being run on it beside the first.
-            assert len(begun) == 1
+            # The first clip's run ends, and the third clip's is the model's next.
+            returns.set()
+            await rig.clip([frame_of(5)])
+            await rig.until(lambda: ("resolved", 3) in rig.seen.seen)
+            assert [event.facts["transcript"] for event in rig.events("clip")] == ["failed", "failed", "none"]
+            # The model ran on the first clip and the third on its one thread, and never on the second, which failed in
+            # its own time behind the first.
+            assert ran_on == [ran_on[0]] * 2
     finally:
         returns.set()
 
