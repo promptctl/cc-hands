@@ -42,6 +42,20 @@ class Listening(Protocol):
     async def choose(self, level: Level, by: Asker) -> Level: ...
 
 
+class Listened(Protocol):
+    """The level the desk listens at as the run's end reads it: the level listened at, the one last chosen, which a
+    restart starts at, and how many choices asked for were never taken."""
+
+    @property
+    def level(self) -> Level: ...
+
+    @property
+    def last_chosen(self) -> Level: ...
+
+    @property
+    def unanswered(self) -> int: ...
+
+
 class Stepped(Protocol):
     """The desk as its driver stepped it (`hands.voice.desk.Desk`): the level it listens at, and the level last chosen,
     which it listens at once its models are loaded."""
@@ -53,30 +67,48 @@ class Stepped(Protocol):
     def chosen(self) -> Level: ...
 
 
-class Levels:
-    """The one owner of the level the desk listens at. The run makes it with the level its start chooses, off or the one a
-    restart carried; the desk's driver steps that choice first, and tells it the desk it stepped after every step; the
-    tools and the pages read it, and ask for another level, which the driver takes and answers in order with the taps.
+class Driving(Protocol):
+    """The level the desk listens at as the desk's driver holds it, the one that steps it: the level the run starts at,
+    the next choice asked for, its answer, and the desk as each step left it."""
 
-    [LAW:no-shared-mutable-globals] the desk's driver is the one caller of `stepped` and `answer`; the run's start, the
-    run and the desk's server pass it on to the driver unread, and the tools and the pages hold it as Listening, which
-    reads and asks. All of them run on the event loop.
+    @property
+    def last_chosen(self) -> Level: ...
+
+    async def taken(self) -> Choice: ...
+
+    def answer(self, choice: Choice) -> None: ...
+
+    def stepped(self, desk: Stepped) -> None: ...
+
+
+class Levels:
+    """The one owner of the level the desk listens at. The run's start makes it at the level the run starts at, off or the
+    one a restart carried, and its end reads it as Listened; the desk's driver alone holds it as Driving, making its desk
+    at that level, taking and answering each choice in order with the taps, and telling it the desk after every step;
+    the tools and the pages hold it as Listening, which reads and asks.
+
+    [LAW:no-shared-mutable-globals] each holder is handed the port it uses, so only the driver can write the level, and
+    a choice is asked only through `choose`. All of them run on the event loop.
     """
 
     def __init__(self, start: Level) -> None:
-        # Off, as the desk listens before its models are loaded, with the start's choice to be stepped first.
+        # Off, as the desk listens before its models are loaded, holding the start's choice.
         self._level: Level = "off"
         self._chosen: Level = start
+        self._asked_for: asyncio.Queue[Choice] = asyncio.Queue()
         self._asked = 0
         self._answered = 0
-        self.chosen: asyncio.Queue[Choice] = asyncio.Queue()
 
     async def choose(self, level: Level, by: Asker) -> Level:
         """Ask the desk for `level`, and get back the level it listened at as the driver took the choice."""
         was: asyncio.Future[Level] = asyncio.get_running_loop().create_future()
         self._asked += 1
-        self.chosen.put_nowait(Choice(level, by, was))
+        self._asked_for.put_nowait(Choice(level, by, was))
         return await was
+
+    async def taken(self) -> Choice:
+        """The next choice asked for, in the order they were asked."""
+        return await self._asked_for.get()
 
     def answer(self, choice: Choice) -> None:
         """The driver's answer to `choice`, as it takes it to step: the level it found."""

@@ -11,7 +11,7 @@ from conftest import ScriptedEars, hearing_with
 from hands.virtualclock import VirtualClock
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Leveled, Made
-from hands.voice.listening import Choice, Level, Levels
+from hands.voice.listening import Level, Levels
 from hands.voice.clips import Trigger
 from hands.voice.engaged import Hears, drive
 from hands.voice.turnlife import Ears
@@ -289,9 +289,10 @@ async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:
 async def test_a_choice_whose_tool_call_was_cancelled_is_stepped_and_the_desk_goes_on() -> None:
     rig = Rig(verdicts=[])
     driving = rig.start()
-    cancelled: asyncio.Future[Level] = asyncio.get_running_loop().create_future()
-    cancelled.cancel()
-    rig.owner.chosen.put_nowait(Choice("engaged", "tool", cancelled))
+    # The tool call asks, and is cancelled before the driver takes its choice: the user cutting the brain off.
+    asking = asyncio.create_task(rig.choose("engaged"))
+    await asyncio.sleep(0)
+    asking.cancel()
     assert await rig.choose("off") == "engaged"
     await stopped(driving)
     assert rig.made == ["listen", "deafen"]

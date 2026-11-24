@@ -16,9 +16,8 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.clock import SYSTEM
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice.desk import Leveled, Made
-from hands.voice.listening import Level
 from hands.voice.engaged import drive
-from hands.voice.listening import Choice, Levels
+from hands.voice.listening import Levels
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
 from hands.voice.wake import SAMPLE_RATE, WakeWord, listening, loaded
@@ -50,14 +49,9 @@ async def untapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
     yield
 
 
-def choice(level: Level) -> Choice:
-    return Choice(level, "tool", asyncio.get_running_loop().create_future())
-
-
 async def wake_word_level() -> Levels:
-    levels = Levels("off")
-    levels.chosen.put_nowait(choice("wake word"))
-    return levels
+    # The run starts at the wake word, which the desk listens at once its models are loaded.
+    return Levels("wake word")
 
 
 class AtLevel:
@@ -100,10 +94,11 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
     async with asyncio.timeout(1.0):
         while len(made) < 7:
             await asyncio.sleep(0.001)
-    levels.chosen.put_nowait(choice("off"))
+    deafening = asyncio.create_task(levels.choose("off", "tool"))
     async with asyncio.timeout(1.0):
         while len(made) < 8:
             await asyncio.sleep(0.001)
+    assert await deafening == "wake word"
     driving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await driving

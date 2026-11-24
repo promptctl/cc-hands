@@ -848,7 +848,7 @@ def engaged_conversation(told: Sequence[tuple[float, desk.Event]], seconds: floa
     def asked(was: desk.Desk, event: desk.Event, now: desk.Desk) -> tuple[tuple[float, desk.Event], ...]:
         return (*(shortcut.asked(event) if isinstance(event, KeyEvent) else ()), *voiceturn.asked(desk.turn_of(was.phase), desk.turn_of(now.phase)))
 
-    return play_out(desk.step, desk.Desk(models=desk.Loaded()), asked, told, seconds, "engaged conversation")
+    return play_out(desk.step, desk.Desk(desk.Loaded(desk.Resting("off"))), asked, told, seconds, "engaged conversation")
 
 
 async def test_a_shortcut_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:

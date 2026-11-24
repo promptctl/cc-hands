@@ -17,7 +17,7 @@ from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Hears, drive, loaded
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
-from hands.voice.listening import Levels
+from hands.voice.listening import Driving
 from hands.voice.turnlife import Ears
 from hands.voice.wakeword import Word
 
@@ -43,7 +43,7 @@ class Speaker(Protocol):
 async def serve_desk(
     *,
     key: PushToTalk,
-    levels: Levels,
+    levels: Driving,
     tapped: Callable[[Clock, Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     microphone: Microphone,
     speaker: Callable[[], Speaker],

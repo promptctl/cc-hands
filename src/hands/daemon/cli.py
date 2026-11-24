@@ -36,7 +36,7 @@ from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice import summarising
-from hands.voice.listening import LEVELS, Level, Levels, parse_level
+from hands.voice.listening import LEVELS, Driving, Level, Levels, Listened, Listening, parse_level
 from hands.voice.portaudio import Listed, Lists, default_input, default_output, listing
 
 
@@ -316,8 +316,8 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
             pass
     run_start = Start(handover is not None, clock)
     # [LAW:nothing-unseen] the --model that outranks the file's, and the --level, None where there was none, and the level
-    # the desk starts at, said by a start refused first.
-    run_start.heard(model_flag=model, level_flag=level_flag, listening_level=starts_at(handover))
+    # chosen for the desk to start at, said by a start refused first.
+    run_start.heard(model_flag=model, level_flag=level_flag, level_chosen=starts_at(handover))
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
     # or a crash the next run must read. A restart's run holds it already, since it holds the home: the run before it
     # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
@@ -559,11 +559,12 @@ def run_here(clock: Clock, home: Home, pin: pinned.Pin, handover: Handover | Non
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, clock)
     # [LAW:one-source-of-truth] the one owner of the level the desk listens at, made before the run and read after it, so a
-    # restart carries the level the desk was at, or, where the run never stepped it, the one it was to start at.
+    # restart carries the level last chosen, or, where the run never stepped its desk, the one it was to start at: the run
+    # is handed it as the tools' and pages' Listening and the driver's Driving, and the run's end as Listened.
     levels = Levels(starts_at(handover))
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, pin, settings, heart, record, exports.degraded, after_crash, run_start, levels), levels, heart, exports.degraded, lambda: edited(home, pin, record, settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, pin, settings, heart, record, exports.degraded, after_crash, run_start, levels, levels), levels, heart, exports.degraded, lambda: edited(home, pin, record, settings, clock), record, run_start, clock))
     match ending:
         case "quit":
             return "quit"
@@ -576,11 +577,11 @@ type Run = Callable[[Stop], Coroutine[object, object, Ended]]
 
 
 async def launch(
-    load: Callable[[], Run], levels: Levels, heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start, clock: Clock
+    load: Callable[[], Run], levels: Listened, heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start, clock: Clock
 ) -> Ending:
     """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told
     to end, or, where it failed, every failing cause's error raised together as one group. `levels` is the level the
-    run's desk listens at, which its event says.
+    run's desk listens at and the one last chosen, which its event says.
     A run that ends before it was ready ends its start here: failed with what it raised, or cancelled, told to stop first.
 
     [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the restart signal, the q key,
@@ -652,7 +653,7 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, levels: Levels) -> Run:
+def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -675,7 +676,7 @@ def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart:
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, pin, run_start, OwnModel(home, pin, settings), clock, levels)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, pin, run_start, OwnModel(home, pin, settings), clock, listening, driving)
 
 
 def start_indicator(home: Home) -> int:

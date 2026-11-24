@@ -2029,13 +2029,14 @@ runs for the whole run, and Right Shift held alone opens a turn at every level. 
 level says what else does. `off`, a cold start's, keeps the microphone closed between
 turns. `wake word` listens for the wake word. `engaged` has speech alone open each turn.
 A restart comes back at the level the run before it was at: the run hands it on as
-`--level`, and the new run's driver steps it first, as any choice is stepped. The desk
-listens at off until the models it hears with are loaded, holding the level last
-chosen, by the start, a tap, a tool or a page, and only then makes the listen move, so
-the gate hears the desk listen and the level's cue plays when the room can be heard.
-One owner holds the level (`hands.voice.listening.Levels`), made before the run so a
-restart told while the models load still carries the level last chosen; the driver
-alone writes it, after each step, and the tools and the pages read it.
+`--level`, and the new run's desk is made at it, the start's choice. The desk listens
+at off until the models it hears with are loaded, holding the level last chosen, by the
+start, a tap, a tool or a page, and only then makes the listen move, so the gate hears
+the desk listen and the level's cue plays when the room can be heard. One owner holds
+the level (`hands.voice.listening.Levels`), made before the run so a restart told while
+the models load still carries the level last chosen. Each holder is handed the port it
+uses: the driver alone writes it, after each step; the tools and the pages read it and
+ask; the run's end reads it.
 A triple tap of Right Command toggles `wake word`, and one of Right Shift toggles
 `engaged` (`hands.voice.taps`): three presses of the modifier alone inside a second,
 with no other key between. Either switches straight from the other. The brain's

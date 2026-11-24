@@ -35,7 +35,7 @@ from hands.voice.desk import Leveled, Made
 from hands.voice.turnlife import Ears
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
-from hands.voice.listening import Choice, Levels
+from hands.voice.listening import Levels
 from hands.voice.turnstop import SpeechHeard
 
 # The real load, bound before conftest stands a pair that hears nothing in for it.
@@ -246,8 +246,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
 
         frames = pcm(TIMELINE)
         levels = Levels("off")
-        engaging: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        levels.chosen.put_nowait(Choice("engaged", "tool", engaging))
+        engaging = asyncio.create_task(levels.choose("engaged", "tool"))
 
         @asynccontextmanager
         async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:

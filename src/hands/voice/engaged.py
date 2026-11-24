@@ -37,7 +37,7 @@ from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
 from hands.voice.desk import Chosen, Desk, Event, Keyed, Leveled, Made, ModelsLoaded, Woken, listens, step, turn_of
-from hands.voice.listening import LEVELS, Choice, Level, Levels
+from hands.voice.listening import LEVELS, Choice, Driving, Level
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.turnlife import Ears, Life
 from hands.voice.voiceturn import Judging, TurnEnded
@@ -204,13 +204,13 @@ async def drive(
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
     hearing: Callable[[], AbstractAsyncContextManager[tuple[Ears, Hears]]],
-    levels: Levels,
+    levels: Driving,
     on_move: Callable[[Made], Awaitable[None]],
     on_level: Callable[[Leveled], Awaitable[None]],
     emit: Callable[[WideEvent], None],
 ) -> None:
-    """Hand every move the desk makes to `on_move`, and every change of level to `on_level`, until cancelled, the start
-    choosing the level `levels` carries before anything else is stepped, and `levels` told the desk after every step.
+    """Hand every move the desk makes to `on_move`, and every change of level to `on_level`, until cancelled, the desk
+    made at the level `levels` says the run starts at, and `levels` told the desk after every step.
 
     One task steps the desk, in the order things were heard, so the speech, the key, the taps, the wake word, the
     tools' choices, and Smart Turn's verdicts never race each other: a verdict is stepped as it is given, before any
@@ -219,10 +219,8 @@ async def drive(
     drive. A level chosen before then, by the start or anyone, is listened at, with its cue, from then.
     """
     events: asyncio.Queue[Event | Overheard | Choice] = asyncio.Queue()
-    # What has been told and is yet to be stepped, in the order it is stepped: first the level the start chose.
-    # [LAW:dataflow-not-control-flow] it is stepped as any choice is: held while the models load, and then the gate is told
-    # the desk listens, its cue plays, and its change is said, as for a tap; off, a cold start's, is no change.
-    heard: deque[Event] = deque([Chosen(levels.last_chosen, "start")])
+    # What has been told and is yet to be stepped, in the order it is stepped.
+    heard: deque[Event] = deque()
 
     async def overhearing() -> None:
         # [LAW:no-ambient-temporal-coupling] each buffer carries the life of the models it is heard with, so none is heard
@@ -236,15 +234,18 @@ async def drive(
 
     async def choosing() -> None:
         while True:
-            events.put_nowait(await levels.chosen.get())
+            events.put_nowait(await levels.taken())
 
-    desk = Desk()
+    # [LAW:dataflow-not-control-flow] the level the run starts at is the start's choice, held as any choice is while the
+    # models load, and then the gate is told the desk listens, its cue plays, and its change is said, as for a tap; off, a
+    # cold start's, is no change.
+    desk = Desk.starting(levels.last_chosen)
     # The life of the models the last buffer was heard with: None until they are loaded, while Smart Turn has heard nothing.
     life: Life | None = None
     # Whether the key has come up since the last buffer was heard: speech the desk ignored while it was down starts for it
     # as the key comes up, so a tap of Shift as the user began does not lose what they say.
     key_came_up = False
-    # The level the last buffer was heard at: off, where nothing has heard it, before the start's level is stepped.
+    # The level the last buffer was heard at: off, where nothing has heard it, as the desk listens while its models load.
     overheard_at: Level = "off"
     async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
         group.create_task(overhearing(), name="the desk's microphone, overheard")

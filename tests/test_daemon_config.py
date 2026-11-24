@@ -26,7 +26,7 @@ from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import CannotStart, Ended, Handover, QuitKey, Signalled, Start, Stop, Failing, start
 from hands.voice.desk import Desk, Loaded, Resting
-from hands.voice.listening import Level, Levels
+from hands.voice.listening import Driving, Level, Levels, Listening
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import Entry, SettingsEdited
@@ -278,13 +278,13 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
-    def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, levels: Levels) -> cli.Run:
+    def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
         loaded_on.append(settings.model)
-        started.append((levels.level, levels.last_chosen))
+        started.append((listening.level, driving.last_chosen))
 
         async def restarted(stop: Stop) -> Ended:
             for level in stepped.pop(0):
-                levels.stepped(Desk(Resting(level), models=Loaded()))
+                driving.stepped(Desk(Loaded(Resting(level))))
             stop.tell(Signalled(RESTART_SIGNAL))
             return Ended(None, 0)
 
@@ -320,7 +320,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     lines = list(map(json.loads, audit.tail(home.audit, 100)[0]))
     # Each start says the --level it was given and the level its desk starts at, and each run the level its desk listened
     # at and the one last chosen.
-    assert [(line["facts"]["level_flag"], line["facts"]["listening_level"]) for line in lines if line.get("event") == "hands.start"] == [(None, "off"), ("engaged", "engaged")]
+    assert [(line["facts"]["level_flag"], line["facts"]["level_chosen"]) for line in lines if line.get("event") == "hands.start"] == [(None, "off"), ("engaged", "engaged")]
     assert [(line["facts"]["listening_level"], line["facts"]["level_chosen"]) for line in lines if line.get("event") == "hands.run"] == [("engaged", "engaged"), ("off", "engaged")]
 
 
@@ -479,9 +479,10 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
 
     run_start = Start(restarted=False, clock=SYSTEM)
     recorded: list[Entry] = []
+    levels = Levels("off")
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, _NO_FILE), SYSTEM, Levels("off"))
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, _NO_FILE), SYSTEM, levels, levels)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -511,7 +512,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "start_indicator", unshown)
     monkeypatch.setattr(cli, "reap", kept)
 
-    def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _levels: Levels) -> cli.Run:
+    def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:

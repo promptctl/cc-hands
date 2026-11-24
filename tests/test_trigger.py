@@ -18,7 +18,7 @@ TWO_WORDS = Path(__file__).parent / "fixtures" / "two_words.onnx"
 
 def listening_at(level: Level) -> Desk:
     """A desk resting at `level`, its models loaded, as its driver reports it."""
-    return Desk(Resting(level), models=Loaded())
+    return Desk(Loaded(Resting(level)))
 
 
 OFF = "The microphone is off between turns. Hold Right Shift to talk, and let go to send. Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
@@ -51,7 +51,7 @@ async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_i
     async def driver() -> None:
         # As the desk's driver does: answers each choice with the level it found, then reports the level it went to.
         while True:
-            choice = await levels.chosen.get()
+            choice = await levels.taken()
             asked.append(f"{choice.level} by {choice.by}")
             levels.answer(choice)
             levels.stepped(listening_at(choice.level))
