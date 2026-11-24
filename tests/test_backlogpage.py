@@ -214,6 +214,20 @@ def test_a_level_is_the_open_epic_of_that_topic_titled_exactly_so_or_one_made_be
             backlog.leveling(ticket, level)
 
 
+def test_a_level_epic_lit_archived_is_put_away_and_a_press_makes_the_level_another_epic() -> None:
+    issues = [
+        issue("w", "01", "Train a new wake word", status=None, kind="epic", topic="wake-word"),
+        issue("w.a", "02", "Hey hands", topic="wake-word"),
+        issue("wh", "03", "wake word - high", status=None, kind="epic", topic="wake-word", archived_at="2026-10-18T00:00:00Z"),
+        issue("wh.a", "04", "A wake word", topic="wake-word"),
+    ]
+    backlog = parse_export(export(issues, [inside("w", "w.a"), inside("wh", "wh.a")]))
+    assert backlog.level_epics("wake-word", None) == {}
+    assert backlog.leveling("w.a", "high").epic == NewEpic("wake-word", "wake word - high", None, Place("above", "w"))
+    # A ticket inside the archived epic stands inside no epic lit lists.
+    assert backlog.standing("wh.a") is None
+
+
 def test_a_level_epic_made_is_placed_so_its_topics_levels_stay_high_over_normal_over_low() -> None:
     issues = [
         issue("w", "01", "Train a new wake word", status=None, kind="epic", topic="wake-word"),

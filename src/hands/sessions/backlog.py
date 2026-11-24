@@ -319,8 +319,8 @@ class Backlog:
         there of that topic titled exactly so, finished or not, the first ranked where there are more.
 
         [LAW:one-source-of-truth] the one way a level's epic is found: by its frame, title, and topic in lit, read fresh.
-        A topic has one epic for a level in a frame among those lit lists: one whose tickets are all closed is used again,
-        never made a second time, and one lit archived is put away, so a press makes the level another.
+        A press never makes a second epic for a level lit lists in the frame: one whose tickets are all closed is used
+        again. One lit archived is put away and not listed, so a press makes another epic for the level.
         """
         epics: dict[Level, str] = {}
         for id, ticket in self.tickets.items():  # rank order, so the first ranked is kept
