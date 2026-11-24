@@ -236,6 +236,12 @@ def children_on(clock: Clock) -> Children:
     return Children(clock, lambda _: None)
 
 
+def shell_without_hands_settings() -> dict[str, str]:
+    """The environment the tests run in, less any `HANDS_*` the developer's shell exports: the start's preflight refuses
+    one, so a test of what a start passes does not take it from the shell."""
+    return {name: value for name, value in os.environ.items() if not name.startswith("HANDS_")}
+
+
 @dataclass(frozen=True)
 class Unstarting(Children):
     """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real

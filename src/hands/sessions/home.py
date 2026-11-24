@@ -127,12 +127,17 @@ class Home:
         return self.overlays / session
 
 
+# [LAW:one-source-of-truth] the one variable of hands' own that is read: the start's preflight leaves it, and only it,
+# among the `HANDS_*` variables it refuses.
+HOME_VARIABLE = "HANDS_HOME"
+
+
 def default_home(environment: Mapping[str, str]) -> Home:
     """HANDS_HOME, or ~/.hands: the hook shim, which Claude Code runs with no arguments of hands', finds it as the CLI does."""
     # [LAW:one-source-of-truth] the one place the default is named; the CLI's --home and the shim both start here.
     # HANDS_HOME is no setting but where the settings are: the one thing a process started by Claude Code, with no
     # arguments of hands', can be told.
-    root = Path(environment.get("HANDS_HOME") or Path.home() / ".hands").expanduser()
+    root = Path(environment.get(HOME_VARIABLE) or Path.home() / ".hands").expanduser()
     # [LAW:parse-dont-validate] a hook runs in its session's directory, so a relative home would be a different
     # home in every project; it is refused here, where every reader of the home gets it.
     if not root.is_absolute():

@@ -631,8 +631,8 @@ def logged_in(children: Children, claude: Path, config_dir: Path, base_url: str,
     command that makes a login, when it has none, or one whose requests do not reach hands' proxy, and Unstartable when
     Claude Code could not be asked.
 
-    Asked as hands starts and by `hands check`, before any brain runs to say it; never by a weigh of an edit, which reads
-    files alone (hands.daemon.preflight). A login lost since the start is the brain's own API answers' to say
+    Asked as hands starts and by `hands check`, before any brain runs to say it; never by a weigh of an edit, which starts
+    no Claude Code (hands.daemon.preflight). A login lost since the start is the brain's own API answers' to say
     (promptctl-phone-app-9d9y.h4s)."""
     asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, base_url, inherited), limit=AUTH_STATUS_SECONDS)
     match asked:

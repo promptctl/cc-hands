@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import answering, children_on, executable, laid_out, onboard, pin, stand_in, SYSTEM_PATH
+from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, stand_in, SYSTEM_PATH
 from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
@@ -870,7 +870,7 @@ def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monk
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(root / "home")
     onboard(home.brain)
-    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), os.environ)
+    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), shell_without_hands_settings())
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 

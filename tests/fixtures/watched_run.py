@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from datetime import timedelta
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, NoReturn
 
@@ -42,21 +43,21 @@ def stuck() -> NoReturn:
         time.sleep(0.05)
 
 
-def hung(clock: Clock, home: Home, pin: pinned.Pin, handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
+def hung(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
     heart.beat("starting", None, 0, listening=False, degraded=())
     stuck()
 
 
-def stalled_at_the_door(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
+def stalled_at_the_door(home: Home, pin: pinned.Pin, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     stuck()
 
 
-def opened(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
+def opened(home: Home, pin: pinned.Pin, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     """The door, opened onto settings the stood-in run never reads."""
     return Settings(None, Config(), model)
 
 
-def refused(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
+def refused(home: Home, pin: pinned.Pin, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     raise CannotStart("refused for the test")
 
 

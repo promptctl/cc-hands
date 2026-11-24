@@ -1,8 +1,8 @@
-"""Where a setting meets its login: the backend config.toml names, with the login it reaches its model on, in an
-environment that names no setting.
+"""Where a setting meets its login: the backend config.toml names, with the login it reaches its model on.
 
 Read by `hands run` before the voice loads, and by `hands check`, which loads the voice's pipeline for neither, each on
-what the start's preflight passed. The login is the one refusal the preflight leaves out: only a Claude Code can say it.
+what the start's preflight weighed, and by a start the preflight refused, which asks the login beside its refusals. The
+login is the one refusal the preflight leaves out: only a Claude Code can say it.
 """
 
 from collections.abc import Mapping
@@ -22,10 +22,6 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
     which says nothing of its login."""
     # [LAW:single-enforcer] where a setting meets its login: the brain's login is checked here, once, before the voice
     # loads, rather than once every turn has failed.
-    # [LAW:no-silent-failure] a setting in the environment would be one silently not applied: settings are the home's
-    # config.toml, and HANDS_HOME, where that is, is the one variable of hands' own it reads.
-    if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
-        raise Rejected(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     # Imported here, so that only a check loads the brain's process, its MCP server, and Pipecat's tools.
     from hands.brain.process import NotLoggedIn, logged_in
 
