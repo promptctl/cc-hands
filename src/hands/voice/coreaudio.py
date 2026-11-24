@@ -14,7 +14,7 @@ import CoreFoundation
 import objc
 from loguru import logger
 
-from hands.voice.devicechoice import DefaultDevices, Hardware
+from hands.voice.devicechoice import BuiltIns, DefaultDevices, Hardware
 
 _SYSTEM = CoreAudio.kAudioObjectSystemObject
 
@@ -29,6 +29,14 @@ _DEVICES = _address(CoreAudio.kAudioHardwarePropertyDevices)
 _NAME = _address(CoreAudio.kAudioObjectPropertyName)
 _INPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAudioObjectPropertyScopeInput)
 _OUTPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAudioObjectPropertyScopeOutput)
+_INPUT_SOURCE = _address(CoreAudio.kAudioDevicePropertyDataSource, CoreAudio.kAudioObjectPropertyScopeInput)
+_OUTPUT_SOURCE = _address(CoreAudio.kAudioDevicePropertyDataSource, CoreAudio.kAudioObjectPropertyScopeOutput)
+
+# The data sources of the Mac's own microphone and speakers, IOAudio's port subtypes 'imic' and 'ispk'. Their transport
+# alone, built-in, does not say so: the headphone jack is built in too, a device of its own on Apple silicon and, on an
+# Intel Mac, the speakers' own device with its data source moved to 'hdpn'.
+_INTERNAL_MICROPHONE = int.from_bytes(b"imic")
+_INTERNAL_SPEAKERS = int.from_bytes(b"ispk")
 
 
 def hardware() -> Hardware:
@@ -91,6 +99,23 @@ def _name(device: int) -> str:
         return str(named)
     finally:
         CoreFoundation.CFRelease(named)
+
+
+def _on_source(address: object, source: int, device: int) -> bool:
+    """Whether `device` is on the data source `source` now: read as it is asked, since a headphone plug can move it with
+    no new device. A device with no data source, Bluetooth's or a virtual one, is on none, and so is one gone."""
+    status, _size, data = CoreAudio.AudioObjectGetPropertyData(device, address, 0, b"", 4, None)
+    if status == CoreAudio.kAudioHardwareUnknownPropertyError:
+        return False
+    try:
+        _of_device(status, "say which data source an audio device is on")
+    except _Gone:
+        return False
+    return struct.unpack("I", data)[0] == source
+
+
+# The Mac's own microphone and speakers, by the data source each device is on as it is asked.
+BUILT_INS = BuiltIns(partial(_on_source, _INPUT_SOURCE, _INTERNAL_MICROPHONE), partial(_on_source, _OUTPUT_SOURCE, _INTERNAL_SPEAKERS))
 
 
 def _has_streams(device: int, scope: object) -> bool:

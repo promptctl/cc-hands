@@ -10,6 +10,11 @@ as it was, under that sound, while hands speaks as much as while it is quiet: th
 said over a reply opens a turn that cuts it off. The desk listens for as long as the level is the wake word's, so the
 clip owner keeps the second before each turn opens and the wake word, and anything said while the detector made sure
 of it, are in the turn.
+
+On the Mac's own microphone and speakers, hands' voice left over from the canceller can say the wake word as the user
+would, and a turn opened over it would cut the reply off on hands' own word and send the brain hands' voice as the
+user's. There, a wake with hands' voice in what the turn would keep opens nothing (`hands.voice.desk`): hands said it, or
+the user said it over hands, and the talk key still cuts in.
 """
 
 import asyncio
@@ -24,6 +29,7 @@ from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
+from hands.voice.desk import Woken
 from hands.voice.wakemodels import Files
 from hands.voice.wakeword import THRESHOLD, Word
 
@@ -77,26 +83,28 @@ async def loaded(clock: Clock, sample_rate: int, files: Files, word: Word, emit:
     yield heard
 
 
-def listening(clock: Clock, word: WakeWord, speaking: Callable[[], bool], emit: Callable[[WideEvent], None]) -> Callable[[bytes, bool], Awaitable[bool]]:
-    """Whether each buffer of the desk's microphone ends with the wake word, heard afresh from a buffer the wake word's
-    level `begun` with, with nothing of the room before it."""
+def listening(
+    clock: Clock, word: WakeWord, over_hands: Callable[[], bool], built_in: Callable[[], bool], emit: Callable[[WideEvent], None]
+) -> Callable[[bytes, bool], Awaitable[Woken | None]]:
+    """The wake word each buffer of the desk's microphone ends with, if it does, heard afresh from a buffer the wake
+    word's level `begun` with, with nothing of the room before it, and what `over_hands` and `built_in` say as it is."""
 
-    async def woken(audio: bytes, begun: bool) -> bool:
-        # Read with the buffer, not after the hops off the loop below, by which time a reply may have stopped.
-        while_speaking = speaking()
+    async def woken(audio: bytes, begun: bool) -> Woken | None:
         if begun:
             await asyncio.to_thread(word.reset)
         score = await asyncio.to_thread(word.score, audio)
         if score < THRESHOLD:
-            return False
-        # Off the loop as scoring is: forgetting refills the model with seconds of features.
+            return None
+        # Off the loop as scoring is: forgetting refills the model with seconds of features. CoreAudio is asked off it too.
         await asyncio.to_thread(word.reset)
-        count(heard=1)
-        # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and whether hands was speaking:
-        # a wake on hands' own voice, left over from the echo canceller, reads as one heard while it spoke. Whether it
-        # opened a turn is the desk's to say, as its count of starts.
+        # [LAW:one-source-of-truth] the clip owner's own second, read as the turn is about to open on it, which is the second
+        # the turn would keep from before it.
+        hands, on_built_in = over_hands(), await asyncio.to_thread(built_in)
+        count(wake_words=1)
+        # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and the facts the desk takes it
+        # by. Whether a wake opened a turn is the desk's to say, as its count of starts.
         with unit("desk.wake_word_heard", emit, wide.begun(clock)):
-            annotate(score=score, threshold=THRESHOLD, while_speaking=while_speaking)
-        return True
+            annotate(score=score, threshold=THRESHOLD, over_hands=hands, built_in=on_built_in)
+        return Woken(clock.now(), over_hands=hands, built_in=on_built_in)
 
     return woken

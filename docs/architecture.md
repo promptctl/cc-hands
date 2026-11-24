@@ -2027,7 +2027,11 @@ no copy of the turn that could outlive the gate's.
 The wake-word trigger opens the mic without a hand, as `engaged conversation` does, and
 hears what it hears: the room with hands' own voice taken out by the echo canceller,
 while hands speaks as much as while it is quiet, so the wake word said over a reply cuts
-it off. Each hearing records `while_speaking`, whether hands was speaking as its audio arrived; a wake on the echo's tail, after hands stops, reads as one it was not. The
+it off, except on the Mac's own microphone and speakers, where a wake with hands' voice in the second the turn would keep
+wakes nothing (`voice/desk.py`). The second is the clip owner's own, which keeps what the speaker played over each
+buffer, so the echo's tail after hands stops is still hands'; the pair is read by the data sources, `imic` and `ispk`,
+of the devices the streams opened on (`voice/coreaudio.py`), so headphones in the jack, built in too, are not it. Each
+hearing records `over_hands` and `built_in`. The
 pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
 The life of the models hears afresh from the wake (`Life.afresh`): Silero is quiet until sure of speech

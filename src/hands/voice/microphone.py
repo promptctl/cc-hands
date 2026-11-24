@@ -51,7 +51,7 @@ from pipecat.transports.local.audio import (
 
 from hands.clock import Clock
 from hands.voice import coreaudio
-from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, lost_microphone, placed
+from hands.voice.devicechoice import Auto, BuiltIns, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, built_in, hears_nothing, lost_microphone, placed
 from hands.voice.clips import Playhead
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
@@ -808,6 +808,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         record: Record,
         portaudio: Callable[[], PortAudio] = lambda: cast(PortAudio, pyaudio.PyAudio()),
         hardware: Callable[[], Hardware] = coreaudio.hardware,
+        built_ins: BuiltIns = coreaudio.BUILT_INS,
         echo: Callable[[], Echo] = EchoCanceller,
         choices: Choices = Choices(),
     ) -> None:
@@ -816,6 +817,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         # miss an unplug during the model load between this and the pipeline's start.
         self._choices = choices
         self._hardware = hardware
+        self._built_ins = built_ins
         self.opened_on = self.wanted()
         # [LAW:single-enforcer] PortAudio is started by the one factory, here and at every reopen. LocalAudioTransport's
         # own init would start an instance of its own, and while two are alive, ending one lists no devices anew.
@@ -841,6 +843,12 @@ class KeyedAudioTransport(LocalAudioTransport):
     def wanted(self) -> Placement:
         """Where config.toml puts the streams on the devices there are now. Blocking: CoreAudio is asked."""
         return placed(self._choices, self._hardware())
+
+    def built_in(self) -> bool:
+        """Whether the streams are open on the Mac's own microphone and speakers, which hear each other through the room.
+        Blocking: CoreAudio is asked."""
+        # [LAW:one-source-of-truth] the devices the streams opened on, by CoreAudio's ids for them, as the follower reads them.
+        return built_in(self.opened_on, self._built_ins)
 
     async def reopen(self) -> Devices:
         """Close both streams and PortAudio itself, and open them again where config.toml puts them on the devices as they are now."""

@@ -32,10 +32,7 @@ class Microphone(Protocol):
 
 
 class Speaker(Protocol):
-    """The speaker attached now: it plays a cue at once, and says whether hands is speaking."""
-
-    @property
-    def hands_speaking(self) -> bool: ...
+    """The speaker attached now: it plays a cue at once."""
 
     def cue(self, cue: Cue) -> Played: ...
 
@@ -47,6 +44,8 @@ async def serve_desk(
     tapped: Callable[[Clock, Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     microphone: Microphone,
     speaker: Callable[[], Speaker],
+    over_hands: Callable[[], bool],
+    built_in: Callable[[], bool],
     models: WakeModels,
     word: Word,
     taken: Callable[[Move], Awaitable[None]],
@@ -55,7 +54,9 @@ async def serve_desk(
     clock: Clock,
 ) -> None:
     """Drive the desk until cancelled: each move it makes goes to the gate, and what the gate takes it as to `taken`; each
-    change of level plays its cue and is beaten, the driver having told `levels` of it as it stepped it."""
+    change of level plays its cue and is beaten, the driver having told `levels` of it as it stepped it. `over_hands`
+    says whether hands' voice may be in what a turn opened now would keep, and `built_in` whether the desk's streams are
+    on the Mac's own microphone and speakers: what the wake word is heard with (`hands.voice.wake.listening`)."""
 
     async def at_desk(made: Made) -> None:
         # [LAW:single-enforcer] a clip is ended only through `PushToTalk.end`, which the gate lets only the trigger that opened it do;
@@ -88,6 +89,6 @@ async def serve_desk(
             files = ensured.files
             annotate(**ensured.facts())
         async with loaded(clock, rate, record, "desk.loaded") as ears, wake.loaded(clock, rate, files, word, record) as heard:
-            yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
+            yield ears, wake.listening(clock, heard, over_hands, built_in, record)
 
     await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels, at_desk, at_level, record)

@@ -302,7 +302,7 @@ Need 8. Where the microphone is.
 - **Wake word.** Saying "Hey Jarvis", or the wake word config.toml names, opens
   a turn with no key at all, and end-of-turn detection closes it as in an engaged
   conversation. openWakeWord's pretrained model, or one the user trained, listens to the echo-cancelled desk microphone, while hands speaks
-  as while it is quiet. Done when, with speakers on, a turn completes with no key and
+  as while it is quiet, except on the Mac's own microphone and speakers, where said over hands it wakes nothing. Done when, with speakers on, a turn completes with no key and
   none of hands' own words in its transcript, and room talk without the wake word
   opens no turn.
 - **Phone over WebRTC.** A hold-to-talk page served over HTTPS on the LAN and the

@@ -10,7 +10,7 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from conftest import events, patiently
-from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Instead, Named, Off, OnDefault, OnNamed, Placement, placed
+from hands.voice.devicechoice import Auto, BuiltIns, Choices, Closed, DefaultDevices, Hardware, Instead, Named, Off, OnDefault, OnNamed, Placement, built_in, placed
 from hands.voice.devices import follow
 from hands.voice.microphone import Devices
 from hands.voice.system import AudioMoved, SystemFact, system_text
@@ -247,6 +247,15 @@ async def test_a_named_device_that_leaves_and_comes_back_between_two_reads_is_a_
     await follower.settled()
     await follower.stop()
     assert follower.reopens == 1
+
+
+def test_the_macs_own_pair_is_both_sides_on_its_own_microphone_and_speakers() -> None:
+    there = BuiltIns(microphone={1}.__contains__, speakers={2}.__contains__)
+    assert built_in(Placement(OnDefault(1), OnNamed("MacBook Pro Speakers", 2)), there)
+    # The headset on either side, or a side on no device, and hands' voice does not reach the microphone through the room.
+    assert not built_in(Placement(OnDefault(1), OnNamed("headset", 3)), there)
+    assert not built_in(Placement(OnNamed("headset", 3), OnDefault(2)), there)
+    assert not built_in(Placement(Closed(), OnDefault(2)), there)
 
 
 def test_the_devices_are_asked_after_only_for_a_side_that_names_one() -> None:

@@ -15,7 +15,7 @@ from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.clock import SYSTEM
 from hands.sessions.wide import WideEvent, begun, unit
-from hands.voice.desk import Leveled, Made
+from hands.voice.desk import Leveled, Made, Woken
 from hands.voice.engaged import drive
 from hands.voice.listening import Levels
 from hands.voice.shortcut import KeyEvent, Move
@@ -79,8 +79,8 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
 
         yield buffers()
 
-    async def woken(heard: bytes, begun: bool) -> bool:
-        return heard == b"w"
+    async def woken(heard: bytes, begun: bool) -> Woken | None:
+        return Woken(SYSTEM.now(), over_hands=False, built_in=False) if heard == b"w" else None
 
     async def on_move(move: Made) -> None:
         made.append(move.move)
@@ -124,24 +124,29 @@ class FakeWord(WakeWord):
         self.resets += 1
 
 
-def test_the_detector_hears_the_room_while_hands_speaks_and_each_waking_says_whether_it_did() -> None:
+def test_the_detector_hears_the_room_while_hands_speaks_and_each_wake_says_whether_it_was_over_hands_on_the_macs_own_pair() -> None:
     word = FakeWord()
-    speaking = [True]
+    # Whether hands' voice may be in the second the turn would keep, and whether the desk is on the Mac's own pair.
+    now = [(True, False)]
     events: list[WideEvent] = []
-    woken = listening(SYSTEM, word, lambda: speaking[0], events.append)
+    woken = listening(SYSTEM, word, lambda: now[0][0], lambda: now[0][1], events.append)
 
-    async def heard() -> list[bool]:
-        with unit("desk", events.append, begun(SYSTEM), ("heard",)):
-            over = await woken(b"\x01\x02" * 160, False)
-            speaking[0] = False
-            return [over, await woken(b"\x01\x02" * 160, False)]
+    async def heard() -> list[tuple[bool, bool] | None]:
+        with unit("desk", events.append, begun(SYSTEM), ("wake_words",)):
+            echoes: list[tuple[bool, bool] | None] = []
+            for facts, audio in [((True, False), b"\x01\x02" * 160), ((False, True), b"\x01\x02" * 160), ((True, True), b"\x01\x02" * 160), ((True, True), bytes(320))]:
+                now[0] = facts
+                wake = await woken(audio, False)
+                echoes.append(None if wake is None else (wake.over_hands, wake.built_in))
+            return echoes
 
-    assert asyncio.run(heard()) == [True, True]
-    assert word.heard == [b"\x01\x02" * 160] * 2
-    assert word.resets == 2
-    assert [(event.event, event.facts.get("while_speaking")) for event in events] == [("desk.wake_word_heard", True), ("desk.wake_word_heard", False), ("desk", None)]
-    assert dict(events[2].counts) == {"heard": 2}
-    assert events[0].parent_id == events[2].span_id
+    # Each wake says what the two facts were as it was heard, for the desk to take it by; silence is no wake at all.
+    assert asyncio.run(heard()) == [(True, False), (False, True), (True, True), None]
+    assert word.resets == 3
+    hearings = [event for event in events if event.event == "desk.wake_word_heard"]
+    assert [(event.facts["over_hands"], event.facts["built_in"]) for event in hearings] == [(True, False), (False, True), (True, True)]
+    assert dict(events[-1].counts) == {"wake_words": 3}
+    assert {event.parent_id for event in hearings} == {events[-1].span_id}
 
 
 async def files_of(models: Path, word: Word) -> Files:
@@ -232,7 +237,7 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
         made.append(move.move)
 
     async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append, "desk.loaded") as ears, loaded(SYSTEM, SAMPLE_RATE, await files_of(models, Pretrained()), Pretrained(), events.append) as word:
-        driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
+        driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:
                 await asyncio.sleep(0.01)
