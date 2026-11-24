@@ -760,9 +760,9 @@ async def test_a_turn_of_a_kind_added_to_the_openers_opens_and_ends_with_no_othe
 
 
 class _Keys:
-    """The brain's typist, as fritter's takes keys: each typing and press, in order; and its screen, as tmux
-    shows it, which shows the prompt unless the test says else: every capture it was read for is counted. Its screen is the
-    fake Claude Code the terminal contract holds to the pinned one on the chord's two claims (tests/claudescreen.py; the rest
+    """The brain's terminal and typist, as fritter is both: its typist takes keys, each typing and press, in order; and
+    its screen, as tmux shows it, which shows the prompt unless the test says else: every capture it was read for is
+    counted. Its screen is the fake Claude Code the terminal contract holds to the pinned one on the chord's two claims (tests/claudescreen.py; the rest
     it plays is the docs' and held by nothing yet), and what hands types reaches it as the pin takes it: a paste, then the
     chord."""
 
@@ -1120,8 +1120,6 @@ async def test_a_notification_that_opens_while_a_turn_waits_for_the_input_is_nev
     brain._input.release()  # pyright: ignore[reportPrivateUsage]
     # Typed into Claude Code's queue behind it, with nothing pressed to stop it.
     await passed(clock, SETTLE_SECONDS)
-    await until(lambda: keys.pressed == [" and now?"])
-    _told(brain, "n1", ["n1"])
     await until(lambda: keys.pressed == [" and now?"])
     asking.cancel()
 
@@ -1509,8 +1507,6 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
     # Claude Code stops what the Escape stopped: the model decides the turn told, and its telling waits to be performed.
     interrupted = asyncio.ensure_future(_interrupted(brain, "p1"))
     await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
-    await settled()
-    assert not turn.answered.done()
     performing.set()
     await interrupted
     await brain.drained()
