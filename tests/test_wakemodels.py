@@ -35,16 +35,18 @@ def test_a_files_fields_are_the_roles_the_page_asks_the_models_by() -> None:
 async def test_a_pretrained_words_three_models_are_fetched_as_their_pins_say(tmp_path: Path) -> None:
     fetching = Fetching()
     models = WakeModels(tmp_path, VirtualClock(), fetching)
-    files = await models.ensured(Pretrained())
-    assert files == Files(tmp_path / MELSPECTROGRAM.name, tmp_path / EMBEDDING.name, tmp_path / JARVIS.name)
+    ensured = await models.ensured(Pretrained())
+    assert ensured.files == Files(tmp_path / MELSPECTROGRAM.name, tmp_path / EMBEDDING.name, tmp_path / JARVIS.name)
     assert [pin for _, pin in fetching.calls] == [MELSPECTROGRAM, EMBEDDING, JARVIS]
-    assert models.how == {MELSPECTROGRAM.name: "fetched", EMBEDDING.name: "fetched", JARVIS.name: "fetched"}
+    assert ensured.facts() == {"files": "melspectrogram.onnx, embedding_model.onnx, hey_jarvis_v0.1.onnx", "fetched": "melspectrogram.onnx, embedding_model.onnx, hey_jarvis_v0.1.onnx", "replaced": ""}
+    # The next ask is its own: it fetched nothing, and its facts say so.
+    assert (await models.ensured(Pretrained())).facts()["fetched"] == ""
 
 
 async def test_another_pretrained_word_is_its_own_file_and_no_other_words_model_is_fetched(tmp_path: Path) -> None:
     fetching = Fetching()
-    files = await WakeModels(tmp_path, VirtualClock(), fetching).ensured(Pretrained("Hey Mycroft"))
-    assert (files.word, [pin for _, pin in fetching.calls]) == (tmp_path / PRETRAINED["Hey Mycroft"].name, [MELSPECTROGRAM, EMBEDDING, PRETRAINED["Hey Mycroft"]])
+    ensured = await WakeModels(tmp_path, VirtualClock(), fetching).ensured(Pretrained("Hey Mycroft"))
+    assert (ensured.files.word, [pin for _, pin in fetching.calls]) == (tmp_path / PRETRAINED["Hey Mycroft"].name, [MELSPECTROGRAM, EMBEDDING, PRETRAINED["Hey Mycroft"]])
 
 
 async def test_a_word_the_user_trained_is_heard_with_their_file_where_they_keep_it_and_only_the_two_feature_models_are_fetched(tmp_path: Path) -> None:
@@ -52,8 +54,8 @@ async def test_a_word_the_user_trained_is_heard_with_their_file_where_they_keep_
     mine.parent.mkdir()
     mine.write_bytes(b"my model")
     fetching = Fetching()
-    files = await WakeModels(tmp_path / "models", VirtualClock(), fetching).ensured(Trained("Hey Hands", mine))
-    assert (files.word, [pin for _, pin in fetching.calls]) == (mine, [MELSPECTROGRAM, EMBEDDING])
+    ensured = await WakeModels(tmp_path / "models", VirtualClock(), fetching).ensured(Trained("Hey Hands", mine))
+    assert (ensured.files.word, [pin for _, pin in fetching.calls]) == (mine, [MELSPECTROGRAM, EMBEDDING])
 
 
 async def test_a_word_the_user_trained_whose_model_is_not_there_is_unserved_naming_it(tmp_path: Path) -> None:
@@ -81,5 +83,5 @@ async def test_asks_that_arrive_while_the_models_are_being_fetched_wait_for_that
     await asyncio.sleep(0)
     assert not second.done()
     fetching.release.set()
-    assert await first == await second
+    assert (await first).files == (await second).files
     assert [pin for _, pin in fetching.calls] == [MELSPECTROGRAM, EMBEDDING, JARVIS]

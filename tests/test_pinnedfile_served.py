@@ -3,6 +3,7 @@ tests/test_pinnedfile.py cannot show."""
 
 import asyncio
 import hashlib
+import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from http.client import IncompleteRead
@@ -78,6 +79,13 @@ async def test_a_fetch_that_never_finishes_is_given_up_on_whatever_the_server_ke
         try:
             with pytest.raises(Unserved, match=r"hands cannot get revision 1's model.bin: it took more than 0.3 s"):
                 await Release(tmp_path, SYSTEM).path(pin)
+            # Given up on, the fetch's own thread ends at the next bytes it reads, while the server is still sending: no fetch
+            # goes on after the ask that wanted it said it could not be had.
+            for _ in range(300):
+                if not any(thread.name == "fetching model.bin" for thread in threading.enumerate()):
+                    break
+                await asyncio.sleep(0.01)
+            assert [thread.name for thread in threading.enumerate() if thread.name == "fetching model.bin"] == []
         finally:
             stalled.set()
     assert list(tmp_path.iterdir()) == []

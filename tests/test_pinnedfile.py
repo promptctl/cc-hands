@@ -69,24 +69,24 @@ async def test_a_pins_file_is_fetched_as_the_pin_says_on_the_first_ask_and_held_
     fetching = Fetching()
     release = Release(tmp_path, VirtualClock(), fetching)
     first = await release.path(SECOND)
-    assert (first, fetching.calls) == (tmp_path / "second.bin", [(tmp_path, SECOND)])
-    assert await release.path(SECOND) == first
+    assert (first, fetching.calls) == (Kept(tmp_path / "second.bin", "fetched"), [(tmp_path, SECOND)])
+    # What this ask came by is this ask's own: the run held the file already, and fetched nothing for it.
+    assert await release.path(SECOND) == Kept(first.path, "held")
     assert len(fetching.calls) == 1
 
 
-async def test_ensured_fetches_each_pin_for_itself_and_how_says_how_each_came_to_be_there(tmp_path: Path) -> None:
+async def test_ensured_fetches_each_pin_for_itself(tmp_path: Path) -> None:
     fetching = Fetching()
-    release = Release(tmp_path, VirtualClock(), fetching)
-    await release.ensured([FIRST, SECOND])
-    assert (fetching.names, dict(release.how)) == (["first.bin", "second.bin"], {"first.bin": "fetched", "second.bin": "fetched"})
+    await Release(tmp_path, VirtualClock(), fetching).ensured([FIRST, SECOND])
+    assert fetching.names == ["first.bin", "second.bin"]
 
 
 async def test_a_held_file_that_has_gone_from_the_directory_is_fetched_again(tmp_path: Path) -> None:
     fetching = Fetching()
     release = Release(tmp_path, VirtualClock(), fetching)
-    path = await release.path(FIRST)
+    path = (await release.path(FIRST)).path
     path.unlink()
-    assert await release.path(FIRST) == path and path.is_file()
+    assert (await release.path(FIRST), path.is_file()) == (Kept(path, "fetched"), True)
     assert len(fetching.calls) == 2
 
 
@@ -105,7 +105,7 @@ async def test_a_fetch_that_fails_is_unserved_with_the_reason_and_the_next_ask_f
         await release.path(SECOND)
     assert (str(unserved.value).startswith("hands cannot get release 2's second.bin: "), str(failure) in str(unserved.value)) == (True, True)
     fetching.failure = None
-    assert await release.path(SECOND) == tmp_path / "second.bin"
+    assert (await release.path(SECOND)).path == tmp_path / "second.bin"
     assert len(fetching.calls) == 2
 
 
@@ -119,9 +119,10 @@ async def test_a_fetch_that_outlasts_its_deadline_is_unserved_naming_the_deadlin
     clock.advance(pinnedfile.FETCH_DEADLINE + 1)
     with pytest.raises(Unserved, match=f"hands cannot get release 2's first.bin: it took more than {pinnedfile.FETCH_DEADLINE} s"):
         await asking
-    # The lock is let go with the fetch, so an ask after it is not held behind it.
+    # The fetch is told to give up, and the lock is let go, so an ask after it is not held behind it.
+    assert fetching.stops[0].is_set()
     fetching.release.set()
-    assert await release.path(FIRST) == tmp_path / "first.bin"
+    assert (await release.path(FIRST)).path == tmp_path / "first.bin"
 
 
 async def test_a_directory_that_cannot_be_made_is_unserved_naming_why(tmp_path: Path) -> None:
@@ -149,5 +150,5 @@ async def test_asks_that_arrive_while_a_file_is_being_fetched_wait_for_that_fetc
     await asyncio.sleep(0)
     assert not any(ask.done() for ask in others)
     fetching.release.set()
-    assert set(await asyncio.gather(first, *others)) == {tmp_path / "first.bin"}
+    assert {kept.path for kept in await asyncio.gather(first, *others)} == {tmp_path / "first.bin"}
     assert len(fetching.calls) == 1

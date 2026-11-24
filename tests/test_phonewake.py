@@ -75,6 +75,9 @@ async def test_a_file_of_the_runtime_is_served_to_anyone_for_a_year_as_what_it_i
     assert (wasm.status, wasm.content_type, wasm.headers["Cache-Control"], await wasm.read()) == (200, "application/wasm", KEPT_A_YEAR, RUNTIME[WASM])
     # [LAW:nothing-unseen] each request says it made hands fetch the file.
     assert [(event.facts["file"], event.facts["source"]) for event in served.events("phone.wake.runtime")] == [(SCRIPT, "fetched"), (WASM, "fetched")]
+    # What a later request came by is its own: the run holds the file already.
+    await served.client.get(f"/ort/{ortweb.VERSION}/{SCRIPT}")
+    assert [event.facts["source"] for event in served.events("phone.wake.runtime")] == ["fetched", "fetched", "held"]
 
 
 @pytest.mark.parametrize("path", [f"/ort/1.0.0/{SCRIPT}", f"/ort/{ortweb.VERSION}/anything-else.js", f"/ort/{ortweb.VERSION}/..%2Fsecret", "/wake/models/passwd"])
@@ -112,8 +115,10 @@ async def test_the_settings_are_the_macs_word_and_threshold_the_second_kept_and_
         "runtime": f"/ort/{ortweb.VERSION}/{SCRIPT}",
         "models": {"melspectrogram": "/wake/models/melspectrogram", "embedding": "/wake/models/embedding", "word": "/wake/models/word"},
     }
-    # The models are held to their digests before the page is told where they are; the runtime is fetched when the page asks
-    # for it, which is the one ask that waits as long as the file takes.
+    # The models are held to their digests before the page is told where they are, and the unit says what it fetched for it; the
+    # runtime is fetched when the page asks for it, which is the one ask that waits as long as the file takes.
+    [event] = served.events("phone.wake.settings")
+    assert (event.facts["phrase"], event.facts["fetched"]) == ("Hey Jarvis", f"{MELSPECTROGRAM.name}, {EMBEDDING.name}, {JARVIS.name}")
     assert (served.runtime.names, served.models.names) == ([], [MELSPECTROGRAM.name, EMBEDDING.name, JARVIS.name])
 
 

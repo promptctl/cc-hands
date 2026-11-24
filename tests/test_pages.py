@@ -4,6 +4,7 @@ the route tests' fakes: a choice made on each page as a person makes it, and wha
 import base64
 import os
 import subprocess
+import threading
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -342,7 +343,7 @@ async def test_the_phone_hears_the_wake_word_where_the_mac_does_and_asks_nothing
     # Not in the sentence that names Jarvis in passing, but in the one that says the word: and where the Mac hears it, to
     # within what the phone's chunks and its own resampling move it by.
     assert len(before) / (RATE * 2) < heard["at"]
-    assert abs(heard["at"] - mac_hears_at(await WakeModels(models, SYSTEM).ensured(Pretrained()), before + said)) < 0.5
+    assert abs(heard["at"] - mac_hears_at((await WakeModels(models, SYSTEM).ensured(Pretrained())).files, before + said)) < 0.5
     # Everything the page and its worker loaded came from hands, the runtime and the models among it.
     origin = str(hands.server.make_url("/"))
     assert [url for url in asked_of if not url.startswith(origin)] == []
@@ -363,7 +364,7 @@ async def test_a_second_page_runs_the_runtime_from_the_browsers_copy(keeping_bro
 class Unreachable:
     """A fetch that cannot reach the release."""
 
-    async def __call__(self, directory: Path, pin: Pin) -> Kept:
+    async def __call__(self, directory: Path, pin: Pin, stop: threading.Event) -> Kept:
         raise OSError("the network is down")
 
 
@@ -373,7 +374,7 @@ class WithTwoWords:
     def __init__(self, models: Path) -> None:
         self._models = models
 
-    async def __call__(self, directory: Path, pin: Pin) -> Kept:
+    async def __call__(self, directory: Path, pin: Pin, stop: threading.Event) -> Kept:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / pin.name).write_bytes((TWO_WORDS if pin == PRETRAINED["Hey Jarvis"] else self._models / pin.name).read_bytes())
         return Kept(directory / pin.name, "fetched")

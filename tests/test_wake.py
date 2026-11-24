@@ -150,7 +150,7 @@ def test_the_detector_hears_the_room_while_hands_speaks_and_each_waking_says_whe
 
 async def files_of(models: Path, word: Word) -> Files:
     """The files `word` is heard with, from the models the run fetched."""
-    return await WakeModels(models, SYSTEM).ensured(word)
+    return (await WakeModels(models, SYSTEM).ensured(word)).files
 
 
 def said(asked: str) -> bytes:

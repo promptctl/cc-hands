@@ -49,12 +49,12 @@ def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Release, 
         async def serve(_request: web.Request) -> web.StreamResponse:
             with unit("phone.wake.runtime", record, begun(clock)):
                 try:
-                    path = await runtime.path(file.pin)
+                    kept = await runtime.path(file.pin)
                 except Unserved as error:
                     return unavailable(error)
                 # [LAW:nothing-unseen] a request that made hands fetch the file, or write over one with other bytes, says so.
-                annotate(file=file.pin.name, source=runtime.how[file.pin.name])
-                response = web.FileResponse(path, headers={"Cache-Control": KEPT_A_YEAR})
+                annotate(file=file.pin.name, source=kept.how)
+                response = web.FileResponse(kept.path, headers={"Cache-Control": KEPT_A_YEAR})
                 response.content_type = file.content_type
                 return response
 
@@ -63,9 +63,10 @@ def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Release, 
     @keyed(clock, "phone.wake.settings", record, key)
     async def settings(_request: web.Request) -> web.StreamResponse:
         try:
-            await models.ensured(word)
+            ensured = await models.ensured(word)
         except Unserved as error:
             return unavailable(error)
+        annotate(phrase=word.phrase, **ensured.facts())
         # No-store, as the models are: the phone runs the word the Mac names now, never the one a browser kept.
         return web.json_response(
             {
@@ -83,10 +84,11 @@ def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Release, 
         async def serve(_request: web.Request) -> web.StreamResponse:
             annotate(model=role)
             try:
-                files = await models.ensured(word)
+                ensured = await models.ensured(word)
             except Unserved as error:
                 return unavailable(error)
-            return web.FileResponse(files.by_role()[role], headers={"Cache-Control": "no-store"})
+            annotate(**ensured.facts())
+            return web.FileResponse(ensured.files.by_role()[role], headers={"Cache-Control": "no-store"})
 
         return web.get(f"{MODEL_PREFIX}{role}", serve)
 

@@ -51,30 +51,46 @@ class Files:
 ROLES = tuple(field.name for field in fields(Files))
 
 
+@dataclass(frozen=True)
+class Ensured:
+    """What an ask for a word's models got: the files, and how this ask came by each of openWakeWord's among them (a trained
+    word's is its owner's, so not one of those)."""
+
+    files: Files
+    how: Mapping[str, How]
+
+    def facts(self) -> dict[str, str]:
+        """What the unit of work that asked says of it: the files heard with, those it fetched, and those it wrote over."""
+        return {
+            "files": ", ".join(path.name for path in self.files.by_role().values()),
+            "fetched": ", ".join(name for name, how in self.how.items() if how == "fetched"),
+            "replaced": ", ".join(name for name, how in self.how.items() if how == "replaced"),
+        }
+
+
 class WakeModels:
     """The wake word's models in `directory`, fetched when they are first asked for."""
 
     def __init__(self, directory: Path, clock: Clock, fetch: Fetch = fetched_off_the_loop) -> None:
         self._release = Release(directory, clock, fetch)
 
-    @property
-    def how(self) -> Mapping[str, How]:
-        """How each of openWakeWord's files asked for so far came to be there: kept, fetched, or written over."""
-        return self._release.how
-
-    async def ensured(self, word: Word) -> Files:
+    async def ensured(self, word: Word) -> Ensured:
         """`word`'s three models, fetched if they are not there; raises Unserved naming why one cannot be had.
 
         A word the user trained is never fetched: its model is theirs, where they keep it.
         """
         melspectrogram = await self._release.path(MELSPECTROGRAM)
         embedding = await self._release.path(EMBEDDING)
+        kept = [(MELSPECTROGRAM, melspectrogram), (EMBEDDING, embedding)]
         match word:
             case Pretrained(phrase=phrase):
-                own = await self._release.path(PRETRAINED[phrase])
+                pin = PRETRAINED[phrase]
+                got = await self._release.path(pin)
+                kept.append((pin, got))
+                own_path = got.path
             case Trained(model=model):
-                own = model
+                own_path = model
         # [LAW:single-enforcer] the one judge of whether a model is there to be heard with, whoever's it is.
-        if not own.is_file():
-            raise Unserved(f"no wake word model at {own}")
-        return Files(melspectrogram, embedding, own)
+        if not own_path.is_file():
+            raise Unserved(f"no wake word model at {own_path}")
+        return Ensured(Files(melspectrogram.path, embedding.path, own_path), {pin.name: got.how for pin, got in kept})
