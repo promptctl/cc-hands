@@ -21,8 +21,7 @@ from hands.sessions.recall import Moment, Moments, recall
 from hands.sessions.registry import Performed
 from hands.sessions.wide import WideEvent
 from hands.voice.naming import judge
-from hands.voice.tool import tool
-from hands.voice.tools import audited
+from hands.voice.tool import audited, tool
 
 MORNING = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 BILLING = SessionId("6f1c2d3e-0000-4000-8000-000000000001")

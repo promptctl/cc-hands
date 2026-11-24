@@ -42,9 +42,10 @@ from hands.core.playback import (
 )
 from hands.sessions.audit import BargeIn, Entry
 from hands.sessions.wide import WideEvent
+from hands.voice.tool import audited
 from hands.voice.player import LineFrame, LineText, Player, Unsaid, line_frame, said
 from hands.voice.spoken import SpokenForm
-from hands.voice.tools import audited, playback_tools
+from hands.voice.braindoor import playback_tools
 from hands.voice.voices import SaidInTTS
 
 # What happens at the speaker, as the taps report it: a line handed to it (a sentence's text is a sentence of the brain's),

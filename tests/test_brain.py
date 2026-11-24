@@ -14,7 +14,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -60,14 +60,17 @@ from hands.sessions.typing import Typist
 from hands.sessions import wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
+from hands.voice.modelswitch import Switches
 from hands.voice.refocus import Refocus
 from hands.voice.summaries import SummaryStore
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
+from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, WideEvent, begun, here, root, unit, within
-from hands.voice.tool import Result, tool
-from hands.voice.tools import Called, audited
+from hands.voice.tool import After, Answer, Called, Result, Tool, result_of, tool
+from hands.voice.player import Player
+from hands.voice.braindoor import BrainDoor
 from hands.voice import voicechoice
 
 # [LAW:no-silent-failure] an error hands logs that a test does not take fails it (`errors`).
@@ -135,7 +138,7 @@ def test_a_body_that_is_no_request_hands_can_answer_is_refused_with_the_id_it_co
 @pytest.mark.outside
 async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_event() -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append)], recorded.append, CallSpans())
+    server = await serve_mcp(SYSTEM, [tool(echo)], recorded.append, CallSpans())
     try:
         status, opened = await rpc(server, {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "claude-code"}}})
         assert status == 200 and opened == {
@@ -174,10 +177,70 @@ async def test_a_client_is_agreed_its_protocol_version_only_where_the_server_spe
         await server.close()
 
 
+@dataclass
+class Gated:
+    """An effect that waits on `gate` to run, or fails with `refusal`: whether it ran."""
+
+    gate: asyncio.Event
+    refusal: str | None = None
+    ran: bool = False
+
+    async def __call__(self) -> None:
+        await self.gate.wait()
+        if self.refusal is not None:
+            raise Rejected(self.refusal)
+        self.ran = True
+
+
+def switching(effect: Gated) -> Tool[Answer]:
+    async def switch() -> Answer:
+        """Switch hands' own model."""
+        return After({"switching_to": "claude-opus-5-5"}, effect, "dropped")
+
+    return tool(switch)
+
+
+@pytest.mark.outside
+async def test_a_call_answered_with_an_effect_after_is_answered_before_the_effect_runs_and_the_effect_is_its_own_event_in_the_calls_trace(errors: list[str]) -> None:
+    """Keeping a model restarts hands, so the answer reaches the client first: the effect is held at a gate the test opens
+    only once the client holds the answer."""
+    recorded: list[Entry] = []
+    ended = asyncio.Event()
+
+    def record(entry: Entry) -> None:
+        recorded.append(entry)
+        if isinstance(entry, WideEvent) and entry.event == "tool.after":
+            ended.set()
+
+    for effect, outcome in ((Gated(asyncio.Event()), "ok"), (Gated(asyncio.Event(), "the file was saved by hand since"), "failed")):
+        ended.clear()
+        recorded.clear()
+        spans = CallSpans()
+        with unit("voice.turn", record, begun(SYSTEM)):
+            call = within(SYSTEM, here())
+        spans.opened("toolu_1", call)
+        server = await serve_mcp(SYSTEM, [switching(effect)], record, spans)
+        try:
+            # An effect run before the answer is written would hold the answer at the gate, and this would never return.
+            _, called = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "switch", "_meta": {TOOL_USE_ID: "toolu_1"}}})
+            assert called == {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": '{"switching_to": "claude-opus-5-5"}'}], "isError": False}}
+            assert not effect.ran and not ended.is_set()
+            effect.gate.set()
+            await ended.wait()
+        finally:
+            await server.close()
+        assert effect.ran is (effect.refusal is None)
+        [event] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "tool.after"]
+        failed = None if effect.refusal is None else f"switch failed once answered: Rejected: {effect.refusal}"
+        assert (event.outcome, event.facts, event.error) == (outcome, {"tool": "switch"}, failed)
+        assert (event.trace_id, event.parent_id) == (call.trace_id, call.span_id)
+    assert taken(errors) == ["switch failed once answered: Rejected: the file was saved by hand since"]
+
+
 @pytest.mark.outside
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error(errors: list[str]) -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append), audited(SYSTEM, tool(broken), recorded.append)], recorded.append, CallSpans())
+    server = await serve_mcp(SYSTEM, [tool(echo), tool(broken)], recorded.append, CallSpans())
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
         refusal = "echo was called with the wrong arguments: missing a required argument: 'text'"
@@ -230,7 +293,7 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
 async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_one_no_turn_is_running_is_a_root() -> None:
     recorded: list[Entry] = []
     spans = CallSpans()
-    server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append)], recorded.append, spans)
+    server = await serve_mcp(SYSTEM, [tool(echo)], recorded.append, spans)
     with unit("voice.turn", recorded.append, begun(SYSTEM)):
         call = within(SYSTEM, here())
     spans.opened("toolu_1", call)
@@ -249,7 +312,7 @@ async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_o
 @pytest.mark.outside
 async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append)], recorded.append, CallSpans())
+    server = await serve_mcp(SYSTEM, [tool(echo)], recorded.append, CallSpans())
     call ={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}}}
     try:
         async with aiohttp.ClientSession() as client:
@@ -1745,7 +1808,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
-    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
+    async with mind(SYSTEM, claude, [tool(echo)], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         # The brain is behind the proxy, so it is given its usage read off the wire.
@@ -1762,15 +1825,15 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         pass
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
     transcript(tmp_path / "brain", str(launched.facts["session"]))
-    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
+    async with mind(SYSTEM, claude, [tool(echo)], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
         # Its usage is heard under the session it resumed, not one begun for it.
         wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {}))
         # A request offering no tools at all is one without hands', and says so.
         assert taken(errors) == ["the brain's turn went to the model without hands' tools: it did not connect to hands' MCP server (())"]
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
         assert isinstance(minded.llm, BrainStage)
-        reported = await minded.llm._tools["mcp__hands__context_usage"].body()  # pyright: ignore[reportPrivateUsage]
-        assert reported["in_context_tokens"] == 8
+        reported = await minded.llm._tools["mcp__hands__context_usage"].tool.body()  # pyright: ignore[reportPrivateUsage]
+        assert result_of(reported)["in_context_tokens"] == 8
     [_, again] = events(recorded, "brain.launch")
     assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
 
@@ -1782,7 +1845,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     def minding(llm: ClaudeCodeBackend):
-        return mind(SYSTEM, VoiceConfig(llm=llm, voice=voicechoice.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention)
+        return mind(SYSTEM, VoiceConfig(llm=llm, voice=voicechoice.DEFAULT, personality="Dry and wry."), [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention)
 
     launched: list[Launch] = []
 
@@ -1807,7 +1870,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     # A PATH with no tmux: the pinned claude is the start's preflight's to refuse, before any launch (tests/test_preflight.py).
     with pytest.raises(CannotStart, match="^no tmux is on the PATH to run the brain in$"):
-        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_barged_in, Attention):
+        async with mind(SYSTEM, claude, [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_barged_in, Attention):
             pass
     # The launch that failed is one event, saying why; no brain ran, so there is no run.
     [launched] = events(recorded, "brain.launch")
@@ -1828,7 +1891,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):
-        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_barged_in, Attention):
+        async with mind(SYSTEM, claude, [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_barged_in, Attention):
             pass
     [launched] = events(recorded, "brain.launch")
     assert launched.outcome == "failed" and launched.error == f"Unstartable: {refused}"

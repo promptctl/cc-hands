@@ -31,7 +31,7 @@ file's for as long as that run runs, its restarts included.
 would be a flag is a variant with a real alternative, or it does not exist.
 """
 
-import asyncio
+import threading
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -172,19 +172,20 @@ class OwnModel:
         self._pin = pin
         self._environment = environment
         self._running = running
-        # [LAW:single-enforcer] the one lock over a switch of the model, taken by `hands.voice.modelswitch.switch_model`.
-        self.changing = asyncio.Lock()
 
     def running(self) -> str:
         """The model the run is on: the one --model named, or the file's as it started."""
         return self._running.config.llm.model
 
-    def weigh(self, model: str) -> Callable[[], None]:
-        """The edit that runs hands on `model`, written by calling it. Raises Rejected where the file could not take it, or
-        the start's preflight refuses: weighed here as `edited` weighs an edit by hand, so a choice a restart would
+    def weigh(self, model: str) -> "ModelChoice":
+        """`model` weighed, writing nothing: the choice `keep` writes. Raises Rejected where the file could not take it,
+        or the start's preflight refuses: weighed here as `edited` weighs an edit by hand, so a choice a restart would
         refuse is refused while the user is there to hear why. A login lost since the start is not weighed
         (promptctl-phone-app-9d9y.h4s): a choice made then is said, written, and its restart refused. Hashes a pinned
         claude this process has not hashed since it changed, so it is called off the loop."""
+        return self._edit(model)
+
+    def _edit(self, model: str) -> "ModelChoice":
         if self._running.model is not None:
             # [LAW:one-source-of-truth] the file's model is not the run's while --model outranks it, so an edit to it would
             # change nothing until hands is started without the flag.
@@ -210,7 +211,25 @@ class OwnModel:
             case Refused(refusals=refusals):
                 raise Rejected("; ".join(refusals))
             case Startable():
-                return partial(_keep, self._home, held, edited)
+                return ModelChoice(model, partial(_keep, self._home, held, edited))
+
+
+@dataclass(frozen=True)
+class ModelChoice:
+    """A model weighed for hands: its id, and the edit that keeps it, made to the file as it was when weighed. Holds
+    nothing until it is kept."""
+
+    to: str
+    write: Callable[[], None]
+
+    def keep(self) -> None:
+        """Run hands on it: its edit written, which restarts hands. Raises Rejected where the file has changed since it
+        was weighed, and OSError where it cannot be written. Called off the loop.
+
+        [LAW:no-ambient-temporal-coupling] kept only onto the file it was weighed on, so of two choices in flight the one
+        kept first is the one hands runs on, and the other is refused, never written over it.
+        """
+        self.write()
 
 
 def _with_model(held: bytes | None, model: str) -> bytes:
@@ -221,15 +240,22 @@ def _with_model(held: bytes | None, model: str) -> bytes:
     return tomlkit.dumps(document).encode()
 
 
+# [LAW:single-enforcer] held by every write of a config.toml, whichever choice makes it, so no two pass `_keep`'s check
+# before either writes. One for the process, as the file it guards is the process's, whichever object writes it.
+_WRITING = threading.Lock()
+
+
 def _keep(home: Home, held: bytes | None, edited: bytes) -> None:
-    # [LAW:one-source-of-truth] exception: a save by hand since the choice was weighed is not written over where it is
-    # seen here, but the file has no lock, so one landing between this read and the write below is, as is an edit made
-    # at the same moment by the gallery or a model switch (promptctl-phone-app-9d9y.r8p).
-    if _held(home) != held:
-        raise Rejected(f"{home.config} was saved after the choice was made, so the choice was not written over it")
-    # Through a link to the file, as dotfiles keep one, so the link stays and the file it names takes the edit.
-    target = home.config.resolve()
-    replace_whole(target, edited.decode(), 0o644 if held is None else target.stat().st_mode & 0o777)
+    # [LAW:one-source-of-truth] one writer at a time of every choice hands keeps, a model's or a sample line's: the file
+    # changed since the choice was weighed is another's, and is never written over. [LAW:one-source-of-truth] exception:
+    # an editor takes no lock of hands', so a save by hand landing between this read and the write below is
+    # (promptctl-phone-app-9d9y.r8p).
+    with _WRITING:
+        if _held(home) != held:
+            raise Rejected(f"{home.config} changed after the choice was made, by another choice kept first or a save by hand, so the choice was not written over it")
+        # Through a link to the file, as dotfiles keep one, so the link stays and the file it names takes the edit.
+        target = home.config.resolve()
+        replace_whole(target, edited.decode(), 0o644 if held is None else target.stat().st_mode & 0o777)
 
 
 def _held(home: Home) -> bytes | Unread | None:

@@ -9,7 +9,8 @@ from hands.core.session import SessionId
 from hands.core.wire import Compaction, Exchanged, Heard, Kind, MainTurn, MessageDelta, MessageStarted, Message, Reached, Sent, Written
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
-from hands.voice.tools import Called, audited, usage_tool
+from hands.voice.tools import usage_tool
+from hands.voice.tool import Called, audited
 
 BRAIN = SessionId("brain")
 
@@ -97,12 +98,12 @@ async def test_each_call_is_one_event_holding_what_it_reported() -> None:
     recorded: list[Entry] = []
     usage = Usage(lambda: BRAIN)
     context_usage = audited(SYSTEM, usage_tool(usage), recorded.append)
-    assert await context_usage.body() == {"error": "No reply of yours has been counted yet."}
+    assert await context_usage.body() == {"error": "No reply has been counted yet."}
     heard(usage, sent("a"), started("a", 2, cached=14800, created=98), delta("a", 40))
     reported = {"model": "claude-opus-5-5", "in_context_tokens": 14940, "spent": {"input_tokens": 14900, "output_tokens": 40, "replies": 1}}
     assert await context_usage.body() == reported
     events = [entry for entry in recorded if isinstance(entry, WideEvent)]
-    assert [cast(Called, event.facts["called"]).result for event in events] == [{"error": "No reply of yours has been counted yet."}, reported]
+    assert [cast(Called, event.facts["called"]).result for event in events] == [{"error": "No reply has been counted yet."}, reported]
 
 
 async def test_after_a_move_what_the_brain_spent_is_still_said_though_its_new_conversation_holds_nothing_yet() -> None:

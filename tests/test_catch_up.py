@@ -16,7 +16,8 @@ from hands.sessions.audit import Announced, AuditLog, Entry, Replied, Transcribe
 from hands.sessions.home import Home
 from hands.sessions.registry import Performed, Sessions
 from hands.sessions.wide import WideEvent
-from hands.voice.tools import Called, CATCH_UP_CLOSINGS, CATCH_UP_LEAST, audited, catch_up_tool
+from hands.voice.tools import CATCH_UP_CLOSINGS, CATCH_UP_LEAST, catch_up_tool
+from hands.voice.tool import Called, audited
 from conftest import new_sessions
 
 LEFT = datetime(2026, 10, 3, 14, 0, tzinfo=UTC)

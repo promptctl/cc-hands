@@ -21,7 +21,8 @@ from hands.sessions.payload import Rejected
 from hands.voice import voices
 from hands.voice import voicechoice
 from hands.voice.player import Player
-from hands.voice.tools import audited, voice_tools
+from hands.voice.tools import voice_tools
+from hands.voice.tool import audited
 from hands.voice.library import Library
 from hands.voice.voices import Voices, sample
 from hands.voice.voicechoice import DEFAULT, VOICES, Chosen, LibraryVoice, Saved, Voice, chosen, parse_voice

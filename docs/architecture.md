@@ -1612,8 +1612,8 @@ mid-draft" across a long conversation, and both failures are expensive. So both 
 in the daemon as typed state and the tools default to them.
 
 **Focus** is `SessionId | None`, or `Unreadable` when its file cannot be read, kept in the home's `focus` file (`hands.sessions.focus`)
-and read at each use. Every tool that acts on a session accepts the omission of its
-`session` argument as "the focus" (`defaulting_to_focus`), and a session it names wins
+and read at each use. In a voice turn, every tool that acts on a session accepts the omission of its
+`session` argument as "the focus" (`hands.voice.braindoor`), and a session it names wins
 over the focus. "Switch to cc-hands" is `focus_session`, with no confirmation. A
 session whose turn or question hands tells becomes the focus too, so the reply that
 follows reaches it (`hands.voice.refocus`). It moves as the model takes the telling,

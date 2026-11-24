@@ -10,31 +10,21 @@ from pathlib import Path
 
 import pytest
 
-from hands.brain import pinned
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
-from hands.spotify import Catalogue, Missing
-from hands.voice.library import Library
-from hands.voice.voices import Voices
-from hands.voice.voicechoice import DEFAULT
 from hands.sessions.audit import SEGMENT_GLOB, AuditLog, Transcribed, segment
 from hands.sessions.wide import annotate, begun, fail, root, unit
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import tail
 from hands.voice.intermediary_instruction import brain_instruction
-from hands.sessions.summaries import Summaries
-from hands.voice.summaries import SummaryStore
-from hands.voice.narrator import Recounts
+from hands.voice.modelswitch import Switches
 from hands.voice.player import Player
 from hands.voice.refocus import Refocus
-from hands.daemon.config import Config, OwnModel, SampleLines, Settings
-from hands.voice.ptt import PushToTalk
-from hands.voice.listening import Levels
-from hands.voice.wakeword import Pretrained
-from hands.voice.tools import intermediary_tools
+from hands.voice.braindoor import brain_door
 from conftest import new_sessions
+from served import every_act
 
 AUTH = {"id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34", "name": "cc-hands, auth refactor", "state": "idle", "mode": "manual mode"}
 FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "state": "working", "mode": "not reported yet"}
@@ -42,7 +32,8 @@ FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "stat
 
 def names(sessions: Sessions) -> list[str]:
     with tempfile.TemporaryDirectory() as home:
-        return [tool.name for tool in intermediary_tools(sessions, SummaryStore(Summaries(Path(home) / "summaries.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(sessions.clock, lambda _entry: None).switch, Levels("off"), lambda: None, Pretrained(), OwnModel(Home(Path(home)), pinned.PIN, {}, Settings(None, Config())), Voices(Home(Path(home)), Player(lambda _entry: None).lines, lambda _voice: None, Library(sessions.clock, lambda: []), DEFAULT, SampleLines(Home(Path(home)), Settings(None, Config()))), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": home}, lambda: None)]
+        turn = brain_door(sessions, Home(Path(home)), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), lambda: None, Switches(Player(lambda _entry: None)))
+        return [served.tool.name for served in turn.serve(every_act(sessions, Home(Path(home))))]
 
 
 def test_the_tail_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools_and_says_it_is_current() -> None:

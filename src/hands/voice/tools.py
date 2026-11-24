@@ -1,8 +1,8 @@
-"""The tools the brain can call.
+"""hands' own tools: the acts, the same to any caller.
 
 Each is a `hands.voice.tool.Tool`: a plain async body, called with the model's arguments and returning what the model
 is handed back. [LAW:decomposition] what each tool does knows nothing of who calls it: hands' MCP server is the adapter
-over the bodies.
+over the bodies, and what a call is to a voice turn is `hands.voice.braindoor`'s.
 """
 
 import asyncio
@@ -11,15 +11,15 @@ import json
 import re
 from datetime import timedelta
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, TypedDict
 
 from loguru import logger
 
 from hands.clock import Clock
-from hands.voice.modelswitch import BargedIn, OwnModel, switch_model
-from hands.voice.tool import Result, Tool, read_back, tool
+from hands.voice.modelswitch import OwnModel, chosen
+from hands.voice.tool import Answer, Result, Tool, read_back, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
@@ -39,36 +39,24 @@ from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Lit, LitFailed, Untracked
 from hands.sessions import catchup, closesession, startsession, tmux
 from hands.sessions.audit import Record
-from hands.sessions.wide import annotate, begun, fail, unit
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions import attention as settings
-from hands.core import playback, status
-from hands.core.playback import as_told
+from hands.core import status
 from hands.core.place import Modality
 from hands.voice.listening import Level, Listening
 from hands.voice.trigger import PhoneLevel, described, described_at_phone
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
-from hands.voice.player import Player
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
-from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import Voices
 from hands.voice.voicechoice import VOICES, parse_voice, spoken
 from hands import spotify
-
-@dataclass(frozen=True)
-class Called:
-    """What the model gave a tool, and the result it was handed back: None while the body runs, and for a body that raised."""
-
-    arguments: Mapping[str, object]
-    result: Result | None
-
 
 # How much of a session one reading hands over. A session that has run for an hour has hundreds of steps, and
 # all of them at once is a context spent on history; the rest are read on from `more_since`, in order.
@@ -88,175 +76,47 @@ _APPROVALS: Mapping[str, ModeAfterPlan] = {"approve": "resume", "auto-accept edi
 _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 
-def audited(clock: Clock, tool: Tool, record: Record) -> Tool:
-    """The tool, each call one wide event: the tool's name, what it was given, and what the model was handed back, ending
-    failed where the body raised or the result refuses the call."""
+def acts(
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: OwnModel, voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str],
+    record: Record,
+) -> list[Tool[Answer]]:
+    """hands' own tools, in the order its schema lists them, each the act alone: [LAW:types-are-the-program] built with
+    no player, no refocus and no cue, so none can speak a voice turn's line, wait on a heard line, or move the focus. A
+    room act still sounds in the room, for any caller: hear_voices says voices, use_voice changes the voice hands speaks
+    in, and Spotify plays. Every tool reads time on `sessions.clock`, the run's one clock. `environment` is the run's,
+    which says where tmux keeps its sockets and where tmux is.
 
-    # [LAW:single-enforcer] one unit on every body, whichever adapter calls it, so no call goes unseen [LAW:nothing-unseen].
-    @functools.wraps(tool.body)
-    async def call(**arguments: object) -> Result:
-        with unit("tool.run", record, begun(clock)):
-            annotate(tool=tool.name, called=Called(arguments, None))
-            result = await tool.body(**arguments)
-            annotate(called=Called(arguments, result))
-            match result:
-                case {"error": refused}:
-                    fail(str(refused))
-                case _:
-                    pass
-            return result
-
-    return replace(tool, body=call)
-
-
-def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
-    """The tool, saying by `acting` that hands is acting each time the model calls it, before its body runs."""
-
-    @functools.wraps(tool.body)
-    async def call(**arguments: object) -> Result:
-        acting()
-        return await tool.body(**arguments)
-
-    return replace(tool, body=call)
-
-
-def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
-) -> list[Tool]:
-    """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
-    but staying silent, whose call is the choice not to act. Every tool reads time on `sessions.clock`, the run's one clock.
-    `environment` is the run's, which says where tmux keeps its sockets and where tmux is.
-
-    [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
-    tool added here is one the eval's model is offered too.
+    [LAW:one-source-of-truth] the daemon serves the brain these through its `BrainDoor`, and the intermediary's eval
+    (tests/test_intermediary.py) judges the prompt against them served the same way, so a tool added here is one the
+    eval's model is offered too.
     """
     overlays = Overlays(home)
-    # Every tool that acts on one session, each taking the focus for the session the user did not name.
-    on_a_session = [
+    return [
+        list_sessions_tool(sessions, overlays, home, environment),
         *session_tools(sessions, store),
-        tell_turn_tool(sessions, recounts, refocus),
+        tell_turn_tool(sessions, recounts),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store, Lit(sessions.children, environment)),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
         read_screen_tool(sessions, environment),
         set_overlay_tool(sessions, overlays),
-    ]
-    acts = [
-        list_sessions_tool(sessions, overlays, home, environment),
-        focus_session_tool(sessions, home),
-        *(defaulting_to_focus(tool, home) for tool in on_a_session),
         *permission_tools(sessions),
         catch_up_tool(sessions, home),
         attention_tool(home),
         modality_tool(switch),
         *listening_tools(levels, at_phone, wake),
         *voice_tools(voices),
-        *model_tools(own, player),
-        *playback_tools(player),
+        *model_tools(own),
         *spotify_tools(spotify.Player(functools.partial(spotify.osascript, sessions.children)), catalogue),
+        # A session is started by the daemon, in the environment hands was started in, which is the user's, and is started
+        # once the registry holds it, so the brain can stage for it at once; it is closed once the registry no longer does.
+        start_session_tool(sessions.clock, home, record, environment, sessions.live_members),
+        close_session_tool(home, record, sessions),
     ]
-    return [*(cued(tool, acting) for tool in acts), stay_silent_tool()]
 
 
-def playback_tools(player: Player) -> list[Tool]:
-    """Going back over what was said: hands says it again from where the speaker was, never the model from memory.
-
-    [LAW:nothing-unseen] each call's result is what hands said for it and how many cut-off readings still wait, so its
-    event holds what was heard and where it left playback.
-    """
-
-    async def resume() -> Result:
-        """Go back to what you were saying when the user cut in, and say it from where it stopped.
-
-        Hands says it, exactly as it was said, from the start of the sentence that was cut off. Calling it is the whole
-        reply: add no words of your own, and never retell what you remember saying.
-        """
-        return {"said": as_told(await player.act(playback.resume)), "waiting": player.waiting}
-
-    async def skip() -> Result:
-        """Skip the sentence the user cut in on, and go on with what you were saying from the one after it.
-
-        Hands says the rest. Calling it is the whole reply: add no words of your own.
-        """
-        return {"said": as_told(await player.act(playback.skip)), "waiting": player.waiting}
-
-    async def repeat() -> Result:
-        """Say again the last thing you said, whole, exactly as it was said.
-
-        Hands says it. Calling it is the whole reply: add no words of your own, and never say it again yourself.
-        """
-        return {"said": as_told(await player.act(playback.repeat)), "waiting": player.waiting}
-
-    return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
-
-
-def stay_silent_tool() -> Tool:
-    async def stay_silent() -> Result:
-        """End your turn with nothing said, because what was just heard was not said to you.
-
-        In a turn the user asked and did not speak over, if you acted and they have heard nothing since, hands refuses the
-        silence once, and you say what you did.
-        """
-        # [LAW:no-silent-failure] the choice not to answer is still a tool's event in the audit log, and with the model
-        # not run on the result, nothing follows it to the speaker.
-        return {"silent": True}
-
-    # [LAW:types-are-the-program] the one whole reply nothing is said for: the stage refuses it to a turn that acted.
-    return tool(stay_silent, then="nothing")
-
-
-def defaulting_to_focus(tool: Tool, home: Home) -> Tool:
-    """The tool, its session argument made optional: a call that names no session acts on the focused one."""
-    # [LAW:single-enforcer] the one place a session left unnamed becomes the focus, for every tool that acts on one, so
-    # what "the focus" means is said once and the model never has to remember which session that is.
-    if "session" not in tool.required:
-        raise TypeError(f"the tool {tool.name} takes no session the focus could stand in for")
-    line = tool.properties["session"]
-
-    async def call(session: object = "", **arguments: object) -> Result:
-        if not _unnamed(session):
-            return await tool.body(session=session, **arguments)
-        match await asyncio.to_thread(focused, home):
-            case None:
-                return {"error": "no session was named and none is focused: ask the user which session they mean"}
-            case Unreadable(reason):
-                return {"error": f"no session was named, and which one is focused cannot be read: {reason}"}
-            case focus:
-                # [LAW:nothing-unseen] the session the focus stood in for rides on the result, so its event says where the call went.
-                return {**await tool.body(session=focus, **arguments), "focused_session": focus}
-
-    return replace(
-        tool,
-        properties={**tool.properties, "session": {**line, "description": f"{line['description']} Empty for the focused session."}},
-        required=tuple(name for name in tool.required if name != "session"),
-        body=call,
-    )
-
-
-def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
-    async def focus_session(session: str) -> Result:
-        """Make a session the one the user is talking to: what they say for a session without naming one goes to it.
-
-        Call this when the user says to focus a session, switch or move to one, or work in one, such as "switch to
-        cc-hands" or "focus the laws session". Do not ask them to confirm it. It holds from the next thing they say, and
-        across restarts, until they move it; a session they name still gets what they say to it, focused or not. Say
-        the returned readback.
-
-        Args:
-            session: The session's id, from list_sessions. Empty to focus none, when the user says to stop working in one.
-        """
-        try:
-            to = None if session == "" else SessionId(session)
-            await move_focus(sessions, home, to)
-        except (Rejected, NotRunning, OSError) as error:
-            return {"error": str(error)}
-        return {"readback": "No session is focused now." if to is None else f"Now on {spoken_name(sessions, to)}."}
-
-    return tool(focus_session)
-
-
-def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool:
+def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool[Result]:
     async def list_sessions() -> Result:
         """List the running Claude Code sessions by name, what each is doing, and the permission mode each is in.
 
@@ -284,7 +144,7 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
 
 
 
-def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool:
+def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool[Result]:
     async def read_screen(session: str) -> Result:
         """What a session's terminal shows now, as text, read off the tmux pane it runs in.
 
@@ -358,14 +218,14 @@ TURN_SUMMARY_BUDGET = Budget(opening=400, said=250, input=100, result=120, steps
 TURNS_PAGE = 40
 
 
-def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
+def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]:
     """read_session, read_turn: what a session has done, a summary per finished turn first and one turn's steps on request."""
 
     async def read_session(session: str, before: int = 0) -> Result:
         """What a session has done, one turn at a time, in order: a summary for each turn it has finished, and the request of the one it is on.
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
-        running before you attached. Answer from the summaries; call read_turn to hear more of one turn, or of the
+        running before hands attached. Answer from the summaries; call read_turn to hear more of one turn, or of the
         one it is on. A finished turn with no summary yet has only what opened it (a request, or a command the user ran), and its summary is being written.
         When `working` comes back true the session is still on its last turn. You are given its newest turns; when
         `earlier` is above zero there are that many before them, and calling again with `before` set to the first
@@ -514,7 +374,7 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     return happenings[:end]
 
 
-def backlog_tools(sessions: Sessions, store: SummaryStore, lit: Lit) -> list[Tool]:
+def backlog_tools(sessions: Sessions, store: SummaryStore, lit: Lit) -> list[Tool[Result]]:
     """read_backlog, read_ticket: a session's project backlog, a summary per ticket first and the ticket's own words on request."""
 
     async def read_backlog(session: str) -> Result:
@@ -678,14 +538,13 @@ def _waiting_on(on: Blocker) -> str:
             return "waiting for the user to approve its plan"
 
 
-def tell_turn_tool(sessions: Sessions, recounts: Recounts, refocus: Refocus) -> Tool:
+def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool[Result]:
     async def tell_turn(session: str) -> Result:
         """What a session's last finished turn did, as hands tells a turn when it finishes, and how it stands now.
 
         Call this when the user asks what a session just did or how its last turn went. Tell them as the returned turn
         says to. `now` is how the session stands at this moment, as list_sessions says it: a question the turn ended
         on may have been answered at the keyboard since, and a session working again is no longer waiting on it.
-        The session told becomes the focus, as a session whose turn hands tells as it finishes does.
 
         Args:
             session: The session's id, from list_sessions.
@@ -705,20 +564,16 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts, refocus: Refocus) -> 
             case Recount(tellings=tellings, unread=unread):
                 failed = (f"[hands] hands could not read {'the rest of ' if tellings else ''}the turn the Claude Code session {name} finished. Tell the user so.",)
                 turn = "\n\n".join((*(told(id, name, (telling,), "full") for telling in tellings), *(failed if unread else ())))
-        # Told as a turn that finishes is told, so the focus moves to it as it does then, recorded as that move is.
-        await refocus(id)
         return {"turn": turn, "now": now}
 
     return tool(tell_turn)
 
 
-def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
+def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool[Result]:
     async def expand(session: str, part: str = "") -> Result:
         """More of the last turn a session finished: with no part, the parts it opens into, such as the change, the
         tests, or the commit, each in a line; with a part, that part's records, at more length each time it is asked for.
 
-        Tell it in your own words, in spoken form. There is no word-for-word reading: say what code does and what a
-        command found, and never read out code, output, paths, or hashes as written, however much the user asks for.
         When `deeper` comes back false, asking for that part again tells no more.
 
         Args:
@@ -766,7 +621,7 @@ def _shown(value: object) -> object:
             return value
 
 
-def catch_up_tool(sessions: Sessions, home: Home) -> Tool:
+def catch_up_tool(sessions: Sessions, home: Home) -> Tool[Result]:
     async def catch_up(minutes: int = 0) -> Result:
         """What the user missed: every session that finished work while they were away and the newest words each closed
         a turn with, the sessions that ended, what their hooks said happened, and what hands announced.
@@ -780,7 +635,7 @@ def catch_up_tool(sessions: Sessions, home: Home) -> Tool:
         ConfigChanged, its settings or skills changing; Compacting; Cleared, a /clear.
 
         Args:
-            minutes: How far back to look, when the user says, such as 60 for "the last hour". 0 for since they last spoke to you before this.
+            minutes: How far back to look, when the user says, such as 60 for "the last hour". 0 for since the user last spoke to hands before this.
         """
         if minutes < 0:
             return {"error": f"minutes is how far back to look, so it cannot be {minutes}"}
@@ -816,9 +671,9 @@ class Change(TypedDict):
     level: Literal["off", "brief", "full", "on"]
 
 
-def attention_tool(home: Home) -> Tool:
+def attention_tool(home: Home) -> Tool[Result]:
     async def attention(changes: list[Change]) -> Result:
-        """Change what you say to the user without being asked, or hear what is set: with no changes, it only says.
+        """Change what hands says to the user without being asked, or hear what is set: with no changes, it only says.
 
         Kinds, and their levels:
         - finished: each turn a session finishes. off holds it until they ask (tell_turn, catch_up), except a watched
@@ -837,9 +692,8 @@ def attention_tool(home: Home) -> Tool:
         Call this as soon as the user says what they want to hear more or less of, mapping their words to the nearest
         kind and level yourself, several changes at once if they said several; never ask which they meant. "Stop telling
         me when sessions finish" is finished off; "just the headlines" is finished brief; "less detail while it works" is
-        progress brief. Call it with no changes when they ask what you tell them. It lasts until they change it, across
-        restarts, from the next thing you would say. Say the returned readback to the user; for quiet on, say in a few words
-        that you will keep quiet, never nothing, so they know it took.
+        progress brief. Call it with no changes when they ask what hands tells them. It lasts until they change it,
+        across restarts, from the next thing hands would say. Say the returned readback to the user.
 
         Args:
             changes: each kind to set and its level, in the order said; none to hear what is set.
@@ -854,13 +708,13 @@ def attention_tool(home: Home) -> Tool:
     return tool(attention)
 
 
-def modality_tool(switch: Callable[[Modality], None]) -> Tool:
+def modality_tool(switch: Callable[[Modality], None]) -> Tool[Result]:
     async def set_modality(modality: Modality) -> Result:
         """Take the user as able to see a screen, or as audio-only, from now on.
 
         Each of their turns says which they are: talking at the Mac starts as screen, and from the phone as audio-only.
         This switches it until hands next moves between the Mac and the phone, as a call comes or goes. It is a hint for choosing what to do, never a limit on what
-        you can do. Call this when the user asks to go audio-only, or back to a screen. Say the returned readback.
+        hands can do. Call this when the user asks to go audio-only, or back to a screen. Say the returned readback.
 
         Args:
             modality: screen, or audio-only.
@@ -879,7 +733,7 @@ def _modality_readback(modality: Modality) -> str:
             return "Okay, audio only."
 
 
-def listening_tools(levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word) -> list[Tool]:
+def listening_tools(levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word) -> list[Tool[Result]]:
     """How the place hands is at listens between the user's turns. At the Mac: saying the level the desk is at, and
     choosing another while hands runs, as a triple tap does; `wake` is the wake word. At the phone, `at_phone` says the
     phone's level, which only the page's own button sets, so choosing says so and changes neither level."""
@@ -921,7 +775,7 @@ def listening_tools(levels: Listening, at_phone: Callable[[], PhoneLevel | None]
     return [tool(listening_level), tool(set_listening_level)]
 
 
-def voice_tools(voices: Voices) -> list[Tool]:
+def voice_tools(voices: Voices) -> list[Tool[Result]]:
     """Choosing the voice hands speaks in, by ear: the user hears the voices said by hands, and keeps one.
 
     [LAW:nothing-unseen] each result names the voice hands speaks in after the call, and a hearing the voices it said,
@@ -931,7 +785,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
     async def voices_on_offer() -> Result:
         """The voices hands can speak in, and the one it speaks in now.
 
-        Call this when the user asks what voice you speak in, or which voices there are. Say a voice's name as a person
+        Call this when the user asks what voice hands speaks in, or which voices there are. Say a voice's name as a person
         would: bill_boerst is Bill Boerst. Voices in Kyutai's voice library are not listed here; find_voices searches them.
         """
         return {"speaking_in": str(voices.speaking_in()), "voices": VOICES}
@@ -941,10 +795,8 @@ def voice_tools(voices: Voices) -> list[Tool]:
         they set none, its own name, then speaks on in the voice it was using.
 
         Call this when the user wants to hear what voices sound like: a few at a time, at most five unless they ask for
-        more, since each takes a few seconds. Say nothing before calling it. What you say after it is heard after the
-        last voice, so keep it to a few words asking which they would like. Hearing a voice does not choose it;
-        use_voice does. To hear voices again, after a barge-in too, call this again: going back or repeating says the
-        words again in the voice you speak in, not in theirs.
+        more, since each takes a few seconds. Hearing a voice does not choose it; use_voice does. To hear voices again,
+        call this again.
 
         Args:
             names: the voices to hear, as voices_on_offer lists them.
@@ -956,9 +808,9 @@ def voice_tools(voices: Voices) -> list[Tool]:
             return {"error": str(error)}
 
     async def use_voice(name: str) -> Result:
-        """Speak in this voice from now on. It lasts until the user chooses another, across restarts.
+        """Hands speaks in this voice from now on. It lasts until the user chooses another, across restarts.
 
-        Call this when the user picks a voice. What you say next is in it, so say the returned readback.
+        Call this when the user picks a voice. Say the returned readback.
 
         Args:
             name: the voice, as voices_on_offer lists it.
@@ -990,7 +842,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
     return [tool(voices_on_offer), tool(hear_voices), tool(use_voice), tool(find_voices)]
 
 
-def model_tools(own: OwnModel, player: Player) -> list[Tool]:
+def model_tools(own: OwnModel) -> list[Tool[Answer]]:
     """Choosing the model hands runs on, which is a setting of hands' own and never a session's.
 
     [LAW:nothing-unseen] each result names the model hands runs on and, for a choice, the one it switches to, so the
@@ -998,45 +850,38 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
     """
 
     async def model_in_use() -> Result:
-        """The model you, hands, run on now. Call this when the user asks what model you run on."""
+        """The model hands runs on now. Call this when the user asks what model hands runs on."""
         return {"running_on": own.running()}
 
-    async def use_model(model: str) -> Result:
-        """Run you, hands, on another model: hands restarts on it, back in a few seconds, and stays on it across restarts.
+    async def use_model(model: str) -> Answer:
+        """Run hands on another model: hands restarts on it, back in a few seconds, and stays on it across restarts.
 
-        Call this when the user asks to change your own model. It never touches a session; a session's model is changed
-        by send_command running model in it. Hands says it is switching, and switches once the user has heard that:
-        calling it is the whole reply, so add no words of your own.
+        Call this when the user asks to change hands' own model. It never touches a session; a session's model is changed
+        by send_command running model in it.
 
         Args:
             model: the model's id, such as claude-opus-5-5.
         """
         try:
-            return await switch_model(own, player, model)
-        except BargedIn as error:
-            # The brain is told to ask again; the page shows the same refusal without this instruction.
-            return {"error": f"{error} Ask whether they still want it."}
+            return (await chosen(own, model)).answer
         except (Rejected, OSError) as error:
             return {"error": str(error)}
 
-    # A barge-in over the line is what `heard` reports, and the model is told the switch did not happen.
-    return [tool(model_in_use), tool(use_model, then="silence")]
+    return [tool(model_in_use), tool(use_model)]
 
 
-def usage_tool(usage: Usage) -> Tool:
+def usage_tool(usage: Usage) -> Tool[Result]:
     """[LAW:nothing-unseen] the result is the reading, so the call's event holds it."""
 
     async def context_usage() -> Result:
-        """How many tokens your main conversation holds now, and how many you have spent since hands started, as the API
-        counted them on your replies.
+        """How many tokens hands' main conversation holds now, and how many hands has spent since it started, as the API
+        counted them on its replies.
 
-        Call this when the user asks how much context or how many tokens you have used, or when you need to know how full
-        your context is. These are the real figures; a token total in your system reminders is not your usage. A subagent
-        you start has its own context, which this does not measure.
+        Call this when the user asks how much context or how many tokens hands has used. These are the real figures.
         """
         reading = usage.reading()
         if reading.spent.replies == 0:
-            return {"error": "No reply of yours has been counted yet."}
+            return {"error": "No reply has been counted yet."}
         # A conversation the brain has moved to and had no reply in yet holds nothing counted: its model and size are null.
         held = reading.in_context
         return {
@@ -1048,7 +893,7 @@ def usage_tool(usage: Usage) -> Tool:
     return tool(context_usage)
 
 
-def spotify_tools(player: spotify.Player, catalogue: spotify.Catalogue) -> list[Tool]:
+def spotify_tools(player: spotify.Player, catalogue: spotify.Catalogue) -> list[Tool[Result]]:
     """Spotify on this Mac: what it plays, played, paused, skipped, and set, and its catalogue searched for what to play.
 
     [LAW:nothing-unseen] each result is what Spotify said or did, or why it would not, so the call's event holds it.
@@ -1154,7 +999,7 @@ async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind
     return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
-def start_session_tool(clock: Clock, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool:
+def start_session_tool(clock: Clock, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool[Result]:
     """[LAW:nothing-unseen] each start is its own session.start event, inside the call's."""
 
     async def start_session(folder: str, model: str = "") -> Result:
@@ -1175,7 +1020,7 @@ def start_session_tool(clock: Clock, home: Home, record: Record, environment: Ma
     return tool(start_session)
 
 
-def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
+def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool[Result]:
     """[LAW:nothing-unseen] each close is its own session.close event, inside the call's."""
 
     async def closed(id: SessionId, asked: closesession.Asked) -> Result:
@@ -1207,7 +1052,7 @@ def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
     return tool(close_session)
 
 
-def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
+def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool[Result]:
     async def set_overlay(session: str, overlay: Overlay) -> Result:
         """Set how the user hears a session's finished turns: watched, normal, or muted.
 
@@ -1261,7 +1106,7 @@ class Resolved(TypedDict):
     meant: str
 
 
-def draft_tools(sessions: Sessions) -> list[Tool]:
+def draft_tools(sessions: Sessions) -> list[Tool[Result]]:
     """stage_draft, amend_draft, discard_draft, send_draft: a prompt dictated for a session, read back until it is right, then sent."""
 
     def aloud(outcome: DraftOutcome, name: str) -> Result:
@@ -1279,8 +1124,6 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
     async def stage_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Stage a prompt the user dictated for a session. It is not sent until the user says to send it.
 
-        Hands reads the draft back to the user as it will be typed. Calling it is the whole reply: add no words of your own.
-
         Args:
             session: The session's id, from list_sessions.
             text: The prompt.
@@ -1290,9 +1133,6 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
 
     async def amend_draft(session: str, text: str, resolutions: list[Resolved]) -> Result:
         """Replace a session's staged draft with a corrected one when the user changes it.
-
-        Hands reads the new draft back as it will be typed, or, when it is long, the sentences that changed as they now
-        read. Calling it is the whole reply: add no words of your own.
 
         Args:
             session: The session's id, from list_sessions.
@@ -1319,12 +1159,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _answer(sessions, session, SendDraft, sessions.draft, _for_the_model(readback))
 
-    return [
-        tool(stage_draft, then="silence"),
-        tool(amend_draft, then="silence"),
-        tool(discard_draft),
-        tool(send_draft),
-    ]
+    return [tool(stage_draft), tool(amend_draft), tool(discard_draft), tool(send_draft)]
 
 
 def _for_the_model[O](say: Callable[[O, str], str]) -> Callable[[O, str], Result]:
@@ -1348,7 +1183,7 @@ async def _answer[R, O](
     return say(outcome, spoken_name(sessions, id))
 
 
-def keyboard_tools(sessions: Sessions) -> list[Tool]:
+def keyboard_tools(sessions: Sessions) -> list[Tool[Result]]:
     """send_command, interrupt_session: what the user would otherwise do at a session's keyboard besides send it a prompt."""
 
     async def send_command(session: str, command: str, args: str = "") -> Result:
@@ -1378,7 +1213,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
     return [tool(body) for body in (send_command, interrupt_session)]
 
 
-def permission_tools(sessions: Sessions) -> list[Tool]:
+def permission_tools(sessions: Sessions) -> list[Tool[Result]]:
     """answer_permission, answer_question, answer_plan: the only ways a voice answer reaches a session waiting on its dialog."""
 
     async def answer_permission(request: str, decision: str, message: str = "") -> Result:
@@ -1463,11 +1298,6 @@ def _request_id(request: str) -> RequestId:
     if not request:
         raise Rejected(f"request should be the request id string, got {request!r}")
     return RequestId(request)
-
-
-def _unnamed(session: object) -> bool:
-    """Whether the model named no session: empty, or null, which some models send for an argument left empty."""
-    return session in ("", None)
 
 
 def parse_draft(text: str, resolutions: list[Resolved]) -> Staged:

@@ -1,8 +1,10 @@
 """hands' own model: chosen by voice as an edit to config.toml, made only once the user has heard hands say it is switching."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+import threading
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -12,7 +14,7 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.frames.frames import Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import laid_out, Running, running
+from conftest import laid_out, new_sessions, Running, running
 from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.daemon import config
@@ -21,10 +23,14 @@ from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.playback import hands_says
+from hands.voice.modelswitch import Switches
 from hands.voice.player import Marker, Markers, Player
-from hands.voice.tool import Tool, silent
+from hands.voice.tool import After, Answer, Called, Effect, Tool, audited, result_of
 from hands.sessions.wide import WideEvent
-from hands.voice.tools import Called, audited, model_tools
+from hands.voice.tools import model_tools
+from hands.voice.braindoor import Voiced, silent, brain_door
+from hands.voice.refocus import Refocus
+from served import voiced
 from test_playback import Heard
 
 SPOKEN_FILE = """# hands, by hand
@@ -50,14 +56,14 @@ def _own(home: Home) -> config.OwnModel:
 def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    _own(home).weigh("claude-opus-5-5")()
+    _own(home).weigh("claude-opus-5-5").keep()
     assert home.config.read_text() == SPOKEN_FILE.replace('model = "claude-sonnet-5-5"', 'model = "claude-opus-5-5"')
     assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
 
 
 def test_a_model_chosen_with_no_file_is_the_default_backend_on_that_model(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    _own(home).weigh(" claude-opus-5-5 ")()
+    _own(home).weigh(" claude-opus-5-5 ").keep()
     assert home.config.read_text() == '[llm]\nmodel = "claude-opus-5-5"\n'
     assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"))
 
@@ -118,11 +124,82 @@ def test_a_model_chosen_on_a_file_that_is_not_toml_is_refused_naming_the_file(tm
 def test_a_save_by_hand_after_the_choice_was_weighed_is_not_written_over(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    keep = _own(home).weigh("claude-opus-5-5")
+    choice = _own(home).weigh(" claude-opus-5-5 ")
+    assert choice.to == "claude-opus-5-5"
     home.config.write_text(SPOKEN_FILE + "# saved by hand\n")
-    with pytest.raises(Rejected, match="saved after the choice was made"):
-        keep()
+    with pytest.raises(Rejected, match="changed after the choice was made, by another choice kept first or a save by hand"):
+        choice.keep()
     assert home.config.read_text() == SPOKEN_FILE + "# saved by hand\n"
+
+
+def test_of_two_choices_in_flight_the_one_kept_first_is_kept_and_the_other_refused(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    home.config.write_text(SPOKEN_FILE)
+    own = _own(home)
+    # Both weighed before either is kept, as two switches heard at once are.
+    opus, haiku = own.weigh("claude-opus-5-5"), own.weigh("claude-haiku-4-5-20251001")
+    opus.keep()
+    with pytest.raises(Rejected, match="by another choice kept first"):
+        haiku.keep()
+    assert home.config.read_text() == SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-5-5")
+
+
+class Watched:
+    """The lock every write of config.toml holds, counting each writer that comes to it."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.come = threading.Semaphore(0)
+
+    def __enter__(self) -> None:
+        self.come.release()
+        self.lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self.lock.release()
+
+
+def test_a_model_kept_while_a_sample_line_is_written_waits_for_the_write_and_is_refused_on_the_file_it_left(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(tmp_path)
+    home.config.write_text(SPOKEN_FILE)
+    choice = _own(home).weigh("claude-opus-5-5")
+    lines = config.SampleLines(home, config.load(home))
+    writing, written = threading.Event(), threading.Event()
+    replace_whole = config.replace_whole
+
+    def held_open(target: Path, text: str, mode: int) -> None:
+        # The line's write, held open under the lock until the model's keep has come to it.
+        writing.set()
+        written.wait()
+        replace_whole(target, text, mode)
+
+    watched = Watched()
+    monkeypatch.setattr(config, "replace_whole", held_open)
+    monkeypatch.setattr(config, "_WRITING", watched)
+    refused: list[str] = []
+
+    def keep_model() -> None:
+        try:
+            choice.keep()
+        except Rejected as error:
+            refused.append(str(error))
+
+    line, model = threading.Thread(target=lines.keep, args=("mary", "Mary here.")), threading.Thread(target=keep_model)
+    line.start()
+    try:
+        writing.wait()
+        model.start()
+        # Both writers have come to the lock, the line's holding it, before its write ends.
+        watched.come.acquire()
+        watched.come.acquire()
+    finally:
+        # Ended however the test does, so a keep that never comes to the lock fails the test and never hangs the run.
+        written.set()
+    line.join()
+    model.join()
+    assert refused == [f"{home.config} changed after the choice was made, by another choice kept first or a save by hand, so the choice was not written over it"]
+    assert "Mary here." in home.config.read_text()
+    assert config.load(home).config.llm.model == "claude-sonnet-5-5"
 
 
 def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_path: Path) -> None:
@@ -131,7 +208,7 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
     kept.write_text(SPOKEN_FILE)
     home = Home(tmp_path)
     home.config.symlink_to(kept)
-    _own(home).weigh("claude-opus-5-5")()
+    _own(home).weigh("claude-opus-5-5").keep()
     assert home.config.is_symlink()
     assert 'model = "claude-opus-5-5"' in kept.read_text()
 
@@ -151,25 +228,36 @@ async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -
     home.config.write_text(SPOKEN_FILE)
     running_on = config.load(home)
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, {}, lambda _entry: None, running_on, SYSTEM, period=0.01), 2.0))
-    config.OwnModel(home, LAID_OUT, {}, running_on).weigh("claude-opus-5-5")()
+    config.OwnModel(home, LAID_OUT, {}, running_on).weigh("claude-opus-5-5").keep()
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 
-class FakeOwn:
-    """hands' own model, kept in memory: what was weighed, and what was kept."""
+@dataclass(frozen=True)
+class FakeChoice:
+    to: str
+    own: "FakeOwn"
 
-    def __init__(self, refusal: str | None = None) -> None:
+    def keep(self) -> None:
+        if self.own.unkept is not None:
+            raise Rejected(self.own.unkept)
+        self.own.kept.append(self.to)
+
+
+class FakeOwn:
+    """hands' own model, kept in memory: what was kept, or the choice refused as it is weighed, or as it is kept."""
+
+    def __init__(self, refusal: str | None = None, unkept: str | None = None) -> None:
         self.refusal = refusal
+        self.unkept = unkept
         self.kept: list[str] = []
-        self.changing = asyncio.Lock()
 
     def running(self) -> str:
         return "claude-sonnet-5-5"
 
-    def weigh(self, model: str) -> Callable[[], None]:
+    def weigh(self, model: str) -> FakeChoice:
         if self.refusal is not None:
             raise Rejected(self.refusal)
-        return lambda: self.kept.append(model)
+        return FakeChoice(model.strip(), self)
 
 
 @asynccontextmanager
@@ -181,8 +269,19 @@ async def spoken(player: Player, speaker: FrameProcessor | None = None) -> Async
         yield run, heard
 
 
-def _tools(own: FakeOwn, player: Player) -> dict[str, Tool]:
-    return {tool.name: tool for tool in model_tools(own, player)}
+def _voiced(own: FakeOwn, player: Player) -> dict[str, Voiced]:
+    """The model tools as a voice turn serves the brain them."""
+    sessions, home = new_sessions(clock=SYSTEM), Home(Path("/nonexistent"))
+    return voiced(brain_door(sessions, home, player, Refocus(sessions, home, lambda _entry: None), lambda: None, Switches(player)), model_tools(own))
+
+
+def _tools(own: FakeOwn, player: Player) -> dict[str, Tool[Answer]]:
+    return {name: each.tool for name, each in _voiced(own, player).items()}
+
+
+def _effect(answer: Answer) -> Effect:
+    assert isinstance(answer, After), answer
+    return answer.effect
 
 
 async def test_a_line_heard_to_its_end_is_said_so() -> None:
@@ -225,28 +324,56 @@ async def test_a_line_cut_off_by_a_barge_in_is_said_so() -> None:
         assert await asyncio.wait_for(hearing, 2.0) is False
 
 
-async def test_use_model_switches_once_the_user_has_heard_it_say_so_and_is_the_whole_reply() -> None:
+async def test_use_model_says_it_is_switching_and_keeps_the_model_once_answered_and_is_the_whole_reply() -> None:
     own, player = FakeOwn(), Player(lambda _entry: None)
-    tools = _tools(own, player)
+    served = _voiced(own, player)
     async with spoken(player) as (_, heard):
-        result = await tools["use_model"].body(model="claude-opus-5-5")
+        answer = await served["use_model"].tool.body(model="claude-opus-5-5")
         said = await heard.until(1, TTSSpeakFrame)
     line = "Switching to claude-opus-5-5. I'll be back in a few seconds."
     assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)] == [line]
-    assert result == {"said": line, "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}
+    assert result_of(answer) == {"said": line, "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}
+    assert silent(served["use_model"], result_of(answer))
+    # Kept only once the door runs its effect, after the answer is written.
+    assert own.kept == []
+    await _effect(answer)()
     assert own.kept == ["claude-opus-5-5"]
-    assert silent(tools["use_model"], result)
+
+
+async def test_use_model_alone_says_nothing_and_keeps_nothing_until_its_effect_is_run() -> None:
+    """The act as any caller is answered it: no line is spoken, since no player is there to speak it, and an answer left
+    with its effect unrun holds nothing."""
+    own = FakeOwn()
+    [_, use_model] = model_tools(own)
+    answer = await use_model.body(model=" claude-opus-5-5 ")
+    assert result_of(answer) == {"running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}
+    assert own.kept == []
+    await _effect(answer)()
+    assert own.kept == ["claude-opus-5-5"]
+
+
+async def test_a_switch_said_but_refused_as_it_is_kept_is_said_aloud() -> None:
+    own, player = FakeOwn(unkept="the home's brain is not logged in"), Player(lambda _entry: None)
+    served = _voiced(own, player)
+    async with spoken(player) as (_, heard):
+        answer = await served["use_model"].tool.body(model="claude-opus-5-5")
+        await heard.until(1, TTSSpeakFrame)
+        with pytest.raises(Rejected):
+            await _effect(answer)()
+        said = await heard.until(2, TTSSpeakFrame)
+    assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)][1] == "The switch to claude-opus-5-5 did not happen: the home's brain is not logged in"
+    assert own.kept == []
 
 
 async def test_use_model_refused_says_nothing_and_switches_nothing_and_the_model_answers() -> None:
     own, player = FakeOwn(refusal="the brain is not logged in"), Player(lambda _entry: None)
-    tools = _tools(own, player)
+    served = _voiced(own, player)
     async with spoken(player) as (_, heard):
-        result = await tools["use_model"].body(model="claude-opus-5-5")
+        result = await served["use_model"].tool.body(model="claude-opus-5-5")
     assert result == {"error": "the brain is not logged in"}
     assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]
     assert own.kept == []
-    assert not silent(tools["use_model"], result)
+    assert not silent(served["use_model"], result_of(result))
 
 
 async def test_use_model_cut_off_before_its_line_is_heard_switches_nothing() -> None:
@@ -257,7 +384,7 @@ async def test_use_model_cut_off_before_its_line_is_heard_switches_nothing() -> 
         call = asyncio.ensure_future(tools["use_model"].body(model="claude-opus-5-5"))
         await heard.until(1, TTSSpeakFrame)
         await run.worker.queue_frame(InterruptionFrame())
-        result = await asyncio.wait_for(call, 2.0)
+        result = await call
     assert result == {"error": "The user spoke over hands saying it would switch to claude-opus-5-5, so it did not switch. Ask whether they still want it."}
     assert own.kept == []
 
@@ -269,8 +396,8 @@ async def test_model_in_use_is_the_model_hands_runs_on() -> None:
 
 async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the_one_switched_to() -> None:
     recorded: list[Entry] = []
-    def audited_tools(player: Player) -> dict[str, Tool]:
-        return {tool.name: audited(SYSTEM, tool, recorded.append) for tool in model_tools(FakeOwn(), player)}
+    def audited_tools(player: Player) -> dict[str, Tool[Answer]]:
+        return {name: audited(SYSTEM, tool, recorded.append) for name, tool in _tools(FakeOwn(), player).items()}
 
     tools = audited_tools(player := Player(lambda _entry: None))
     async with spoken(player):

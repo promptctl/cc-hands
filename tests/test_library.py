@@ -25,7 +25,8 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import library, voicechoice, voices
 from hands.voice.library import LIBRARY_URL_PREFIX, Found, Library
-from hands.voice.tools import audited, voice_tools
+from hands.voice.tools import voice_tools
+from hands.voice.tool import audited
 from hands.voice.player import Player
 from hands.voice.voices import Voices, source
 from hands.voice.voicechoice import DEFAULT, LibraryVoice, chosen, parse_voice

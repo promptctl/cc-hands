@@ -10,9 +10,9 @@ from conftest import exited
 from hands.sessions.child import Captured, Kill, Killed, Limit, NeverStarted, Outcome, Ran
 from hands.sessions.wide import WideEvent
 from hands.spotify import TELL_SECONDS, Catalogue, Credentials, Missing, Player, Refused, credentials, link
-from hands.voice.tool import Body
+from hands.voice.tool import Body, Result, audited
 from hands.virtualclock import VirtualClock
-from hands.voice.tools import audited, spotify_tools
+from hands.voice.tools import spotify_tools
 
 TRACK = "4uLU6hMCjMI75M1A2tKUQC"
 PLAYLIST = "37i9dQZF1DXcBWIGoYBM5M"
@@ -58,7 +58,7 @@ def printed(text: str) -> Outcome:
     return exited(0, f"{text}\n".encode())
 
 
-def tools(tell: Osascript, catalogue: Catalogue | None = None) -> dict[str, Body]:
+def tools(tell: Osascript, catalogue: Catalogue | None = None) -> dict[str, Body[Result]]:
     return {tool.name: tool.body for tool in spotify_tools(Player(tell), catalogue or Catalogue(Missing("none here"), VirtualClock()))}
 
 

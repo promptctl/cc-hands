@@ -86,8 +86,8 @@ from hands.voice.speech import Aloud, Narrated
 
 from spoken import Received, Spoken
 from test_narrator import heard as unasked
-from hands.voice.tool import Result, Tool, read_back, tool
-from hands.voice.tools import stay_silent_tool
+from hands.voice.tool import Result, read_back, tool
+from hands.voice.braindoor import Voiced, stay_silent_tool
 
 BRAIN = SessionId("brain-session")
 ANSWERED = BrainAnswered("p1", None)
@@ -124,12 +124,12 @@ async def read_session(session: str) -> Result:
     return {"steps": []}
 
 
-TOOLS: Sequence[Tool] = (
-    tool(stage_draft),
-    tool(amend_draft, then="silence"),
+TOOLS: Sequence[Voiced] = (
+    Voiced(tool(stage_draft), "reply"),
+    Voiced(tool(amend_draft), "silence"),
     # hands' own: whether a turn may close on it is read off its `then`, so the rig's must be the real one's.
     stay_silent_tool(),
-    tool(read_session),
+    Voiced(tool(read_session), "reply"),
 )
 
 

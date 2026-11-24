@@ -44,8 +44,7 @@ from hands.sessions.home import Home
 from hands.sessions.model_facts import ModelFailed
 from hands.sessions.wide import WideEvent, annotate, begun, fail, root, unit
 from hands.sessions.registry import EFFECT_KINDS, Performed
-from hands.voice.tool import tool
-from hands.voice.tools import Called, audited
+from hands.voice.tool import Called, audited, tool
 from hands.core.status import Busy, Report, Stamp
 from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unfinished, Unkept, Unreached
 from conftest import new_sessions

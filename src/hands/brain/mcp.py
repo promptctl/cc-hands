@@ -24,7 +24,8 @@ from hands.core.trace import Span
 from hands.sessions.audit import Record, said
 from hands.sessions.payload import NotJson, Payload, Rejected
 from hands.sessions.wide import annotate, begun, continuing, fail, unit
-from hands.voice.tool import Tool
+from hands.voice.answered import answered_then
+from hands.voice.tool import After, Answer, Result, Tool, audited
 
 # What the brain's --mcp-config names this server; its tools reach the model as mcp__hands__<tool>.
 SERVER_NAME = "hands"
@@ -80,9 +81,10 @@ class McpServer:
         return json.dumps({"mcpServers": {SERVER_NAME: {"type": "http", "url": self.url, "headers": {"Authorization": bearer(self.token)}}}})
 
 
-async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: CallSpans) -> McpServer:
-    """Listen on a free local port until the returned server is closed."""
-    by_name = {tool.name: tool for tool in tools}
+async def serve_mcp(clock: Clock, tools: Sequence[Tool[Answer]], record: Record, spans: CallSpans) -> McpServer:
+    """Listen on a free local port until the returned server is closed. [LAW:single-enforcer] each call of a tool it
+    serves is one `tool.run` event, here, whichever tools a door hands it."""
+    by_name = {tool.name: audited(clock, tool, record) for tool in tools}
     token = clock.token(32)
 
     @web.middleware
@@ -93,10 +95,19 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
             return web.Response(status=401)
         return await handler(request)
 
-    async def post(request: web.Request) -> web.Response:
+    async def post(request: web.Request) -> web.StreamResponse:
         match parse(await request.read()):
             case Request(id, "tools/call", Payload({"name": str(name)} as params), meta) if name in by_name and (arguments := _arguments(params)) is not None:
-                return web.json_response(await call(id, by_name[name], arguments, _text(meta.fields.get(TOOL_USE_ID))))
+                used = _text(meta.fields.get(TOOL_USE_ID))
+                match await call(by_name[name], arguments, used):
+                    case After(result=result) as after:
+                        # [LAW:nothing-unseen] its own event, in the trace of the call it followed: the call's event
+                        # ended with its answer.
+                        with continuing(spans.span(used)), unit("tool.after", record, begun(clock)):
+                            annotate(tool=name)
+                            return await answered_then(request, web.json_response(_answered(id, result)), after, name)
+                    case result:
+                        return web.json_response(_answered(id, result))
             case Request(id, method, Payload(params)):
                 # [LAW:nothing-unseen] every request but a tool's run, which is the tool's own event, is one event.
                 with unit("mcp.request", record, begun(clock)):
@@ -138,7 +149,7 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
                 fail(f"no method {method}")
                 return _error(id, METHOD_NOT_FOUND, f"no method {method}")
 
-    async def call(id: RequestId, tool: Tool, arguments: Mapping[str, object], used: str | None) -> Mapping[str, object]:
+    async def call(tool: Tool[Answer], arguments: Mapping[str, object], used: str | None) -> Answer | Failed:
         if used is None:
             # [LAW:no-silent-failure] Claude Code names the tool_use block each call runs: a call naming none is
             # run as a trace of its own, cut off from the turn that made it.
@@ -146,16 +157,13 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
         try:
             # The run is a part of the turn's call to the tool, where a turn is running it.
             with continuing(spans.span(used)):
-                result = await tool.body(**arguments)
+                return await tool.body(**arguments)
         except Exception as error:
             # The tool's event holds what it raised; the model hears that the tool failed. [LAW:no-silent-failure] the
             # exception ends here, so it is said here.
             failed = f"{tool.name} failed: {type(error).__name__}: {error}"
             said(failed)
-            return _result(id, {"content": [{"type": "text", "text": failed}], "isError": True})
-        # A refusal is a result like any other: Claude Code turns an isError result into an error of its own wording, out
-        # of which the brain's stage could not read the refusal back.
-        return _result(id, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False})
+            return Failed(failed)
 
     async def refused(_request: web.Request) -> web.Response:
         return web.Response(status=405, headers={"Allow": "POST"})
@@ -264,6 +272,23 @@ def _arguments(params: Mapping[str, object]) -> Mapping[str, object] | None:
 
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+@dataclass(frozen=True)
+class Failed:
+    """A tool's body that raised, as the model hears it."""
+
+    said: str
+
+
+def _answered(id: RequestId, result: Result | Failed) -> Mapping[str, object]:
+    match result:
+        case Failed(said=failed):
+            return _result(id, {"content": [{"type": "text", "text": failed}], "isError": True})
+        case _:
+            # A refusal is a result like any other: Claude Code turns an isError result into an error of its own
+            # wording, out of which the brain's stage could not read the refusal back.
+            return _result(id, {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False})
 
 
 def _result(id: RequestId, result: object) -> Mapping[str, object]:

@@ -2,7 +2,7 @@
 choice the one its tool makes, and each refused where the tool refuses it."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,6 +15,7 @@ from hands.core.playback import Labelled
 from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
+from hands.voice.modelswitch import Switches
 from hands.voice.listening import Asker, Level
 from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
@@ -111,29 +112,33 @@ class Speaker:
 
 @dataclass
 class Own:
-    """Hands' own model: the one it runs on, and a weighing that either refuses or gives the keep the edit waits on."""
+    """Hands' own model: the one it runs on, a weighing that may refuse, and what was kept, or the keep refused."""
 
     running_on: str = MODELS[0]
     refused: Exception | None = None
+    unkept: Exception | None = None
     kept: list[str] = field(default_factory=list[str])
-    changing: asyncio.Lock = field(default_factory=asyncio.Lock)
-    open_weighings: int = 0
-    most_open: int = 0
 
     def running(self) -> str:
         return self.running_on
 
-    def weigh(self, model: str) -> Callable[[], None]:
+    def weigh(self, model: str) -> "Weighing":
         if self.refused is not None:
             raise self.refused
-        self.open_weighings += 1
-        self.most_open = max(self.most_open, self.open_weighings)
+        return Weighing(model, self)
 
-        def keep() -> None:
-            self.open_weighings -= 1
-            self.kept.append(model)
 
-        return keep
+@dataclass(frozen=True)
+class Weighing:
+    """A model the page's own weighed, kept into it, or refused as it is kept."""
+
+    to: str
+    own: Own
+
+    def keep(self) -> None:
+        if self.own.unkept is not None:
+            raise self.own.unkept
+        self.own.kept.append(self.to)
 
 
 @dataclass
@@ -146,9 +151,18 @@ class Page:
     speaker: Speaker
     own: Own
     recorded: list[Entry]
+    arrived: asyncio.Event
 
     def events(self, name: str) -> list[WideEvent]:
         return events(self.recorded, name)
+
+    async def ended(self, name: str, count: int = 1) -> list[WideEvent]:
+        """The events `name` once `count` of them are recorded: a request's event is recorded as its handler returns,
+        which for a model switch is after its answer is written and its keep run."""
+        while len(self.events(name)) < count:
+            self.arrived.clear()
+            await self.arrived.wait()
+        return self.events(name)
 
 
 @pytest.fixture
@@ -157,11 +171,17 @@ async def page() -> AsyncGenerator[Page]:
     clock = VirtualClock()
     voices, levels, desk, speaker, own = Voicing(), Listening(), Desk(), Speaker(clock), Own()
     recorded: list[Entry] = []
-    gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, speaker=speaker, wake=Pretrained(), models=MODELS)
+    arrived = asyncio.Event()
+
+    def record(entry: Entry) -> None:
+        recorded.append(entry)
+        arrived.set()
+
+    gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, switches=Switches(speaker), wake=Pretrained(), models=MODELS)
     app = web.Application()
-    app.add_routes(gallery_routes(clock, gallery, KEY, recorded.append))
+    app.add_routes(gallery_routes(clock, gallery, KEY, record))
     async with TestClient(TestServer(app)) as client:
-        yield Page(client, clock, voices, levels, desk, speaker, own, recorded)
+        yield Page(client, clock, voices, levels, desk, speaker, own, recorded, arrived)
 
 
 @pytest.mark.outside
@@ -354,9 +374,21 @@ async def test_a_model_is_switched_once_its_line_is_heard_and_names_the_switch(p
     body = await response.json()
     assert body["switching_to"] == "claude-opus-5-5"
     assert page.speaker.said == ["Switching to claude-opus-5-5. I'll be back in a few seconds."]
+    [switch] = await page.ended("gallery.model")
     assert page.own.kept == ["claude-opus-5-5"]
-    [switch] = page.events("gallery.model")
     assert (switch.outcome, switch.facts["model"], switch.facts["switching"]) == ("ok", "claude-opus-5-5", True)
+
+
+@pytest.mark.outside
+async def test_a_model_switch_heard_but_refused_as_it_is_kept_is_said_aloud_and_its_event_fails(page: Page) -> None:
+    page.own.unkept = Rejected("config.toml was saved as the choice was kept")
+    response = await page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-5-5"})
+    # Answered before the keep: the page is told the switch, and the user hears that it did not happen.
+    assert response.status == 200
+    [switch] = await page.ended("gallery.model")
+    assert page.speaker.said == ["Switching to claude-opus-5-5. I'll be back in a few seconds.", "The switch to claude-opus-5-5 did not happen: config.toml was saved as the choice was kept"]
+    assert (switch.outcome, switch.error, switch.facts["switching"]) == ("failed", "the model's switch failed once answered: Rejected: config.toml was saved as the choice was kept", True)
+    assert page.own.kept == []
 
 
 @pytest.mark.outside
@@ -369,24 +401,6 @@ async def test_a_model_switch_talked_over_is_refused_and_hands_stays_on_its_mode
     assert page.own.kept == []
     [switch] = page.events("gallery.model")
     assert (switch.outcome, switch.facts["switching"]) == ("failed", False)
-
-
-@pytest.mark.outside
-async def test_two_model_switches_at_once_are_made_one_after_the_other(page: Page) -> None:
-    # Each weighs the file as the one before it kept it: never two weighed and open at once.
-    page.speaker.hold = 1.0
-    switches = asyncio.gather(
-        page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-5-5"}),
-        page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-sonnet-5-5"}),
-    )
-    # The first is heard out while the second waits on it, and then the second is.
-    for heard_until in (1.0, 2.0):
-        await page.clock.sleeping(heard_until)
-        page.clock.advance_to(heard_until)
-    first, second = await switches
-    assert (first.status, second.status) == (200, 200)
-    assert page.own.most_open == 1
-    assert sorted(page.own.kept) == ["claude-opus-5-5", "claude-sonnet-5-5"]
 
 
 @pytest.mark.outside
@@ -421,7 +435,7 @@ async def test_the_library_search_returns_matches_and_records_the_listing(page: 
 def test_the_routes_are_the_gallery_and_its_seven_choices_and_two_reads() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
     clock = VirtualClock()
-    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(clock), wake=Pretrained(), models=MODELS)
+    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(clock)), wake=Pretrained(), models=MODELS)
     routes: list[Any] = [route for route in gallery_routes(clock, gallery, KEY, lambda _entry: None)]
     assert sorted(f"{route.method} {route.path}" for route in routes) == sorted([
         "GET /gallery", "GET /gallery/state", "GET /gallery/line", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",

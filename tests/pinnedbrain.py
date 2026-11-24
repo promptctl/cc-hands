@@ -38,12 +38,14 @@ from hands.sessions.summaries import Summaries
 from hands.sessions.tmux import TmuxExit, ran_at
 from hands.brain.stage import BrainStage
 from hands.voice import voicechoice
+from hands.voice.modelswitch import Switches
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.conversation import UserWords
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.refocus import Refocus
 from hands.voice.summaries import SummaryStore
-from hands.voice.tools import stay_silent_tool
+from hands.voice.player import Player
+from hands.voice.braindoor import BrainDoor, stay_silent_tool
 from hands.sessions.wide import WideEvent
 
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang. The one wait the pinned Claude
@@ -52,7 +54,7 @@ PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
 # What only the brain's own turns carry, among every request its Claude Code makes: hands' tools offered to the model.
 # A title or a summary Claude Code asks for beside a turn carries the user's words too, but none of hands' tools.
-TURN = f"mcp__{SERVER_NAME}__{stay_silent_tool().name}"
+TURN = f"mcp__{SERVER_NAME}__{stay_silent_tool().tool.name}"
 # The words a side question's prompt opens with, past the reminder's tag: nothing in them is escaped in a JSON string.
 SIDE_QUESTION = SIDE_QUESTION_OPENING.removeprefix("<system-reminder>")
 # What only a request carrying a tool's result holds, as Claude Code's compact JSON writes the block.
@@ -253,7 +255,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
         config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT, brain=_runnable(brain)), voice=voicechoice.DEFAULT)
         out = Spoken()
         store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-        async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
+        async with mind(SYSTEM, config, [], BrainDoor({}, [stay_silent_tool()], Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:

@@ -30,7 +30,7 @@ from hands.voice.speech import Narrated
 
 from test_shim import STARTED
 from test_narrator import rendered
-from hands.voice.tool import Tool
+from hands.voice.tool import Result, Tool
 from hands.voice.tools import DENIED_BY_VOICE, SENT_BACK_BY_VOICE, permission_tools
 from conftest import new_sessions
 
@@ -119,12 +119,12 @@ async def asked(home: Home, sessions: Sessions, payload: Mapping[str, object] = 
     return shim, heard.moment
 
 
-def named(sessions: Sessions, name: str) -> Tool:
+def named(sessions: Sessions, name: str) -> Tool[Result]:
     [tool] = [tool for tool in permission_tools(sessions) if tool.name == name]
     return tool
 
 
-async def call(tool: Tool, **arguments: object) -> dict[str, object]:
+async def call(tool: Tool[Result], **arguments: object) -> dict[str, object]:
     return dict(await tool.body(**arguments))
 
 

@@ -7,8 +7,7 @@ import pytest
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.voice.tool import Result, Tool, tool
-from hands.voice.tools import Called, audited
+from hands.voice.tool import Called, Result, Tool, audited, tool
 
 
 async def echo(text: str) -> Result:
@@ -75,7 +74,7 @@ def run(recorded: list[Entry]) -> WideEvent:
 async def test_an_audited_tool_keeps_its_schema() -> None:
     plain = tool(echo)
     wrapped = audited(SYSTEM, plain, lambda _: None)
-    assert (wrapped.name, wrapped.description, wrapped.input_schema, wrapped.then) == (plain.name, plain.description, plain.input_schema, plain.then)
+    assert (wrapped.name, wrapped.description, wrapped.input_schema) == (plain.name, plain.description, plain.input_schema)
 
 
 async def test_a_call_that_returns_is_one_event_with_what_it_was_given_and_handed_back() -> None:
@@ -147,7 +146,7 @@ async def test_a_null_is_an_argument_left_out_and_takes_its_default_with_the_eve
 
 async def test_a_call_that_raises_is_one_failed_event_with_what_raised_and_where_and_raises_on() -> None:
     recorded: list[Entry] = []
-    wrapped: Tool = audited(SYSTEM, tool(broken), recorded.append)
+    wrapped: Tool[Result] = audited(SYSTEM, tool(broken), recorded.append)
     with pytest.raises(RuntimeError):
         await wrapped.body(session="s1")
     event = run(recorded)

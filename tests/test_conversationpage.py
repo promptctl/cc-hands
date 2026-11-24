@@ -16,8 +16,7 @@ from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, segments
 from hands.sessions.wide import WideEvent
 from hands.voice import longpoll
 from hands.voice.conversationpage import Conversation, conversation_routes
-from hands.voice.tool import tool
-from hands.voice.tools import audited
+from hands.voice.tool import audited, tool
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}

@@ -29,7 +29,7 @@ def held(steps: tuple[Step, ...] = STEPS, turn: str = "p1") -> Recounts:
     return recounts
 
 
-def expand(recounts: Recounts) -> Body:
+def expand(recounts: Recounts) -> Body[Result]:
     """The tool's body, as the model calls it."""
     return expand_tool(new_sessions(clock=VirtualClock()), recounts).body
 

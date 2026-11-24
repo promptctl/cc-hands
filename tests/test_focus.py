@@ -1,5 +1,6 @@
 """The focus: the session the user's words go to when they name none, set in one call, held in the home, and never a lock."""
 
+from dataclasses import replace
 from collections.abc import Callable
 import json
 from datetime import UTC, datetime
@@ -9,7 +10,6 @@ import aiohttp
 import pytest
 
 from hands.clock import SYSTEM
-from hands.brain import pinned
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.core.effects import Input, Text, Type
 from hands.core.events import Joined
@@ -18,22 +18,13 @@ from hands.sessions.audit import AuditLog, Record, tail as audit_tail
 from hands.sessions.focus import Unreadable, focused, set_focus
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
-from hands.sessions.summaries import Summaries
 from hands.voice.briefing import as_sent
-from hands.voice.narrator import Recounts
+from hands.voice.modelswitch import Switches
 from hands.voice.player import Player
-from hands.voice.library import Library
-from hands.voice.voices import Voices
-from hands.voice.voicechoice import DEFAULT
 from hands.voice.refocus import Refocus
-from hands.voice.summaries import SummaryStore
-from hands.daemon.config import Config, OwnModel, SampleLines, Settings
-from hands.voice.ptt import PushToTalk
-from hands.spotify import Catalogue, Missing
-from hands.voice.listening import Levels
-from hands.voice.wakeword import Pretrained
-from hands.voice.tool import Tool
-from hands.voice.tools import audited, defaulting_to_focus, intermediary_tools, stay_silent_tool
+from hands.voice.tool import Answer, Tool, audited, result_of
+from hands.voice.braindoor import Voiced, brain_door
+from served import every_act
 from conftest import new_sessions
 
 HANDS = SessionId("s-hands")
@@ -50,10 +41,15 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
     return sessions
 
 
-def tools(sessions: Sessions, home: Home, record: Record = lambda _: None, acting: Callable[[], None] = lambda: None) -> dict[str, Tool]:
-    """The tools as the daemon gives them, focus defaulting and each call its event in `record`."""
-    given = intermediary_tools(sessions, SummaryStore(Summaries(home.root / "summaries.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(SYSTEM, lambda _entry: None).switch, Levels("off"), lambda: None, Pretrained(), OwnModel(home, pinned.PIN, {}, Settings(None, Config())), Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, Library(SYSTEM, lambda: []), DEFAULT, SampleLines(home, Settings(None, Config()))), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": str(home.root)}, acting)
-    return {tool.name: audited(SYSTEM, tool, record) for tool in given}
+def served(sessions: Sessions, home: Home, record: Record = lambda _: None, acting: Callable[[], None] = lambda: None) -> dict[str, Voiced]:
+    """The tools as the voice turn serves the brain them, focus defaulting, and each call its event in `record` as hands'
+    MCP server makes it."""
+    turn = brain_door(sessions, home, Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), acting, Switches(Player(lambda _entry: None)))
+    return {voiced.tool.name: replace(voiced, tool=audited(SYSTEM, voiced.tool, record)) for voiced in turn.serve(every_act(sessions, home))}
+
+
+def tools(sessions: Sessions, home: Home, record: Record = lambda _: None, acting: Callable[[], None] = lambda: None) -> dict[str, Tool[Answer]]:
+    return {name: voiced.tool for name, voiced in served(sessions, home, record, acting).items()}
 
 
 async def test_every_call_is_heard_acting_but_staying_silent(tmp_path: Path) -> None:
@@ -68,17 +64,17 @@ async def test_every_call_is_heard_acting_but_staying_silent(tmp_path: Path) -> 
 async def test_only_stay_silent_ends_a_reply_on_nothing_and_each_reply_hands_says_is_whole(tmp_path: Path) -> None:
     """The brain's stage reads `then` to tell a turn that acted from one closing on nothing, so the tools as the daemon
     gives them carry it: a turn closing on any of these but stay_silent is heard."""
-    given = tools(await two_sessions(tmp_path, []), Home(tmp_path / "home"))
+    given = served(await two_sessions(tmp_path, []), Home(tmp_path / "home"))
     whole = {"stage_draft", "amend_draft", "resume", "skip", "repeat", "use_model"}
-    assert {name: tool.then for name, tool in given.items() if tool.then != "reply"} == {"stay_silent": "nothing", **dict.fromkeys(whole, "silence")}
+    assert {name: voiced.then for name, voiced in given.items() if voiced.then != "reply"} == {"stay_silent": "nothing", **dict.fromkeys(whole, "silence")}
     assert given["send_draft"].then == "reply"
 
 
-async def say(given: dict[str, Tool], text: str, **session: str) -> dict[str, object]:
+async def say(given: dict[str, Tool[Answer]], text: str, **session: str) -> dict[str, object]:
     """One dictated turn, staged and sent, naming the session only where `session` does."""
-    staged = await given["stage_draft"].body(text=text, resolutions=[], **session)
+    staged = result_of(await given["stage_draft"].body(text=text, resolutions=[], **session))
     assert "error" not in staged, staged
-    return dict(await given["send_draft"].body(**session))
+    return dict(result_of(await given["send_draft"].body(**session)))
 
 
 def typed_to(typed: list[Type[Input]]) -> list[tuple[str, Input]]:
@@ -116,7 +112,7 @@ async def test_the_focus_outlives_a_restart_and_is_what_the_brain_is_told_with_e
     again = Home(tmp_path / "home")
     assert focused(again) == LAWS
     assert f'The focused session, the one the user\'s words go to when they name none, is "laws" (id {LAWS}).' in as_sent(sessions, again)
-    assert (await tools(sessions, again)["list_sessions"].body())["focus"] == LAWS
+    assert result_of(await tools(sessions, again)["list_sessions"].body())["focus"] == LAWS
 
 
 async def test_with_no_focus_an_unnamed_turn_is_refused_and_nothing_is_typed(tmp_path: Path) -> None:
@@ -159,8 +155,8 @@ async def test_a_focus_file_holding_no_session_id_is_refused_and_the_brain_is_to
     home.focus.write_text("../escape\n")
     assert isinstance(unreadable := focused(home), Unreadable) and "which is no session id" in unreadable.reason
     assert "Which session is focused cannot be read:" in as_sent(sessions, home)
-    assert (await tools(sessions, home)["list_sessions"].body())["focus"] == {"cannot_read": unreadable.reason}
-    result = await tools(sessions, home)["read_backlog"].body()
+    assert result_of(await tools(sessions, home)["list_sessions"].body())["focus"] == {"cannot_read": unreadable.reason}
+    result = result_of(await tools(sessions, home)["read_backlog"].body())
     assert "which one is focused cannot be read" in str(result["error"])
 
 
@@ -174,8 +170,6 @@ async def test_every_tool_that_acts_on_a_session_takes_the_focus_for_one_left_un
     assert all(str(given[name].properties["session"]["description"]).endswith("Empty for the focused session.") for name in defaulted)
     # focus_session's own empty means "focus none", never "the focus".
     assert given["focus_session"].required == ("session",)
-    with pytest.raises(TypeError, match="stay_silent takes no session"):
-        defaulting_to_focus(stay_silent_tool(), Home(tmp_path / "home"))
 
 
 async def test_the_session_the_focus_stood_in_for_is_on_the_calls_event(tmp_path: Path) -> None:
