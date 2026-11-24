@@ -663,7 +663,8 @@ def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart:
             case Configured(voice=voice):
                 reached: readiness.Finding = readiness.reaching(voice.llm)
             case CannotStart() as error:
-                # Refused on its home's files, its login, or its kept voice's fetch: the reason names each, so the line claims none.
+                # Refused on its home's files, its login, a Claude Code it could not ask, or its kept voice's fetch: the reason
+                # names each, so the line claims none.
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 

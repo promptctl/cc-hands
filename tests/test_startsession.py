@@ -4,6 +4,7 @@ outside any session, and the session that joined hands named."""
 import asyncio
 import json
 import os
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,9 +34,9 @@ def members(home: Home) -> list[Membership]:
     return [parse_membership(SessionId(path.stem), path.read_bytes()) for path in sorted(home.memberships.glob("*.json"))]
 
 
-def start(home: Home, folder: Path, model: str = "") -> dict[str, Any]:
+def start(home: Home, folder: Path, model: str = "", environment: Mapping[str, str] = os.environ) -> dict[str, Any]:
     """The tool called as the model calls it, in the environment hands was started in."""
-    start_session = start_session_tool(SYSTEM, home, AuditLog(home.audit, clock=datetime.now).record, os.environ, lambda: members(home))
+    start_session = start_session_tool(SYSTEM, home, AuditLog(home.audit, clock=datetime.now).record, environment, lambda: members(home))
 
     async def called() -> Result:
         return await start_session.body(folder=str(folder), model=model)
@@ -74,6 +75,34 @@ def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_o
     }
     users = {"PATH": "/Users/me/.hands/bin:/usr/bin", "CLAUDE_CONFIG_DIR": "/Users/me/.claude.work", "ANTHROPIC_API_KEY": "sk-mine", "HANDS_HOME": "/elsewhere"}
     assert as_from_a_terminal({**inside, **users}) == {**users, "HTTPS_PROXY": "http://proxy.lan:3128"}
+
+
+def test_a_session_started_where_no_tmux_is_on_path_answers_that_it_was_not_started(tmp_path: Path) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "billing"
+    folder.mkdir()
+    # A PATH that holds no tmux, given whole, so the lookup never falls back to this process's own.
+    empty = tmp_path / "bin"
+    empty.mkdir()
+    reason = "there is no tmux on PATH, and hands starts a session in a tmux window"
+    assert start(home, folder, environment={"PATH": str(empty)}) == {"error": reason}
+    [event] = started(home)
+    assert (event["outcome"], event["error"]) == ("failed", f"NotStarted: {reason}")
+
+
+@pytest.mark.outside
+def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "billing"
+    folder.mkdir()
+    # Found on PATH, and no program the OS will run: its interpreter is not there.
+    tmux = tmp_path / "bin" / "tmux"
+    tmux.parent.mkdir()
+    tmux.write_text("#!/nonexistent/hands-no-such-shell\n")
+    tmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmux.parent}:{os.environ['PATH']}")
+    answer = start(home, folder)
+    assert answer.keys() == {"error"} and answer["error"].startswith("tmux new-session could not be started: ")
 
 
 @pytest.mark.outside
