@@ -718,8 +718,13 @@ class Workspace:
 
     def order(self, *ids: str) -> list[str]:
         """`ids` in the rank order `lit export` reports them in, read raw."""
+        return [id for id, _, _ in self.held() if id in ids]
+
+    def held(self) -> list[tuple[str, str, str | None]]:
+        """Every ticket lit holds, as its id, rank, and parent, in rank order, read raw."""
         exported = json.loads(subprocess.run([str(LIT), "export"], cwd=self.root, check=True, capture_output=True).stdout)
-        return [entry["id"] for entry in sorted(exported["issues"], key=lambda entry: entry["rank"]) if entry["id"] in ids]
+        parents = {relation["src_id"]: relation["dst_id"] for relation in exported["relations"] if relation["type"] == "parent-child"}
+        return [(entry["id"], entry["rank"], parents.get(entry["id"])) for entry in sorted(exported["issues"], key=lambda entry: entry["rank"])]
 
 
 @pytest.fixture
@@ -1037,14 +1042,14 @@ async def test_a_level_moves_the_ticket_into_its_topics_epic_for_it_made_beside_
 
 @pytest.mark.outside
 @real_lit
-@pytest.mark.quarantined("promptctl-testing-c3u.m9b", until="2026-11-26")
 async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_moves(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     await level(page, workspace, hey, "normal")
-    before = workspace.order(hey)
+    before = workspace.held()
     status, body = await leveled(page, workspace, hey, "normal")
     assert status == 400 and body.startswith("not leveled: ") and "already in" in body
-    assert workspace.order(hey) == before
+    # No ticket is made, ranked, or moved to another parent.
+    assert workspace.held() == before
     assert [event.outcome for event in page.events("backlog.leveled")] == ["ok", "failed"]
 
 
