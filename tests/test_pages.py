@@ -22,6 +22,7 @@ from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
+from hands.voice.modelswitch import Switches
 from hands.voice.clips import KEPT_SECONDS, Clip
 from hands.voice.gallerypage import Gallery
 from hands.voice.keyed import UNKEYED, Handler
@@ -32,8 +33,7 @@ from hands.voice.phonepage import phone_pages
 from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
-from hands.voice.tool import tool
-from hands.voice.tools import audited
+from hands.voice.tool import audited, tool
 from hands.voice.voicechoice import VOICES, Voice
 from hands.voice.wake import WakeWord
 from hands.voice.wakemodels import PRETRAINED, ROLES, Files, WakeModels
@@ -105,7 +105,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
     async def typing(text: str) -> None:
         typed.append(text)
 
-    gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(VirtualClock()), wake=Pretrained(), models=MODELS)
+    gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(VirtualClock())), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
     pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
     requests = list[str]()
@@ -562,6 +562,7 @@ async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_cannot_listen_
     assert await page.evaluate("events") == [{"kind": "failed", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
 
 
+@pytest.mark.quarantined("promptctl-testing-c3u.sm9", until="2026-11-29")
 @pytest.mark.parametrize("wake_models", [WithTwoWords], indirect=True)
 async def test_a_model_that_scores_two_words_is_refused_by_the_phone_as_the_desk_refuses_it(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))

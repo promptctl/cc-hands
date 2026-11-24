@@ -301,7 +301,7 @@ async def test_an_edit_and_a_voice_choice_are_weighed_without_starting_a_claude_
     monkeypatch.setattr(config, "_held", _reads([EDIT, EDIT, EDIT]))
     assert await config.edited(home, LAID_OUT, {}, lambda _entry: None, running, VirtualClock(), period=0) == SettingsEdited(path=str(home.config), refused=None)
     monkeypatch.setattr(config, "_held", held)
-    config.OwnModel(home, LAID_OUT, {}, config.load(home)).weigh("claude-opus-5-5")()
+    config.OwnModel(home, LAID_OUT, {}, config.load(home)).weigh("claude-opus-5-5").keep()
     assert config.load(home).config.llm.model == "claude-opus-5-5"
     assert not mark.exists()
 

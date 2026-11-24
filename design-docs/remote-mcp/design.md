@@ -54,7 +54,7 @@ Door = BrainDoor | RemoteDoor
 class BrainDoor:
     token: str            # admits a Brain: the bearer token the brain's --mcp-config holds
     acts: Tools           # what both doors serve
-    voice: Voice          # the voice's own tools, and what a call is to a voice turn (below)
+    voice: BrainDoor      # the voice's own tools, and what a call is to a voice turn (below)
 @dataclass(frozen=True)
 class RemoteDoor:
     access: Access        # admits a Remote: the Access team, the application's AUD tag, the team's key set
@@ -74,28 +74,39 @@ class Remote: email: str; tasks: bool     # from the Access JWT, which is refuse
 **A tool's act and its place in a voice turn are two values.** Today a `Tool` carries both: the act (its name,
 description, schema and body) and the voice turn's protocol (`then`, the cue, sentences in its description that tell
 a speaking model how to end its reply, the focus it defaults to and moves, a line it waits to have heard). The remote
-door serves the act; the voice part is the brain door's `Voice`, and the act cannot hold any of it
+door serves the act; the voice part is the brain door's `BrainDoor` (`src/hands/voice/braindoor.py`), and the act
+cannot hold any of it
 [LAW:types-are-the-program]:
 
-- **The act is built with no player and no refocus**, so its body cannot speak, wait on a heard line, or move the
-  focus. The `Voice` wraps the acts it serves the brain, and does those around the act's call: `tell_turn`'s act
-  returns the session it told, and the wrap moves the focus to it; `use_model`'s wrap says the switch and waits for it
-  to be heard before the call is answered, a barge-in answering it with the refusal the brain is told to ask again on.
-  The one effect no body performs is keeping a model, which restarts hands: `use_model`'s result carries it as
-  `Keep(model)`, and the handler performs it once the response is written, on both doors, the one place it is
-  ordered after the write [LAW:single-enforcer] [LAW:no-ambient-temporal-coupling]. A wrap whose heard line was barged
-  in drops the `Keep` with the result it replaces. On the remote door the Claude app's approval prompt stands where
-  the heard line stands.
-- **The voice's own tools are the `Voice`'s**, not acts: `stay_silent`, `resume`, `skip`, `repeat` (the reply hands is
+- **The act is built with no player and no refocus**, so its body cannot speak a voice turn's line, wait on a heard
+  line, or move the focus; a room act (hear_voices, use_voice, Spotify) still sounds in the room for any caller. The
+  `BrainDoor` wraps the acts it serves the brain, and does those around the act's call: `tell_turn`'s wrap moves the
+  focus to the session the call named; and a switch of model, whichever act answers it, is said and heard before the
+  call is answered, a barge-in answering it with the refusal the brain is told to ask again on. The voice turn takes
+  the switch by what the act answers (`Switch`), never by the act's name. The one effect no body performs is one that
+  would cut its own answer off, as keeping a model restarts hands: `use_model` answers `After(result, effect,
+  unanswered)`, and the door runs the effect once the response is written (`hands.voice.answered`), on every door and
+  the phone's page alike, the one place it is ordered after the write [LAW:single-enforcer]
+  [LAW:no-ambient-temporal-coupling]. Where the answer cannot be written, a switch the user heard said is kept as they
+  were told, and one only the answer would have told is dropped. The effect holds nothing until it runs, so an answer
+  dropped leaves nothing held. One switch is said at a time (`Switches`, shared by the voice and the phone's page):
+  from its line until hands restarts on it, a second is refused before it is said, since the first one's restart
+  would cut it off unkept and unsaid. A model is kept only onto the file it was weighed on, under the lock every
+  write of config.toml holds, so a switch weighed before a save by hand or a sample line's write is refused, never
+  written over it. A keep that fails is its own
+  `tool.after` event in the call's trace, and a switch the user heard said but that could not be kept is said aloud.
+  On the remote door the Claude app's approval prompt stands where the heard line stands.
+- **The voice's own tools are the `BrainDoor`'s**, not acts: `stay_silent`, `resume`, `skip`, `repeat` (the reply hands is
   speaking) and `focus_session` mean nothing outside a voice turn, so the brain door serves the acts and these, and
   the remote door serves the acts, with no list of names to keep beside them.
-- **What a call is to a voice turn** is the `Voice`'s, per tool: `then`; whether it plays the working cue (today a
-  tool's place in `intermediary_tools`' `acts` list and two `cued` calls in `run.py`); and whether a call naming no
-  session acts on the focus (`defaulting_to_focus`).
-- **A description says what is true for any caller**, and the `Voice` adds the sentences true only in a voice turn
+- **What a call is to a voice turn** is the `BrainDoor`'s, per tool, as a `Part`: `then`, the sentences added to the
+  description, and what is done around the call. Every act it serves plays the working cue, and every act whose schema
+  requires a session takes the focus for one left unnamed; `serve` refuses a part that names no act it was given.
+- **A description says what is true for any caller**, and the `BrainDoor` adds the sentences true only in a voice turn
   ("Calling it is the whole reply: add no words of your own", "Hands says it is switching, and switches once the user
-  has heard that", "The session told becomes the focus"). "Tell the user" is true for both; `catch_up`'s window "since
-  they last spoke to you" becomes "since the user last spoke to hands", which it is.
+  has heard that", "The session told becomes the focus", and how to speak what `expand`, `hear_voices`, `use_voice`,
+  `attention` and `context_usage` hand back). "Tell the user" is true for both; a "you" that meant hands says "hands",
+  as `catch_up`'s window "since the user last spoke to hands" does.
 - **The focus is the voice conversation's**, so a remote call names its session and moves no focus, and what the app
   does never changes which session a spoken "send it" lands on.
 
@@ -294,10 +305,10 @@ live connect is its own ticket, taken as soon as there is a door to connect to, 
 
 1. **A tool's voice part is a value of its own.** `then`, the cue, the focus, the voice's own tools, the
    description's voice sentences, and what a voice turn does around a call (refocus, a heard line) move off the act,
-   which is built with no player and no refocus, into the brain door's `Voice`; a model's keep becomes the `Keep` the
-   handler performs after the write. Done when the brain is
-   offered the same tools, with the same descriptions but `catch_up`'s reworded window, and the same calls cue, speak
-   and move the focus as before, by the existing tests, which are the brain's contract here.
+   which is built with no player and no refocus, into the brain door's `BrainDoor`; a model's keep becomes the effect
+   of an `After` the door runs after the write. Done when the brain is offered the same tools with the same schemas and
+   `then`, their descriptions changed only where a sentence named hands as "you" or was true only of a voice turn, and
+   the same calls cue, speak and move the focus as before, by the existing tests, which are the brain's contract here.
 2. **Walking skeleton: the remote door, admitting only Access.** `Door` and `Caller` in place of `used`, the remote
    door serving hands' own acts with JWT admission and the `[remote]` setting, a refusal event on both doors, and
    every `tools/call` answered as a stream. Done

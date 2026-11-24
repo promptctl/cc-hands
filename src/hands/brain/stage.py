@@ -89,7 +89,8 @@ from hands.voice.trigger import Trigger
 from hands.voice.turnstop import ClipDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks, brain_refused
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
-from hands.voice.tool import Result, Tool, said_back, silent, whole
+from hands.voice.tool import Answer, Result, Tool, said_back
+from hands.voice.braindoor import Voiced, silent, whole
 
 
 class Asking(Protocol):
@@ -171,7 +172,7 @@ class _Close:
 _Point = _Close | Asked
 
 
-def wire_name(tool: Tool) -> str:
+def wire_name(tool: Tool[Answer]) -> str:
     """The name a hands tool has on the wire, where the brain calls it through hands' MCP server."""
     return f"mcp__{SERVER_NAME}__{tool.name}"
 
@@ -384,7 +385,7 @@ class _Turn:
         it or not. Their words in it are answered instead."""
         return isinstance(self.asker, UserAsked) and self.first_word is None and not self.asked and not self.interrupted and not self.barge_ins
 
-    def owes_word(self, tools: Mapping[str, Tool]) -> bool:
+    def owes_word(self, tools: Mapping[str, Voiced]) -> bool:
         """The user is owed a word of what the turn did: they asked it and did not speak over it, it acted, and its latest
         reply closes it on nothing, no words and no call but stay_silent, with no readback of hands' to follow. That reply's
         words would follow every act before it, since a reply's words come ahead of its calls' runs, and a readback follows
@@ -414,7 +415,7 @@ class BrainStage(FrameProcessor):
     def __init__(
         self,
         brain: Asking,
-        tools: Sequence[Tool],
+        tools: Sequence[Voiced],
         tail: Callable[[], str],
         refocus: Callable[[SessionId], Awaitable[None]],
         front: Callable[[], Awaitable[InFront]],
@@ -449,7 +450,7 @@ class BrainStage(FrameProcessor):
         self._clock = clock
         self._acknowledgements = cycle(ACKNOWLEDGEMENTS)
         self._answers = cycle(ANSWERS)
-        self._tools = {wire_name(tool): tool for tool in tools}
+        self._tools = {wire_name(voiced.tool): voiced for voiced in tools}
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
         # it runs beside the frames passing through, a barge-in ends what is said of it but not it, and the next is written only
         # once the brain has ended it. What waits is in two lanes, the user's and hands', and the user's goes first.
@@ -1080,7 +1081,7 @@ class BrainStage(FrameProcessor):
 
     def _called(self, tool: str) -> str:
         """A tool as the user knows it: one of hands' own by its own name, any other as the model called it."""
-        return self._tools[tool].name if tool in self._tools else tool
+        return self._tools[tool].tool.name if tool in self._tools else tool
 
     def hear(self, observed: Observed) -> None:
         turn = self._running
@@ -1174,7 +1175,7 @@ class _Failure:
     note: str
 
 
-def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failure | None:
+def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Voiced]) -> _Failure | None:
     """What a turn the brain finished failed of; None for one that did not, or one the user stopped, which ends as they asked."""
     match ended:
         case BrainStopped():

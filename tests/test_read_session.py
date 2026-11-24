@@ -19,7 +19,7 @@ from hands.sessions.summaries import Summaries
 from hands.voice.summary import SummaryFailed
 from hands.voice.summaries import SummaryStore, Turns
 from hands.voice.summarising import summarise_turns
-from hands.voice.tool import Tool
+from hands.voice.tool import Result, Tool
 from hands.voice.tools import READBACK_COUNT, TURNS_PAGE, session_tools
 from conftest import new_sessions
 
@@ -39,7 +39,7 @@ async def at_prompt(sessions: Sessions) -> Sessions:
     return sessions
 
 
-def tools(sessions: Sessions, store: SummaryStore | None = None) -> dict[str, Tool]:
+def tools(sessions: Sessions, store: SummaryStore | None = None) -> dict[str, Tool[Result]]:
     return {tool.name: tool for tool in session_tools(sessions, store or SummaryStore(Summaries(Path(tempfile.mkdtemp()) / "summaries.db")))}
 
 

@@ -1,45 +1,119 @@
 """A tool the model can call: the schema it sees, read once from a plain async body's signature and docstring, and the
-body that answers a call. [LAW:decomposition] it knows nothing of who calls it: hands' MCP server is the adapter over
-tools, and none of its dependencies are this module's.
+body that answers a call. [LAW:decomposition] it is the act alone, the same to any caller: what a call is to a voice
+turn is `hands.voice.braindoor`'s, and hands' MCP server is the adapter over tools.
 """
 
 import functools
 import inspect
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Literal, cast, get_args, get_origin, get_type_hints, is_typeddict
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
+from typing import Literal, Protocol, cast, get_args, get_origin, get_type_hints, is_typeddict
 
 import docstring_parser
+
+from hands.clock import Clock
+from hands.sessions.audit import Record
+from hands.sessions.wide import annotate, begun, fail, unit
 
 from hands.core.playback import Labelled
 
 
 # What the model is handed back from a call: an object, as every tool API carries a result.
 Result = Mapping[str, object]
-Body = Callable[..., Awaitable[Result]]
 JsonSchema = Mapping[str, object]
-# What a call means to the conversation. "reply": the model is asked to go on once it has the result. "silence": the call
-# is the whole reply and hands says something for it: a draft read back, playback resumed, the model switched. "nothing":
-# the call is the whole reply and nothing is said for it, which only words not said to the model may end in. Either whole
-# reply that hands back an error is the model's to answer: a refused call did nothing, and only the model can retry it.
-Then = Literal["reply", "silence", "nothing"]
+
+
+class Effect(Protocol):
+    """What is done once the caller has the answer, holding nothing until it is run, so an answer dropped unanswered
+    leaves nothing held."""
+
+    async def __call__(self) -> None: ...
+
+
+# What becomes of an effect whose answer cannot be written. "run": someone was already told of it, as the user hears a
+# switch said before it is answered, so it is done as they were told. "dropped": only the answer would have told anyone.
+Unanswered = Literal["run", "dropped"]
 
 
 @dataclass(frozen=True)
-class Tool:
-    """One tool: the schema the model sees, the body that answers a call, and what a call means to the conversation."""
+class After:
+    """A result, and an effect that would cut its answer off if it ran first, as keeping the model hands runs on restarts
+    hands. [LAW:effects-at-boundaries] a body describes the effect, and the door that answers runs it once the answer is
+    written, or as `unanswered` says where it cannot be (`hands.voice.answered`)."""
+
+    result: Result
+    effect: Effect
+    unanswered: Unanswered
+
+
+type Answer = Result | After
+type Body[A: Answer] = Callable[..., Awaitable[A]]
+
+
+def result_of(answer: Answer) -> Result:
+    """What the caller is handed back for an answer."""
+    match answer:
+        case After(result=result):
+            return result
+        case _:
+            return answer
+
+
+def with_result(answer: Answer, result: Callable[[Result], Result]) -> Answer:
+    """The answer with its result made by `result` from the one it had, and the effect, if any, kept with it."""
+    match answer:
+        case After(result=had):
+            return replace(answer, result=result(had))
+        case _:
+            return result(answer)
+
+
+@dataclass(frozen=True)
+class Tool[A: Answer]:
+    """One tool: the schema the model sees, and the body that answers a call. Typed by what its body can answer, so one
+    built to answer a `Result` alone is known as one by whoever holds it."""
 
     name: str
     description: str
+    # [LAW:one-source-of-truth] each argument's schema and which are required, as listed and as the body is held to them.
     properties: Mapping[str, JsonSchema]
     required: tuple[str, ...]
-    body: Body
-    # A result `read_back` made is said by hands, as written, whichever the model does.
-    then: Then
+    body: Body[A]
 
     @property
     def input_schema(self) -> JsonSchema:
-        return {"type": "object", "properties": dict(self.properties), "required": list(self.required)}
+        """The arguments' schema as MCP lists it."""
+        return {"type": "object", "properties": self.properties, "required": list(self.required)}
+
+
+@dataclass(frozen=True)
+class Called:
+    """What the model gave a tool, and the result it was handed back: None while the body runs, and for a body that raised."""
+
+    arguments: Mapping[str, object]
+    result: Result | None
+
+
+def audited[A: Answer](clock: Clock, tool: Tool[A], record: Record) -> Tool[A]:
+    """The tool, each call one wide event: the tool's name, what it was given, and what the model was handed back, ending
+    failed where the body raised or the result refuses the call."""
+
+    # [LAW:single-enforcer] one unit on every body, whichever adapter calls it, so no call goes unseen [LAW:nothing-unseen].
+    @functools.wraps(tool.body)
+    async def call(**arguments: object) -> A:
+        with unit("tool.run", record, begun(clock)):
+            annotate(tool=tool.name, called=Called(arguments, None))
+            answer = await tool.body(**arguments)
+            result = result_of(answer)
+            annotate(called=Called(arguments, result))
+            match result:
+                case {"error": refused}:
+                    fail(str(refused))
+                case _:
+                    pass
+            return answer
+
+    return replace(tool, body=call)
 
 
 def read_back(says: str, label: str) -> Result:
@@ -57,7 +131,7 @@ def said_back(result: Result) -> Labelled | None:
             return None
 
 
-def tool(body: Body, *, then: Then = "reply") -> Tool:
+def tool[A: Answer](body: Body[A]) -> Tool[A | Result]:
     """The body as a tool, its schema read once from its signature and docstring: the name, the text, and each argument's type and line."""
     # [LAW:parse-dont-validate] a signature with a type no schema says is refused here, as the daemon builds its tools.
     docstring = docstring_parser.parse(inspect.getdoc(body) or "")
@@ -66,10 +140,10 @@ def tool(body: Body, *, then: Then = "reply") -> Tool:
     parameters = inspect.signature(body).parameters.values()
     properties = {parameter.name: {**_schema(hints[parameter.name]), "description": lines.get(parameter.name, "")} for parameter in parameters}
     required = tuple(parameter.name for parameter in parameters if parameter.default is inspect.Parameter.empty)
-    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, _closed(body, properties), then)
+    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, _closed(body, properties))
 
 
-def _closed(body: Body, properties: Mapping[str, JsonSchema]) -> Body:
+def _closed[A: Answer](body: Body[A], properties: Mapping[str, JsonSchema]) -> Body[A | Result]:
     """The body, refusing a call whose arguments do not fit its signature or the schema the model was shown for them,
     so the model is told, as a result, and can call again."""
     # [LAW:single-enforcer] every adapter calls the tool's body, so the schema it advertises is held here, once.
@@ -77,7 +151,7 @@ def _closed(body: Body, properties: Mapping[str, JsonSchema]) -> Body:
     signature = inspect.signature(body)
 
     @functools.wraps(body)
-    async def call(**arguments: object) -> Result:
+    async def call(**arguments: object) -> A | Result:
         # A null is an argument left out, which some models send for one they leave empty: it takes the argument's
         # default, and is refused where there is none.
         sent = {name: value for name, value in arguments.items() if value is not None}
@@ -142,13 +216,3 @@ def _schema(hint: object) -> JsonSchema:
             return {"type": "array", "items": _schema(item)}
         case _:
             raise TypeError(f"a tool argument typed {hint!r} has no schema here")
-
-
-def whole(silences: Sequence[bool]) -> bool:
-    """Whether a reply's calls were the whole of it: every one of them silent. One that replied or was refused is the model's to answer."""
-    return bool(silences) and all(silences)
-
-
-def silent(tool: Tool, result: Result) -> bool:
-    """Whether the call is the whole reply: a silence or nothing tool's, unless it was refused."""
-    return tool.then != "reply" and "error" not in result

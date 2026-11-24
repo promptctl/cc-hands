@@ -60,6 +60,7 @@ from hands.core.attention import Attention
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_devices
 from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
+from hands.voice.modelswitch import Switches
 from hands.voice.shortcut import Move
 from hands.voice.clips import Trigger
 from hands.voice.atdesk import serve_desk
@@ -103,9 +104,10 @@ from hands.voice.library import Library
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.listening import Driving, Listening
-from hands.voice.tool import Tool
+from hands.voice.tool import Answer, Tool
 from hands.voice.gallerypage import Gallery
-from hands.voice.tools import audited, close_session_tool, cued, intermediary_tools, start_session_tool, usage_tool
+from hands.voice.tools import acts, usage_tool
+from hands.voice.braindoor import BrainDoor, brain_door
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
@@ -209,12 +211,12 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    clock: Clock, config: VoiceConfig, tools: Sequence[Tool[Answer]], turn: BrainDoor, tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     log: Path, hands: str, record: Record, environment: Mapping[str, str], next_barge_in: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
-    speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is given
-    `brain_tools` beside `tools`: what it does with a shell, to find what they act on, and a skill saying when."""
+    speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is served
+    hands' own `tools`, and the one that reads its usage, through the voice `turn`, and each call is its event."""
     llm = config.llm
     spans = CallSpans()
     talk = conversation(llm.config_dir, SessionId(dashed(clock)))
@@ -223,8 +225,9 @@ async def mind(
     session = BrainSession(talk.session)
     # The brain is behind hands' proxy, so its usage is read off the wire, and it has a tool to ask it with.
     usage = Usage(session.id)
-    tools = [*tools, *brain_tools, audited(clock, usage_tool(usage), record)]
-    server = await serve_mcp(clock, tools, record, spans)
+    # [LAW:single-enforcer] one event on every tool the brain is served, the voice's own among them.
+    served = turn.serve([*tools, usage_tool(usage)])
+    server = await serve_mcp(clock, [each.tool for each in served], record, spans)
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
@@ -236,7 +239,7 @@ async def mind(
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
         asides = Asides(clock, proxy_url, Newest(session), record)
         try:
-            stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
+            stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
             with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -328,18 +331,13 @@ async def run(
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
-            tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
+            tools = acts(sessions, store, home, recounts, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, record)
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
-            gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
-            # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
-            # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
-            # no longer does.
-            brain_tools = [
-                audited(clock, cued(start_session_tool(clock, home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record),
-                audited(clock, cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
-            ]
+            # [LAW:single-enforcer] one owner of a switch under way, whether the user asks by voice or on the page.
+            switches = Switches(player)
+            gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, switches=switches, wake=config.wake, models=CLAUDE_MODELS)
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)

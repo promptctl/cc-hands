@@ -23,9 +23,13 @@ from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
 from hands.sessions.wide import begun, unit
 from hands.sessions.registry import Sessions
+from hands.voice.modelswitch import Switches
 from hands.voice.conversation import record_turns, turns
-from hands.voice.tool import Result, Tool, tool
-from hands.voice.tools import audited, cued, draft_tools, keyboard_tools
+from hands.voice.tool import Result, Tool, audited, tool
+from hands.voice.tools import draft_tools, keyboard_tools
+from hands.voice.player import Player
+from hands.voice.braindoor import BrainDoor
+from hands.sessions.home import Home
 from conftest import new_sessions
 
 
@@ -58,7 +62,7 @@ async def joined(tmp: Path, record: Record = unrecorded, typed: Callable[[Type[I
     return sessions, membership.id
 
 
-async def call(tools: list[Tool], name: str, **arguments: object) -> dict[str, object]:
+async def call(tools: Sequence[Tool[Result]], name: str, **arguments: object) -> dict[str, object]:
     """A call to the tool named, inside a unit of work, as every call the daemon makes is."""
     [tool] = [tool for tool in tools if tool.name == name]
     with unit("tool.run", unrecorded, begun(SYSTEM)):
@@ -131,7 +135,6 @@ async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_
     assert [tool.name for tool in tools] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
     assert tools[0].required == ("session", "text", "resolutions")
     assert tools[0].properties["resolutions"]["items"] == {"type": "object", "properties": {"heard": {"type": "string"}, "meant": {"type": "string"}}, "required": ["heard", "meant"]}
-    assert [tool.then for tool in tools] == ["silence", "silence", "reply", "reply"]
 
 
 async def fire(aggregator: object, event: str, message: object) -> None:
@@ -421,7 +424,7 @@ async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path)
     assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}
 
 
-async def test_a_cued_tool_says_hands_is_acting_as_it_is_called_and_answers_as_before() -> None:
+async def test_an_act_served_in_a_voice_turn_says_hands_is_acting_as_it_is_called_and_answers_as_before(tmp_path: Path) -> None:
     happened: list[str] = []
 
     async def look(where: str) -> Result:
@@ -433,7 +436,8 @@ async def test_a_cued_tool_says_hands_is_acting_as_it_is_called_and_answers_as_b
         happened.append(f"looked {where}")
         return {"saw": where}
 
-    looking = cued(tool(look), lambda: happened.append("acting"))
+    [served] = BrainDoor({}, (), Home(tmp_path), lambda: happened.append("acting"), Switches(Player(lambda _entry: None))).serve([tool(look)])
+    looking = served.tool
     assert await looking.body(where="up") == {"saw": "up"}
     assert happened == ["acting", "looked up"]
     assert looking.name == "look"

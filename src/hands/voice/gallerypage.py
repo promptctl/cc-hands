@@ -4,8 +4,8 @@ listening level, the modality, and the model it runs on, set from the same page.
 
 Served beside the phone's page, on its port and under its key (`hands.voice.phonepage`, `hands.voice.keyed`). Each choice
 is the one its by-voice tool makes: the voices are `hands.voice.voices`', the level is the desk's, the modality is the
-push-to-talk key's, and the model is `hands.voice.tools.switch_model`'s, so a choice on the page and one by voice are
-the same change.
+push-to-talk key's, and the model is switched as `hands.voice.modelswitch` switches it, so a choice on the page and one
+by voice are the same change.
 """
 
 import json
@@ -23,7 +23,8 @@ from hands.sessions.wide import annotate, fail
 from hands.voice.listening import LEVELS, Level, Listening, parse_level
 from hands.voice.keyed import keyed
 from hands.voice.longpoll import version_of, waited
-from hands.voice.modelswitch import Heard, OwnModel, switch_model
+from hands.voice.modelswitch import OwnModel, Switches, chosen
+from hands.voice.answered import answered_then
 from hands.voice.trigger import described
 from hands.voice.library import Found
 from hands.voice.voicechoice import VOICES, Chosen, Saved, Voice, parse_voice
@@ -64,14 +65,14 @@ class Desk(Protocol):
 
 @dataclass(frozen=True)
 class Gallery:
-    """What the page reads and sets. `speaker` is what a model switch's line is heard through, and `models` the models
+    """What the page reads and sets. `switches` says a model switch, one under way at a time, and `models` the models
     the page offers, which `own` refuses where they are not hands' to run on."""
 
     voices: Voicing
     levels: Listening
     desk: Desk
     own: OwnModel
-    speaker: Heard
+    switches: Switches
     wake: Word
     models: tuple[str, ...]
 
@@ -244,16 +245,16 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
         return web.json_response({"modality": modality})
 
     @keyed(clock, "gallery.model", record, key)
-    async def choose_model(request: web.Request) -> web.Response:
+    async def choose_model(request: web.Request) -> web.StreamResponse:
         try:
             model = parse_field(await request.read(), "model")
             annotate(model=model, switching=False)
             # [LAW:one-source-of-truth] the same switch the voice tool makes: its order, its line, and its refusals.
-            result = await switch_model(gallery.own, gallery.speaker, model)
+            switch = await gallery.switches.announced(await chosen(gallery.own, model))
         except (Rejected, OSError) as error:
             return _refusal(error)
         annotate(switching=True)
-        return web.json_response(result)
+        return await answered_then(request, web.json_response(switch.result), switch, "the model's switch")
 
     return [
         web.get("/gallery", served),
