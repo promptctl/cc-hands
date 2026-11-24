@@ -192,14 +192,12 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
 
 
 def _login(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable, running: heartbeat.Verdict) -> Ready | Missing:
-    """The brain's login: expired, where the running brain's turns last said so, which no Claude Code is started to learn;
+    """The brain's login: expired, where the brain of hands up now last said so, which no Claude Code is started to learn;
     else as its Claude Code says it. Its `claude auth status` says only that it holds a token, not that the token works,
     and a brain that has said nothing of its login has shown nothing of it."""
-    match running:
-        case heartbeat.Up(status=status) | heartbeat.Unresponsive(status=status) if any(each.kind == "login-expired" for each in status.degraded):
-            return Missing(heartbeat.LOGIN_EXPIRED.brief, LOGIN_EXPIRY, LOGIN_RENEWAL)
-        case _:
-            return _reached(children, llm, home, environment, brain)
+    if any(each.kind == heartbeat.LOGIN_EXPIRED.kind for each in heartbeat.degradations(running)):
+        return Missing(heartbeat.LOGIN_EXPIRED.brief, LOGIN_EXPIRY, LOGIN_RENEWAL)
+    return _reached(children, llm, home, environment, brain)
 
 
 def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[str, str], brain: Runnable) -> Ready | Missing:

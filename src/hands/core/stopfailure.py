@@ -31,6 +31,9 @@ class StopFailed:
 # all say of it. Claude Code's own text names its /login, which is not how hands' brain logs in.
 LOGIN_EXPIRY = "the brain's login has expired, so every turn fails"
 LOGIN_RENEWAL = "`hands login`, then `hands restart`"
+# [LAW:one-source-of-truth] the two said as one, where the voice and the heartbeat say them; `hands check` gives each
+# its own place in a finding.
+LOGIN_EXPIRED_SAID = f"{LOGIN_EXPIRY}: {LOGIN_RENEWAL}"
 
 
 @dataclass(frozen=True)

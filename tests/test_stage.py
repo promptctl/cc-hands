@@ -1510,6 +1510,9 @@ def unreached(exchange: str, clock: VirtualClock) -> Exchanged:
         ([], EXPIRED := LoginExpired(StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile")), EXPIRED),
         # Refused with a 401, and the refresh after it refused too: the expired login is why, over the 401 the wire named.
         ([401], REFUSED := LoginExpired(StopFailed("authentication_failed", "Login expired · Please run /login")), REFUSED),
+        # Any other cause the wire named is the turn's, whatever Claude Code ended it saying.
+        ([429], REFUSED, UsageLimitReached(RESETS)),
+        ([529], REFUSED, ModelFailed(ErrorCategory.SERVER)),
     ],
 )
 async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None | Literal["unanswered"]], failure: StopFailed | LoginExpired, fact: ModelFact) -> None:

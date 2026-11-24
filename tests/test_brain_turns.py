@@ -4,7 +4,6 @@ Code takes and tells to the turns it asked, and answers the hooks it posts, with
 from types import SimpleNamespace
 import asyncio
 import os
-from datetime import UTC, datetime
 import json
 import threading
 import re
@@ -28,7 +27,6 @@ from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, Re
 from hands.sessions.audit import Entry
 from conftest import Unstarting, events, laid_out, patiently, settled, taken
 from fixtures.pins import LAID_OUT
-from hands.clock import SYSTEM
 from hands.core.session import Runnable
 from hands.daemon import readiness, run
 from hands.sessions import heartbeat
@@ -1061,12 +1059,14 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
     Claude Code is started to learn it."""
     home = Home(tmp_path / "home")
     laid_out(home)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
-    brain = _owning(VirtualClock())
+    clock = VirtualClock()
+    heart = heartbeat.Heart(home.status, os.getpid(), clock.wall(), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=clock)
+    brain = _owning(clock)
 
     def checked() -> readiness.Finding:
         heart.beat("running", None, 0, listening=False, degraded=run._login(brain.login))  # pyright: ignore[reportPrivateUsage]
-        return readiness.configured(Unstarting(SYSTEM, lambda _: None), home, LAID_OUT, {}, heartbeat.look(home.status, datetime.now(UTC)))
+        # Judged as `look` judges the hands it finds running, on the brain's own clock.
+        return readiness.configured(Unstarting(clock, lambda _: None), home, LAID_OUT, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
 
     _took(brain, "n1", NOTICE)
     _told(brain, "n1", ("n1",), failure=REFRESH_REFUSED)
@@ -1084,32 +1084,36 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
     assert (checked(), len(asked)) == (readiness.Missing("brain cannot reach its model", "hands has no model to talk with", "asked"), 1)
 
 
-async def test_every_turn_open_as_hands_presses_escape_is_marked_stopped_by_it() -> None:
+async def test_a_turn_opened_while_hands_clears_claude_code_leaves_the_report_unless_it_is_told_expired() -> None:
+    """The clear's keys may stop a turn Claude Code opened before it read them: told as though it answered, such a turn
+    says nothing of the login. Told expired, it says what Claude Code said."""
     brain = _owning(VirtualClock())
     keys = _keyed(brain, [])
+    gate = threading.Event()
+    keys.before["ctrl_c"] = gate.wait
+    _took(brain, "n0", NOTICE)
+    _told(brain, "n0", ("n0",), failure=UNREFRESHED)
     _took(brain, "n1", NOTICE)
     (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
-    assert notified.escaped is False
     assert brain.interrupt(notified) is True
-    await until(lambda: "escape" in keys.pressed)
-    assert notified.escaped is True
+    reports: list[LoginExpired | None] = []
+    try:
+        # Held at its Ctrl-C, the clear still runs.
+        await until(lambda: keys.pressed == ["escape", "ctrl_c"])
+        _took(brain, "n2", NOTICE)
+        _told(brain, "n2", ("n2",))
+        reports.append(brain.login)
+        _took(brain, "n3", NOTICE)
+        _told(brain, "n3", ("n3",), failure=REFRESH_REFUSED)
+        reports.append(brain.login)
+    finally:
+        gate.set()
     await brain.drained()
-
-
-@pytest.mark.parametrize(
-    ("escaped", "ended", "report"),
-    [
-        (True, BrainAnswered(PromptId("n1"), None), LoginExpired(UNREFRESHED)),
-        (True, BrainAnswered(PromptId("n1"), LoginExpired(REFRESH_REFUSED)), LoginExpired(REFRESH_REFUSED)),
-        (False, BrainAnswered(PromptId("n1"), None), None),
-    ],
-    ids=["stopped, told answered", "stopped, told expired", "told answered"],
-)
-async def test_a_turn_hands_pressed_escape_for_leaves_the_report_unless_it_was_told_expired(escaped: bool, ended: BrainAnswered, report: LoginExpired | None) -> None:
-    # Told as though it answered, a turn the Escape stopped says nothing of how Claude Code would have ended it.
-    running = process.ClaudeTurn(frozenset({PromptId("n1")}), "notified", asyncio.get_running_loop().create_future(), escaped=escaped)
-    running.ended.set_result(ended)
-    assert process.reported(LoginExpired(UNREFRESHED), running) == report
+    # Once the clear has taken, a turn told answered says so again.
+    _took(brain, "n4", NOTICE)
+    _told(brain, "n4", ("n4",))
+    reports.append(brain.login)
+    assert reports == [LoginExpired(UNREFRESHED), LoginExpired(REFRESH_REFUSED), None]
 
 
 async def test_a_task_result_ctrl_c_cleared_from_claude_codes_queue_ends_its_turn_unran_and_holds_no_turn_after_it() -> None:

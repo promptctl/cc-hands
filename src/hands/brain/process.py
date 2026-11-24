@@ -48,7 +48,7 @@ from hands.core.screen import Box, plain, typable
 from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PinnedClaude, PromptId, PromptText, RequestId, Runnable, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
-from hands.core.stopfailure import LoginExpired, StopFailed, expired
+from hands.core.stopfailure import LOGIN_RENEWAL, LoginExpired, StopFailed, expired
 from hands.darwin import child_pids
 from hands.sessions.audit import Record
 from hands.sessions.registry import Sessions, StopHeld
@@ -830,9 +830,9 @@ class ClaudeTurn:
     awaited: bool = False
     # How its telling was found to be its: by an id they share, or as the turn behind the one told before it.
     matched: Literal["id", "behind"] | None = None
-    # Whether hands pressed Escape while it was open (`Brain._clear`): then however it ends, it was stopped, and its end
-    # says nothing of how Claude Code would have ended it.
-    escaped: bool = False
+    # Whether it was open while hands cleared what Claude Code ran (`ClaudeTurns.clearing`): then it may be what the clear
+    # stopped, and an end told as though it answered says nothing of how Claude Code would have ended it.
+    cleared: bool = False
 
 
 class ClaudeTurns:
@@ -857,6 +857,9 @@ class ClaudeTurns:
         # Whether which turn Claude Code runs is unknown, since its order was lost (`lost`): known again at the next prompt
         # hook, and until then no turn behind is taken for the one running.
         self._unknown = False
+        # [LAW:no-ambient-temporal-coupling] how many clears run now (`clearing`): a turn opened while one runs may be one
+        # Claude Code opened before it read the clear's keys, so which turn they stop is never taken from when they went.
+        self._clearing = 0
 
     @property
     def current(self) -> ClaudeTurn | None:
@@ -883,7 +886,7 @@ class ClaudeTurns:
         wait, so words that join one already waiting run in it, and it is awaited once any of them is hands'."""
         running = next((running for running in self._open if not running.ids), None)
         if running is None:
-            running = ClaudeTurn(frozenset(), kind, asyncio.get_running_loop().create_future(), awaited)
+            running = ClaudeTurn(frozenset(), kind, asyncio.get_running_loop().create_future(), awaited, cleared=self._clearing > 0)
             self._open.append(running)
             # [LAW:no-ambient-temporal-coupling] it runs once the turn ahead of it ends (`_end`), never while that one
             # still sends its requests; nor while which turn runs is unknown.
@@ -919,10 +922,17 @@ class ClaudeTurns:
         running.ended.set_result(BrainAnswered(told.turn, None if told.failure is None else expired(told.failure)))
         self._on_end(running)
 
-    def escaping(self) -> None:
-        """Hands presses Escape now: every turn open is stopped by it, however it is told."""
+    @contextlib.contextmanager
+    def clearing(self) -> Generator[None]:
+        """While hands clears what Claude Code runs: every turn open as it begins, and each opened before it ends, is one
+        it may stop (`ClaudeTurn.cleared`)."""
         for running in self._open:
-            running.escaped = True
+            running.cleared = True
+        self._clearing += 1
+        try:
+            yield
+        finally:
+            self._clearing -= 1
 
     def lost(self, error: BaseException) -> tuple[ClaudeTurn, ...]:
         """Ends every open turn with `error`, as `failed`, where Claude Code may still run one of them: which it runs is
@@ -946,6 +956,7 @@ class ClaudeTurns:
         self._on_end(running)
 
     def _run(self, running: ClaudeTurn) -> ClaudeTurn:
+        running.cleared = self._clearing > 0
         self._open.append(running)
         self._current = running
         return running
@@ -960,12 +971,13 @@ class ClaudeTurns:
 
 def reported(was: LoginExpired | None, running: ClaudeTurn) -> LoginExpired | None:
     """What the brain's turns say of its login once `running` has ended, given what they said before: an expired login
-    where Claude Code ended it saying so, and nothing where Claude Code ended it otherwise. A turn no telling ended, or
-    one hands pressed Escape for, shows nothing of the login, so what was said before stands."""
+    wherever Claude Code ended it saying so, a turn hands cleared included, as that failure is Claude Code's own; and
+    nothing where Claude Code ended it otherwise. A turn no telling ended shows nothing of the login, nor does one told
+    otherwise that hands' clear may have stopped, so what was said before stands."""
     match running.ended.exception() or running.ended.result():
         case BrainAnswered(error=LoginExpired() as login):
             return login
-        case BrainAnswered() if not running.escaped:
+        case BrainAnswered() if not running.cleared:
             return None
         case _:
             return was
@@ -1362,13 +1374,12 @@ class Brain:
         held = self._modelled()
         # [LAW:nothing-unseen] each clear is one event: whether it was for a turn, and how long Claude Code took to stop
         # what it ran.
-        with unit("brain.clear", self._record, begun(self._clock)):
+        with unit("brain.clear", self._record, begun(self._clock)), self._claude_turns.clearing():
             annotate(for_turn=turn is not None)
             # [LAW:no-ambient-temporal-coupling] what runs is ended in the model in the step its Escape goes: every dialog
             # it holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether
             # it reaches Claude Code before the Escape or after it.
             self._sessions.hear(Ending(self._session.id(), DenyAndInterrupt(STOPPED)))
-            self._claude_turns.escaping()
             await self._type(lambda typist: typist.press("escape"))
             escaped = self._clock.now()
             if turn is not None and (turn is not self._turn or not turn.stopped):
@@ -1874,7 +1885,14 @@ class Brain:
         """[LAW:single-enforcer] the turn in flight that rides `running` ends with it, whatever ended it: its telling, a
         clear, the order lost, the brain's exit. A turn stopped is `_stopping`'s to end. Every turn of Claude Code's ends
         here, one it opened itself included, so here is where what its end says of the login is heard."""
-        self._login = reported(self._login, running)
+        was, self._login = self._login, reported(self._login, running)
+        # [LAW:nothing-unseen] each change of what the brain reports of its login is a line, with the turn that changed it.
+        if self._login != was:
+            match self._login:
+                case LoginExpired() as login:
+                    logger.warning(f"the brain's Claude Code ended turn {sorted(running.ids)} with its login expired ({login}): its turns fail until {LOGIN_RENEWAL}")
+                case None:
+                    logger.info(f"the brain's Claude Code ended turn {sorted(running.ids)} without its login expired: its login is no longer reported expired")
         turn = self._turn
         if turn is None or turn.running is not running or turn.answered.done():
             return
