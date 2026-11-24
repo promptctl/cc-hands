@@ -242,5 +242,12 @@ async def test_an_interrupting_clock_s_first_wait_of_any_kind_is_a_ctrl_c_and_a_
         clock.take(queue.SimpleQueue[str](), 1)
 
 
+async def test_a_wait_on_a_clock_whose_sleep_raises_as_it_is_asked_leaves_nothing_of_it_running() -> None:
+    reading = asyncio.get_running_loop().create_future()
+    with pytest.raises(KeyboardInterrupt):
+        await wait(Interrupting(VirtualClock()), (reading,), 5.0)
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
 def test_a_timeout_with_no_deadline_on_an_interrupting_clock_is_no_wait() -> None:
     assert Interrupting(VirtualClock()).timeout(None).expired() is False

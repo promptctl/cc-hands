@@ -16,7 +16,6 @@ from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
 from hands.clock import SYSTEM
-from fixtures.clocks import Interrupting
 from hands.virtualclock import VirtualClock
 from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Submitted, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
@@ -50,6 +49,7 @@ from hands.voice.tools import Called, audited
 from hands.core.status import Busy, Report, Stamp
 from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unfinished, Unkept, Unreached
 from conftest import new_sessions
+from fixtures.clocks import Interrupting
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)

@@ -2,8 +2,8 @@
 
     python command_imports_child.py <home> <command> <out>
 
-Each command's reach past this machine has a stand-in: `log` follows until Ctrl-C, which its first wait for a new line
-stands in for; `phone` asks Tailscale for the tailnet's name and the machine for its LAN addresses; `login` runs Claude
+Each command's reach past this machine has a stand-in: `log` follows until Ctrl-C, which the clock every command runs on
+makes its first wait; `phone` asks Tailscale for the tailnet's name and the machine for its LAN addresses; `login` runs Claude
 Code's own login at the terminal."""
 
 from __future__ import annotations
