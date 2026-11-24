@@ -167,7 +167,7 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
     except Rejected as error:
         # The refusal names the file and what is wrong with it, so it is the detail, beside every other refusal of the
         # home's files, each naming its own fix, and the line names the file to mend.
-        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(home, pin, error))}", f"correct {home.config}")
+        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(preflight(home, pin), error))}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse on the home's files is said here in
     # its words, every refusal at once, and the login beside them wherever the brain's own config directory runs one.
     match preflight(home, pin).verdict:
@@ -203,7 +203,7 @@ def _reached(children: Children, llm: Claude, home: Home, environment: Mapping[s
 
 def reaching(reached: backends.ClaudeCodeBackend) -> Ready:
     """What a brain that has its login reaches, and the Claude Code it runs."""
-    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model} on Claude Code {reached.brain.version}, hands' own copy: {reached.brain.claude}")
+    return Ready(f"brain logged in as {reached.account}", f"the brain is logged in as {reached.account}, and reaches {reached.model} on Claude Code {reached.brain.claude.version}, hands' own copy: {reached.brain.claude.path}")
 
 
 def unstartable(reason: str) -> Missing:

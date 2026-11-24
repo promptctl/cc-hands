@@ -22,7 +22,7 @@ from pipecat.tests.utils import run_test
 
 from conftest import unprimed
 from hands.brain import pinned
-from hands.core.session import Runnable
+from hands.core.session import PinnedClaude, Runnable
 from hands.virtualclock import VirtualClock
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
@@ -358,7 +358,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     voice = built.build_voice(
         clock,
         built.VoiceConfig(
-            llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(pinned.PIN.claude(tmp_path), pinned.PIN.version, None)),
+            llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(PinnedClaude(pinned.PIN.claude(tmp_path), pinned.PIN.version), None)),
             voice=voicechoice.Voice("cosette"),
         ),
         llm=FrameProcessor(),

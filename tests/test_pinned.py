@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 
 from hands.brain import pinned
+from hands.core.session import PinnedClaude
 from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
@@ -42,18 +43,28 @@ def test_the_brain_runs_exactly_the_pinned_version_in_its_own_directory(tmp_path
     copied(config_dir / "pinned-claude" / VERSION / "claude", RELEASE)
     # Another version beside it is never the brain's.
     copied(dataclasses.replace(PIN, version=ANOTHER_VERSION).claude(config_dir), RELEASE)
-    assert PIN.verified(config_dir) == config_dir / "pinned-claude" / VERSION / "claude"
+    assert PIN.verified(config_dir) == PinnedClaude(config_dir / "pinned-claude" / VERSION / "claude", VERSION)
+
+
+def test_each_mac_runs_its_own_machines_build_of_the_pin_and_any_other_machine_has_none() -> None:
+    pin = pinned.Pin(version="1.2.3", arm64="a" * 64, x64="b" * 64)
+    assert pin.build("arm64") == pinned.Build("darwin-arm64", "a" * 64)
+    assert pin.build("x86_64") == pinned.Build("darwin-x64", "b" * 64)
+    with pytest.raises(pinned.Uninstallable, match="^Claude Code 1.2.3 has no macOS build for a 'riscv64' machine$"):
+        pin.build("riscv64")
 
 
 def test_two_pins_in_one_process_each_weigh_a_brain_against_their_own_checksums(tmp_path: Path) -> None:
     config_dir = tmp_path / "brain"
     copy = copied(PIN.claude(config_dir), RELEASE)
+    # The same build where another release's pin puts it.
     other = pins.of(OTHER)
-    assert PIN.verified(config_dir) == copy
+    copied(other.claude(config_dir), RELEASE)
+    assert PIN.verified(config_dir) == PinnedClaude(copy, VERSION)
     with pytest.raises(pinned.Unpinned, match=f"hashes to {hashlib.sha256(RELEASE).hexdigest()}, not the {hashlib.sha256(OTHER).hexdigest()}"):
         other.verified(config_dir)
     # Weighing one leaves the other as it was.
-    assert PIN.verified(config_dir) == copy
+    assert PIN.verified(config_dir) == PinnedClaude(copy, VERSION)
 
 
 def test_a_brain_whose_pinned_release_is_not_installed_refuses_naming_the_version_and_the_install(tmp_path: Path) -> None:
@@ -76,7 +87,7 @@ def test_a_copy_that_is_not_the_pinned_release_refuses_naming_its_checksum_and_t
     )
     # Written over with the pin, it is the brain's: what was hashed before is not taken for what is there now.
     copied(copy, RELEASE)
-    assert PIN.verified(config_dir) == copy
+    assert PIN.verified(config_dir) == PinnedClaude(copy, VERSION)
     # Nor is it when other bytes of the same length are written into the same file and its modified time is set back.
     held = copy.stat()
     copy.write_bytes(RELEASE.replace(b"pinned", b"PINNED"))
@@ -155,7 +166,7 @@ async def test_install_fetches_the_pinned_build_once_and_replaces_a_copy_that_is
     target = PIN.claude(config_dir)
     assert await pinned.install(config_dir, PIN, releases.source) == pinned.Installed(target, unpinned=f"Claude Code {VERSION}, the brain's, is not installed at {target}: run `hands install-brain`")
     assert releases.asked == [f"/{VERSION}/{built}/claude"]
-    assert PIN.verified(config_dir).read_bytes() == RELEASE and os.access(PIN.verified(config_dir), os.X_OK)
+    assert PIN.verified(config_dir).path.read_bytes() == RELEASE and os.access(PIN.verified(config_dir).path, os.X_OK)
     # There already, it is not fetched again.
     assert await pinned.install(config_dir, PIN, releases.source) == pinned.Installed(PIN.claude(config_dir), unpinned=None)
     assert len(releases.asked) == 1
@@ -169,9 +180,10 @@ async def test_install_fetches_the_pinned_build_once_and_replaces_a_copy_that_is
 @pytest.mark.outside
 async def test_a_download_that_is_not_the_pinned_release_is_refused_and_leaves_nothing(tmp_path: Path, releases: Served) -> None:
     config_dir = tmp_path / "brain"
-    with pytest.raises(pinned.Uninstallable, match=f"hashes to {hashlib.sha256(RELEASE).hexdigest()}, not the {hashlib.sha256(OTHER).hexdigest()} Claude Code {VERSION} is pinned to"):
-        await pinned.install(config_dir, pins.of(OTHER), releases.source)
-    assert list(PIN.claude(config_dir).parent.iterdir()) == []
+    other = pins.of(OTHER)
+    with pytest.raises(pinned.Uninstallable, match=f"hashes to {hashlib.sha256(RELEASE).hexdigest()}, not the {hashlib.sha256(OTHER).hexdigest()} Claude Code {other.version} is pinned to"):
+        await pinned.install(config_dir, other, releases.source)
+    assert list(other.claude(config_dir).parent.iterdir()) == []
 
 
 @pytest.mark.outside
@@ -180,7 +192,7 @@ async def test_install_replaces_a_copy_of_the_pin_that_cannot_be_run(tmp_path: P
     copied(PIN.claude(config_dir), RELEASE).chmod(0o644)
     installed = await pinned.install(config_dir, PIN, releases.source)
     assert installed.unpinned is not None and installed.unpinned.endswith("cannot be run: run `hands install-brain` to fetch it again")
-    assert PIN.verified(config_dir) == PIN.claude(config_dir) and len(releases.asked) == 1
+    assert PIN.verified(config_dir) == PinnedClaude(PIN.claude(config_dir), VERSION) and len(releases.asked) == 1
 
 
 @pytest.mark.outside
@@ -190,7 +202,7 @@ async def test_two_installs_at_once_each_write_their_own_download_and_leave_the_
     assert first.fetched and second.fetched and len(releases.asked) == 2
     # Neither removed or renamed the other's download, and what is left is the pin alone.
     assert list(PIN.claude(config_dir).parent.iterdir()) == [PIN.claude(config_dir)]
-    assert PIN.verified(config_dir) == PIN.claude(config_dir)
+    assert PIN.verified(config_dir) == PinnedClaude(PIN.claude(config_dir), VERSION)
 
 
 def serving(*chunks: bytes | Exception) -> pinned.Source:
@@ -224,7 +236,7 @@ async def test_install_holds_every_source_to_the_pin_and_leaves_nothing_of_one_t
     assert list(PIN.claude(config_dir).parent.iterdir()) == []
     # Its bytes the pin's, written in pieces, it is the brain's.
     installed = await pinned.install(config_dir, PIN, serving(RELEASE[:4], RELEASE[4:]))
-    assert installed.fetched and PIN.verified(config_dir).read_bytes() == RELEASE
+    assert installed.fetched and PIN.verified(config_dir).path.read_bytes() == RELEASE
 
 
 @dataclass(frozen=True)

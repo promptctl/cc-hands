@@ -15,9 +15,16 @@ import threading
 import time
 from datetime import timedelta
 from pathlib import Path
+from typing import NoReturn
 
+from standins import replace
+
+from hands.brain import pinned
+from hands.clock import Clock
 from hands.daemon import cli, watchdog
-from hands.daemon.starting import CannotStart
+from hands.daemon.config import Config, Settings
+from hands.daemon.starting import CannotStart, Ending, Start
+from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 
 # How often `beats` kicks: a twentieth of the deadline, so only a stall of nearly all of it ends the run.
@@ -29,28 +36,27 @@ def stuck_in_a_regex() -> None:
     re.search(r"(a+)+$", "a" * 40 + "b")
 
 
-def stuck() -> None:
+def stuck() -> NoReturn:
     threading.Thread(target=stuck_in_a_regex, name="worker").start()
     while True:
         time.sleep(0.05)
 
 
-def hung(*arguments: object) -> None:
-    # The run's own heart, found by its type: none of the run's other arguments is one, wherever it is passed.
-    [heart] = [argument for argument in arguments if isinstance(argument, cli.heartbeat.Heart)]
+def hung(clock: Clock, home: Home, pin: pinned.Pin, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
     heart.beat("starting", None, 0, listening=False, degraded=())
     stuck()
 
 
-def stalled_at_the_door(*_arguments: object) -> None:
+def stalled_at_the_door(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
     stuck()
 
 
-def opened(*_arguments: object) -> None:
+def opened(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
     """The door, opened onto settings the stood-in run never reads."""
+    return Settings(None, Config(), model)
 
 
-def refused(*_arguments: object) -> None:
+def refused(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
     raise CannotStart("refused for the test")
 
 
@@ -59,15 +65,15 @@ def main() -> None:
     watchdog.HUNG = deadline
     match mode:
         case "hangs":
-            setattr(cli, "door", opened)
-            setattr(cli, "run_here", hung)
+            replace(cli.door, opened)
+            replace(cli.run_here, hung)
             sys.exit(cli.main(["--home", str(home.root), "run"]))
         case "stalls":
-            setattr(cli, "door", stalled_at_the_door)
+            replace(cli.door, stalled_at_the_door)
             sys.exit(cli.main(["--home", str(home.root), "run"]))
         case "returns":
             # A restart's run holds the heartbeat from the outset, so its refusal beats, and kicks the watchdog.
-            setattr(cli, "door", refused)
+            replace(cli.door, refused)
             code = cli.main(["--home", str(home.root), "run", "--restarted", "0"])
             time.sleep(deadline.total_seconds() * 2)
             sys.exit(10 + code)

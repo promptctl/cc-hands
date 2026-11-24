@@ -134,7 +134,7 @@ async def edited(home: Home, pin: pinned.Pin, record: Record, running: Settings,
             # file's model alone is no edit while one outranks it.
             settings = _settings(home, _readable(home, now), running.model)
         except Rejected as error:
-            refusals: tuple[str, ...] = await off_loop(partial(beside, home, pin, error), "weighing a settings edit")
+            refusals = beside(await off_loop(partial(preflight, home, pin), "weighing a settings edit"), error)
         else:
             if settings == running.config:
                 settled = now
@@ -192,7 +192,7 @@ class OwnModel:
             held = _readable(self._home, _held(self._home))
             on_file = _settings(self._home, held, self._running.model)
         except Rejected as error:
-            raise Rejected("; ".join(beside(self._home, self._pin, error))) from error
+            raise Rejected("; ".join(beside(preflight(self._home, self._pin), error))) from error
         edited = _with_model(held, model)
         chosen = _settings(self._home, edited, self._running.model)
         if chosen == self._running.config:

@@ -54,5 +54,5 @@ async def test_the_pin_is_read_out_of_its_package_and_a_package_without_it_is_re
         await pinned.install(tmp_path, pin, registry("without"))
     assert list(pin.claude(tmp_path).parent.iterdir()) == []
     installed = await pinned.install(tmp_path, pin, registry("whole"))
-    assert installed.fetched and pin.verified(tmp_path).read_bytes() == RELEASE
+    assert installed.fetched and pin.verified(tmp_path).path.read_bytes() == RELEASE
 

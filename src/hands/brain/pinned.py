@@ -20,6 +20,8 @@ from typing import Literal
 
 import aiohttp
 
+from hands.core.session import PinnedClaude
+
 RELEASES = "https://downloads.claude.ai/claude-code-releases"
 INSTALL = "hands install-brain"
 # How long the fetch from Anthropic's releases waits on a connection, or on the next bytes of the download, before failing
@@ -111,7 +113,7 @@ class Pin:
         # Beside the brain's login and settings: everything the brain is, in the one directory hands owns for it.
         return config_dir / "pinned-claude" / self.version / "claude"
 
-    def verified(self, config_dir: Path) -> Path:
+    def verified(self, config_dir: Path) -> PinnedClaude:
         """The brain's pinned claude, once its bytes are the pin's and it can be run; raises Unpinned, naming the command
         that installs it, when it is not there, cannot be read, is not the pin, or cannot be run."""
         found = self.claude(config_dir)
@@ -131,7 +133,7 @@ class Pin:
             raise Unpinned(f"{found} hashes to {got}, not the {expected} of Claude Code {self.version}, the brain's: run `{INSTALL}` to fetch it again")
         if not os.access(found, os.X_OK):
             raise Unpinned(f"{found}, Claude Code {self.version}, the brain's, cannot be run: run `{INSTALL}` to fetch it again")
-        return found
+        return PinnedClaude(found, self.version)
 
 
 # [LAW:one-source-of-truth] the pin hands runs: the version, and the SHA-256 Anthropic's manifest for it gives each macOS
@@ -158,7 +160,7 @@ async def install(config_dir: Path, pin: Pin, source: Source) -> Installed:
     """`pin`'s claude in the brain's directory: fetched from `source` and checked against its checksum unless the pin is
     there already, and whole or not there at all."""
     try:
-        return Installed(pin.verified(config_dir), unpinned=None)
+        return Installed(pin.verified(config_dir).path, unpinned=None)
     except Unpinned as error:
         # [LAW:nothing-unseen] why the copy there is fetched over: missing, unreadable, unrunnable, or bytes not the pin's.
         unpinned = str(error)

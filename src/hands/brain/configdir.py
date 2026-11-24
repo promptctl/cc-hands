@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hands.brain import pinned
-from hands.core.session import PERMISSION_MODES, PermissionMode, Runnable, UnknownMode
+from hands.core.session import PERMISSION_MODES, PermissionMode, PinnedClaude, Runnable, UnknownMode
 from hands.sessions.files import Unread
 from hands.sessions.payload import Payload, Rejected
 
@@ -58,12 +58,11 @@ class State:
 @dataclass(frozen=True)
 class ConfigDir:
     """The brain's config directory, every file of it read, and the directory the brain runs in, as Claude Code records
-    a directory it trusts: resolved; and the version of Claude Code its claude was weighed against."""
+    a directory it trusts: resolved."""
 
     path: Path
     cwd: Path
-    version: str
-    claude: Path | pinned.Unpinned
+    claude: PinnedClaude | pinned.Unpinned
     settings: Settings | Unread
     state: State | Absent | Unread
 
@@ -77,12 +76,12 @@ def read(config_dir: Path, pin: pinned.Pin) -> ConfigDir:
     """Every file of `config_dir` the brain starts on, read, its claude weighed against `pin`; never raises on what they
     hold. Hashes a pinned claude this process has not hashed since it changed, about 230 MB, so it is called off the loop."""
     try:
-        claude: Path | pinned.Unpinned = pin.verified(config_dir)
+        claude: PinnedClaude | pinned.Unpinned = pin.verified(config_dir)
     except pinned.Unpinned as error:
         claude = error
     # realpath, not resolve: a link loop is a directory Claude Code trusts none of, never a raise.
     here = Path(os.path.realpath(cwd(config_dir)))
-    return ConfigDir(config_dir, here, pin.version, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here))
+    return ConfigDir(config_dir, here, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here))
 
 
 def _settings(path: Path) -> Settings | Unread:
@@ -157,17 +156,17 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
     refused = (*_pinned(config.claude), *_kept_out(config))
     match config.claude, config.settings:
-        case Path() as claude, Settings(mode=str() | None as mode) if not refused:
-            return Runnable(claude, config.version, mode)
+        case PinnedClaude() as claude, Settings(mode=str() | None as mode) if not refused:
+            return Runnable(claude, mode)
         case _:
             return refused
 
 
-def _pinned(claude: Path | pinned.Unpinned) -> tuple[str, ...]:
+def _pinned(claude: PinnedClaude | pinned.Unpinned) -> tuple[str, ...]:
     match claude:
         case pinned.Unpinned():
             return (str(claude),)
-        case Path():
+        case PinnedClaude():
             return ()
 
 

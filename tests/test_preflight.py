@@ -198,7 +198,7 @@ def test_the_door_passes_a_home_whose_brain_is_refused_so_the_start_says_it_besi
     home = Home(tmp_path)
     monkeypatch.setattr(talkkey, "granted", lambda: True)
     _stale_shim(home)
-    assert cli.door(home, LAID_OUT, None) == config.load(home)
+    assert cli.door(home, LAID_OUT, None, Start(False, VirtualClock())) == config.load(home)
 
 
 async def test_an_edit_refused_on_its_home_is_taken_once_the_home_is_mended_its_bytes_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -269,10 +269,11 @@ def test_two_starts_in_one_process_each_weigh_the_brain_against_the_pin_they_are
     home = Home(tmp_path)
     laid_out(home)
     wrapper.install(home)
-    # Another release of the same version: the brain's claude in the place both pins put it, the build of only one of them.
+    # The same build in the place another release's pin puts it, as a copy of the wrong release would be.
     other = pins.of(b"#!/bin/sh\nexit 0\n")
-    assert other.claude(home.brain) == LAID_OUT.claude(home.brain)
-    # Each start weighs the one build against its own pin, whichever was weighed before it.
+    other.claude(home.brain).parent.mkdir(parents=True)
+    other.claude(home.brain).symlink_to(LAID_OUT.claude(home.brain))
+    # Each start weighs the build against its own pin, whichever was weighed before it.
     assert isinstance(preflight(home, LAID_OUT).verdict, Startable)
     match preflight(home, other).verdict:
         case Refused(refusals=(unpinned,)):
@@ -316,10 +317,15 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
     home.config.write_text("[llm\n")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
     each = (str(home.config), "is not the shim this hands writes")
-    # The start, refused at its door, before the settings name where the run is recorded.
+    # The start, refused at its door, before the settings name where the run is recorded, its event saying what the
+    # preflight beside the settings found, as a start past its door says it.
+    run_start = Start(False, VirtualClock())
     with pytest.raises(CannotStart) as refused:
-        cli.door(home, LAID_OUT, None)
+        cli.door(home, LAID_OUT, None, run_start)
     assert [said for said in each if said not in str(refused.value)] == []
+    events: list[WideEvent] = []
+    run_start.ended(events.append, refused.value)
+    assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code")} for event in events] == [preflight(home, LAID_OUT).facts()]
     # The survey.
     match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, os.environ):
         case readiness.Missing(detail=detail):

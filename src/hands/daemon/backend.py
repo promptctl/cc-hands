@@ -30,7 +30,7 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
     from hands.brain.process import NotLoggedIn, logged_in
 
     try:
-        account = logged_in(children, brain.claude, home.brain, UPSTREAM, environment)
+        account = logged_in(children, brain.claude.path, home.brain, UPSTREAM, environment)
     except (NotLoggedIn, Unstartable) as error:
         raise Rejected(str(error)) from error
     return ClaudeCodeBackend(model=llm.model, config_dir=home.brain, account=account, brain=brain)

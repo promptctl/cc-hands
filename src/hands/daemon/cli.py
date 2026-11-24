@@ -303,7 +303,7 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
                 # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
                 after_crash = restarted is None and crashed_before(clock, home)
                 run_start.heard(after_crash=after_crash)
-                settings = door(home, pin, model)
+                settings = door(home, pin, model, run_start)
             except CannotStart as cannot:
                 run_start.ended(audit_log.record, cannot)
                 refuse(cannot, held)
@@ -418,11 +418,12 @@ def dispatch(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, 
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def door(home: Home, pin: pinned.Pin, model: str | None) -> Settings:
+def door(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant and the
     settings it starts on. CannotStart where either is missing. What the home's files refuse is the start's preflight's
     to say, a step of its own once the run has its heartbeat (hands.daemon.preflight), and said here beside settings
-    that do not parse, since a run whose settings choose where it is recorded never reaches that step."""
+    that do not parse, since a run whose settings choose where it is recorded never reaches that step: what that
+    preflight found reaches `run_start`'s event as the step's would."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -437,7 +438,9 @@ def door(home: Home, pin: pinned.Pin, model: str | None) -> Settings:
     try:
         return load(home, model)
     except Rejected as error:
-        raise CannotStart("; ".join(preflight.beside(home, pin, error))) from error
+        checked = preflight.preflight(home, pin)
+        run_start.heard(**checked.facts())
+        raise CannotStart("; ".join(preflight.beside(checked, error))) from error
 
 
 @dataclass(frozen=True)

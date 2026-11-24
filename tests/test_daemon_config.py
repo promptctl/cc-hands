@@ -18,7 +18,7 @@ import pytest
 from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin
 from fixtures.pins import LAID_OUT
 from hands.brain import pinned
-from hands.core.session import Runnable
+from hands.core.session import PinnedClaude, Runnable
 from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, preflight, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
@@ -183,8 +183,8 @@ def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(children_on(SYSTEM), Claude(), home, os.environ, Runnable(fake_claude, pinned.PIN.version, None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(fake_claude, pinned.PIN.version, None))
-    assert backend(children_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(fake_claude, pinned.PIN.version, None)).model == "claude-opus-5-5"
+    assert backend(children_on(SYSTEM), Claude(), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
+    assert backend(children_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == "claude-opus-5-5"
 
 
 @pytest.mark.outside
@@ -192,7 +192,7 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fa
 def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(children_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(fake_claude, pinned.PIN.version, None)).model == model
+    assert backend(children_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == model
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
@@ -246,9 +246,9 @@ def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path
 
     home = Home(tmp_path / ".hands")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    assert cli.door(home, LAID_OUT, "claude-opus-5-5") == config.load(home, "claude-opus-5-5")
+    assert cli.door(home, LAID_OUT, "claude-opus-5-5", Start(False, SYSTEM)) == config.load(home, "claude-opus-5-5")
     with pytest.raises(CannotStart, match="^--model 'opus': "):
-        cli.door(home, LAID_OUT, "opus")
+        cli.door(home, LAID_OUT, "opus", Start(False, SYSTEM))
 
 
 @pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
@@ -256,7 +256,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     home = Home(tmp_path)
     loaded: list[str | None] = []
 
-    def door(_home: Home, _pin: pinned.Pin, model: str | None) -> config.Settings:
+    def door(_home: Home, _pin: pinned.Pin, model: str | None, _run_start: Start) -> config.Settings:
         # Only what the restart is given is weighed here: an id that begins with a dash is no model hands offers.
         loaded.append(model)
         return config.Settings(None, Config(), model)
@@ -316,13 +316,13 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(Rejected, match="`hands login` gives it one"):
-        backend(children_on(SYSTEM), Claude(), HOME, os.environ, Runnable(fake_claude, pinned.PIN.version, None))
+        backend(children_on(SYSTEM), Claude(), HOME, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
     sessions = new_sessions(clock=SYSTEM)
-    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(pinned.PIN.claude(tmp_path / "brain"), pinned.PIN.version, None)), voice=voicechoice.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")), devices=Choices(Named("MacBook Pro Microphone"), Auto()))
+    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(pinned.PIN.claude(tmp_path / "brain"), pinned.PIN.version), None)), voice=voicechoice.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")), devices=Choices(Named("MacBook Pro Microphone"), Auto()))
     return Home(tmp_path), sessions, heart, config
 
 

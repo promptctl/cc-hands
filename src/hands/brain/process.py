@@ -45,7 +45,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
-from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Runnable, Session, SessionId, all_told, holds, ids, pasted
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PinnedClaude, PromptId, PromptText, RequestId, Runnable, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -290,7 +290,7 @@ def command(launch: Launch, hooks: str) -> list[str]:
     """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
     mode = launch.brain.mode
     return [
-        *slim(launch.brain.claude, launch.station.model, launch.conversation),
+        *slim(launch.brain.claude.path, launch.station.model, launch.conversation),
         # The instruction as this hands writes it on every request, a resumed conversation's too: Claude Code otherwise
         # sends the system prompt its conversation first had until it is compacted, even for a resume launched with a new
         # --append-system-prompt. Rendered fresh, it is byte-identical request to request.
@@ -584,7 +584,7 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, base_url: str, 
     # [LAW:single-enforcer] what any run of hands' own Claude Code is refused on, the start's included, checked before
     # this one, which would sync what the brain's settings do not keep out. Its first screens are this run's to answer.
     match configdir.runnable(before):
-        case Runnable(claude=claude):
+        case Runnable(claude=PinnedClaude(path=claude)):
             pass
         case refused:
             raise Unstartable("; ".join(refused))
@@ -1894,7 +1894,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         except Unpackaged as error:
             raise Unstartable(str(error)) from error
         annotate(fritter=fritter)
-        annotate(claude=launch.brain.claude, mode=launch.brain.mode)
+        annotate(claude=launch.brain.claude.path, mode=launch.brain.mode)
         # [LAW:one-source-of-truth] the brain's keybindings are hands' alone, written whole at every start from SUBMIT, the
         # chord hands types: a file that bound it to anything else would leave every turn unsent, or have it say yes.
         # Whole or not at all: Claude Code reloads the file as it changes, and a half-written one binds nothing.

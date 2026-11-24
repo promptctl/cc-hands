@@ -57,7 +57,7 @@ from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
 from hands.voice.trigger import Trigger, place_of
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
-from hands.core.session import Held, Membership, Permission, RequestId, Runnable, Running, Session, SessionId
+from hands.core.session import Held, Membership, Permission, RequestId, PinnedClaude, Runnable, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
@@ -299,7 +299,7 @@ async def rigged(
 
     voice = built.build_voice(
         SYSTEM,
-        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(pinned.PIN.claude(tmp_path), pinned.PIN.version, None)), voice=voicechoice.DEFAULT),
+        built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(PinnedClaude(pinned.PIN.claude(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT),
         llm=llm,
         key=PushToTalk(SYSTEM, recorded.append),
         player=Player(recorded.append),

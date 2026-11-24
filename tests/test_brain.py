@@ -34,7 +34,7 @@ from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBM
 from hands.brain.configdir import Unstartable
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
-from hands.core.session import DenyAndInterrupt, Permission, Runnable
+from hands.core.session import DenyAndInterrupt, Permission, PinnedClaude, Runnable
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed
@@ -211,7 +211,7 @@ def station(tmp: Path) -> Station:
 
 
 def launch(tmp: Path) -> Launch:
-    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None), Runnable(faked(tmp), pinned.PIN.version, None))
+    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None), Runnable(PinnedClaude(faked(tmp), pinned.PIN.version), None))
 
 
 async def launched_brain(clock: Clock, launch: Launch, record: Record) -> Brain:
@@ -281,7 +281,7 @@ def test_a_side_questions_markers_take_the_ttl_the_brains_command_line_pins(tmp_
 
 
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
-    argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), pinned.PIN.version, None)), "http://127.0.0.1:7")
+    argv = command(replace(launch(tmp_path), brain=Runnable(PinnedClaude(Path("/real/claude"), pinned.PIN.version), None)), "http://127.0.0.1:7")
     # The real claude, interactive: no -p, and no pipe to speak over.
     assert argv[0] == "/real/claude" and "-p" not in argv and "--print" not in argv
     # Its tools, what it may do without asking, and its MCP servers are its config directory's: nothing here narrows them.
@@ -420,14 +420,14 @@ def test_a_brain_starts_new_until_one_has_held_a_conversation_and_resumes_it_whi
     transcript(brain, "c1")
     assert conversation(brain, SessionId("n1")) == Resumed(SessionId("c1"))
     # Resumed under its own session, which Claude Code keeps: never a session id of its own beside it.
-    argv = command(replace(launch(tmp_path), conversation=Resumed(SessionId("c1")), brain=Runnable(Path("/real/claude"), pinned.PIN.version, None)), "http://127.0.0.1:7")
+    argv = command(replace(launch(tmp_path), conversation=Resumed(SessionId("c1")), brain=Runnable(PinnedClaude(Path("/real/claude"), pinned.PIN.version), None)), "http://127.0.0.1:7")
     assert argv[argv.index("--resume") + 1] == "c1" and "--session-id" not in argv
 
 
 def test_the_mode_the_brains_settings_name_is_said_on_its_command_line_too_so_claude_code_offers_no_other(tmp_path: Path) -> None:
     """Claude Code offers to make auto mode the default to a session whose mode its user settings alone name, and the first
     turn typed into the offer answers Yes (promptctl-brain-lq3.mcw): the same mode said in --settings means no offer."""
-    argv = command(replace(launch(tmp_path), brain=Runnable(Path("/real/claude"), pinned.PIN.version, "acceptEdits")), "http://127.0.0.1:7")
+    argv = command(replace(launch(tmp_path), brain=Runnable(PinnedClaude(Path("/real/claude"), pinned.PIN.version), "acceptEdits")), "http://127.0.0.1:7")
     assert json.loads(argv[argv.index("--settings") + 1])["permissions"] == {"defaultMode": "acceptEdits"}
 
 
@@ -451,10 +451,10 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
             case _:
                 raise AssertionError(f"{ran} is not one refusal")
 
-    assert ran({}) == Runnable(brain_pin.claude(brain), brain_pin.version, None)
-    assert ran({"permissions": {"defaultMode": "plan", "allow": ["Bash(ls:*)"]}}) == Runnable(brain_pin.claude(brain), brain_pin.version, "plan")
+    assert ran({}) == Runnable(brain_pin.verified(brain), None)
+    assert ran({"permissions": {"defaultMode": "plan", "allow": ["Bash(ls:*)"]}}) == Runnable(brain_pin.verified(brain), "plan")
     # Claude Code's other name for its default mode.
-    assert ran({"permissions": {"defaultMode": "manual"}}) == Runnable(brain_pin.claude(brain), brain_pin.version, "default")
+    assert ran({"permissions": {"defaultMode": "manual"}}) == Runnable(brain_pin.verified(brain), "default")
     assert refused(ran({"permissions": {"defaultMode": "acceptedits"}})) == f'the brain\'s settings name a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in {settings}'
     assert "the brain's settings name no defaultMode hands can read" in refused(ran({"permissions": {"defaultMode": 3}}))
     settings.unlink()
@@ -1688,7 +1688,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(faked(tmp_path), pinned.PIN.version, None)), voice=voicechoice.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
@@ -1736,7 +1736,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 
     monkeypatch.setattr(run, "start_brain", starting)
     with pytest.raises(CannotStart, match="^seen$"):
-        async with minding(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(faked(tmp_path), pinned.PIN.version, None))):
+        async with minding(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None))):
             pass
     [launch] = launched
     assert "\n\nDry and wry.\n\n" in launch.instruction
@@ -1748,7 +1748,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(faked(tmp_path), pinned.PIN.version, None)), voice=voicechoice.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     # A PATH with no tmux: the pinned claude is the start's preflight's to refuse, before any launch (tests/test_preflight.py).
     with pytest.raises(CannotStart, match="^no tmux is on the PATH to run the brain in$"):
         async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_barged_in, Attention):
@@ -1768,7 +1768,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(faked(tmp_path), pinned.PIN.version, None)), voice=voicechoice.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):

@@ -90,10 +90,10 @@ def preflight(home: Home, pin: pinned.Pin) -> Preflight:
             return Preflight(fritter, shim, pin.version, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
-def beside(home: Home, pin: pinned.Pin, unread: Rejected) -> tuple[str, ...]:
-    """Every refusal of a start whose settings do not parse: theirs, then every one the preflight finds beside it, so a
-    settings file that cannot be read hides none of the home's other refusals."""
-    match preflight(home, pin).verdict:
+def beside(checked: Preflight, unread: Rejected) -> tuple[str, ...]:
+    """Every refusal of a start whose settings do not parse: theirs, then every one `checked`, the home's preflight, found
+    beside it, so a settings file that cannot be read hides none of the home's other refusals."""
+    match checked.verdict:
         case Refused(refusals=refusals):
             return (str(unread), *refusals)
         case Startable():
