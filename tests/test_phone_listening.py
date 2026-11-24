@@ -205,7 +205,7 @@ async def test_the_phone_listens_where_its_page_says_and_each_change_is_an_event
             call.page.send(said)
         await call.until(lambda: len(events(call.recorded, "phone.leveled")) == 3)
         assert (call.key.gate.key, call.key.gate.at_phone) == ("listening", "wake word")
-        assert [event.facts for event in events(call.recorded, "phone.leveled")] == [{"was": "off", "now": "wake word"}, {"was": "wake word", "now": "off"}, {"was": "off", "now": "wake word"}]
+        assert [event.facts for event in events(call.recorded, "phone.leveled")] == [{"was": "off", "now": "wake word", "by": "level"}, {"was": "wake word", "now": "off", "by": "level"}, {"was": "off", "now": "wake word", "by": "level"}]
         # The call ending takes the listening with it, and a call that comes starts at off.
         await call.phone.hang_up("hung up")
         assert call.key.gate.phone_level == "off"

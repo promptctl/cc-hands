@@ -21,7 +21,7 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from typing import Any, cast, get_args
+from typing import Any, Literal, cast, get_args
 
 import numpy as np
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
@@ -145,7 +145,7 @@ class Models:
 
 
 @asynccontextmanager
-async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], None], name: str) -> AsyncGenerator[Models]:
+async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], None], name: Literal["desk.loaded", "phone.loaded"]) -> AsyncGenerator[Models]:
     """Both models, loaded off the loop as their own unit of work, `name`, Smart Turn judging at a turn's latency from the
     first verdict, for as long as what hears with them does: the desk (`desk.loaded`) or the phone (`phone.loaded`)."""
     async with AsyncExitStack() as held:

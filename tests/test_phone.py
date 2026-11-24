@@ -157,7 +157,9 @@ class Call:
 @asynccontextmanager
 async def calling(clock: Clock = SYSTEM) -> AsyncGenerator[Call, None]:
     """A call up, hands at the phone, ended as the block ends, its watch on `clock`."""
-    key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
+    recorded = list[Entry]()
+    # [LAW:one-source-of-truth] the gate and the phone write one record, as the daemon runs them.
+    key = PushToTalk(SYSTEM, recorded.append)
     phone = Phone(clock, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     page = await connected(phone, FIRST, "192.168.7.20")
     try:
@@ -177,7 +179,7 @@ async def call() -> AsyncGenerator[Call, None]:
 async def test_a_call_puts_hands_at_the_phone(call: Call) -> None:
     assert call.key.gate.place == "phone"
     # A call's one event is written as it ends.
-    assert call.recorded == []
+    assert calls(call.recorded) == []
 
 
 
@@ -391,9 +393,9 @@ async def test_a_newer_call_replaces_the_one_before_it_once_it_connects(call: Ca
     page, offer = await a_page()
     answer = await answered(call.phone, offer, "100.66.66.10")
     # Answered, not yet connected: the call that is up is still the one hands is at.
-    assert call.recorded == []
+    assert calls(call.recorded) == []
     await page.peer.setRemoteDescription(answer)
-    await call.until(lambda: bool(call.recorded))
+    await call.until(lambda: bool(calls(call.recorded)))
     [replaced] = calls(call.recorded)
     assert (replaced.outcome, replaced.facts["remote"], left(replaced).reason) == ("ok", "192.168.7.20", "replaced")
     assert call.key.gate.place == "phone"

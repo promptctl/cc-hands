@@ -108,10 +108,10 @@ def test_a_call_that_comes_or_goes_leaves_the_phone_not_listening_and_the_key_fo
     gate = Gate().moved("phone").after("listen", "phone wake word")
     assert (gate.key, gate.at_phone) == ("listening", "wake word")
     # A call coming where hands already is: the level is the call's, so it starts off, and the key at rest says so.
-    again = gate.called("phone")
-    assert (again.key, again.listening, again.refusal("phone wake word"), again.at_phone) == ("up", frozenset(), "deaf", "off")
+    moves, again = gate.called("phone")
+    assert (moves, again.key, again.listening, again.refusal("phone wake word"), again.at_phone) == ((), "up", frozenset(), "deaf", "off")
     # Going: hands is at the desk, and the desk's own listening is untouched.
-    assert Gate(Resting("shortcut"), "phone", DESK | PHONE).called("desk") == Gate(Resting("shortcut"), "desk", DESK)
+    assert Gate(Resting("shortcut"), "phone", DESK | PHONE).called("desk") == ((), Gate(Resting("shortcut"), "desk", DESK))
 
 
 def test_a_turn_opened_at_the_other_place_moves_the_gate_there() -> None:
@@ -138,13 +138,15 @@ def test_leaving_a_place_mid_clip_sends_the_clip_as_it_stands() -> None:
 @pytest.mark.parametrize("held", [Gate(Pressing("shortcut", "shortcut"), "desk"), Gate().after("start", "shortcut"), Gate(Resting("shortcut"), "desk", DESK).after("arm", "wake word").after("start", "wake word")])
 def test_a_call_that_comes_never_cuts_off_a_press_or_a_clip_at_the_desk(held: Gate) -> None:
     # The page called again by itself while the user talks at the desk: hands stays, and the phone's first press takes it.
-    assert held.called("phone") == held
-    assert held.called("phone").after("start", "phone button").place == "phone"
+    assert held.called("phone") == ((), held)
+    assert held.called("phone")[1].after("start", "phone button").place == "phone"
 
 
 def test_a_call_that_goes_sends_its_clip_and_one_that_comes_to_a_quiet_desk_takes_hands() -> None:
-    assert Gate().after("start", "phone button").called("desk") == Gate(Resting("phone button"), "desk", ended=("sent",))
-    assert Gate().after("listen", "wake word").called("phone") == Gate(Resting("shortcut"), "phone", DESK)
+    assert Gate().after("start", "phone button").called("desk") == (("stop",), Gate(Resting("phone button"), "desk", ended=("sent",)))
+    assert Gate().after("listen", "wake word").called("phone") == ((), Gate(Resting("shortcut"), "phone", DESK))
+    # A press at the place a call leaves is let go, and the gate says so.
+    assert Gate(Pressing("phone wake word", "shortcut"), "phone", PHONE).called("desk") == (("disarm",), Gate(Resting("shortcut"), "desk"))
 
 
 def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
@@ -157,7 +159,7 @@ def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
     key.end(key.gate.turn, "stop", "phone button")
     key.go("desk")
     assert [move.facts for move in events(recorded, "place.moved")] == [
-        {"before": "desk", "after": "phone", "by": "turn", "sent": True},
+        {"before": "desk", "after": "phone", "by": "phone button", "sent": True},
         {"before": "phone", "after": "desk", "by": "call", "sent": False},
     ]
     assert all(move.outcome == "ok" for move in events(recorded, "place.moved")) and len(recorded) == 2
@@ -168,13 +170,13 @@ def test_a_hand_at_the_other_place_takes_hands_there_and_sends_the_clip_open_whe
     # Right Shift held at the desk, and the phone's button pressed: the user's hand is at the phone now.
     gate = Gate(held, "desk")
     sent = isinstance(held, Open)
-    assert gate.took("start", "phone button") == (("stop", "start") if sent else ("start",))
+    assert gate.took("start", "phone button") == (("stop", "start") if sent else ("disarm", "start"))
     assert gate.after("start", "phone button") == Gate(Open("phone button"), "phone", ended=("sent",) if sent else ())
     recorded: list[Entry] = []
     key = PushToTalk(VirtualClock(), recorded.append)
     key.move("start", "phone button")
     assert key.move("start", "shortcut") == ("stop", "start")
-    assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "turn", "sent": True}
+    assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "shortcut", "sent": True}
 
 
 @pytest.mark.parametrize("voice", ["engaged conversation", "wake word", "phone wake word"])
@@ -221,13 +223,17 @@ def test_a_hands_arm_or_start_sends_the_clip_another_trigger_has_open_and_a_hand
     # The voice's own end now ends nothing, and the hand's ends its clip.
     assert (taken.took("stop", voice), taken.took("stop", hand)) == ((), ("stop",))
     # The same trigger's press over its own clip goes on with it.
-    assert taken.took("start", hand) == ("start",) and taken.after("start", hand) == taken
+    assert taken.took("start", hand) == () and taken.after("start", hand) == taken
     # A press over the voice's clip sends it, then arms.
     pressed = wake.after("arm", hand)
     assert (wake.took("arm", hand), pressed.position, pressed.ended) == (("stop", "arm"), Pressing(hand, voice), ("sent",))
     # A hand's press takes the arming a voice made, which the voice then cannot start.
     armed = Gate(Resting("shortcut"), place, frozenset({place})).after("arm", voice).after("arm", hand)
     assert (armed.position, armed.took("start", voice)) == (Pressing(hand, "shortcut"), ())
+    # The gate says it let go of the voice's press, and a hand over its own press lets go of nothing.
+    voice_armed = Gate(Resting("shortcut"), place, frozenset({place})).after("arm", voice)
+    assert (voice_armed.took("arm", hand), voice_armed.took("start", hand)) == (("disarm", "arm"), ("disarm", "start"))
+    assert Gate().after("arm", "shortcut").took("start", "shortcut") == ("start",)
 
 
 def test_a_disarm_lets_go_only_of_the_press_it_belongs_to() -> None:
@@ -299,6 +305,12 @@ def test_no_move_by_any_trigger_loses_a_turn_makes_a_clip_two_triggers_or_lets_a
                 assert grew == 1, context
             case _:
                 pass
+        # A press is gone only by becoming its presser's clip, or by a disarm the moves say.
+        match gate.position:
+            case Pressing(by=presser) if after.position != gate.position and after.position != Open(presser):
+                assert "disarm" in moves, context
+            case _:
+                pass
         # A clip is open only at the place of the trigger that opened it, and a press only at its presser's.
         match after.position:
             case Open(by=opener) | Pressing(by=opener):
@@ -339,17 +351,38 @@ def test_the_gate_tells_those_who_watch_each_turn_it_opens_and_ends_in_order_and
     key.go("desk")
     assert told == [
         GateOpened(TurnId(0), "shortcut", 0.0),
-        GateEnded(TurnId(0), "sent", "shortcut"),
+        GateEnded(TurnId(0), "stop", "shortcut"),
         GateOpened(TurnId(1), "shortcut", 0.0),
-        GateEnded(TurnId(1), "dropped", "shortcut"),
+        GateEnded(TurnId(1), "drop", "shortcut"),
         GateOpened(TurnId(2), "shortcut", 0.0),
-        GateEnded(TurnId(2), "sent", "phone button"),
+        GateEnded(TurnId(2), "stop", "phone button"),
         GateOpened(TurnId(3), "phone button", 0.0),
-        GateEnded(TurnId(3), "sent", "call"),
+        GateEnded(TurnId(3), "stop", "call"),
     ]
     # A move that opens and ends nothing tells no one.
     key.end(key.gate.turn, "stop", "shortcut")
     assert len(told) == 8
+
+
+def test_a_place_going_deaf_ends_the_turn_its_voice_has_open_as_the_level_and_the_level_is_recorded_whoever_changed_it() -> None:
+    recorded: list[Entry] = []
+    key = PushToTalk(VirtualClock(), recorded.append)
+    told: list[GateOpened | GateEnded] = []
+    key.watch(told.append)
+    key.go("phone")
+    key.move("listen", "phone wake word")
+    key.move("arm", "phone wake word")
+    key.move("start", "phone wake word")
+    key.move("deafen", "phone wake word")
+    assert told[-1] == GateEnded(TurnId(0), "stop", "level")
+    key.move("listen", "phone wake word")
+    key.go("desk")  # the call goes: the level is the call's, and goes off with it
+    assert [level.facts for level in events(recorded, "phone.leveled")] == [
+        {"was": "off", "now": "wake word", "by": "level"},
+        {"was": "wake word", "now": "off", "by": "level"},
+        {"was": "off", "now": "wake word", "by": "level"},
+        {"was": "wake word", "now": "off", "by": "call"},
+    ]
 
 
 def test_every_turn_the_gate_opens_is_ended_once_before_the_next_opens_whatever_order_things_come_in() -> None:

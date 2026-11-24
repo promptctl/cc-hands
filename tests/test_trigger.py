@@ -11,7 +11,7 @@ from hands.voice.clips import Trigger
 from hands.voice.desk import Desk, Loaded, Resting
 from hands.voice.tools import listening_tools
 from hands.voice.listening import Level, Levels
-from hands.voice.trigger import PHONE_BUTTON, PhoneLevel, by_hand, place_of, turn_start
+from hands.voice.trigger import PHONE_WAKE_BUTTON, PhoneLevel, by_hand, place_of, turn_start
 from hands.voice.wake import Unheard, WakeWord
 from hands.voice.wakemodels import EMBEDDING, MELSPECTROGRAM, PRETRAINED, Files
 from hands.voice.wakeword import Pretrained, Trained
@@ -116,9 +116,9 @@ async def test_where_hands_is_at_the_phone_the_tools_say_the_phones_level_and_th
     levels = Levels()
     said, choose = listening_tools(levels, lambda: level, Pretrained())
     readback = str((await said.body())["readback"])
-    assert (await said.body())["level"] == level and PHONE_BUTTON in readback and readback.count("Right") == 0
+    assert (await said.body())["level"] == level and PHONE_WAKE_BUTTON in readback and readback.count("Right") == 0
     assert ("is not listening between turns" in readback) == (not listens) and ("listens for the wake word" in readback) == listens
     # A choice made at the phone is the page's to make: it says so, and the desk's level and the phone's stay where they were.
     chosen = await choose.body(level="engaged")
-    assert (chosen["level"], PHONE_BUTTON in str(chosen["readback"])) == (level, True)
+    assert (chosen["level"], PHONE_WAKE_BUTTON in str(chosen["readback"])) == (level, True)
     assert (levels.level, levels.chosen.qsize()) == ("off", 0)

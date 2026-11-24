@@ -68,7 +68,7 @@ PHONE_WAKE: Trigger = "phone wake word"
 PhoneLevel = Literal["off", "wake word"]
 
 # The name the brain is told the phone's page button has, spelled once for every readback that says it.
-PHONE_BUTTON = "The page's Phone wake word button"
+PHONE_WAKE_BUTTON = "The page's Phone wake word button"
 
 
 def described_at_phone(level: PhoneLevel) -> str:
@@ -76,6 +76,6 @@ def described_at_phone(level: PhoneLevel) -> str:
     held = "Hold the page's button to talk, and let go to send."
     match level:
         case "off":
-            return f"The phone is not listening between turns. {held} {PHONE_BUTTON} turns on listening for the wake word."
+            return f"The phone is not listening between turns. {held} {PHONE_WAKE_BUTTON} turns on listening for the wake word."
         case "wake word":
-            return f"The phone listens for the wake word: say it, then what you want; hands answers when you finish. {held} {PHONE_BUTTON} turns it off."
+            return f"The phone listens for the wake word: say it, then what you want; hands answers when you finish. {held} {PHONE_WAKE_BUTTON} turns it off."

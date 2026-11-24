@@ -2114,16 +2114,18 @@ when its page says so: `level` is `off` or `wake word`, held for the call and `o
 starts, and the page's `wake` opens a turn only where hands is at the phone and it listens, or is
 answered `unopened` with the gate's reason (hands is at the desk is no mistake of the page's, the
 phone not listening or a turn being open is). Each `wake` is a `phone.wake` event, each change of
-level a `phone.leveled` event, and each `detector` a `phone.detector` event. The phone has ears of
+level a `phone.leveled` event, from and to and what made it, the page's word or a call that came or went,
+and each `detector` a `phone.detector` event. The phone has ears of
 its own, a second Silero and Smart Turn loaded before its page is answered (`phone.loaded`), and a
 driver (`hands.voice.atphone`) that runs the shared life of a voice turn on the audio of a wake's
 turn: it hears from the wake on, never the second the page sent before it, and asks the gate to end
 the turn by the same rules as the desk's wake word turn, one `phone.turn` event for each turn
-followed. The brain's `listening_level` and `set_listening_level` speak for the place hands is at:
+followed: how it ended, by which move (the limit is `timeout`, a wake nothing was asked after `drop`), and what
+ended it, a trigger, a call, or the level going off. The brain's `listening_level` and `set_listening_level` speak for the place hands is at:
 at the phone they say the phone's level and that the page's `Phone wake word` button sets it, and
 change neither level. Each move of hands
-between the places is one `place.moved` event: from where to where, whether a turn or
-a call made it, and whether a clip open at the place it left was sent. A move
+between the places is one `place.moved` event: from where to where, what made it (the trigger, or a
+call), and whether a clip open at the place it left was sent. A move
 a call made is part of that call's trace.
 
 **Cues say what hands is doing while it is silent** (`hands.voice.cues`). The talk

@@ -14,8 +14,9 @@ that much silence. Hands plays to the page over an audio track. Over the same ch
 (`hands.voice.milestone`): the clip each of its presses opened, by the press's number, or that it opened none and why; the clip taken, or thrown away; its words heard or none found, a stage failing, the reply begun,
 and the first sound, which the page shows with how long each took; and each line of the transcript
 (`hands.voice.transcript`), which the page shows when asked to. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
-for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
-microphone's wait for the room to go quiet.
+for its echo cancellation as well; so the phone's audio is gated by the gate alone, with none of the desk
+microphone's wait for the room to go quiet: a clip of its button holds what was said while the button was down, and a clip of
+its wake begins with the second the page kept from before its detector fired.
 
 The page also tells hands when its detector heard the wake word (`wake`), which of its two levels the phone listens at
 (`level`, `off` at the start of every call), and whether its detector loaded (`detector`). A wake is a press the page
@@ -48,7 +49,7 @@ from hands.voice.milestone import ClipDiscarded, ClipOpened, ClipReleased, Miles
 from hands.voice.ptt import KeyedAudio, PushToTalk, Refusal
 from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
-from hands.voice.trigger import PHONE_WAKE, PhoneLevel
+from hands.voice.trigger import PHONE_WAKE, PhoneLevel, Trigger
 from hands.voice.wakeword import THRESHOLD
 
 
@@ -400,7 +401,9 @@ def _why(refusal: Refusal) -> str:
 
 
 @dataclass
-class _Call:
+class Call:
+    """One call, from its offer: the connection, what plays to it and what resamples from it, and the page's counts."""
+
     peer: RTCPeerConnection
     outbound: Outbound
     resampler: AudioResampler
@@ -455,8 +458,8 @@ class Phone:
         self._played_rate = played_rate
         self._record = record
         # The call hands is at, and the newest offer answered and not yet up.
-        self._call: _Call | None = None
-        self._offered: _Call | None = None
+        self._call: Call | None = None
+        self._offered: Call | None = None
         # The phone's microphone as the pipeline hears it: keyed frames at the pipeline's rate, while hands is at the phone.
         self.heard: asyncio.Queue[KeyedAudio] = asyncio.Queue()
         # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
@@ -479,7 +482,7 @@ class Phone:
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         outbound = Outbound(self._clock, self._played_rate)
         resampler = AudioResampler(format="s16", layout="mono", rate=self._heard_rate)
-        call = _Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began, asyncio.Event())
+        call = Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began, asyncio.Event())
         peer.addTrack(outbound)
 
         @peer.on("datachannel")
@@ -505,7 +508,7 @@ class Phone:
                     logger.error(str(error))
                     return
                 call.heard.set()
-                self._hear(call, said)
+                self.hear(call, said)
 
             if self._offered is call:
                 await self._arrive(call, channel)
@@ -537,7 +540,7 @@ class Phone:
         await self._let_go(older, "replaced")
         return peer.localDescription
 
-    async def _arrive(self, call: _Call, channel: RTCDataChannel) -> None:
+    async def _arrive(self, call: Call, channel: RTCDataChannel) -> None:
         # [LAW:no-ambient-temporal-coupling] the call that was up goes, and this one comes, in one step before any
         # await: a speaker reading the gate between them never finds the phone without a call.
         self._offered = None
@@ -551,19 +554,19 @@ class Phone:
         match gone:
             case None:
                 pass
-            case _Call():
+            case Call():
                 await gone.peer.close()
 
-    async def _let_go(self, offered: _Call | None, reason: PhoneGone) -> None:
+    async def _let_go(self, offered: Call | None, reason: PhoneGone) -> None:
         # An offer is let go of once it is no longer the one offered, so no other handler of it acts again.
         match offered:
             case None:
                 pass
-            case _Call():
+            case Call():
                 call_ended(self._record, offered.began, offered.remote, offered.asked, CallUnreached(reason))
                 await offered.peer.close()
 
-    async def _watch(self, call: _Call) -> None:
+    async def _watch(self, call: Call) -> None:
         while True:
             try:
                 async with self._clock.timeout(QUIET_SECS):
@@ -574,7 +577,8 @@ class Phone:
                 return
             call.heard.clear()
 
-    def _hear(self, call: _Call, said: Said) -> None:
+    def hear(self, call: Call, said: Said) -> None:
+        """Act on one message `call`'s page sent, as the channel brings it, in order."""
         # [LAW:nothing-unseen] what a message makes of the gate is part of its call, in its trace.
         with continuing(call.began.span):
             match said:
@@ -585,11 +589,9 @@ class Phone:
                     # [LAW:dataflow-not-control-flow] silence is the audio it stands for: it takes the path audio takes.
                     self._heard(call, Pcm(bytes(2 * samples)))
                 case "start":
-                    press = self._press(call)
-                    taken = self._key.move("start", "phone button")
-                    self._opened(call, press)
-                    self.took(taken)
+                    self._open(call, self._press(call), "phone button")
                 case "stop":
+                    # The button ends only the clip it opened: the gate refuses a release over any other trigger's.
                     self.took(self._key.end(self._key.gate.turn, "stop", "phone button"))
                 case Wake() | Unreadable():
                     self._wake(call, said)
@@ -600,7 +602,7 @@ class Phone:
                 case DetectorFailed(browser=browser, why=why):
                     ended("phone.detector", self._record, begun(self._clock), None, why, browser=browser, loaded=False)
 
-    def _wake(self, call: _Call, wake: Wake | Unreadable) -> None:
+    def _wake(self, call: Call, wake: Wake | Unreadable) -> None:
         """The page's detector heard the word: a press the page numbered, which the gate takes or refuses, and either is told to
         the page at once, a refusal as `unopened` with its reason. A wake the page should not have sent is the page's mistake,
         the failure of its event; one that hands being at the desk refused is no mistake, for the page cannot know."""
@@ -614,16 +616,14 @@ class Phone:
         match why:
             case None:
                 self.took(self._key.move("arm", PHONE_WAKE))
-                taken = self._key.move("start", PHONE_WAKE)
-                self._opened(call, press)
-                self.took(taken)
+                self._open(call, press, PHONE_WAKE)
             case _:
                 self._unopened(call, press, why)
         score = wake.score if isinstance(wake, Wake) else None
         failure = f"the page's wake opened nothing: {why}" if mistake else None
         ended("phone.wake", self._record, begun(self._clock), None, failure, score=score, threshold=THRESHOLD, while_speaking=self._speaking(), opened=why is None, press=press)
 
-    def _unopened(self, call: _Call, press: int, why: str) -> None:
+    def _unopened(self, call: Call, press: int, why: str) -> None:
         """A press of the page's that hands answers at once, for it opened no clip."""
         match call.channel:
             case RTCDataChannel(readyState="open") as channel:
@@ -633,11 +633,8 @@ class Phone:
                 pass
 
     def _level(self, level: PhoneLevel) -> None:
-        """The level the page has the phone listening at, which is the gate's for the phone: one event for each change."""
-        was = self._key.gate.phone_level
+        """The level the page has the phone listening at, which is the gate's for the phone, and the gate says each change."""
         self.took(self._key.move("listen" if level == "wake word" else "deafen", PHONE_WAKE))
-        if level != was:
-            ended("phone.leveled", self._record, begun(self._clock), None, was=was, now=level)
 
     def took(self, taken: tuple[Move, ...]) -> None:
         """What the gate made of a move, once the phone made it or its driver did, goes to the tone and the words that
@@ -645,19 +642,25 @@ class Phone:
         for move in taken:
             self.moves.put_nowait(move)
 
-    def _press(self, call: _Call) -> int:
+    def _press(self, call: Call) -> int:
         """The page's next press or wake, numbered as the page numbers them: the channel is ordered and reliable, so the
         call counts every one the page counts."""
         call.presses += 1
         return call.presses
 
-    def _opened(self, call: _Call, press: int) -> None:
-        """The turn the gate has open is the one `press` opened."""
-        # [LAW:no-ambient-temporal-coupling] the press is bound to the turn it opened as it opens it, so the page learns its
-        # clip exactly, however late either reaches it.
-        call.pressing[self._key.gate.turn] = press
+    def _open(self, call: Call, press: int, by: Trigger) -> None:
+        """`press` asks the gate for a clip at the phone, for `by`. The gate says whether it opened one: the turn it opened is
+        the press's, and a press over its own trigger's open clip opens none and is answered so at once."""
+        taken = self._key.move("start", by)
+        if "start" in taken:
+            # [LAW:no-ambient-temporal-coupling] the press is bound to the turn it opened as it opens it, so the page learns its
+            # clip exactly, however late either reaches it.
+            call.pressing[self._key.gate.turn] = press
+        else:
+            self._unopened(call, press, _why("busy"))
+        self.took(taken)
 
-    def _heard(self, call: _Call, audio: Pcm) -> None:
+    def _heard(self, call: Call, audio: Pcm) -> None:
         frame = AudioFrame.from_ndarray(np.frombuffer(audio, dtype=np.int16)[None, :], format="s16", layout="mono")
         frame.sample_rate = call.rate
         for out in call.resampler.resample(frame):
@@ -670,14 +673,14 @@ class Phone:
                 for follower in self._followers:
                     follower(frame)
 
-    def _leave(self, reason: PhoneGone) -> _Call | None:
+    def _leave(self, reason: PhoneGone) -> Call | None:
         # [LAW:no-ambient-temporal-coupling] the place moves in the same step the call goes, before any await: a
         # speaker reading the gate after this never finds the phone without a call.
         call, self._call = self._call, None
         match call:
             case None:
                 return None
-            case _Call():
+            case Call():
                 with continuing(call.began.span):
                     self._key.go("desk")
                 call.outbound.stop()
@@ -704,7 +707,7 @@ class Phone:
         """Tell the page a milestone of the turn it is waiting on, or a line of the transcript, over the call's channel, as the
         page sends its button. With no call up, or its channel on its way shut, there is no page to tell."""
         match self._call:
-            case _Call(channel=RTCDataChannel(readyState="open") as channel) as call:
+            case Call(channel=RTCDataChannel(readyState="open") as channel) as call:
                 match told:
                     case ClipOpened(turn=turn) | TurnUnopened(turn=turn):
                         # [LAW:single-enforcer] a press leaves `pressing` as it is answered, so it is answered once. A turn no
