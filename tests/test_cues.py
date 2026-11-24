@@ -9,7 +9,7 @@ import numpy as np
 from conftest import VirtualClock, patiently
 from hands.sessions.audit import Cued, Entry
 from hands.sessions.audit import Played
-from hands.voice.cues import CUE_LEVEL, CUE_SECONDS, DROPPED, OPENED, RECEIVED, SENT, WORKING, Cue, QuietCue, QuietCues, cues, sound
+from hands.voice.cues import ANSWER, CUE_LEVEL, CUE_SECONDS, DROPPED, ENGAGED, OFF, OPENED, RECEIVED, SENT, WAKE_WORD, WORKING, Cue, QuietCue, QuietCues, cues, sound
 
 RATE = 24000
 
@@ -33,7 +33,7 @@ def pitch(tone: np.ndarray) -> float:
 
 
 def test_each_cue_is_short_soft_and_starts_and_ends_in_silence() -> None:
-    for cue in (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue):
+    for cue in (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue, ANSWER):
         audio = samples(cue)
         assert len(audio) == round(RATE * CUE_SECONDS) * 2 * len(cue.glides)
         assert 0.9 * CUE_LEVEL < np.abs(audio).max() <= CUE_LEVEL
@@ -63,6 +63,21 @@ def test_receiving_is_high_and_rising_in_steps_and_working_is_one_steady_tone() 
     assert len(working) == 2 * n and abs(pitch(working[: n // 2]) - pitch(working[n // 2 : n])) < 100
     # One steady tone, where every other cue is a glide or a pair.
     assert [len(cue.glides) == 1 and cue.glides[0][0] == cue.glides[0][1] for cue in (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue)] == [False, False, False, False, True]
+
+
+def test_the_window_after_hands_spoke_dips_and_rises_above_the_keys_pitches_in_a_shape_no_other_cue_has() -> None:
+    n = round(RATE * CUE_SECONDS)
+    answer = samples(ANSWER)
+    falling, rising = answer[:n], answer[2 * n : 3 * n]
+    assert pitch(falling[: n // 2]) > pitch(falling[n // 2 :]) and pitch(rising[: n // 2]) < pitch(rising[n // 2 :])
+    # Above the key's 660 to 990 Hz, so it is taken for none of a turn's edges.
+    assert min(pitch(falling), pitch(rising)) > 990
+    # Each other cue's tones all go one way, or none: one falling and one rising is the window's alone.
+    def directions(cue: Cue) -> tuple[int, ...]:
+        return tuple(int(np.sign(end - start)) for start, end in cue.glides)
+
+    others = (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue, OFF, WAKE_WORD, ENGAGED)
+    assert directions(ANSWER) == (-1, 1) and directions(ANSWER) not in {directions(cue) for cue in others}
 
 
 class Quiet(asyncio.Event):

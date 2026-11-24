@@ -46,6 +46,9 @@ TIMED_OUT = Cue(f"turn: ended, open {TURN_LIMIT_SECONDS:.0f}s", SENT.glides)
 OFF = Cue("desk: microphone off", ((990.0, 660.0), (990.0, 660.0)))
 WAKE_WORD = Cue("desk: listening for the wake word", ((660.0, 990.0), (660.0, 990.0)))
 ENGAGED = Cue("desk: engaged", ((660.0, 990.0), (660.0, 990.0), (660.0, 990.0)))
+# The window after hands spoke opening (`hands.voice.desk`): a dip, one tone falling and one rising, above the key's
+# pitches, so it is taken neither for a turn's edge, one tone, nor for a level, whose tones all go one way.
+ANSWER = Cue("desk: listening for your answer", ((1175.0, 880.0), (880.0, 1175.0)))
 
 
 @dataclass(frozen=True)

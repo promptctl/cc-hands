@@ -12,8 +12,8 @@ from hands.clock import Clock
 from hands.sessions.wide import WideEvent, annotate, begun, unit
 from hands.voice import wake
 from hands.voice.wakemodels import WakeModels
-from hands.voice.cues import Cue, Played, level_cue
-from hands.voice.desk import Leveled, Made
+from hands.voice.cues import ANSWER, Cue, Played, level_cue
+from hands.voice.desk import HandsQuiet, HandsSpeaking, Leveled, Made, WindowOpened
 from hands.voice.engaged import Hears, drive, loaded
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
@@ -32,9 +32,11 @@ class Microphone(Protocol):
 
 
 class Speaker(Protocol):
-    """The speaker attached now: it plays a cue at once."""
+    """The speaker attached now: it plays a cue at once, and says each time hands starts and stops speaking."""
 
     def cue(self, cue: Cue) -> Played: ...
+
+    def spoken(self) -> AbstractAsyncContextManager[AsyncIterator[HandsQuiet | HandsSpeaking]]: ...
 
 
 async def serve_desk(
@@ -76,6 +78,10 @@ async def serve_desk(
         speaker().cue(cue)
         beat()
 
+    async def at_window(_opened: WindowOpened) -> None:
+        logger.info(ANSWER.line)
+        speaker().cue(ANSWER)
+
     @asynccontextmanager
     async def hearing() -> AsyncGenerator[tuple[Ears, Hears]]:
         rate = microphone.sample_rate
@@ -91,4 +97,4 @@ async def serve_desk(
         async with loaded(clock, rate, record, "desk.loaded") as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, over_hands, built_in, record)
 
-    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels, at_desk, at_level, record)
+    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, lambda: speaker().spoken(), levels, at_desk, at_level, at_window, record)

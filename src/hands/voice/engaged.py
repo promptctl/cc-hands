@@ -20,6 +20,7 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import Any, Literal, cast, get_args
 
@@ -36,7 +37,7 @@ from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
-from hands.voice.desk import Chosen, Desk, Event, Keyed, Leveled, Made, ModelsLoaded, Woken, listens, step, turn_of
+from hands.voice.desk import Chosen, Desk, Event, HandsQuiet, HandsSpeaking, Keyed, Leveled, Made, ModelsLoaded, WindowOpened, Woken, hears, step, turn_of
 from hands.voice.listening import LEVELS, Choice, Driving, Level
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.turnlife import Ears, Life
@@ -173,7 +174,7 @@ _COUNTED: tuple[str, ...] = (
     *(name for literal in get_args(Move) for name in get_args(literal)),
     *(f"by_{trigger.replace(' ', '_')}" for trigger in get_args(Trigger)),
     *(f"to_{level.replace(' ', '_')}" for level in LEVELS),
-    "held_open", "ended_on_silence", "heard", "wake_words",
+    "held_open", "ended_on_silence", "heard", "wake_words", "windows",
 )
 
 # The wake word a buffer of the desk's microphone ends with, if it does (`hands.voice.wake`), heard afresh from it when
@@ -204,13 +205,16 @@ async def drive(
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
     hearing: Callable[[], AbstractAsyncContextManager[tuple[Ears, Hears]]],
+    spoken: Callable[[], AbstractAsyncContextManager[AsyncIterator[HandsQuiet | HandsSpeaking]]],
     levels: Driving,
     on_move: Callable[[Made], Awaitable[None]],
     on_level: Callable[[Leveled], Awaitable[None]],
+    on_window: Callable[[WindowOpened], Awaitable[None]],
     emit: Callable[[WideEvent], None],
 ) -> None:
-    """Hand every move the desk makes to `on_move`, and every change of level to `on_level`, until cancelled, the desk
-    made at the level `levels` says the run starts at, and `levels` told the desk after every step.
+    """Hand every move the desk makes to `on_move`, every change of level to `on_level`, and every window opened after
+    hands spoke to `on_window`, until cancelled, the desk made at the level `levels` says the run starts at, and `levels`
+    told the desk after every step. `spoken` says each time hands starts and stops speaking.
 
     One task steps the desk, in the order things were heard, so the speech, the key, the taps, the wake word, the
     tools' choices, and Smart Turn's verdicts never race each other: a verdict is stepped as it is given, before any
@@ -236,6 +240,11 @@ async def drive(
         while True:
             events.put_nowait(await levels.taken())
 
+    async def telling() -> None:
+        async with spoken() as edges:
+            async for edge in edges:
+                events.put_nowait(edge)
+
     # [LAW:dataflow-not-control-flow] the level the run starts at is the start's choice, held as any choice is while the
     # models load, and then the gate is told the desk listens, its cue plays, and its change is said, as for a tap; off, a
     # cold start's, is no change.
@@ -245,11 +254,12 @@ async def drive(
     # Whether the key has come up since the last buffer was heard: speech the desk ignored while it was down starts for it
     # as the key comes up, so a tap of Shift as the user began does not lose what they say.
     key_came_up = False
-    # The level the last buffer was heard at: off, where nothing has heard it, as the desk listens while its models load.
-    overheard_at: Level = "off"
+    # The level the last buffer was heard at, None where nothing heard it: at off, until the window after hands spoke.
+    overheard_at: Level | None = None
     async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
         group.create_task(overhearing(), name="the desk's microphone, overheard")
         group.create_task(choosing(), name="the levels the tools chose")
+        group.create_task(telling(), name="hands' speech starting and stopping")
         while True:
             # [LAW:nothing-unseen] one event for each stint at a level, counting every move, trigger, and change of level
             # in it, emitted as the level changes.
@@ -260,12 +270,13 @@ async def drive(
                     if not heard:
                         match await events.get():
                             # [LAW:types-are-the-program] off, the microphone is closed between turns, and nothing
-                            # hears the room.
-                            case Overheard() if not listens(desk.level):
-                                overheard_at = desk.level
+                            # hears the room but the window after hands spoke.
+                            case Overheard() if not hears(desk.phase):
+                                overheard_at = None
                             case Overheard(audio=audio, life=life, woken=woken):
                                 count(heard=1)
-                                # Each model hears from where its level started, with nothing of the room before it.
+                                # Each model hears from where its level, or the window off, started, with nothing of the
+                                # room before it.
                                 begun = desk.level != overheard_at
                                 overheard_at = desk.level
                                 if begun:
@@ -306,6 +317,13 @@ async def drive(
                             case Made(move=move, by=by):
                                 count(**{move: 1, f"by_{by.replace(' ', '_')}": 1})
                                 await on_move(act)
+                            case WindowOpened():
+                                count(windows=1)
+                                # [LAW:no-ambient-temporal-coupling] the end names the window it is for, so it closes no
+                                # window opened after it.
+                                at, over = act.end()
+                                clock.call_at(at, partial(events.put_nowait, over))
+                                await on_window(act)
                             case Leveled(was=was_level, now=now, by=chooser):
                                 count(**{f"to_{now.replace(' ', '_')}": 1})
                                 # [LAW:nothing-unseen] each change of level is its own event: from, to, and by.

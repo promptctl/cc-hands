@@ -11,14 +11,15 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-from conftest import patiently
+from conftest import Speech, patiently
 from speech import quiet, spoken
 
 from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent
 from hands.voice.atdesk import serve_desk
-from hands.voice.cues import ENGAGED, OFF, WAKE_WORD, Cue
+from hands.voice.cues import ANSWER, ENGAGED, OFF, WAKE_WORD, Cue
+from hands.voice.desk import HandsQuiet
 from hands.voice.keys import tapped
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import SHORTCUT_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
@@ -38,10 +39,11 @@ BUFFER = 640
 LOADS = {"desk.loaded", "desk.wake_word_loaded"}
 
 
-class Speaker:
-    """The speaker attached: it keeps each cue played."""
+class Speaker(Speech):
+    """The speaker attached: it keeps each cue played, and says hands' speech starting and stopping as the test does."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.cues: list[Cue] = []
 
     def cue(self, cue: Cue) -> Played:
@@ -219,6 +221,14 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     microphone.say(deaf + quiet(3.0))
     await settled()
     assert taken == []
+
+    # Hands falls quiet at the desk: off, the window's cue plays, the room is heard, and the answer said in it is a turn
+    # Smart Turn sends, after which the desk is deaf again.
+    speaker.say(HandsQuiet(SYSTEM.now(), "desk"))
+    await until(lambda: speaker.cues[-1] == ANSWER)
+    microphone.say(quiet(0.5) + engaged + quiet(4.0))
+    await until(lambda: "deafen" in taken)
+    assert taken == ["listen", "arm", "start", "stop", "deafen"]
 
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):

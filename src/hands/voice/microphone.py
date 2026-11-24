@@ -51,6 +51,7 @@ from pipecat.transports.local.audio import (
 
 from hands.clock import Clock
 from hands.voice import coreaudio
+from hands.voice.desk import HandsQuiet, HandsSpeaking
 from hands.voice.devicechoice import Auto, BuiltIns, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, built_in, hears_nothing, lost_microphone, placed
 from hands.voice.clips import Playhead
 from hands.voice.cues import Cue, sound
@@ -372,6 +373,8 @@ class Speaker(LocalAudioOutputTransport):
         self._speaking: set[Literal["hands", "user"]] = set()
         self.quiet = asyncio.Event()
         self.quiet.set()
+        # Each listener to hands' speech starting and stopping.
+        self._telling: tuple[asyncio.Queue[HandsQuiet | HandsSpeaking], ...] = ()
         # [LAW:one-source-of-truth] whose each byte of hands' speech is travels with it (`hands.voice.synthesis`): cut
         # into the sender's chunks at ingress, and at egress, the synthesis of the last `SpeakingIn` the sender wrote.
         self._cutter = Cutter()
@@ -382,6 +385,21 @@ class Speaker(LocalAudioOutputTransport):
     def hands_speaking(self) -> bool:
         """Whether hands is speaking, between its sender's start and stop."""
         return "hands" in self._speaking
+
+    @asynccontextmanager
+    async def spoken(self) -> AsyncGenerator[AsyncIterator[HandsQuiet | HandsSpeaking]]:
+        """Each time hands starts speaking, and stops, with where it spoke, as its sender says, from now on."""
+        told: asyncio.Queue[HandsQuiet | HandsSpeaking] = asyncio.Queue()
+        self._telling = (*self._telling, told)
+
+        async def edges() -> AsyncIterator[HandsQuiet | HandsSpeaking]:
+            while True:
+                yield await told.get()
+
+        try:
+            yield edges()
+        finally:
+            self._telling = tuple(each for each in self._telling if each is not told)
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # [LAW:one-source-of-truth] Pipecat's local setup is only the base's and an open; the open is open_stream's, so
@@ -537,11 +555,18 @@ class Speaker(LocalAudioOutputTransport):
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
         # [LAW:one-source-of-truth] the sender pushes both edges of hands' speech through here, an interruption stops it,
         # and the user's turn edges pass through on their way out.
+        # Pipecat pushes each edge of hands' speech both ways: told once, as it goes down.
+        downstream = direction == FrameDirection.DOWNSTREAM
         match frame:
             case BotStartedSpeakingFrame():
                 self._speaking.add("hands")
+                if downstream:
+                    self._tell(HandsSpeaking())
             case BotStoppedSpeakingFrame():
                 self._speaking.discard("hands")
+                # [LAW:one-source-of-truth] the gate says where hands is, read as its speech stops: where it was heard.
+                if downstream:
+                    self._tell(HandsQuiet(self._clock.now(), self._key.gate.place))
             case TurnOpened():
                 # The user is speaking from their turn's first clip, before it cuts anything off.
                 self._speaking.add("user")
@@ -554,6 +579,10 @@ class Speaker(LocalAudioOutputTransport):
         else:
             self.quiet.set()
         await super().push_frame(frame, direction)
+
+    def _tell(self, edge: HandsQuiet | HandsSpeaking) -> None:
+        for told in self._telling:
+            told.put_nowait(edge)
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at

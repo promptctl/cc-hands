@@ -24,7 +24,7 @@ from pipecat.frames.frames import Frame, InputAudioRawFrame
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import PAIRS, events, hearing_with, running
+from conftest import PAIRS, Speech, events, hearing_with, no_window, running
 from test_streaming import NOT_SPEECH, READER, fixture_clips, hearings, pcm
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
@@ -272,7 +272,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
             pass
 
         driving = asyncio.create_task(
-            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), levels, on_move, on_level, record)
+            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), Speech().spoken, levels, on_move, on_level, no_window, record)
         )
         # Heard to its last frame, past the owner, or the drive failed on the way, which is said; then every hearing the
         # owner was given has its event.

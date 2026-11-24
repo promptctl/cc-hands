@@ -6,13 +6,13 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 
 import pytest
-from conftest import ScriptedEars, hearing_with
+from conftest import ScriptedEars, Speech, hearing_with
 
 from hands.clock import Clock
 from hands.virtualclock import VirtualClock
 from hands.voice import engaged
 from hands.sessions.wide import WideEvent
-from hands.voice.desk import Leveled, Made, Woken
+from hands.voice.desk import HandsQuiet, Leveled, Made, WindowOpened, Woken
 from hands.voice.listening import Level, Levels
 from hands.voice.clips import Trigger
 from hands.voice.engaged import Hears, drive
@@ -44,6 +44,8 @@ class Rig:
         self.changed = asyncio.Condition()
         # Set as the driver begins to load the models held, and by a test to have them loaded.
         self.loading, self.loaded = asyncio.Event(), asyncio.Event()
+        self.speech = Speech()
+        self.windows: list[WindowOpened] = []
 
     async def _told(self) -> None:
         async with self.changed:
@@ -76,6 +78,10 @@ class Rig:
     async def on_level(self, leveled: Leveled) -> None:
         self.levels.append(leveled)
 
+    async def on_window(self, opened: WindowOpened) -> None:
+        self.windows.append(opened)
+        await self._told()
+
     @asynccontextmanager
     async def held(self) -> AsyncGenerator[tuple[Ears, Hears]]:
         """The models, loaded once the test sets `loaded`."""
@@ -84,11 +90,11 @@ class Rig:
         yield self.ears, unwoken
 
     def start(self, ears: Ears | None = None) -> asyncio.Task[None]:
-        return asyncio.create_task(drive(self.clock, self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), self.owner, self.on_move, self.on_level, self.events.append))
+        return asyncio.create_task(drive(self.clock, self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), self.speech.spoken, self.owner, self.on_move, self.on_level, self.on_window, self.events.append))
 
     async def start_loading(self) -> asyncio.Task[None]:
         """The driver, its models loading until the test sets `loaded`, once it has stepped the start's level."""
-        driving = asyncio.create_task(drive(self.clock, self.tapped, self.overheard, self.held, self.owner, self.on_move, self.on_level, self.events.append))
+        driving = asyncio.create_task(drive(self.clock, self.tapped, self.overheard, self.held, self.speech.spoken, self.owner, self.on_move, self.on_level, self.on_window, self.events.append))
         # The start's level is stepped before the driver first waits, and so before the models begin to load.
         await self.loading.wait()
         return driving
@@ -246,7 +252,7 @@ async def test_a_drive_cancelled_while_a_move_is_handed_on_leaves_the_owner_at_t
         handed.set()
         await asyncio.Event().wait()
 
-    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, unwoken), rig.owner, held, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, unwoken), rig.speech.spoken, rig.owner, held, rig.on_level, rig.on_window, rig.events.append))
     # The tool's choice, whose one move is the listen ahead of the change of level.
     assert await rig.choose("engaged") == "off"
     await handed.wait()
@@ -284,7 +290,7 @@ async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:
         yield rig.ears, unwoken
 
     with pytest.raises(ExceptionGroup) as failed:
-        await drive(rig.clock, rig.tapped, rig.overheard, unloadable, rig.owner, rig.on_move, rig.on_level, rig.events.append)
+        await drive(rig.clock, rig.tapped, rig.overheard, unloadable, rig.speech.spoken, rig.owner, rig.on_move, rig.on_level, rig.on_window, rig.events.append)
     assert failed.group_contains(OSError, match="no network")
 
 
@@ -308,7 +314,7 @@ async def test_each_level_hears_from_where_it_started() -> None:
         begun.append(afresh)
         return None
 
-    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.owner, rig.on_move, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.speech.spoken, rig.owner, rig.on_move, rig.on_level, rig.on_window, rig.events.append))
     # Off, nothing hears the room; the wake word's model hears from its level's first buffer, afresh each time it starts.
     await rig.hear(b"q")
     for level in ("wake word", "off", "wake word"):
@@ -363,7 +369,7 @@ async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out(mo
         said, spoke[0] = not spoke[0], True
         return Woken(rig.clock.now(), over_hands=False, built_in=False) if said else None
 
-    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.owner, rig.on_move, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(rig.clock, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.speech.spoken, rig.owner, rig.on_move, rig.on_level, rig.on_window, rig.events.append))
     await rig.choose("wake word")
     await rig.hear(b"q")
     # The wake word's deadlines are set as it opens the turn, from the instant it was heard.
@@ -388,6 +394,40 @@ async def test_an_engaged_turn_open_to_the_limit_is_sent_as_it_stands(monkeypatc
     await stopped(driving)
     assert rig.made_by == [Made("listen", "engaged conversation"), Made("arm", "engaged conversation"), Made("start", "engaged conversation"), Made("timeout", "engaged conversation")]
     assert rig.ears.cleared == 1
+
+
+WINDOWED = [Made(move, "reply window") for move in ("listen", "arm", "start", "stop", "deafen")]
+
+
+async def test_off_the_room_is_heard_only_in_the_window_after_hands_spoke_from_its_start_and_speech_there_is_a_turn() -> None:
+    rig = Rig(verdicts=[True])
+    driving = rig.start()
+    # Off, what may be speech opens nothing, and is no part of what the window hears.
+    await rig.hear(b"s")
+    await rig.drained()
+    rig.speech.say(HandsQuiet(0.0, "desk"))
+    await rig.until(lambda: bool(rig.windows))
+    await rig.hear(b"s", b"S", b"q")
+    await rig.settle(len(WINDOWED))
+    await stopped(driving)
+    assert rig.windows == [WindowOpened(0.0)] and rig.made_by == WINDOWED
+    # Heard from the window's start, with nothing of the room before it.
+    assert rig.ears.afreshed == 1
+    (desk,) = (event for event in rig.events if event.event == "desk")
+    assert (desk.counts["windows"], desk.counts["by_reply_window"], desk.counts["heard"]) == (1, 5, 3)
+
+
+async def test_a_window_nothing_was_said_in_closes_when_it_is_due(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The window is moved in its one place, and its end moves with it.
+    monkeypatch.setattr("hands.voice.desk.WINDOW_SECONDS", 3.0)
+    rig = Rig(verdicts=[])
+    driving = rig.start()
+    rig.speech.say(HandsQuiet(0.0, "desk"))
+    await rig.clock.scheduled(3.0)
+    rig.clock.advance_to(3.0)
+    await rig.settle(2)
+    await stopped(driving)
+    assert rig.made_by == [Made("listen", "reply window"), Made("deafen", "reply window")]
 
 
 async def test_ears_that_cannot_be_loaded_fail_as_the_unit_they_were_loaded_for_whoever_hears_with_them(monkeypatch: pytest.MonkeyPatch) -> None:
