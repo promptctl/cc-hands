@@ -136,7 +136,7 @@ class Configured:
 def configured_from(children: Children, home: Home, settings: Settings, environment: Mapping[str, str], checked: preflight.Preflight) -> Configured:
     """The process boundary: the settings the run started on, what the start's preflight found in the home's files, and
     the environment's secrets in, typed configuration out; CannotStart where hands cannot run on them, naming every
-    refusal of the home's files at once."""
+    refusal of the home's files and the environment at once."""
     match checked.verdict:
         case preflight.Refused(refusals=refusals, brain=brain):
             # Said once, after them all: the fix of each is made before hands is run again.
@@ -323,7 +323,7 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        read = await start(lambda: configured(partial(configure, environment), survey, home, pin, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        read = await start(lambda: configured(partial(configure, environment), survey, home, pin, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if read is not None:
             config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
@@ -351,7 +351,7 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, pin: pinned.Pin, sessions: Sessions, run_start: Start) -> Configured:
+async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, pin: pinned.Pin, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
@@ -359,7 +359,7 @@ async def configured(configure: Callable[[preflight.Preflight], Configured], sur
     # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
     # refusal only a Claude Code can say. [LAW:no-ambient-temporal-coupling] its facts reach the start's event here, on
     # the loop that owns it, never from the thread it ran on.
-    checked = await off_loop(partial(preflight.preflight, home, pin), "the start's preflight")
+    checked = await off_loop(partial(preflight.preflight, home, pin, environment), "the start's preflight")
     run_start.heard(**checked.facts())
     read = await off_loop(lambda: _attempted(partial(configure, checked)), "the configuration read")
     # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and

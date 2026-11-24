@@ -11,7 +11,8 @@ import sys
 import tempfile
 import queue
 import threading
-from collections.abc import Callable, Coroutine, Generator, Sequence
+from types import MappingProxyType
+from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -252,7 +253,9 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
 
                 if (token := hub_token(Children(clock, audit_log.record), os.environ)) is not None:
                     os.environ["HF_TOKEN"] = token
-                return run_daemon(clock, home, pin, audit_log, handover, arguments.model, arguments.level)
+                # [LAW:one-source-of-truth] the one environment the run is started in, read once, after the last write the
+                # daemon makes to it: its start, every weigh of an edit, and every process it starts take this.
+                return run_daemon(clock, home, pin, MappingProxyType(dict(os.environ)), audit_log, handover, arguments.model, arguments.level)
             case "tmux-status":
                 return show_segment(clock, home)
             case _:
@@ -291,7 +294,7 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
+def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -323,13 +326,13 @@ def run_daemon(clock: Clock, home: Home, pin: pinned.Pin, audit_log: audit.Audit
                 # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
                 after_crash = handover is None and crashed_before(clock, home)
                 run_start.heard(after_crash=after_crash)
-                settings = door(home, pin, model, run_start)
+                settings = door(home, pin, environment, model, run_start)
             except CannotStart as cannot:
                 run_start.ended(audit_log.record, cannot)
                 refuse(cannot, held)
                 return 1
             try:
-                ran: Literal["quit"] | Handover | CannotStart = run_here(clock, home, pin, handover, after_crash, settings, heart, audit_log, run_start)
+                ran: Literal["quit"] | Handover | CannotStart = run_here(clock, home, pin, environment, handover, after_crash, settings, heart, audit_log, run_start)
             except* CannotStart as cannot:
                 # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
                 # refused once, and said so even where another error raised with it is raised on past this block.
@@ -439,10 +442,10 @@ def dispatch(clock: Clock, home: Home, pin: pinned.Pin, release: pinned.Source, 
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def door(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Settings:
+def door(home: Home, pin: pinned.Pin, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant and the
-    settings it starts on. CannotStart where either is missing. What the home's files refuse is the start's preflight's
-    to say, a step of its own once the run has its heartbeat (hands.daemon.preflight), and said here beside settings
+    settings it starts on. CannotStart where either is missing. What the home's files and the environment refuse is the start's
+    preflight's to say, a step of its own once the run has its heartbeat (hands.daemon.preflight), and said here beside settings
     that do not parse, since a run whose settings choose where it is recorded never reaches that step: what that
     preflight found reaches `run_start`'s event as the step's would."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
@@ -459,7 +462,7 @@ def door(home: Home, pin: pinned.Pin, model: str | None, run_start: Start) -> Se
     try:
         return load(home, model)
     except Rejected as error:
-        checked = preflight.preflight(home, pin)
+        checked = preflight.preflight(home, pin, environment)
         run_start.heard(**checked.facts())
         raise CannotStart("; ".join(preflight.beside(checked, error))) from error
 
@@ -535,7 +538,7 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-def run_here(clock: Clock, home: Home, pin: pinned.Pin, handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
+def run_here(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
     """hands run in this process, on what the run before handed over if it was one, until it is told to stop: a quit, or
     a restart and what it hands the next run.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
@@ -555,7 +558,7 @@ def run_here(clock: Clock, home: Home, pin: pinned.Pin, handover: Handover | Non
     levels = Levels(starts_at(handover))
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, pin, settings, heart, record, exports.degraded, after_crash, run_start, levels, levels), levels, heart, exports.degraded, lambda: edited(home, pin, record, settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, pin, environment, settings, heart, record, exports.degraded, after_crash, run_start, levels, levels), levels, heart, exports.degraded, lambda: edited(home, pin, environment, record, settings, clock), record, run_start, clock))
     match ending:
         case "quit":
             return "quit"
@@ -644,7 +647,7 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> Run:
+def loaded(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -653,7 +656,7 @@ def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart:
     # Before any model loads, so no buffer any of them frees is kept past the limit.
     memory.limit_cache()
 
-    path = os.environ.get("PATH", "")
+    path = environment.get("PATH", "")
     children = Children(clock, record)
     # This run is hands running, and the backend it reaches is the one it was configured on.
     running = readiness.Ready("hands running", f"hands is running here: pid {os.getpid()}")
@@ -668,7 +671,7 @@ def loaded(clock: Clock, home: Home, pin: pinned.Pin, settings: Settings, heart:
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, home, path, True, reached, running, partial(keyboards, children)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, pin, run_start, OwnModel(home, pin, settings), clock, listening, driving)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, home, heart, record, degraded, stop, after_crash, environment, pin, run_start, OwnModel(home, pin, environment, settings), clock, listening, driving)
 
 
 def start_indicator(home: Home) -> int:

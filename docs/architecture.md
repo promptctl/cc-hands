@@ -2647,7 +2647,7 @@ file against the bytes the start read, and an edit that parses ends the run as t
 restart signal does `[LAW:single-enforcer]`, said as `SettingsEdited` before the
 next `hands.start`, which says it was `restarted`. One that does not parse, or one the
 start's preflight refuses (`hands.daemon.preflight`: every refusal a start makes on the home's
-files, read from them alone, starting no Claude Code), is said as a `SettingsEdited` that was
+files and on a `HANDS_*` setting in the environment it runs in, read from them alone, starting no Claude Code), is said as a `SettingsEdited` that was
 refused, and the run keeps what it has. Either is weighed again at each poll while its bytes
 stand, so a home-refused edit is taken once the home is mended; it is said again whenever what
 refuses it changes. A start that passes the preflight is run with what it read: the brain's pinned claude and
