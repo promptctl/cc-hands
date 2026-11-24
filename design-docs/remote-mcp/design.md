@@ -19,7 +19,8 @@ app, with Cloudflare Access doing OAuth in front of it."
 hands already is an HTTP MCP server: `src/hands/brain/mcp.py` serves the tools of `hands.voice.tools` over streamable
 HTTP to the brain, POST-only, JSON answers, on `127.0.0.1:<free port>`, admitting only a bearer token that the brain's
 `--mcp-config` holds. That transport is exactly what the Claude app's custom connectors speak (a server that opens no
-GET stream is allowed by the spec). So this is not a new server. It is a **second door** on the one hands has.
+GET stream is allowed by the spec), at the protocol versions it speaks, 2025-06-18 and 2025-11-25. So this is not a
+new server. It is a **second door** on the one hands has.
 
 The brain is given three kinds of tools; only two are MCP and in scope:
 
@@ -43,50 +44,57 @@ The brain is given three kinds of tools; only two are MCP and in scope:
                                                                                                             http clients)
 ```
 
-One handler, two doors. A door says who it admits and what it serves; a call says which turn it belongs to.
+One handler, two doors. The handler never asks which door it serves: a door is a value, and each fact about a call
+lives on the caller that has it [LAW:types-are-the-program].
 
 ```python
-Caller = Brain | Remote          # admitted by the door, once per request [LAW:single-enforcer]
 @dataclass(frozen=True)
-class Brain: ...                 # bore the brain's bearer token
-@dataclass(frozen=True)
-class Remote: email: str         # bore an Access JWT that verifies and names an email; one naming none is refused
+class Door:
+    admit: Callable[[web.Request], Awaitable[Caller | Refusal]]  # the one check this door makes [LAW:single-enforcer]
+    catalogue: Catalogue          # what tools/list says and tools/call reaches
+    voice: Voice | None           # the brain door's: what a call is to a voice turn (below); the remote door has none
+    instructions: str | None      # initialize's instructions, for a model with no system prompt of hands': the remote door's
+    window: timedelta | None      # how long a call may run before it is answered as still running: the remote door's 90 s
 
+Caller = Brain | Remote
 @dataclass(frozen=True)
-class Call:
-    caller: Caller
-    turn: ToolUse | Unjoined | None   # the brain's: claudecode/toolUseId from the call's _meta, or Unjoined, flagged on
-                                      # the call's event; None for a remote call, which is a trace of its own
-    tasks: bool                       # the client declared io.modelcontextprotocol/tasks in the call's _meta
+class Brain:  turn: ToolUse | Unjoined    # claudecode/toolUseId from the call's _meta; Unjoined is flagged on its event
+@dataclass(frozen=True)
+class Remote: email: str; tasks: bool     # from the Access JWT, which is refused without an email; whether the call's
+                                          # _meta declared io.modelcontextprotocol/tasks
 ```
-
-Only the remote door answers `initialize` with `instructions`; the brain learns hands from its appended system prompt.
 
 ## Decisions
 
 **A tool's act and its place in a voice turn are two values.** Today a `Tool` carries both: the act (its name,
-description, schema and body) and the voice turn's protocol (`then`, the cue, the sentences in its description that
-tell a speaking model how to end its reply, the focus it defaults to and moves). The remote door serves the act, and
-the voice part becomes a value of its own that only the brain door applies [LAW:types-are-the-program]:
+description, schema and body) and the voice turn's protocol (`then`, the cue, sentences in its description that tell
+a speaking model how to end its reply, the focus it defaults to and moves, a line it waits to have heard). The remote
+door serves the act; the voice part is the brain door's `Voice`, and the act cannot hold any of it
+[LAW:types-are-the-program]:
 
-- **What a call is to a voice turn**: `then`; whether it plays the working cue, a property of the tool where today it
-  is a tool's place in `intermediary_tools`' `acts` list and two `cued` calls in `run.py`; and whether the tool means
-  anything outside a voice turn at all. `stay_silent`, `resume`, `skip`, `repeat` (the reply hands is speaking) and
-  `focus_session` mean nothing outside one, and the remote door does not list them.
-- **The description's voice sentences** ("Calling it is the whole reply: add no words of your own") are written by the
-  brain door from `then`, not kept in each docstring. The rest of a description is the act's, served to both; the
-  remote door's instructions say once that a description's "say", "tell" and "spoken form" mean writing to the user.
-- **The focus is the voice conversation's.** A remote call names its session (`defaulting_to_focus` wraps the brain
-  door's tools only) and moves no focus (`tell_turn`'s refocus is the brain door's), so what the app does never changes
-  which session a spoken "send it" lands on.
-- **Speech is the brain door's.** A `read_back` result is spoken only because the brain's stage reads it off the
-  brain's wire, so a remote call already gets it as data and the room hears nothing. `use_model` is the one served tool
-  whose body speaks: it says the switch and keeps the model only once the line is heard, since keeping it restarts
-  hands. That wait is its voice part; a remote `use_model` keeps the model once its answer has gone out, the Claude
-  app's approval prompt standing where the heard line stands.
+- **The act is built with no player and no refocus**, so its body cannot speak, wait on a heard line, or move the
+  focus. Where a voice turn does one of those, the act returns it as a description and the brain door's `Voice`
+  performs it [LAW:effects-at-boundaries]: `tell_turn` returns the session it told, and the brain door moves the focus
+  to it; `use_model` returns the switch, and the brain door says it, waits for it to be heard, and keeps the model. A
+  door with no `Voice` performs only what is not the voice's: the remote door keeps the model once its response is
+  written, the Claude app's approval prompt standing where the heard line stands. Keeping restarts hands, so the
+  keep is the door's to order after its own write, never the body's.
+- **What a call is to a voice turn** is the `Voice`'s, per tool: `then`; whether it plays the working cue (today a
+  tool's place in `intermediary_tools`' `acts` list and two `cued` calls in `run.py`); whether a call naming no
+  session acts on the focus (`defaulting_to_focus`); and whether the tool means anything outside a voice turn.
+  `stay_silent`, `resume`, `skip`, `repeat` (the reply hands is speaking) and `focus_session` do not, and a catalogue
+  served with no `Voice` does not list them.
+- **A description says what is true for any caller**, and the `Voice` adds the sentences true only in a voice turn
+  ("Calling it is the whole reply: add no words of your own", "Hands says it is switching, and switches once the user
+  has heard that", "The session told becomes the focus"). "Tell the user" is true for both; `catch_up`'s window "since
+  they last spoke to you" becomes "since the user last spoke to hands", which it is.
+- **The focus is the voice conversation's**, so a remote call names its session and moves no focus, and what the app
+  does never changes which session a spoken "send it" lands on.
 
-Everything else is served as it is, the room's acts included: a remote `set_listening_level` or Spotify call does to
-the desk what the spoken one does.
+A `read_back` result is spoken only because the brain's stage reads it off the brain's wire, so a remote call gets it
+as data and the room hears nothing. Everything else is served as it is, the room's acts and the voice's settings
+included: a remote `set_listening_level`, `set_modality`, attention change or Spotify call does to the desk what the
+spoken one does, which is what someone away from the desk asks for.
 
 **The set is the brain's setup, checked against what the brain is offered.** The remote door serves hands' own tools
 and the tools of each server named in the brain's `.claude.json`. That file is read by `hands.brain.configdir`, which
@@ -94,8 +102,9 @@ already parses it; its `State` gains the servers, from the top level and from `p
 both being the project's, as Claude Code resolves it. The set is not taken from the brain's requests because those
 exist only once the brain has had a turn since hands started, and the remote door is for when nobody is talking to it.
 The requests are the check instead: hands already reads the tools each main turn offers the model (`hear` in
-`src/hands/brain/process.py`), and every `mcp__` tool on one side and not the other is one event naming it: a server
-from a scope hands does not read (a plugin's, a project `.mcp.json`), or a tool a deny rule withholds from the brain.
+`src/hands/brain/process.py`), and each time the `mcp__` tools on one side and not the other change, one event names
+them: a server from a scope hands does not read (a plugin's, a project `.mcp.json`), or a tool a deny rule withholds
+from the brain.
 Deny rules are not applied to the remote door: they bound what the brain's model does unasked, and the remote caller
 is Brandon behind the Claude app's own per-tool approvals.
 
@@ -107,21 +116,29 @@ against starting Claude Code for what hands can do itself.
 - Each entry parses into `Stdio(command, args, env) | Http(url, headers)` [LAW:parse-dont-validate]. An entry hands
   cannot run (an `sse` server, one needing OAuth tokens that live in Claude Code's keychain, a `${VAR}` that is
   unset) is left out with one event saying which and why, never half-started.
-- A stdio server is started through `hands.sessions.child.Children`, the one place hands starts a child, as a child
-  of the daemon for the life of the remote door, and the `mcp` SDK's `ClientSession` speaks over its pipes (stdio
-  framing, request correlation, server-to-client pings). Its environment is the brain's (`environment()` in
-  `src/hands/brain/process.py`, which keeps hands' own logins out) plus the entry's `env`, and `${VAR}` expands
-  against that same environment.
+- A stdio server is started through `hands.sessions.child.Children`, as a child of the daemon for the life of the
+  remote door, so it is reaped and stopped as hands' other children are, and the `mcp` SDK's `ClientSession` speaks
+  over its pipes (stdio framing, request correlation, server-to-client pings). `Children` hands over no pipes today
+  (`Stdio = Null | Terminal`, and `Running` exposes no streams), so a `Pipes` variant, with `Running` exposing its
+  streams, is the first step of the ticket that forwards. The SDK's own `stdio_client`, which spawns the child
+  itself, is not used.
+- Its environment is the brain's (`environment()` in `src/hands/brain/process.py`, which keeps hands' own logins out)
+  plus the entry's `env`, and `${VAR}` expands against that same environment. The daemon composes it and hands it to
+  the forwarder as a value, so the forwarder imports nothing of `process.py`, which imports `mcp.py` [LAW:one-way-deps].
 - It is hands' own instance, not the brain's, so state a server keeps per connection (chrome-devtools' selected page,
   say) is not shared with the brain's. Sharing it would need the brain's Claude Code to make the call, rejected above.
-- The catalogue is `Own(Tool) | Forwarded(server, definition)`. A forwarded tool is named `<server>__<tool>`,
-  mirroring Claude Code's `mcp__<server>__<tool>`, and listed with the upstream's own `inputSchema` and description;
-  its call returns the upstream's result as given, its content blocks and `isError` included. hands' own tools keep
-  their bare names and today's one-JSON-text-block result, and `Result`'s values are typed as JSON so encoding one
-  cannot fail. A name served twice (two servers' names joining to one, an entry named `hands`) leaves both out with
-  an event.
-- A forwarded call is a `tool.run` event like hands' own, naming its server. A server that dies is an event, its
-  tools leave `tools/list` (answered fresh on every request), and a call to one answers an error naming it.
+- The catalogue is keyed by tool: hands' own by their bare names, a forwarded one by `(server, tool)`. A server name
+  is parsed to hold no `__`, and an entry whose name does is left out with its event, so the wire name
+  `<server>__<tool>`, mirroring Claude Code's `mcp__<server>__<tool>`, names one tool and is built in one place beside
+  `wire_name`. A forwarded tool is listed with the upstream's own `inputSchema` and description.
+- A forwarded tool is a `Tool` whose body calls the upstream, so every call, hands' own or forwarded, is one `tool.run`
+  event from the one `audited` [LAW:single-enforcer], naming its server. A body's result is `Result | Upstream`:
+  hands' own JSON object, typed as JSON values so encoding one cannot fail, which the handler sends as today's one
+  text block; or the upstream's result as given, its content blocks and `isError` included. `audited` reads failure
+  from either (an `error` key, or `isError`), and moves into `hands.voice.tool`, which loads no Pipecat, so the
+  forwarder and `mcp.py` can reach it.
+- A server that dies is an event, its tools leave `tools/list` (answered fresh on every request), and a call to one
+  answers an error naming it.
 - hands' server side stays hand-written: it works, it is tested, and the SDK would change nothing a client sees.
   `mcp` and `PyJWT` become dependencies, and `cryptography`, today only pulled in by others, a direct one.
 
@@ -163,15 +180,18 @@ tunnel and the Access application hold, which hands cannot read; the refusal eve
 
 **The Claude app gets instructions.** The brain learns hands from its appended system prompt and its skills; the
 Claude app's model gets only what the server sends. The remote door answers `initialize` with `instructions`: a short
-text, written for a model reading rather than one speaking, of what hands is, what a session is, how to read a tool
-description written for a speaking model, and the order its tools are used in (list, read, stage, send, then `turn`).
+text, written for a model reading rather than one speaking, of what hands is, what a session is, and the order its
+tools are used in (list, read, stage, send, then `turn`).
 It lives beside the brain's instruction and is written with laws:prompt.
 
 **Calls answer inside Cloudflare's window.** Cloudflare drops a proxied request whose origin sends nothing for 100
 seconds (a 524). hands' own calls answer in seconds (`start_session`, the slowest, in about 35), but a forwarded call
-lasts as long as its upstream takes. The remote door answers every call by 90 seconds: one still running then is
-answered with an error saying it is still running and its result will not reach the client, and its event says so.
-The act itself is not cancelled, as the brain door cancels none: a half-done act is worse than an unread result.
+lasts as long as its upstream takes. The remote door's window is 90 seconds: a call still running then is answered,
+not as an error, with a result saying it is still running and is not to be made again, and the call's event closes
+when the act ends, with how it ended. The act is not cancelled, as the brain door cancels none: a half-done act is
+worse than an unread result. No handle is minted for such a call: hands' own calls end well inside the window, and a
+forwarded call runs long only as its caller's own arguments ask (eyes' `find` with a `timeout`), so the one job that
+outlives the window by its nature is the send, below.
 
 ## Long-running work: a send is the job
 
@@ -189,36 +209,46 @@ such channel: it only learns something by asking.
 
 **Every tool that types a prompt returns a handle naming that send** (`send_draft`, and `send_command` for a command
 Claude Code runs as a turn), as soon as it is typed. Nothing waits on the session: what became of the words is read
-when it is asked for. **One tool, `turn(handle)`, says where the send stands**, read from what hands already keeps,
-never from a job table of its own [LAW:one-source-of-truth]. The reducer already files each prompt's words under the
-turn that takes them, by their text (`Prompted` and `Submitted` carry the words; `Opened.waiting` holds words filed
-under a running turn; `Taken` names the turn Claude Code runs for words it had queued, or for a command), so hands
-keeps, for each send, the turn its words were filed under:
+when it is asked for. **One tool, `turn(handle)`, says where the send stands**, read from the reducer and from the one
+store of tellings, never from a job table of its own [LAW:one-source-of-truth]:
+
+- **The reducer carries the send.** Today it files a prompt's words under the turn that takes them by their text
+  alone (`Opened.waiting` is `tuple[str, ...]`, matched by `_unqueued`). hands' typing of a send becomes an event the
+  reducer applies, so each waiting entry is its words and the send that typed them, or none for words hands did not
+  type, and the session keeps, for the life of the session as it keeps `earlier`, the turn each send's words opened
+  or were taken into. Equal words are told apart by order, oldest first, as Claude Code's queue takes them and as the
+  reducer already matches its queue records; words typed at the keyboard between two equal sends are the one case
+  order alone decides.
+- **`Recounts` holds tellings by turn**, each session's 16 latest, where today it holds the newest alone. `tell_turn`
+  and `expand` read the newest, `turn` reads the send's, and `open` and `unread` change the one telling both read.
+- **A handle names the run of hands that issued it**, so a handle from before a restart (and `use_model` restarts
+  hands) is told apart from one never issued.
 
 | The send | `turn` answers |
 | --- | --- |
 | typed, and no turn has its words, or they wait behind the running turn | `queued`, with how the session stands now |
 | its words are in a turn that is open: their own, or one they were delivered into | `working`, with what the session is doing now |
 | that turn stopped on a dialog | `waiting`, with the permission, question, or plan, answered by the permission tools as any dialog is |
-| that turn ended (`Untold` or `Told`) | `done`, with the turn told as `tell_turn` tells it, or, until narration has told it, saying it is not told yet and that `read_session` reads it |
-| not held by this hands (sent before a restart, or past the bound) | an error naming `read_session` |
+| that turn ended, as the reducer says (`Untold` or `Told`) | `done`, with its `telling`: the turn as `tell_turn` tells it, or `untold` where narration has not told it, or `released` where it is past the 16 |
+| issued by an earlier run of hands | an error saying so and naming `read_session` |
 
-hands holds each session's 16 latest sends and the tellings of the turns they name, and lets them go when the session
-is gone [LAW:carrying-cost]. Tellings are written by narration, which runs once the voice is up; until it is, or if
-it is down, a finished turn's answer is the `done` that says it is not told yet, never a turn that did nothing.
-`tell_turn` and `expand` keep reading the session's newest turn: "what did it just do" is a different question from
-"how is the prompt I sent going". `turn` moves no focus. Both doors get `turn`, so the voice brain can answer "is it
-done yet?" by the prompt it sent, rather than by whichever turn happens to be newest.
+Tellings are written by narration, which runs once the voice is up, so a turn the reducer says ended is `done` with
+`untold` while the voice loads or is down, never a turn that did nothing. `tell_turn` has that gap today
+(`Recounts.of` returning None reads as "no turn has finished since hands started"), and reads whether a turn ended
+from the reducer too. "What did it just do" is a different question from "how is the prompt I sent going", so
+`tell_turn` stays. `turn` moves no focus. Both doors get `turn`, so the voice brain can answer "is it done yet?" by
+the prompt it sent, rather than by whichever turn happens to be newest.
 
 **Tasks are not built now.** Anthropic shipped Tasks in the Claude Code CLI on 2026-10-23 (public beta, v2.1.304)
 and said other Claude products would follow. Nothing found shows the Claude app declaring the extension yet, and a
-server must never return a task to a client that did not declare it in the request's `_meta`. So each call carries
-whether its client declared it (`Call.tasks`), and its event records it. The ticket that answers with tasks is in the
+server must never return a task to a client that did not declare it in the request's `_meta`. So a `Remote` caller
+carries whether its call declared it, and the call's event records it. The ticket that answers with tasks is in the
 order below, pulled once a remote call's event shows the Claude app declaring the extension: a `send_draft` from a
 `Remote` caller that declared it is answered with a task whose `taskId` is the send's handle, and whose `tasks/get`
 reads `turn`. `queued` and `working` map to `working`, `waiting` to `input_required`, `done` to `completed`. That is a
-second way of writing out the same job, with no second store behind it. A `Brain` caller gets no task even if its
-Claude Code declares the extension: hands tells the brain each turn as it finishes, and a task would tell it twice.
+second way of writing out the same job, with no second store behind it. A `Brain` caller carries no such field, so it
+gets no task even if its Claude Code declares the extension: hands tells the brain each turn as it finishes, and a
+task would tell it twice.
 
 ## Cloudflare and the Claude app, set up once
 
@@ -242,31 +272,34 @@ URL (anthropics/claude-ai-mcp#410, June 2026, closed as not planned). The causes
 and today's Access get along is not known from here.
 
 Nothing in hands depends on the answer: whichever Access front works, the origin contract is one JWT header. So the
-live connect comes straight after the first door that can be connected to, before anything else is built on it.
+live connect is its own ticket, taken as soon as there is a door to connect to, and no code waits on it.
 
 ## Tickets, in order
 
-1. **A tool's voice part is a value of its own.** `then`, the cue, voice-turn-only, and the description's voice
-   sentences move off the act; the brain door applies them. Done when the brain is offered the same tools, with the
-   same descriptions, and the same calls cue and speak as before, by the existing tests, which are the brain's
-   contract here.
-2. **Walking skeleton: the remote door, admitting only Access.** `Caller` and `Call` in place of `used`, the remote
+1. **A tool's voice part is a value of its own.** `then`, the cue, the focus, voice-turn-only, the description's
+   voice sentences, and the effects a voice turn performs (refocus, a heard line, a model's keep) move off the act,
+   which is built with no player and no refocus; the brain door's `Voice` applies them. Done when the brain is
+   offered the same tools, with the same descriptions but `catch_up`'s reworded window, and the same calls cue, speak
+   and move the focus as before, by the existing tests, which are the brain's contract here.
+2. **Walking skeleton: the remote door, admitting only Access.** `Door` and `Caller` in place of `used`, the remote
    door serving hands' own acts with JWT admission and the `[remote]` setting, a refusal event on both doors. Done
    when, in unit tests with a test-signed key set, a request with a valid JWT lists and calls hands' tools with no
    voice-only tool among them, plays no cue and moves no focus, and each bad JWT is refused with its event.
 3. **The Claude app connects through Access.** The setup above, done live and moved to `docs/`. Done when
    `list_sessions` answers from claude.ai and from the iOS app, and a request without Access's header is refused, with
    the events as the evidence. A live run on a ticket of its own, so no code waits on it.
-4. **The brain's other MCP servers, forwarded.** The servers in `configdir`'s `State`, the stdio and http clients
-   behind a port of hands' own, the catalogue's `Forwarded` entries, the events for a server left out or dead, and the
-   check against the brain's offered tools. Done when unit tests over a fake upstream show the names, results passed
-   through with their content and `isError`, a dead server's tools leaving the list, and each difference from the
-   offered list as an event; and an outside-marked test runs a tiny stdio MCP server through the remote door.
-5. **A send is a job: its handle, and `turn` to ask after it.** Done when a client that sends a prompt and asks after
-   it is told that send's state, through `queued` when the session was busy, and, once its turn ends, that turn and no
-   other.
-6. **Instructions for the Claude app**, written for a model that reads hands' tool descriptions and sends a prompt,
-   then asks `turn` after it. Done when an eval of the Claude app's model, given the remote door's tools and
-   instructions, lists, stages, sends, and asks `turn` in that order and shows the user what a readback says.
+4. **The brain's other MCP servers, forwarded.** `Children`'s `Pipes`, the servers in `configdir`'s `State`, the
+   stdio and http clients behind a port of hands' own, the forwarded tools and their names, `audited` reading
+   `isError`, the events for a server left out or dead, and the check against the brain's offered tools. Done when
+   unit tests over a fake upstream show the names, results passed through with their content and `isError`, a dead
+   server's tools leaving the list, and each change in the difference from the offered list as an event; and an
+   outside-marked test runs a tiny stdio MCP server through the remote door.
+5. **A send is a job: its handle, and `turn` to ask after it.** The reducer carrying sends, `Recounts` by turn, and
+   `tell_turn` reading a turn's end from the reducer. Done when a client that sends a prompt and asks after it is
+   told that send's state, through `queued` when the session was busy, and, once its turn ends, that turn and no
+   other, with `untold` while narration is not running.
+6. **Instructions for the Claude app**, written for a model that sends a prompt and then asks `turn` after it. Done
+   when an eval of the Claude app's model, given the remote door's tools and instructions, lists, stages, sends, and
+   asks `turn` in that order and shows the user what a readback says.
 7. **Tasks for a client that declares them**, pulled once a remote call's event shows the Claude app declaring the
    extension. Done when such a client's `send_draft` is answered with a task that `tasks/get` follows to `completed`.
