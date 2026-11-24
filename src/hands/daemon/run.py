@@ -67,6 +67,8 @@ from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
 from hands.voice.pinnedfile import Release
+from hands.voice.atphone import drive as follow_the_phone
+from hands.voice.engaged import loaded
 from hands.voice.phonepage import phone_pages, serve_phone
 from hands.voice.phoneaddress import phone_key, tailnet
 from hands.voice.turnstop import Typed
@@ -327,7 +329,7 @@ async def run(
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
-            tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, listening, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
+            tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
@@ -493,8 +495,11 @@ async def converse(
         try:
             # The key every page and `hands phone` share, made once here if no run has made it.
             key = phone_key(clock, home)
-            # Either failing ends the other, and the phone task with them.
-            async with asyncio.TaskGroup() as phone_tasks:
+            # [LAW:no-silent-failure] the phone's ears are loaded before its page is answered, as the desk's are before it hears:
+            # ears that cannot be are the run's failure, and never a wake that fails as it is heard.
+            # Any of them failing ends the others, and the phone task with them.
+            async with loaded(clock, voice.phone.heard_rate, record, "phone.loaded") as ears, asyncio.TaskGroup() as phone_tasks:
+                phone_tasks.create_task(follow_the_phone(clock, voice.key, voice.phone, ears, record), name="the phone's turns")
                 phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery, wake_models, runtime), home, partial(tailnet, Children(clock, record), home), record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:

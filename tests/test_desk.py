@@ -7,7 +7,7 @@ import pytest
 from hands.voice.cues import level_cue
 from hands.voice.desk import Act, Chosen, Desk, Event, Leveled, Loaded, Made, ModelsLoaded, Resting, Woken, step
 from hands.voice.listening import Level
-from hands.voice.shortcut import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
+from hands.voice.shortcut import CommandPressed, CommandReleased, Pressed, Released, Ripe, Typed
 from hands.voice.voiceturn import ASK_SECONDS, Judging, NothingAsked, Speaking, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, TurnId, Waiting, deadlines
 
 
@@ -125,11 +125,11 @@ def test_engaged_speech_opens_a_turn_and_a_noise_disarms() -> None:
     assert made == [Made("arm", "engaged conversation"), Made("disarm", "engaged conversation"), Made("arm", "engaged conversation"), Made("start", "engaged conversation"), Judging(Speaking(T1, 2.0)), Made("stop", "engaged conversation")]
 
 
-@pytest.mark.parametrize(("level", "opening", "left"), [("wake word", [Woken(1.0)], "stop"), ("engaged", [SpeechStarted(1.0)], "stop"), ("engaged", [SpeechStarting()], "disarm")])
-def test_a_shortcut_over_what_the_voice_has_open_sends_or_disarms_it_then_talks(level: Level, opening: list[Event], left: Move) -> None:
+@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)]), ("engaged", [SpeechStarting()])])
+def test_a_shortcut_over_what_the_voice_has_open_talks_and_leaves_the_gate_to_send_or_take_what_the_voice_had(level: Level, opening: list[Event]) -> None:
+    # [LAW:single-enforcer] the desk ends nothing of the voice's here: the gate sends its turn, or takes its arming, as the shortcut arms.
     _, made = run([*opening, Pressed(2.0), Ripe(2.0), Released()], at(level))
-    trigger = "wake word" if level == "wake word" else "engaged conversation"
-    assert moves(made)[-4:] == [Made(left, trigger), Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
+    assert moves(made)[-3:] == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
 
 
 @pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])

@@ -45,9 +45,9 @@ SLOT = RATE // 100
 
 # [LAW:domain-language] a trigger is what moves the gate (docs/architecture.md, "The gate has one owner and several
 # triggers"). The desk has three (`hands.voice.desk`): Right Shift held alone, at every level (`hands.voice.shortcut`); speech,
-# engaged (`hands.voice.engaged`); and the wake word said, at its level (`hands.voice.wake`). The phone's is its page's
-# talk button, there for every call.
-Trigger = Literal["shortcut", "engaged conversation", "wake word", "phone button"]
+# engaged (`hands.voice.engaged`); and the wake word said, at its level (`hands.voice.wake`). The phone's are its page's
+# talk button, there for every call, and the wake word its page's detector heard, at its level (`hands.voice.phone`).
+Trigger = Literal["shortcut", "engaged conversation", "wake word", "phone button", "phone wake word"]
 # What opens a clip: a trigger of the gate, or words the user typed into the conversation page
 # (`hands.voice.conversationpage`), which move no gate and are heard nowhere, so they are a clip of their own.
 Opener = Trigger | Literal["typed"]

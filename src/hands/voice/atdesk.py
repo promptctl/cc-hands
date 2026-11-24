@@ -58,12 +58,16 @@ async def serve_desk(
     change of level plays its cue and is beaten, the driver having told `levels` of it as it stepped it."""
 
     async def at_desk(made: Made) -> None:
-        match key.move(made.move, made.by):
-            case None:
-                # A Shift at the desk while the turn is the phone's: nothing of it is cued, said, or beaten.
-                return
+        # [LAW:single-enforcer] a clip is ended only through `PushToTalk.end`, which the gate lets only the trigger that opened it do;
+        # the desk names the turn open now, until `Made` carries the turn it decided about (promptctl-phone-app-9d9y.3hd).
+        match made.move:
+            case "stop" | "drop" | "timeout" as how:
+                moves = key.end(key.gate.turn, how, made.by)
             case move:
-                await taken(move)
+                moves = key.move(move, made.by)
+        # A Shift at the desk while the turn is the phone's made no moves: nothing of it is cued, said, or beaten.
+        for move in moves:
+            await taken(move)
 
     async def at_level(leveled: Leveled) -> None:
         cue = level_cue(leveled)
@@ -83,7 +87,7 @@ async def serve_desk(
             ensured = await models.ensured(word)
             files = ensured.files
             annotate(**ensured.facts())
-        async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, files, word, record) as heard:
+        async with loaded(clock, rate, record, "desk.loaded") as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
 
     await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels, at_desk, at_level, record)

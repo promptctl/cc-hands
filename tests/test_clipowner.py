@@ -22,7 +22,7 @@ from hands.voice import clipowner, transcription
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip, Fate, Heard, Hearing, Hearings, Recording, Reference, Sound, Playhead, Synthesis, Transcriber, voices
 from hands.voice.ptt import Gate
-from hands.voice.trigger import Trigger
+from hands.voice.trigger import Trigger, by_hand
 from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
 from hands.voice.whisper import Whisper
 
@@ -120,7 +120,7 @@ class Rig:
     async def clip(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Trigger = "engaged conversation", voices: tuple[str, ...] = (), reached: bool = True) -> None:
         """A clip opened by `by`, a frame of each sound captured while it is open, hands playing in `voices` over it, its
         voice `reached` the microphone or not, then sent or thrown away."""
-        down = self.gate.after("start", by)
+        down = started(self.gate, by)
         for sound in sounds:
             await self.frame(down, sound, voices, reached)
         await self.frame(down.after("stop" if fate == "sent" else "drop", by), b"\x00\x00" * 320, voices, reached)
@@ -142,9 +142,14 @@ async def rigged(transcriber: Transcriber, listeners: Sequence[Heeding] = (), cl
         yield Rig(run, owner, seen, recorded)
 
 
+def started(gate: Gate, by: Trigger) -> Gate:
+    """The gate once `by` has opened a clip: a hand's press opens it, and a voice's is listened for, armed and started."""
+    return gate.after("start", by) if by_hand(by) else gate.after("listen", by).after("arm", by).after("start", by)
+
+
 def tap(gate: Gate, by: Trigger = "shortcut") -> Gate:
     """The gate once a press and its release both came, with no frame captured between them."""
-    return gate.after("start", by).after("stop", by)
+    return started(gate, by).after("stop", by)
 
 
 def frame_of(n: int) -> bytes:
@@ -233,7 +238,7 @@ async def test_a_listener_slow_to_hear_clips_up_no_other_listeners_cut() -> None
 
     slow, quick = Heeding("slow", hearings=lambda _clip, _sound: (waiting,)), Heeding("quick", hearings=worded("wait"))
     async with rigged(Scripted([None]), (slow, quick)) as rig:
-        await rig.frame(rig.gate.after("start", "engaged conversation"), frame_of(3))
+        await rig.frame(started(rig.gate, "engaged conversation"), frame_of(3))
         await rig.until(lambda: ("barge_in", 1, 0.0) in rig.seen.seen)
         stuck.set()
 
@@ -258,7 +263,7 @@ async def test_words_heard_once_their_clip_closed_cut_nothing_and_never_land_beh
 
 async def test_words_heard_while_their_clip_is_open_cut_hands_off_ahead_of_its_resolution() -> None:
     async with rigged(Scripted([None]), (Heeding("quick", hearings=worded("wait")),)) as rig:
-        down = rig.gate.after("start", "engaged conversation")
+        down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
         await rig.until(lambda: ("barge_in", 1, 0.0) in rig.seen.seen)
         await rig.frame(down.after("drop", "engaged conversation"), frame_of(0))
@@ -295,7 +300,7 @@ async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_
     answers += [never, words]
     listener = Heeding("hung", hearings=lambda _clip, _sound: (answers.pop(0),))
     async with rigged(Scripted([None]), (listener,)) as rig:
-        down = rig.gate.after("start", "engaged conversation")
+        down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
         await rig.frame(down, frame_of(3))
         await rig.until(lambda: ("barge_in", 1, 0.0) in rig.seen.seen)
@@ -321,7 +326,7 @@ async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_qu
     answers += [never, words]
     listener = Heeding("hung", hearings=lambda _clip, _sound: (answers.pop(0),))
     async with rigged(Scripted([None]), (listener,)) as rig:
-        down = rig.gate.after("start", "engaged conversation")
+        down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
         await rig.frame(down, frame_of(3))
         await rig.until(lambda: len(rig.events("hearing")) == 2)
@@ -344,7 +349,7 @@ def unkeyed(_gate: Gate) -> Frame:
 async def test_a_frame_no_clip_can_be_cut_from_fails_as_it_arrives_and_no_listener_hears_it(framed: Callable[[Gate], Frame], why: str) -> None:
     listener = Heeding("given")
     async with rigged(Scripted([]), (listener,)) as rig:
-        await rig.run.worker.queue_frame(framed(rig.gate.after("start", "engaged conversation")))
+        await rig.run.worker.queue_frame(framed(started(rig.gate, "engaged conversation")))
         await rig.until(lambda: len(rig.run.errors) == 1)
         [error] = rig.run.errors
         assert why in error.error
@@ -365,7 +370,7 @@ async def test_a_listener_that_raises_as_it_is_told_fails_its_own_hearing_and_th
 
 async def test_a_clip_sent_by_a_move_to_the_phone_is_measured_over_its_own_audio() -> None:
     async with rigged(Scripted([None])) as rig:
-        down = rig.gate.after("start", "shortcut")
+        down = started(rig.gate, "shortcut")
         await rig.frame(down, frame_of(16384))
         await rig.frame(down, frame_of(16384))
         await rig.run.worker.queue_frame(down.moved("phone").framed(frame_of(0), frame_of(0), None, 16000, 1, "phone"))
@@ -415,7 +420,7 @@ async def test_hearings_still_to_run_as_the_pipeline_stops_end_cancelled() -> No
 
     listener = Heeding("stuck", hearings=lambda _clip, _sound: (waiting,))
     async with rigged(Scripted([None]), (listener,)) as rig:
-        down = rig.gate.after("start", "engaged conversation")
+        down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
         await rig.frame(down, frame_of(3))
         await rig.until(lambda: len(listener.given) == 3)
@@ -567,7 +572,7 @@ async def test_a_clip_thrown_away_is_said_discarded_and_never_sent_though_a_turn
     """The clip open is dropped, and a tap opens and ends, with no frame between: the record says in order how each ended, so
     the clip is not taken for the one the totals alone would call sent."""
     async with rigged(Scripted([])) as rig:
-        down = rig.gate.after("start", "shortcut")
+        down = started(rig.gate, "shortcut")
         await rig.frame(down, frame_of(1))
         await rig.frame(tap(down.after("drop", "shortcut")), frame_of(2))
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)

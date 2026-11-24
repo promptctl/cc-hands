@@ -125,7 +125,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     ask = "create a ticket to read session history."
     off, wake, engaged, deaf = map(spoken, [ask, "Hey Jarvis. What is the status of the build?", ask, ask])
 
-    level, choose = listening_tools(levels, Pretrained())
+    level, choose = listening_tools(levels, lambda: None, Pretrained())
     serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=WakeModels(models, SYSTEM), word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
 
     async def alongside(waiting: Awaitable[object]) -> None:

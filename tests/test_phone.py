@@ -157,8 +157,10 @@ class Call:
 @asynccontextmanager
 async def calling(clock: Clock = SYSTEM) -> AsyncGenerator[Call, None]:
     """A call up, hands at the phone, ended as the block ends, its watch on `clock`."""
-    key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
-    phone = Phone(clock, key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    recorded = list[Entry]()
+    # [LAW:one-source-of-truth] the gate and the phone write one record, as the daemon runs them.
+    key = PushToTalk(SYSTEM, recorded.append)
+    phone = Phone(clock, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     page = await connected(phone, FIRST, "192.168.7.20")
     try:
         yield Call(phone, key, page, recorded)
@@ -177,7 +179,7 @@ async def call() -> AsyncGenerator[Call, None]:
 async def test_a_call_puts_hands_at_the_phone(call: Call) -> None:
     assert call.key.gate.place == "phone"
     # A call's one event is written as it ends.
-    assert call.recorded == []
+    assert calls(call.recorded) == []
 
 
 
@@ -185,7 +187,7 @@ async def test_a_call_puts_hands_at_the_phone(call: Call) -> None:
 async def test_the_moves_a_call_makes_are_part_of_its_trace() -> None:
     recorded: list[Entry] = []
     key = PushToTalk(SYSTEM, recorded.append)
-    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     page, offer = await a_page()
     await page.peer.setRemoteDescription(await answered(phone, offer, "192.168.7.20"))
     async with asyncio.timeout(10):
@@ -221,7 +223,7 @@ async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_
 async def test_the_desk_cannot_end_a_turn_held_at_the_phone(call: Call) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
-    assert call.key.move("disarm", "shortcut") is None  # a Shift typed at the desk
+    assert call.key.move("disarm", "shortcut") == ()  # a Shift typed at the desk
     assert (call.key.gate.key, call.key.gate.place) == ("down", "phone")
 
 
@@ -335,7 +337,7 @@ async def test_a_clip_thrown_away_is_told_discarded_naming_it_and_never_released
         for said in [quiet_message(960), "press", LOUD]:
             call.page.send(said)
         await call.until(lambda: any(frame.key == "down" and any(frame.audio) for frame in given))
-        call.key.move("drop", "phone button")
+        call.key.end(call.key.gate.turn, "drop", "phone button")
         call.page.send(quiet_message(960))
         await call.until(lambda: len(call.page.told) == 2)
     assert [json.loads(cast(str, told)) for told in call.page.told] == [
@@ -346,7 +348,7 @@ async def test_a_clip_thrown_away_is_told_discarded_naming_it_and_never_released
 
 async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:
     """A turn taken at the desk passes the same milestones, and no page is waiting on it."""
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None, speaking=lambda: False)
     phone.tell(ClipReleased(Clip(1, "shortcut")))
 
 
@@ -391,9 +393,9 @@ async def test_a_newer_call_replaces_the_one_before_it_once_it_connects(call: Ca
     page, offer = await a_page()
     answer = await answered(call.phone, offer, "100.66.66.10")
     # Answered, not yet connected: the call that is up is still the one hands is at.
-    assert call.recorded == []
+    assert calls(call.recorded) == []
     await page.peer.setRemoteDescription(answer)
-    await call.until(lambda: bool(call.recorded))
+    await call.until(lambda: bool(calls(call.recorded)))
     [replaced] = calls(call.recorded)
     assert (replaced.outcome, replaced.facts["remote"], left(replaced).reason) == ("ok", "192.168.7.20", "replaced")
     assert call.key.gate.place == "phone"
@@ -402,7 +404,7 @@ async def test_a_newer_call_replaces_the_one_before_it_once_it_connects(call: Ca
 
 async def test_an_offer_that_never_connects_moves_nothing_and_is_let_go_of_by_the_next() -> None:
     key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
-    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     unheard, offer = await a_page()
     await phone.answer(offer, "192.168.7.21", begun(SYSTEM))  # its page never takes the answer
     assert key.gate.place == "desk" and recorded == []
@@ -453,7 +455,7 @@ async def test_a_page_resuming_while_another_page_has_the_call_is_declined_and_m
 async def test_a_page_resuming_while_another_page_has_an_offer_in_is_declined() -> None:
     """The user just pressed Connect on the other page: a page calling again on its own never takes that from them."""
     key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
-    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     pressed, offer = await a_page()
     await phone.answer(offer, "192.168.7.32", begun(SYSTEM))
     _, resumed = await a_page(Asked("another page", "resume"))
@@ -466,7 +468,7 @@ async def test_a_page_resuming_while_another_page_has_an_offer_in_is_declined() 
 async def test_a_resume_answered_alongside_a_press_never_takes_the_phone_from_it() -> None:
     """A press put in while a resume is still being answered is the page in the user's hand, whichever finishes first."""
     key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
-    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     resumed, resume = await a_page(Asked("another page", "resume"))
     pressed, take = await a_page()
     # The resume finishes answering after the press is put in.
@@ -480,7 +482,7 @@ async def test_a_resume_answered_alongside_a_press_never_takes_the_phone_from_it
 @pytest.mark.outside
 async def test_a_page_resuming_with_no_call_up_is_answered() -> None:
     key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
-    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     asked = Asked("a page hands restarted under", "resume")
     page = await connected(phone, asked)
     await phone.hang_up("stopped")
@@ -677,7 +679,7 @@ def offered(offer: Offer) -> str:
 @pytest.fixture
 async def page_server(tmp_path: Path) -> AsyncGenerator[Served, None]:
     key, recorded, home = PushToTalk(SYSTEM, lambda _: None), list[Entry](), Home(tmp_path)
-    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     client = TestClient(TestServer(phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, KEY, recorded.append, {}, unused_gallery(), *unused_wake(home))))
     await client.start_server()
     yield client, phone, key, recorded
@@ -779,7 +781,7 @@ async def test_an_offer_whose_body_cannot_be_read_is_one_failed_event_saying_wha
 
 async def test_an_offer_hands_cannot_answer_is_one_failed_event_and_raises() -> None:
     recorded: list[Entry] = []
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     with pytest.raises(ValueError):
         await phone.answer(Offer("not a session description", "offer", PAGE_RATE, FIRST), "192.168.7.23", begun(SYSTEM))
     [event] = calls(recorded)
@@ -919,7 +921,7 @@ async def _served(home: Home, answers: list[Tailnet | Untailed], waits: list[flo
     monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
     monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
     recorded: list[Entry] = []
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     pages = phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery(), *unused_wake(home))
     with unit("hands.start", recorded.append, begun(clock)):
         serving = asyncio.create_task(phonepage.serve_phone(clock, pages, home, asked, recorded.append))
@@ -1008,7 +1010,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
     monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
     recorded: list[Entry] = []
-    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     typed: list[str] = []
 
     async def typing(text: str) -> None:

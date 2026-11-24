@@ -8,7 +8,9 @@ from contextlib import asynccontextmanager
 import pytest
 from conftest import ScriptedEars, hearing_with
 
+from hands.clock import Clock
 from hands.virtualclock import VirtualClock
+from hands.voice import engaged
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Leveled, Made
 from hands.voice.listening import Level, Levels
@@ -386,3 +388,21 @@ async def test_an_engaged_turn_open_to_the_limit_is_sent_as_it_stands(monkeypatc
     await stopped(driving)
     assert rig.made_by == [Made("listen", "engaged conversation"), Made("arm", "engaged conversation"), Made("start", "engaged conversation"), Made("timeout", "engaged conversation")]
     assert rig.ears.cleared == 1
+
+
+async def test_ears_that_cannot_be_loaded_fail_as_the_unit_they_were_loaded_for_whoever_hears_with_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phone's ears are loaded as the daemon starts and before its page is answered, so a load that fails is the start's failure,
+    named `phone.loaded`; the desk's is `desk.loaded`."""
+
+    class Unloadable:
+        def __init__(self, clock: Clock, sample_rate: int) -> None:
+            raise OSError("no Smart Turn in the hub's cache, and no network")
+
+    monkeypatch.setattr(engaged, "Models", Unloadable)
+    for name in ("phone.loaded", "desk.loaded"):
+        events: list[WideEvent] = []
+        with pytest.raises(OSError, match="no Smart Turn"):
+            async with engaged.loaded(VirtualClock(), 16000, events.append, name):
+                pytest.fail("ears that could not be loaded were given to what hears with them")
+        [failed] = events
+        assert (failed.event, failed.outcome) == (name, "failed")

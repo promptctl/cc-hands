@@ -1997,9 +1997,11 @@ changes the default input, so the follower opens it like any other move. This is
 tested against a PortAudio that lists no default input. A MacBook cannot be put in
 that state, since macOS always falls back to the built-in microphone.
 
-**The gate has one owner and several triggers.** `PushToTalk` holds the key position;
-whatever reads the physical world calls `PushToTalk.move`, naming itself. The triggers are
-values of one type, `Trigger` (`hands.voice.trigger`), not modes of the gate
+**The gate has one owner and several triggers.** `PushToTalk` holds the gate, and the gate's
+position names who has a press or a clip: `Resting`, `Pressing(by)` or `Open(by)`
+(`hands.voice.ptt`). Whatever reads the physical world calls `PushToTalk.move`, naming
+itself, and a clip is ended only by `PushToTalk.end`, which the gate lets only the trigger that opened the clip do. The
+triggers are values of one type, `Trigger` (`hands.voice.trigger`), not modes of the gate
 `[LAW:one-type-per-behavior]`; the gate keeps the one that opened the last turn, and each
 turn's `UserAsked` says it:
 
@@ -2010,6 +2012,17 @@ turn's `UserAsked` says it:
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
 | `wake word` | at the wake word level, openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
+| `phone wake word` | the phone page's detector heard the wake word and sent `wake`, while the phone's level is `wake word` and hands is at the phone (`hands.voice.phone`) | as `wake word`'s, by the same code, followed by the phone's driver (`hands.voice.atphone`) |
+
+The gate's transitions are one exhaustive match over (position, move, trigger), so who may
+open a turn, press over one and end one is not a rule each caller keeps. A voice arms only
+where hands is, at a place that listens, with nothing pressed or open, and starts only what it
+armed; it ends only its own clip. A hand's arm or start over another trigger's clip sends
+that clip first, and a place going deaf sends the clip its voice has open; `move` and `end`
+return the moves the gate made, in order, for the tones and words that follow each. The gate
+tells whoever follows a turn as it opens and ends one (`PushToTalk.watch`): the number, who
+opened it, and for an end its fate and what ended it, a trigger or a call, so a follower keeps
+no copy of the turn that could outlive the gate's.
 
 The wake-word trigger opens the mic without a hand, as `engaged conversation` does, and
 hears what it hears: the room with hands' own voice taken out by the echo canceller,
@@ -2065,9 +2078,11 @@ shortcut's own moves, plus two of their own: `listen` as the desk leaves `off` a
 `deafen` as it returns. While the desk listens, the key rests at `listening`
 between turns rather than `up`: the microphone's bytes reach Whisper, which keeps the last
 second of them as Pipecat keeps audio nobody is speaking in, so the turn the voice opens
-starts with the words said while Silero made sure of them (about 0.2 s). Listening is the
-desk's alone: at the phone the key rests at `up`, what the desk hears opens no turn there,
-and the desk listens again once hands is back. Both models hear the desk through the echo canceller; measured on MacBook speakers, a
+starts with the words said while Silero made sure of them (about 0.2 s). Listening is each
+place's own: the gate holds the set of places that listen, the desk's level and the phone's
+never move each other, and the key rests at `listening` only where hands is at a place that
+listens. At the phone while the desk listens, the key rests at `up`, what the desk hears opens
+no turn there, and the desk listens again once hands is back; the reverse holds for the phone. Both models hear the desk through the echo canceller; measured on MacBook speakers, a
 canceller that has heard one reply lets none of the next trip Silero, where the raw
 microphone tripped it at every phrase, and only the first two seconds of a fresh
 canceller's life let one through.
@@ -2094,9 +2109,23 @@ where hands was, so no turn the user opened is thrown away, and the gate cues an
 tells the moves as it took them. Only a turn opening moves hands, never a press still
 arming, which may be Shift: so a clip
 at the place hands is not at keeps none of the words said before it opened a turn,
-and typing at the desk never takes a call's replies off the phone. Each move of hands
-between the places is one `place.moved` event: from where to where, whether a turn or
-a call made it, and whether a clip open at the place it left was sent. A move
+and typing at the desk never takes a call's replies off the phone. The phone listens between turns
+when its page says so: `level` is `off` or `wake word`, held for the call and `off` as each call
+starts, and the page's `wake` opens a turn only where hands is at the phone and it listens, or is
+answered `unopened` with the gate's reason (hands is at the desk is no mistake of the page's, the
+phone not listening or a turn being open is). Each `wake` is a `phone.wake` event, each change of
+level a `phone.leveled` event, from and to and what made it, the page's word or a call that came or went,
+and each `detector` a `phone.detector` event. The phone has ears of
+its own, a second Silero and Smart Turn loaded before its page is answered (`phone.loaded`), and a
+driver (`hands.voice.atphone`) that runs the shared life of a voice turn on the audio of a wake's
+turn: it hears from the wake on, never the second the page sent before it, and asks the gate to end
+the turn by the same rules as the desk's wake word turn, one `phone.turn` event for each turn
+followed: how it ended, by which move (the limit is `timeout`, a wake nothing was asked after `drop`), and what
+ended it, a trigger, a call, or the level going off. The brain's `listening_level` and `set_listening_level` speak for the place hands is at:
+at the phone they say the phone's level and that the page's `Phone wake word` button sets it, and
+change neither level. Each move of hands
+between the places is one `place.moved` event: from where to where, what made it (the trigger, or a
+call), and whether a clip open at the place it left was sent. A move
 a call made is part of that call's trace.
 
 **Cues say what hands is doing while it is silent** (`hands.voice.cues`). The talk

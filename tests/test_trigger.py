@@ -3,12 +3,15 @@ with, refused as the desk loads it."""
 
 import asyncio
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
+from hands.voice.clips import Trigger
 from hands.voice.desk import Desk, Loaded, Resting
 from hands.voice.tools import listening_tools
 from hands.voice.listening import Level, Levels
+from hands.voice.trigger import PHONE_WAKE_BUTTON, PhoneLevel, by_hand, place_of, turn_start
 from hands.voice.wake import Unheard, WakeWord
 from hands.voice.wakemodels import EMBEDDING, MELSPECTROGRAM, PRETRAINED, Files
 from hands.voice.wakeword import Pretrained, Trained
@@ -25,13 +28,13 @@ OFF = "The microphone is off between turns. Hold Right Shift to talk, and let go
 
 
 async def test_the_level_is_said_and_starts_off() -> None:
-    level, _ = listening_tools(Levels("off"), Pretrained())
+    level, _ = listening_tools(Levels("off"), lambda: None, Pretrained())
     assert await level.body() == {"level": "off", "readback": OFF}
 
 
 async def test_a_restarts_level_is_not_said_until_the_desk_listens_at_it() -> None:
     levels = Levels("engaged")
-    level, _ = listening_tools(levels, Pretrained())
+    level, _ = listening_tools(levels, lambda: None, Pretrained())
     # The run carried engaged, and its desk is yet to step it: the microphone is closed, and the tool says so.
     assert await level.body() == {"level": "off", "readback": OFF}
     levels.stepped(listening_at("engaged"))
@@ -39,13 +42,13 @@ async def test_a_restarts_level_is_not_said_until_the_desk_listens_at_it() -> No
 
 
 async def test_a_level_not_built_is_refused() -> None:
-    _, choose = listening_tools(Levels("off"), Pretrained())
+    _, choose = listening_tools(Levels("off"), lambda: None, Pretrained())
     assert "error" in await choose.body(level="clap")
 
 
 async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_it() -> None:
     levels = Levels("off")
-    level, choose = listening_tools(levels, Pretrained())
+    level, choose = listening_tools(levels, lambda: None, Pretrained())
     asked: list[str] = []
 
     async def driver() -> None:
@@ -70,7 +73,7 @@ async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -
     for word, phrase in ((Pretrained("Hey Mycroft"), "Hey Mycroft"), (Trained("Hey Computer", tmp_path / "hey_computer.onnx"), "Hey Computer")):
         levels = Levels("off")
         levels.stepped(listening_at("wake word"))
-        level, _ = listening_tools(levels, word)
+        level, _ = listening_tools(levels, lambda: None, word)
         assert str((await level.body())["readback"]).startswith(f"The wake word: say {phrase}, then what you want;")
 
 
@@ -95,3 +98,27 @@ def test_a_trained_wake_word_it_cannot_hear_with_is_refused_naming_the_model(tmp
     with pytest.raises(Unheard) as refused:
         WakeWord(Files(models / MELSPECTROGRAM.name, models / EMBEDDING.name, trained))
     assert str(refused.value).startswith(said.format(model=trained))
+
+
+def test_a_wake_heard_on_the_phone_is_a_trigger_of_the_phone_made_by_no_hand_that_cuts_hands_off_once_a_person_is_heard() -> None:
+    assert (place_of("phone wake word"), by_hand("phone wake word"), turn_start("phone wake word")) == ("phone", False, "on a person")
+    # Beside the button, whose turn cuts hands off at once, and the desk's own triggers.
+    assert [(trigger, place_of(trigger), by_hand(trigger), turn_start(trigger)) for trigger in ("phone button", "wake word")] == [
+        ("phone button", "phone", True, "on the clip"),
+        ("wake word", "desk", False, "on a person"),
+    ]
+    triggers: tuple[Trigger, ...] = get_args(Trigger)
+    assert {trigger for trigger in triggers if place_of(trigger) == "phone"} == {"phone button", "phone wake word"}
+
+
+@pytest.mark.parametrize(("level", "listens"), [("off", False), ("wake word", True)])
+async def test_where_hands_is_at_the_phone_the_tools_say_the_phones_level_and_the_button_that_sets_it_and_change_neither_level(level: PhoneLevel, listens: bool) -> None:
+    levels = Levels("off")
+    said, choose = listening_tools(levels, lambda: level, Pretrained())
+    readback = str((await said.body())["readback"])
+    assert (await said.body())["level"] == level and PHONE_WAKE_BUTTON in readback and readback.count("Right") == 0
+    assert ("is not listening between turns" in readback) == (not listens) and ("listens for the wake word" in readback) == listens
+    # A choice made at the phone is the page's to make: it says so, and the desk's level and the phone's stay where they were.
+    chosen = await choose.body(level="engaged")
+    assert (chosen["level"], PHONE_WAKE_BUTTON in str(chosen["readback"])) == (level, True)
+    assert (levels.level, levels.unanswered) == ("off", 0)
