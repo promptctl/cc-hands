@@ -21,7 +21,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.child import Children, Outcome as Ended
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent
-from hands.sessions.backlog import BACKLOG, Lit, LitFailed, Reasoned, Unexplained, Unlaunched, Untracked, events_file, parse_export, read_backlog
+from hands.sessions.backlog import BACKLOG, Lit, LitFailed, Reasoned, Unexplained, Unlaunched, Untracked, events_file, parse_export, read_backlog, rotated
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.voice.summarising import BACKLOG_PASS, summarise_backlog, told
@@ -491,8 +491,8 @@ async def test_a_reason_on_disk_is_found_past_a_newer_torn_line_or_an_events_fil
         trace, span = run_s(env)
         events = events_file(env, cwd)
         assert isinstance(events, Path)
-        with events.with_name(f"{events.name}.1").open("a") as rotated:
-            rotated.write(f'{{"trace_id": "{trace}", "parent_span_id": "{span}", "rea\n')
+        with rotated(events).open("a") as lines:
+            lines.write(f'{{"trace_id": "{trace}", "parent_span_id": "{span}", "rea\n')
         events.mkdir()
         return code
 
@@ -513,7 +513,7 @@ def a_directory_for_each_file(env: Mapping[str, str], cwd: Path) -> int:
     events = events_file(env, cwd)
     assert isinstance(events, Path)
     events.mkdir(parents=True)
-    events.with_name(f"{events.name}.1").mkdir()
+    rotated(events).mkdir()
     return 3
 
 

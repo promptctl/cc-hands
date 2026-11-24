@@ -10,7 +10,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from hands.sessions.backlog import events_file
+from hands.sessions.backlog import events_file, rotated as rotation
 
 # [LAW:one-source-of-truth] the code lit gives each reason a fake of lit refuses on (docs/cli-reference.md in links,
 # "Every reason"): each of the first two may follow a commit, and code 6 is a write whose asked state already holds.
@@ -24,7 +24,7 @@ def refused(environment: Mapping[str, str], cwd: Path, command: str, reason: str
     _, trace, span, _ = environment["TRACEPARENT"].split("-")
     match events_file(environment, cwd):
         case Path() as events:
-            events = events.with_name(f"{events.name}.1") if rotated else events
+            events = rotation(events) if rotated else events
             events.parent.mkdir(parents=True, exist_ok=True)
             line = {"event": command, "trace_id": trace, "parent_span_id": worker or span, "exit_code": CODES[reason], "outcome": "error", "reason": reason}
             with events.open("a") as lines:

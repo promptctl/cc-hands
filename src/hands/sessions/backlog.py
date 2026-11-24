@@ -510,6 +510,11 @@ def events_file(environment: Mapping[str, str], cwd: Path) -> Path | Unexplained
     return state / "links-issue-tracker" / "events.jsonl"
 
 
+def rotated(events: Path) -> Path:
+    """Where lit moves its events file past 8 MiB (links docs/events.md), so a run's line may be found there since."""
+    return events.with_name(f"{events.name}.1")
+
+
 def _recorded(span: Span, events: Path | Unexplained) -> Reasoned | Unexplained:
     """The reason lit recorded for its run as `span`, on that run's line of its events file, or why hands has none.
 
@@ -521,7 +526,7 @@ def _recorded(span: Span, events: Path | Unexplained) -> Reasoned | Unexplained:
     if isinstance(events, Unexplained):
         return events
     looked: list[str] = []
-    for path in (events, events.with_name(f"{events.name}.1")):
+    for path in (events, rotated(events)):
         torn = 0
         try:
             for line in newest_first(path):
