@@ -127,7 +127,7 @@ def test_a_body_that_is_no_request_hands_can_answer_is_refused_with_the_id_it_co
     assert refused(b'[{"jsonrpc": "2.0", "id": 1, "method": "ping"}]') == (-32600, None, None)
     assert refused(b'{"jsonrpc": "2.0", "id": true, "method": "ping"}') == (-32600, None, "ping")
     assert refused(b'{"jsonrpc": "2.0", "id": null, "method": "ping"}') == (-32600, None, "ping")
-    assert refused(b'{"jsonrpc": "2.0", "id": 5, "method": 5}') == (-32600, None, None)
+    assert refused(b'{"jsonrpc": "2.0", "id": 5, "method": 5}') == (-32600, 5, None)
     assert refused(b'{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": "echo"}') == (-32602, 6, "tools/call")
     assert refused(b'{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"_meta": "toolu_1"}}') == (-32602, 7, "tools/call")
 
@@ -151,7 +151,7 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
         _, called = await rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi", "times": 2}}})
         assert called == {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": '{"said": "hi hi"}'}], "isError": False}}
         assert ran(recorded) == [
-            ("mcp.request", "ok", {"method": "initialize", "client": "claude-code", "client_version": None, "protocol": "2025-06-18"}),
+            ("mcp.request", "ok", {"method": "initialize", "client": "claude-code", "client_version": None, "asked": "2025-06-18", "protocol": "2025-06-18"}),
             ("mcp.request", "ok", {"method": "tools/list"}),
             ("tool.run", "ok", {"tool": "echo", "called": Called({"text": "hi", "times": 2}, {"said": "hi hi"})}),
         ]

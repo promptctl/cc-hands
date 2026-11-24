@@ -120,7 +120,7 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool], record: Record, spans: 
                 asked = params.get("protocolVersion")
                 version = asked if isinstance(asked, str) and asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
                 client = _object(params.get("clientInfo"))
-                annotate(client=_text(client.get("name")), client_version=_text(client.get("version")), protocol=_text(asked))
+                annotate(client=_text(client.get("name")), client_version=_text(client.get("version")), asked=_text(asked), protocol=version)
                 return _result(id, {"protocolVersion": version, "capabilities": {"tools": {}}, "serverInfo": {"name": SERVER_NAME, "version": "0"}})
             case "ping":
                 return _result(id, {})
@@ -228,8 +228,10 @@ def parse(body: bytes) -> Message:
                         return Unanswerable(INVALID_PARAMS, str(error), parsed, method)
         case {"method": str()} | {"id": str() | int(), "result": _} | {"id": str() | int(), "error": _}:
             return Unanswered()
-        case _:
-            return Unanswerable(INVALID_REQUEST, "no JSON-RPC message: an object with no method named in text and no answer", None, None)
+        case fields:
+            # Refused by its id where one can be read from it, so a client that sent a request learns which.
+            why = "no JSON-RPC message: an object with no method named in text and no answer"
+            return Unanswerable(INVALID_REQUEST, why, _request_id(fields.get("id")), None)
 
 
 def _request_id(value: object) -> RequestId | None:

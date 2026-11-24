@@ -53,15 +53,15 @@ Door = BrainDoor | RemoteDoor
 @dataclass(frozen=True)
 class BrainDoor:
     token: str            # admits a Brain: the bearer token the brain's --mcp-config holds
-    acts: Catalogue       # what both doors serve
+    acts: Tools           # what both doors serve
     voice: Voice          # the voice's own tools, and what a call is to a voice turn (below)
 @dataclass(frozen=True)
 class RemoteDoor:
     access: Access        # admits a Remote: the Access team, the application's AUD tag, the team's key set
-    acts: Catalogue
+    acts: Tools
     instructions: str     # initialize's instructions, for a model with no system prompt of hands'
 
-Caller = Brain | Remote   # a BrainDoor admits only a Brain, a RemoteDoor only a Remote [LAW:single-enforcer]
+Caller = Brain | Remote   # admit(BrainDoor, request) -> Brain | Refusal; admit(RemoteDoor, request) -> Remote | Refusal
 @dataclass(frozen=True)
 class Brain:  turn: ToolUse | Unjoined    # claudecode/toolUseId from the call's _meta; Unjoined is flagged on its event
 @dataclass(frozen=True)
@@ -232,7 +232,9 @@ store of tellings, never from a job table of its own [LAW:one-source-of-truth]:
   or were taken into. Equal words are told apart by order, oldest first, as Claude Code's queue takes them and as the
   reducer already matches its queue records; words typed at the keyboard between two equal sends are the one case
   order alone decides.
-- **`Recounts` holds tellings by turn**, each session's 16 latest, where today it holds the newest alone. `tell_turn`
+- **`Recounts` holds tellings by turn**, each session's 16 latest, where today it holds the newest alone, and the
+  ids of the turns it let go, for the session's life as the reducer keeps `earlier`, so `released` is a fact it holds
+  and never read off a telling's absence. `tell_turn`
   and `expand` read the newest, `turn` reads the send's, and `open` and `unread` change the one telling both read.
 - **A handle names the run of hands that issued it**, so a handle from before a restart (and `use_model` restarts
   hands) is told apart from one never issued.
