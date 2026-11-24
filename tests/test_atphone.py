@@ -236,6 +236,16 @@ async def test_a_wake_the_gate_refused_leaves_the_driver_with_no_turn() -> None:
     assert rig.page.call.pressing == {}
 
 
+async def test_a_wake_turn_still_open_as_the_driver_stops_is_one_event_that_says_so() -> None:
+    rig = Rig()
+    await rig.start()
+    rig.page.says(Wake(0.9))
+    await rig.hear(b"s")
+    await rig.stop()
+    [followed] = rig.events("phone.turn")
+    assert (followed.outcome, followed.facts) == ("failed", {"ended_by": "stop"})
+
+
 def test_a_second_press_over_the_buttons_own_clip_opens_no_clip_and_leaves_the_first_press_its_turn() -> None:
     rig = Rig()
     rig.page.says("start")

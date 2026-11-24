@@ -34,7 +34,7 @@ async def test_the_level_is_said_and_starts_off() -> None:
 
 async def test_a_restarts_level_is_not_said_until_the_desk_listens_at_it() -> None:
     levels = Levels("engaged")
-    level, _ = listening_tools(levels, Pretrained())
+    level, _ = listening_tools(levels, lambda: None, Pretrained())
     # The run carried engaged, and its desk is yet to step it: the microphone is closed, and the tool says so.
     assert await level.body() == {"level": "off", "readback": OFF}
     levels.stepped(listening_at("engaged"))
@@ -113,7 +113,7 @@ def test_a_wake_heard_on_the_phone_is_a_trigger_of_the_phone_made_by_no_hand_tha
 
 @pytest.mark.parametrize(("level", "listens"), [("off", False), ("wake word", True)])
 async def test_where_hands_is_at_the_phone_the_tools_say_the_phones_level_and_the_button_that_sets_it_and_change_neither_level(level: PhoneLevel, listens: bool) -> None:
-    levels = Levels()
+    levels = Levels("off")
     said, choose = listening_tools(levels, lambda: level, Pretrained())
     readback = str((await said.body())["readback"])
     assert (await said.body())["level"] == level and PHONE_WAKE_BUTTON in readback and readback.count("Right") == 0
@@ -121,4 +121,4 @@ async def test_where_hands_is_at_the_phone_the_tools_say_the_phones_level_and_th
     # A choice made at the phone is the page's to make: it says so, and the desk's level and the phone's stay where they were.
     chosen = await choose.body(level="engaged")
     assert (chosen["level"], PHONE_WAKE_BUTTON in str(chosen["readback"])) == (level, True)
-    assert (levels.level, levels.chosen.qsize()) == ("off", 0)
+    assert (levels.level, levels.unanswered) == ("off", 0)

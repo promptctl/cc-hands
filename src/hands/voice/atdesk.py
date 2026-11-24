@@ -58,7 +58,8 @@ async def serve_desk(
     change of level plays its cue and is beaten, the driver having told `levels` of it as it stepped it."""
 
     async def at_desk(made: Made) -> None:
-        # [LAW:single-enforcer] a clip is ended only by naming the turn the end is for: the desk decides about the turn open now.
+        # [LAW:single-enforcer] a clip is ended only through `PushToTalk.end`, which the gate lets only the trigger that opened it do;
+        # the desk names the turn open now, until `Made` carries the turn it decided about (promptctl-phone-app-9d9y.3hd).
         match made.move:
             case "stop" | "drop" | "timeout" as how:
                 moves = key.end(key.gate.turn, how, made.by)

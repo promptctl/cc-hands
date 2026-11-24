@@ -2000,7 +2000,7 @@ that state, since macOS always falls back to the built-in microphone.
 **The gate has one owner and several triggers.** `PushToTalk` holds the gate, and the gate's
 position names who has a press or a clip: `Resting`, `Pressing(by)` or `Open(by)`
 (`hands.voice.ptt`). Whatever reads the physical world calls `PushToTalk.move`, naming
-itself, and a clip is ended only by `PushToTalk.end`, naming the turn the end is for. The
+itself, and a clip is ended only by `PushToTalk.end`, which the gate lets only the trigger that opened the clip do. The
 triggers are values of one type, `Trigger` (`hands.voice.trigger`), not modes of the gate
 `[LAW:one-type-per-behavior]`; the gate keeps the one that opened the last turn, and each
 turn's `UserAsked` says it:

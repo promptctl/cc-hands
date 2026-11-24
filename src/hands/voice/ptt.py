@@ -102,10 +102,6 @@ class GateEnded:
     move: Ending
     by: Cause
 
-    @property
-    def fate(self) -> Fate:
-        return fate_of(self.move)
-
 
 @dataclass(kw_only=True)
 class KeyedAudio(InputAudioRawFrame):
@@ -179,8 +175,8 @@ class Gate:
         is moved only by the user's hand opening a turn at the other place, or by a call: a voice, which can be anyone's or
         nobody's, arms only where hands is, at a place that listens, with nothing pressed or open (`refusal`), starts only
         what it armed, and a Shift typed at the desk while the user talks on the phone arms nothing. A clip is ended by
-        the trigger that opened it, once. A hand's arm or start over a clip another trigger has open sends it first, and
-        over a press another has made lets it go, and so does a place going deaf over what its voice has open: every move
+        the trigger that opened it, once. A hand's arm over a clip sends it first, and so does its start over another trigger's,
+        which over a press another has made lets it go, and so does a place going deaf over what its voice has open: every move
         the gate made is in the moves it returns, and nothing else of it is, for what follows each.
         """
         at = place_of(by)

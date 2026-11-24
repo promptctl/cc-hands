@@ -634,7 +634,11 @@ class Phone:
 
     def _level(self, level: PhoneLevel) -> None:
         """The level the page has the phone listening at, which is the gate's for the phone, and the gate says each change."""
-        self.took(self._key.move("listen" if level == "wake word" else "deafen", PHONE_WAKE))
+        match level:
+            case "wake word":
+                self.took(self._key.move("listen", PHONE_WAKE))
+            case "off":
+                self.took(self._key.move("deafen", PHONE_WAKE))
 
     def took(self, taken: tuple[Move, ...]) -> None:
         """What the gate made of a move, once the phone made it or its driver did, goes to the tone and the words that
