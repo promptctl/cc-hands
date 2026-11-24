@@ -962,10 +962,12 @@ def expired_beat(home: Home, degraded: tuple[heartbeat.Degradation, ...] = (hear
     return status
 
 
-def test_a_login_the_running_brain_said_expired_is_missing_with_hands_fix_and_no_claude_code_is_started(root: Path) -> None:
+@pytest.mark.parametrize("running", [heartbeat.Up, heartbeat.Unresponsive], ids=["up", "not responding"])
+def test_a_login_the_running_brain_said_expired_is_missing_with_hands_fix_and_no_claude_code_is_started(root: Path, running: Callable[[heartbeat.Status], heartbeat.Verdict]) -> None:
+    # A daemon that stopped beating still runs its brain, whose turns said what they said.
     home = Home(root / "home")
     laid_out(home)
-    found = readiness.configured(Unstarting(SYSTEM, lambda _: None), home, LAID_OUT, {}, heartbeat.Up(expired_beat(home)))
+    found = readiness.configured(Unstarting(SYSTEM, lambda _: None), home, LAID_OUT, {}, running(expired_beat(home)))
     assert found == Missing("brain's login expired", "the brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
     assert found.said == heartbeat.LOGIN_EXPIRED.said
 
@@ -983,15 +985,10 @@ def hands_down(home: Home) -> heartbeat.Verdict:
     return heartbeat.Down(expired_beat(home))
 
 
-def hands_not_responding(home: Home) -> heartbeat.Verdict:
-    # A daemon not up says nothing of itself that holds now, as the menu bar reads it too.
-    return heartbeat.Unresponsive(expired_beat(home))
-
-
 @pytest.mark.parametrize(
     "running",
-    [never_ran, a_brain_that_said_nothing_of_its_login, hands_down, hands_not_responding],
-    ids=["no hands", "a brain that said nothing of its login", "hands down", "hands not responding"],
+    [never_ran, a_brain_that_said_nothing_of_its_login, hands_down],
+    ids=["no hands", "a brain that said nothing of its login", "hands down"],
 )
 def test_a_login_no_running_brain_said_expired_is_asked_of_its_claude_code(root: Path, monkeypatch: pytest.MonkeyPatch, running: Callable[[Home], heartbeat.Verdict]) -> None:
     home = Home(root / "home")

@@ -10,6 +10,7 @@ from dataclasses import replace
 
 from hands.core.effects import (
     AfterEnd,
+    HeardBy,
     Audit,
     AuditRecord,
     Effect,
@@ -604,11 +605,11 @@ def _ending(was: Session, prompt: PromptId, closing: str | None, failure: StopFa
             # Compared before the turn is handed over to be summarised, never after: see Compare. A turn queued behind it
             # is baselined by its Stop (see _behind), however the turn was told. Read against its prompt's baseline even when the
             # Stop is one again: a first Stop hands never heard told nothing, so no reading left off anywhere for this turn.
-            return _telling(id, Told(opened.turn, opened.others, opened.waiting), prompt, closing, failure, again=False)
+            return _telling(id, Told(opened.turn, opened.others, opened.waiting), prompt, closing, failure, "stop", again=False)
         case Untold(turn=turn, others=others, waiting=waiting) as untold if _names(untold, prompt):
             # Its Stop fired after Claude Code set idle, as an Escape's can: told with the reply it carries, under the id
             # it names.
-            return _telling(id, Told(turn, others, waiting), prompt, closing, failure, again=False)
+            return _telling(id, Told(turn, others, waiting), prompt, closing, failure, "stop", again=False)
         case Told() as told if again and _names(told, prompt):
             # The last turn stopping again after another Stop hook blocked its Stop: its telling holds only what was not
             # told before. Any other ending of a turn told ends nothing.
@@ -620,13 +621,13 @@ def _ending(was: Session, prompt: PromptId, closing: str | None, failure: StopFa
 def _alone(was: Session, prompt: PromptId, closing: str | None, failure: StopFailed | None, again: bool) -> tuple[Turn, list[Effect]]:
     """The ending told as a turn that goes by its id alone. The words waiting behind the session's last turn still wait,
     behind this one: no queue record has taken them out."""
-    return _telling(was.membership.id, Told(prompt, frozenset(), was.turn.waiting), prompt, closing, failure, again)
+    return _telling(was.membership.id, Told(prompt, frozenset(), was.turn.waiting), prompt, closing, failure, "stop", again)
 
 
-def _telling(session: SessionId, told: Told, prompt: PromptId | None, closing: str | None, failure: StopFailed | None, again: bool) -> tuple[Turn, list[Effect]]:
+def _telling(session: SessionId, told: Told, prompt: PromptId | None, closing: str | None, failure: StopFailed | None, heard_by: HeardBy, again: bool) -> tuple[Turn, list[Effect]]:
     """The turn told: compared before it is handed over to be summarised, never after (see Compare), and said with what
-    still waits behind it as it is told. [LAW:single-enforcer] every telling is made here."""
-    return told, [Compare(session, again), Summarise(session, prompt, closing, told.waiting, failure, ids(told))]
+    still waits behind it as it is told, and how its end was heard. [LAW:single-enforcer] every telling is made here."""
+    return told, [Compare(session, again), Summarise(session, prompt, closing, told.waiting, failure, ids(told), heard_by)]
 
 
 def _stopping(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
@@ -695,14 +696,14 @@ def _told(session: SessionId, turn: Turn, closing: str | None) -> tuple[Turn, li
     """The turn once one Claude Code ended and hands has not told yet is told, with the reply its Stop carried."""
     match turn:
         case Untold(turn=prompt, others=others, waiting=waiting):
-            return _telling(session, Told(prompt, others, waiting), prompt, closing, None, again=False)
+            return _telling(session, Told(prompt, others, waiting), prompt, closing, None, "record", again=False)
         case Opened() | Told():
             return turn, []
 
 
 def _over(session: SessionId, opened: Opened) -> tuple[Turn, list[Effect]]:
     """The open turn over before Claude Code's idle was read, told now as it stands."""
-    return _telling(session, Told(opened.turn, opened.others, opened.waiting), opened.turn, None, None, again=False)
+    return _telling(session, Told(opened.turn, opened.others, opened.waiting), opened.turn, None, None, "record", again=False)
 
 
 def _names(turn: Turn, prompt: PromptId) -> bool:

@@ -1232,7 +1232,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     (root / "second.py").write_text("turn two\n")
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}))
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}), heard_by="record")
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p2")}))
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]

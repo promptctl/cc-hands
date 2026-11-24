@@ -196,10 +196,20 @@ Verdict = NeverRan | Up | Unresponsive | Down | Stopped | Refused | Unreadable
 
 
 def degradations(verdict: Verdict) -> tuple[Degradation, ...]:
-    """[LAW:one-source-of-truth] what is wrong with a daemon that is up, for every reader of it; one that is not up says
-    nothing of itself that holds now."""
+    """What is wrong with a daemon that is up, as the menu bar shows it; one that is not up says nothing of itself that
+    holds now."""
     match verdict:
         case Up(status=status):
+            return status.degraded
+        case _:
+            return ()
+
+
+def last_said(verdict: Verdict) -> tuple[Degradation, ...]:
+    """What a daemon that still runs last said degraded it, up or not responding: what is true of it until it restarts,
+    as an expired login is (`degradations` is what holds now)."""
+    match verdict:
+        case Up(status=status) | Unresponsive(status=status):
             return status.degraded
         case _:
             return ()

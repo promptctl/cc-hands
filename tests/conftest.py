@@ -852,7 +852,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and says each turn as Claude Code does on each channel hands reads: the hooks its --settings name, as Claude Code fills them, the records of its transcript, and the status in its sessions/<pid>.json, idle as it starts; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under, and
     each prompt a Return sent is a line in the file ANSWERED names once it is done with all it does with it at once; a side
-    question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "stuck" runs whatever is pressed, "fail" is failed by the API, "deaf"
+    question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "stuck" runs whatever is pressed, "fail" is failed by the API, "fail expired" as an expired login fails it, "deaf"
     is never taken, "garbled" is taken as other words and runs until Escape, an Escape writing the record of the interruption and setting it idle, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
     that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
     ["played", name] once it has said all of it. It writes a line to said.log beside TYPED as each line of the recording starts, and with
@@ -1112,6 +1112,9 @@ def submit(text):
         typed(["permission", stray["behavior"], stray.get("message", ""), stray.get("interrupt", False)])
     if said == "fail":
         ended("StopFailure", prompt, "API Error: 400 refused", error="unknown", last_assistant_message="API Error: 400 refused")
+    elif said == "fail expired":
+        # As Claude Code 2.1.308 ends a turn whose login's refresh was refused (docs/claude-code-behavior.md).
+        ended("StopFailure", prompt, "Login expired · Please run /login", error="authentication_failed", last_assistant_message="Login expired · Please run /login")
     elif said == "fail blank":
         ended("StopFailure", prompt, "", error="authentication_failed", last_assistant_message="")
     elif said == "fail odd":

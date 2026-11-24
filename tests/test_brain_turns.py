@@ -20,7 +20,7 @@ from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
 from hands.brain.session import BrainSession
 from hands.brain.process import ClaudeTurns, BROKEN, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Untaken, _listen, _Turn, model  # pyright: ignore[reportPrivateUsage]
-from hands.core.effects import Allow, Deny, HookReply, Submitted, Summarise
+from hands.core.effects import Allow, Deny, HeardBy, HookReply, Submitted, Summarise
 from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
@@ -644,8 +644,8 @@ def _took(brain: Brain, prompt: str, words: str, queued: bool = False) -> None:
     brain._took(Submitted(SessionId("b1"), PromptId(prompt), words, queued))  # pyright: ignore[reportPrivateUsage]
 
 
-def _told(brain: Brain, prompt: str | None, ids: Sequence[str], waiting: tuple[str, ...] = (), failure: StopFailed | None = None) -> None:
-    brain._told(Summarise(SessionId("b1"), None if prompt is None else PromptId(prompt), "Done.", waiting, failure, ids=frozenset(map(PromptId, ids))))  # pyright: ignore[reportPrivateUsage]
+def _told(brain: Brain, prompt: str | None, ids: Sequence[str], waiting: tuple[str, ...] = (), failure: StopFailed | None = None, heard_by: HeardBy = "stop") -> None:
+    brain._told(Summarise(SessionId("b1"), None if prompt is None else PromptId(prompt), "Done.", waiting, failure, ids=frozenset(map(PromptId, ids)), heard_by=heard_by))  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_turn_told_under_an_id_its_hook_did_not_name_ends_its_own_turn_by_the_ids_its_telling_carries() -> None:
@@ -1084,36 +1084,19 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
     assert (checked(), len(asked)) == (readiness.Missing("brain cannot reach its model", "hands has no model to talk with", "asked"), 1)
 
 
-async def test_a_turn_opened_while_hands_clears_claude_code_leaves_the_report_unless_it_is_told_expired() -> None:
-    """The clear's keys may stop a turn Claude Code opened before it read them: told as though it answered, such a turn
-    says nothing of the login. Told expired, it says what Claude Code said."""
+async def test_a_turn_only_the_transcripts_record_told_leaves_the_report_as_it_was() -> None:
+    """An interrupt's record, whoever pressed the key, says nothing of how Claude Code would have ended the turn."""
     brain = _owning(VirtualClock())
-    keys = _keyed(brain, [])
-    gate = threading.Event()
-    keys.before["ctrl_c"] = gate.wait
-    _took(brain, "n0", NOTICE)
-    _told(brain, "n0", ("n0",), failure=UNREFRESHED)
-    _took(brain, "n1", NOTICE)
-    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
-    assert brain.interrupt(notified) is True
     reports: list[LoginExpired | None] = []
-    try:
-        # Held at its Ctrl-C, the clear still runs.
-        await until(lambda: keys.pressed == ["escape", "ctrl_c"])
-        _took(brain, "n2", NOTICE)
-        _told(brain, "n2", ("n2",))
-        reports.append(brain.login)
-        _took(brain, "n3", NOTICE)
-        _told(brain, "n3", ("n3",), failure=REFRESH_REFUSED)
-        reports.append(brain.login)
-    finally:
-        gate.set()
-    await brain.drained()
-    # Once the clear has taken, a turn told answered says so again.
-    _took(brain, "n4", NOTICE)
-    _told(brain, "n4", ("n4",))
+    _took(brain, "n1", NOTICE)
+    _told(brain, "n1", ("n1",), failure=UNREFRESHED)
+    _took(brain, "n2", NOTICE)
+    _told(brain, "n2", ("n2",), heard_by="record")
     reports.append(brain.login)
-    assert reports == [LoginExpired(UNREFRESHED), LoginExpired(REFRESH_REFUSED), None]
+    _took(brain, "n3", NOTICE)
+    _told(brain, "n3", ("n3",))
+    reports.append(brain.login)
+    assert reports == [LoginExpired(UNREFRESHED), None]
 
 
 async def test_a_task_result_ctrl_c_cleared_from_claude_codes_queue_ends_its_turn_unran_and_holds_no_turn_after_it() -> None:

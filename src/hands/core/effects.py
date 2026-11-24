@@ -244,6 +244,9 @@ class Tell:
 Heard = Narrate | Progress | Tell
 
 
+HeardBy = Literal["stop", "record"]
+
+
 @dataclass(frozen=True)
 class Summarise:
     """A session finished a turn: what the tail has not told of it is handed to the model to say.
@@ -265,6 +268,10 @@ class Summarise:
     # [LAW:one-source-of-truth] every id the told turn went by as it was decided (`ids(told)`): which turn of Claude
     # Code's this telling ends, said by the telling itself, never re-read from a model that may have moved on since.
     ids: frozenset[PromptId] = frozenset()
+    # How its end was heard: by Claude Code's own account of it, its Stop or StopFailure, or the reply's close on the
+    # wire that its Stop would tell; or by a record the transcript keeps of it alone (an interrupt, a command carried out,
+    # a reading through where its end would be), which says nothing of how Claude Code would have ended it.
+    heard_by: HeardBy = "stop"
 
 
 @dataclass(frozen=True)
