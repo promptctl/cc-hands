@@ -35,6 +35,7 @@ from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
+from hands.visible import VISIBLE
 from hands.voice import summarising
 from hands.voice.listening import LEVELS, Driving, Level, Levels, Listened, Listening, parse_level
 from hands.voice.portaudio import Listed, Lists, default_input, default_output, listing
@@ -45,16 +46,6 @@ if TYPE_CHECKING:
 
     from hands.brain.process import Method
 
-# Every C0 and C1 control, DEL, the line and paragraph separators, and bidi embedding, override, and isolate, written as
-# its JSON escape: a line's text
-# comes from transcripts, replies, and session names, and a raw ESC, BEL, or BS in it would move the cursor, ring the
-# bell, or rewrite the line, a raw RLO would show it reversed, and a raw U+2028 is a line's end to some readers. A line
-# break and a tab are layout, and pass.
-VISIBLE = {
-    code: f"\\u{code:04x}"
-    for code in (*range(0x20), *range(0x7F, 0xA0), *range(0x2028, 0x202F), *range(0x2066, 0x206A))
-    if chr(code) not in "\n\t"
-}
 # loguru's default line, with the message in its visible form.
 LINE = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "

@@ -19,7 +19,8 @@ from hands.daemon import cli
 from hands.sessions import audit, backlog, filing, grouping
 from hands.sessions.audit import AuditLog, Entry, Logged, Transcribed
 from hands.sessions.backlog import parse_export
-from hands.sessions.child import Outcome as Ended
+from hands.sessions.child import Command, Outcome as Ended
+from hands.visible import VISIBLE
 
 LIT = shutil.which("lit")
 real_lit = pytest.mark.skipif(LIT is None, reason="the tickets are lit's, so it is lit that is driven")
@@ -294,6 +295,17 @@ def test_file_tickets_names_an_epic_the_backlog_lists_or_fails_saying_so(tmp_pat
     assert "hands.command" not in [group.origin for group in found.groups] and found.retold == 1
 
 
+@pytest.mark.outside
+@real_lit
+def test_file_tickets_files_a_warning_that_said_what_lit_cannot_be_handed_with_each_written_as_its_escape(tmp_path: Path, project: tuple[Path, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    repository, epic = project
+    home = tmp_path / "home"
+    AuditLog(home / "audit", clock=Clock()).record(Logged(level="warning", source="hands.sessions.delta:_git", message="git said a\0b \ud800", where="/x/delta.py:515", stacktrace=()))
+    monkeypatch.chdir(repository)
+    assert cli.main(["--home", str(home), "file-tickets", epic]) == 0
+    assert [issue["title"] for issue in bugs(repository)] == ["src/hands/sessions/delta.py: git said a\\u0000b \\ud800"]
+
+
 
 def unit(event: str, span: str, parent: str | None, at: int, error: str | None, exit_code: int | None = None) -> str:
     """A unit of work's line in trace t, failed where it says an error, a command's carrying the code it exited with."""
@@ -319,8 +331,26 @@ def test_a_failed_unit_is_a_sighting_of_its_own_unless_a_unit_inside_it_failed_f
 
 
 def test_a_title_is_one_line_whatever_the_cause_said() -> None:
-    group = grouping.Group("tool.call", "request failed:\n  <text>\tagain", (grouping.Sighting("tool.call", "c", START, "tool.call"),))
+    group = grouping.Group("tool.call", "request failed:\r\n  <text>\tagain", (grouping.Sighting("tool.call", "c", START, "tool.call"),))
     assert filing.title(group) == "tool.call: request failed: <text> again"
+
+
+def test_a_title_cut_to_its_length_is_cut_between_two_characters_and_never_inside_an_escape() -> None:
+    group = grouping.Group("o", "x" * 113 + "\x1b[2J", (grouping.Sighting("o", "c", START, "o"),))
+    title = filing.title(group)
+    assert title == "o: " + "x" * 113 + "…" and len(title) <= filing.TITLE_CHARS
+
+
+def test_what_the_log_said_is_written_in_its_ticket_with_what_lit_cannot_be_handed_or_a_terminal_would_act_on_as_its_escape() -> None:
+    # A NUL and a lone surrogate are no argument the OS can hand lit; an ESC or an RLO would rewrite the terminal the
+    # ticket is read in.
+    group = grouping.Group("tool\0call", "request\x1b[2J failed\u202e at \ud800 and \udc80", (grouping.Sighting("tool\0call", "c", START, "tool\0call"),))
+    title, description, comment = filing.title(group), filing.description(group, LOGS), filing.comment(group, LOGS)
+    assert title == "tool\\u0000call: request\\u001b[2J failed\\u202e at \\ud800 and \\udc80"
+    assert "Origin: tool\\u0000call\nCause: request\\u001b[2J failed\\u202e at \\ud800 and \\udc80\n" in description
+    assert not [character for character in title + description + comment if ord(character) in VISIBLE]
+    Command(("lit", "new", "--title", title, "--description", description), None, None)
+    Command(("lit", "comment", "add", "--body", comment), None, None)
 
 
 @pytest.mark.parametrize(("source", "where", "named"), [
