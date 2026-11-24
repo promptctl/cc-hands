@@ -90,7 +90,11 @@ func tappedTrusting(t *testing.T, upstream string, to string, roots *x509.CertPo
 	if err != nil {
 		t.Fatal(err)
 	}
-	tap, err := startTap(tapping{upstream: parsed, trust: "EXTRA_CA", to: to, roots: roots}, shortTempDir(t))
+	trust, err := intercept.ParseTrustVariable("EXTRA_CA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tap, err := startTap(tapping{upstream: parsed, trust: trust, to: to, roots: roots}, shortTempDir(t))
 	if err != nil {
 		t.Fatalf("startTap: %v", err)
 	}
@@ -252,13 +256,16 @@ func TestATapIsAllItsPartsOrNone(t *testing.T) {
 		{"--tap", "ftp://example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 		{"--tap", "https://:8443", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 		{"--tap", "https://example.com", "--tap-ca", "EXTRA_CA=x", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "https://example.com", "--tap-ca", "NO_PROXY", "--tap-to", "/tmp/x.sock", "--", "true"},
+		{"--tap", "", "--tap-ca", "", "--tap-to", "", "--", "true"},
+		{"--tap", "https://example.com", "--tap", "https://other.example.com", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"},
 	} {
 		if _, err := parse(args); err == nil {
 			t.Errorf("parse(%q) took a tap it cannot run", args)
 		}
 	}
 	parsed, err := parse([]string{"--tap", "https://example.com/v1", "--tap-ca", "EXTRA_CA", "--tap-to", "/tmp/x.sock", "--", "true"})
-	if err != nil || parsed.tap == nil || parsed.tap.upstream.String() != "https://example.com" || parsed.tap.trust != "EXTRA_CA" || parsed.tap.to != "/tmp/x.sock" {
+	if err != nil || parsed.tap == nil || parsed.tap.upstream.String() != "https://example.com" || parsed.tap.trust.String() != "EXTRA_CA" || parsed.tap.to != "/tmp/x.sock" {
 		t.Errorf("parse of a whole tap gave %+v, %v", parsed.tap, err)
 	}
 }
@@ -559,7 +566,7 @@ func TestAChildThatRefusesTheTapsCertificateIsSaidToHaveRefusedIt(t *testing.T) 
 	}
 	reader := bufio.NewReader(said)
 	said.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if warned, err := reader.ReadString('\n'); err != nil || !strings.HasPrefix(warned, "fritter: the child refused the certificate fritter answered api.example.com:443 with") {
+	if warned, err := reader.ReadString('\n'); err != nil || !strings.HasPrefix(warned, "fritter: the child refused fritter's answer for api.example.com:443: ") {
 		t.Errorf("fritter said %q, %v, want the child's refusal", warned, err)
 	}
 }

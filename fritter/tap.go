@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -45,7 +44,7 @@ import (
 // Code.
 type tapping struct {
 	upstream intercept.Origin
-	trust    string
+	trust    intercept.TrustVariable
 	to       string
 	// The certificates fritter trusts the upstream's own with; nil for the system's.
 	roots *x509.CertPool
@@ -121,10 +120,16 @@ func now() float64 {
 
 // Tap is a running tap: the proxy the child is given, and the count of copies lost.
 type Tap struct {
-	upstream   intercept.Origin
-	trusted    string // the file of certificates the child is given to trust
-	door       *intercept.Door
-	lost       atomic.Int64
+	upstream intercept.Origin
+	trusted  string // the file of certificates the child is given to trust
+	door     *intercept.Door
+	lost     atomic.Int64
+	// [LAW:no-ambient-temporal-coupling] mu orders opening a copy against the close: once
+	// closed, no copy is delivered, and underway is the count, carried losses included, of
+	// those still being delivered.
+	mu         sync.Mutex
+	closed     bool
+	underway   int64
 	to         string
 	deliveries sync.WaitGroup
 }
@@ -218,7 +223,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 
 // env is what the child is given: fritter as its proxy for every host, the certificates to
 // trust, and what each of those variables held before, so what it runs can put that back.
-func (tap *Tap) env(trust string) []string {
+func (tap *Tap) env(trust intercept.TrustVariable) []string {
 	given := []string{"FRITTER_TAP=" + tap.door.Address()}
 	for _, variable := range tap.door.Environment(trust, tap.trusted) {
 		given = append(given, variable.String())
@@ -229,24 +234,23 @@ func (tap *Tap) env(trust string) []string {
 	return given
 }
 
-// told is what fritter says of a connection its door took. The child is answered with
-// every error a tunnel, a refusal or a forwarded request meets, so fritter adds nothing to
-// those. A certificate the child refused is never answered to it, and leaves its every
-// request to the upstream failing, so fritter says so; and so it does of what its servers
-// met, which is a fault of fritter's own. [LAW:nothing-unseen]
+// told is what fritter says of what its door did. The child refusing fritter's TLS leaves
+// its every request to the upstream failing, and nothing answers the child that, so
+// fritter says it; and so it does of what its servers logged, a fault of fritter's own.
+// Everything else the child was answered with, or did itself: a 502, a 400, a reply cut
+// short, a connection it hung up. [LAW:nothing-unseen]
 func told(event intercept.Event) {
-	var refused *net.OpError
-	switch {
-	case event.Route == intercept.Intercepted && errors.As(event.Err, &refused) && refused.Op == "remote error":
-		warn("the child refused the certificate fritter answered %s with: %v", event.Target, event.Err)
-	case event.Route == intercept.Served:
-		warn("%v", event.Err)
+	switch event := event.(type) {
+	case intercept.HandshakeRefused:
+		warn("the child refused fritter's answer for %s: %v", event.Target, event.Alert)
+	case intercept.Logged:
+		warn("%s", event.Line)
 	}
 }
 
 // alsoTrusted is what the file `variable` names holds: the certificates the child trusted
 // besides its own before fritter named another file in its place.
-func alsoTrusted(variable string) []byte {
+func alsoTrusted(variable intercept.TrustVariable) []byte {
 	held, err := intercept.AlsoTrusted(variable)
 	if err != nil {
 		// As Node does with a NODE_EXTRA_CA_CERTS it cannot read: says so, and goes on
@@ -261,6 +265,9 @@ func alsoTrusted(variable string) []byte {
 // child has gone, and what they still hold is how its last exchanges ended.
 func (tap *Tap) close() {
 	tap.door.Close()
+	tap.mu.Lock()
+	tap.closed = true
+	tap.mu.Unlock()
 	drained := make(chan struct{})
 	go func() {
 		tap.deliveries.Wait()
@@ -272,7 +279,11 @@ func (tap *Tap) close() {
 	}
 	// [LAW:nothing-unseen] what was lost is told with the next copy, and after the last
 	// there is none: said here, once the child has gone and its terminal is its own again.
-	if lost := tap.lost.Load(); lost > 0 {
+	// A copy still being delivered ends with fritter, and is lost with the rest.
+	tap.mu.Lock()
+	lost := tap.lost.Load() + tap.underway
+	tap.mu.Unlock()
+	if lost > 0 {
 		warn("%d copies of the child's exchanges with %s never reached %s", lost, tap.upstream, tap.to)
 	}
 }
@@ -283,14 +294,27 @@ func (tap *Tap) open(request requested) *exchangeCopy {
 	// one is lost too, so the count reaches the listener with the first copy it takes. A
 	// copy is lost when its request never reached the listener; one that broke off after
 	// was heard, and the listener sees it end broken.
-	request.Lost = tap.lost.Swap(0)
 	copied := newCopy()
+	tap.mu.Lock()
+	defer tap.mu.Unlock()
+	request.Lost = tap.lost.Swap(0)
 	copied.put(request)
+	carried := request.Lost + 1
+	if tap.closed {
+		// The child has gone, and nothing more is delivered.
+		tap.lost.Add(carried)
+		return copied
+	}
+	tap.underway += carried
 	tap.deliveries.Add(1)
 	go func() {
 		defer tap.deliveries.Done()
-		if !copied.deliver(tap.to) {
-			tap.lost.Add(request.Lost + 1)
+		delivered := copied.deliver(tap.to)
+		tap.mu.Lock()
+		defer tap.mu.Unlock()
+		tap.underway -= carried
+		if !delivered {
+			tap.lost.Add(carried)
 		}
 	}()
 	return copied

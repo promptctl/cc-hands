@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bmf/cc-hands/fritter/internal/testrun"
+	"github.com/bmf/cc-hands/fritter/testrun"
 )
 
 // program names what the test binary is when a test starts it as a child, as Go's own

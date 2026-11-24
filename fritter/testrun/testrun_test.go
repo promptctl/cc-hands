@@ -3,6 +3,9 @@ package testrun
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"net"
 	"os"
@@ -31,23 +34,58 @@ func TestEveryPackageOfTheModuleRunsItsTestsUnderMainAndReadsTheHold(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	tested := map[string]string{}
+	type held struct{ main, hold bool }
+	tested := map[string]*held{}
+	files := token.NewFileSet()
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() || !strings.HasSuffix(path, "_test.go") {
 			return err
 		}
-		said, err := os.ReadFile(path)
-		tested[filepath.Dir(path)] += string(said)
-		return err
+		file, err := parser.ParseFile(files, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		package_ := tested[filepath.Dir(path)]
+		if package_ == nil {
+			package_ = &held{}
+			tested[filepath.Dir(path)] = package_
+		}
+		for _, declared := range file.Decls {
+			if function, ok := declared.(*ast.FuncDecl); ok && function.Name.Name == "TestMain" && calls(file, function, "Main") {
+				package_.main = true
+			}
+		}
+		package_.hold = package_.hold || calls(file, file, "Hold")
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for dir, said := range tested {
-		if !strings.Contains(said, "Main(m)") || !strings.Contains(said, "Hold()") {
+	for dir, package_ := range tested {
+		if !package_.main || !package_.hold {
 			t.Errorf("the tests in %s do not run under testrun.Main, or do not read testrun.Hold", dir)
 		}
 	}
+}
+
+// calls says whether within, in file, calls testrun's name: as name in testrun's own
+// tests, as testrun.name in any other package's.
+func calls(file *ast.File, within ast.Node, name string) bool {
+	own := file.Name.Name == "testrun"
+	found := false
+	ast.Inspect(within, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok {
+			switch called := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				package_, ok := called.X.(*ast.Ident)
+				found = !own && ok && package_.Name == "testrun" && called.Sel.Name == name
+			case *ast.Ident:
+				found = own && called.Name == name
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // 192.0.2.1 is TEST-NET-1 (RFC 5737), routed nowhere: outside the sandbox a connection to

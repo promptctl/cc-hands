@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bmf/cc-hands/fritter/internal/testrun"
+	"github.com/bmf/cc-hands/fritter/testrun"
 )
 
 func TestMain(m *testing.M) {
@@ -42,7 +42,7 @@ func origin(t *testing.T, raw string) Origin {
 	return parsed
 }
 
-func interception(t *testing.T, raw string) Interception {
+func interception(t *testing.T, raw string) *Interception {
 	t.Helper()
 	made, err := Intercept("door", origin(t, raw), time.Now())
 	if err != nil {
@@ -156,8 +156,10 @@ func TestAClientTrustingTheFileItIsGivenIsAnsweredForTheOriginByWhoeverTakesWhat
 	if status, body := read(t)(response, err); status != http.StatusOK || body != "intercepted POST /v1/messages?beta=true" {
 		t.Errorf("the door answered %d %q, want the request handed to whoever takes what was intercepted", status, body)
 	}
-	if event := <-door.seen; event != (Event{Route: Intercepted, Target: "api.example.com:443"}) {
-		t.Errorf("the door saw %+v, want the CONNECT intercepted", event)
+	for _, want := range []Event{Opened{Target: "api.example.com:443"}, Answered{Route: Intercepted, URL: "https://api.example.com/v1/messages?beta=true", Status: http.StatusOK}} {
+		if event := <-door.seen; event != want {
+			t.Errorf("the door saw %+v, want %+v", event, want)
+		}
 	}
 }
 
@@ -190,7 +192,7 @@ func TestAPlainRequestForTheOriginIsInterceptedAndOneForAnyOtherIsForwarded(t *t
 	if status, body := read(t)(client.Get("http://elsewhere.example.com/page")); status != http.StatusOK || body != "forwarded http://elsewhere.example.com/page" {
 		t.Errorf("a request for another origin came back %d %q, want it forwarded", status, body)
 	}
-	for _, want := range []Event{{Route: Intercepted, Target: "http://127.0.0.1:8080/v1/messages"}, {Route: Forwarded, Target: "http://elsewhere.example.com/page"}} {
+	for _, want := range []Event{Answered{Route: Intercepted, URL: "http://127.0.0.1:8080/v1/messages", Status: http.StatusOK}, Answered{Route: Forwarded, URL: "http://elsewhere.example.com/page", Status: http.StatusOK}} {
 		if event := <-door.seen; event != want {
 			t.Errorf("the door saw %+v, want %+v", event, want)
 		}
@@ -203,10 +205,22 @@ func TestACertificateTheClientRefusesIsSeen(t *testing.T) {
 	if _, err := stranger.Get("https://api.example.com/v1/models"); err == nil {
 		t.Fatal("a client that does not trust the door's authority took its certificate")
 	}
-	event := <-door.seen
-	var refused *net.OpError
-	if event.Route != Intercepted || !errors.As(event.Err, &refused) || refused.Op != "remote error" {
+	// crypto/tls's own client refuses a certificate from an authority it does not know so:
+	// this holds the door's reading of a received alert to crypto/tls.
+	if event := <-door.seen; event != (HandshakeRefused{Target: "api.example.com:443", Alert: tls.AlertError(42)}) {
 		t.Errorf("the door saw %+v, want the client's refusal of its certificate", event)
+	}
+}
+
+func TestAClientThatHangsUpBeforeTLSIsAHandshakeThatFailed(t *testing.T) {
+	door := open(t, "https://api.example.com", unproxied)
+	response, connection, _ := door.connect(t, "api.example.com:443")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the CONNECT came back %s", response.Status)
+	}
+	connection.Close()
+	if event, ok := (<-door.seen).(HandshakeFailed); !ok || event.Target != "api.example.com:443" || !errors.Is(event.Err, io.EOF) {
+		t.Errorf("the door saw %+v, want the handshake ended by the client's hanging up", event)
 	}
 }
 
@@ -217,7 +231,7 @@ func TestWhatTheClientTrustedAlreadyIsKeptBesideTheAuthorityEndedByALineOrNot(t 
 		t.Fatal(err)
 	}
 	t.Setenv("EXTRA_CERTS", already)
-	held, err := AlsoTrusted("EXTRA_CERTS")
+	held, err := AlsoTrusted(trust(t, "EXTRA_CERTS"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,11 +253,11 @@ func TestWhatTheClientTrustedAlreadyIsKeptBesideTheAuthorityEndedByALineOrNot(t 
 }
 
 func TestAVariableNamingNoFileIsNothingTrustedAndOneNamingAnUnreadableFileIsAnError(t *testing.T) {
-	if held, err := AlsoTrusted("EXTRA_CERTS"); held != nil || err != nil {
+	if held, err := AlsoTrusted(trust(t, "EXTRA_CERTS")); held != nil || err != nil {
 		t.Errorf("an unset variable gave %q, %v, want nothing", held, err)
 	}
 	t.Setenv("EXTRA_CERTS", filepath.Join(t.TempDir(), "missing.pem"))
-	if _, err := AlsoTrusted("EXTRA_CERTS"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := AlsoTrusted(trust(t, "EXTRA_CERTS")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a file the variable names that cannot be read gave %v, want the error reading it", err)
 	}
 }
@@ -299,8 +313,9 @@ func TestAConnectToAnyOtherHostIsTunnelledThroughTheProxyItIsGiven(t *testing.T)
 	if _, err := io.ReadFull(reader, echoed); err != nil || string(echoed) != "ping" {
 		t.Errorf("the tunnel carried back %q, %v, want what was sent through it", echoed, err)
 	}
-	if event := <-door.seen; event != (Event{Route: Tunnelled, Target: "elsewhere.example.com:443"}) {
-		t.Errorf("the door saw %+v, want the CONNECT tunnelled", event)
+	connection.Close()
+	if event := <-door.seen; event != (Tunnelled{Target: "elsewhere.example.com:443"}) {
+		t.Errorf("the door saw %+v, want the tunnel ended as its ends ended it", event)
 	}
 }
 
@@ -311,8 +326,8 @@ func TestAnOuterProxyThatRefusesTheTunnelIsAnsweredAsABadGatewayNamingTheDoor(t 
 	if status, body := read(t)(response, nil); status != http.StatusBadGateway || !strings.HasPrefix(body, "door could not reach elsewhere.example.com:443") || !strings.Contains(body, "407") {
 		t.Errorf("the CONNECT came back %d %q, want a 502 naming the door and what the proxy answered", status, body)
 	}
-	if event := <-door.seen; event.Route != Tunnelled || event.Err == nil {
-		t.Errorf("the door saw %+v, want the tunnel's failure", event)
+	if event, ok := (<-door.seen).(Unreached); !ok || event.Target != "elsewhere.example.com:443" || !strings.Contains(event.Err.Error(), "407") {
+		t.Errorf("the door saw %+v, want the host unreached through the proxy", event)
 	}
 }
 
@@ -342,6 +357,38 @@ func TestATunnelThatCannotTakeTheClientsConnectionEndsTheOneItDialled(t *testing
 	if _, err := dialled.Read(make([]byte, 1)); err != io.EOF {
 		t.Errorf("the far end read %v, want its connection ended", err)
 	}
+	if event, ok := (<-door.seen).(Tunnelled); !ok || event.Err == nil {
+		t.Errorf("the door saw %+v, want a tunnel cut short", event)
+	}
+}
+
+func TestAClientThatEndsWhatItSendsStillGetsAllTheFarEndAnswers(t *testing.T) {
+	far, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer far.Close()
+	go func() {
+		dialled, err := far.Accept()
+		if err != nil {
+			return
+		}
+		defer dialled.Close()
+		// The far end answers once the client has sent all it will.
+		asked, _ := io.ReadAll(dialled)
+		dialled.Write([]byte("answered " + string(asked)))
+	}()
+	door := open(t, "https://api.example.com", unproxied)
+	response, connection, reader := door.connect(t, far.Addr().String())
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the CONNECT came back %s", response.Status)
+	}
+	connection.Write([]byte("ping"))
+	connection.(*net.TCPConn).CloseWrite()
+	connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if answered, err := io.ReadAll(reader); err != nil || string(answered) != "answered ping" {
+		t.Errorf("the client read %q, %v, want the far end's whole answer", answered, err)
+	}
 }
 
 func TestClosingTheDoorEndsItsTunnels(t *testing.T) {
@@ -360,7 +407,6 @@ func TestClosingTheDoorEndsItsTunnels(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dialled.Close()
-	<-door.seen
 	door.door.Close()
 	connection.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := reader.ReadByte(); err != io.EOF {
@@ -370,16 +416,18 @@ func TestClosingTheDoorEndsItsTunnels(t *testing.T) {
 
 func TestAConnectThatNamesNoPortAndARequestThatIsNoProxyRequestAreRefusedInTheDoorsName(t *testing.T) {
 	door := open(t, "https://api.example.com", unproxied)
-	response, _, _ := door.connect(t, "api.example.com")
-	if status, body := read(t)(response, nil); status != http.StatusBadRequest || !strings.Contains(body, "a CONNECT names a host and port") {
-		t.Errorf("a CONNECT with no port came back %d %q, want it refused", status, body)
+	for _, target := range []string{"api.example.com", "api.example.com:"} {
+		response, _, _ := door.connect(t, target)
+		if status, body := read(t)(response, nil); status != http.StatusBadRequest || !strings.Contains(body, "a CONNECT names a host and port") {
+			t.Errorf("a CONNECT for %q came back %d %q, want it refused", target, status, body)
+		}
 	}
 	if status, body := read(t)(http.Get(door.address.String() + "/v1/messages")); status != http.StatusBadRequest || !strings.HasPrefix(body, "door is a proxy") {
 		t.Errorf("a request for a path alone came back %d %q, want a refusal naming the door", status, body)
 	}
-	for _, target := range []string{"api.example.com", "/v1/messages"} {
-		if event := <-door.seen; event.Route != Refused || event.Target != target || event.Err == nil {
-			t.Errorf("the door saw %+v, want %q refused", event, target)
+	for _, asked := range []string{"api.example.com", "api.example.com:", "/v1/messages"} {
+		if event, ok := (<-door.seen).(Refused); !ok || event.Asked != asked || event.Err == nil {
+			t.Errorf("the door saw %+v, want %q refused", event, asked)
 		}
 	}
 }
@@ -390,9 +438,43 @@ func TestADoorMissingAPartIsRefusedBeforeItServes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	if _, err := Open(listener, Opening{Interception: interception(t, "https://api.example.com"), Proxy: unproxied}); err == nil {
-		t.Error("a door with nobody to take what it intercepts was opened")
+	served := http.NotFoundHandler()
+	for name, opening := range map[string]Opening{
+		"nobody to take what it intercepts": {Interception: interception(t, "https://api.example.com"), Forwarded: served, Proxy: unproxied, Seen: func(Event) {}},
+		"nothing to intercept":              {Intercepted: served, Forwarded: served, Proxy: unproxied, Seen: func(Event) {}},
+	} {
+		if _, err := Open(listener, opening); err == nil {
+			t.Errorf("a door with %s was opened", name)
+		}
 	}
+	if _, err := Intercept("door", Origin{}, time.Now()); err == nil {
+		t.Error("an origin ParseOrigin never made was intercepted")
+	}
+}
+
+func TestEachLineTheDoorsServersLogIsSeenAsALineOfItsOwn(t *testing.T) {
+	var seen []string
+	lines(func(line string) { seen = append(seen, line) }).Write([]byte("http: panic serving 1.2.3.4: boom\ngoroutine 1 [running]:\n"))
+	if len(seen) != 2 || seen[0] != "http: panic serving 1.2.3.4: boom" || seen[1] != "goroutine 1 [running]:" {
+		t.Errorf("the log was seen as %q, want each of its lines", seen)
+	}
+}
+
+func TestATrustVariableIsAVariablesNameAndNoneThatPointsTheClientAtItsProxy(t *testing.T) {
+	for _, name := range []string{"", "A=B", "1ST", "HTTPS_PROXY", "no_proxy"} {
+		if _, err := ParseTrustVariable(name); err == nil {
+			t.Errorf("%q was taken for a trust variable", name)
+		}
+	}
+}
+
+func trust(t *testing.T, name string) TrustVariable {
+	t.Helper()
+	variable, err := ParseTrustVariable(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return variable
 }
 
 func TestAnOriginIsAnHTTPOrHTTPSURLWithAHost(t *testing.T) {
@@ -425,7 +507,7 @@ func TestTheEnvironmentPointsAClientAtTheDoorForEveryHostTrustingItsFile(t *test
 	door := open(t, "https://api.example.com", unproxied)
 	at := door.door.Address()
 	want := []Variable{{"EXTRA_CERTS", "/tmp/trusted.pem"}, {"HTTPS_PROXY", at}, {"https_proxy", at}, {"HTTP_PROXY", at}, {"http_proxy", at}, {"NO_PROXY", ""}, {"no_proxy", ""}}
-	got := door.door.Environment("EXTRA_CERTS", "/tmp/trusted.pem")
+	got := door.door.Environment(trust(t, "EXTRA_CERTS"), "/tmp/trusted.pem")
 	if len(got) != len(want) {
 		t.Fatalf("the environment is %v, want %v", got, want)
 	}
