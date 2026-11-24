@@ -16,7 +16,7 @@ from hands.voice.wakeword import Word
 def place_of(trigger: Trigger) -> Place:
     """Where the user is when `trigger` moves the gate."""
     match trigger:
-        case "shortcut" | "engaged conversation" | "wake word":
+        case "shortcut" | "engaged conversation" | "wake word" | "answer window":
             return "desk"
         case "phone button" | "phone wake word":
             return "phone"
@@ -28,7 +28,7 @@ def by_hand(trigger: Trigger) -> bool:
     match trigger:
         case "shortcut" | "phone button":
             return True
-        case "engaged conversation" | "wake word" | "phone wake word":
+        case "engaged conversation" | "wake word" | "answer window" | "phone wake word":
             return False
 
 
@@ -53,9 +53,9 @@ def described(level: Level, word: Word) -> str:
     held = "Hold Right Shift to talk, and let go to send."
     match level:
         case "off":
-            return f"The microphone is off between turns. {held} Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
+            return f"The microphone is off between turns, but for a few seconds after each reply, so you can answer. {held} Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
         case "wake word":
-            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish. {held} Triple tap Right Command to turn the microphone off."
+            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish, and just after a reply you can answer without it. {held} Triple tap Right Command to turn the microphone off."
         case "engaged":
             return f"Engaged conversation: just talk; hands answers when you finish, and listens again. {held} Triple tap Right Shift to turn the microphone off."
 

@@ -31,7 +31,9 @@ from hands.sessions.audit import Entry
 from hands.voice import engaged, streaming
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import RATE, Clip, Fate, Hearings, Sound
-from hands.voice.desk import Leveled, Made, Woken
+from hands.fanout import Fanout
+from hands.voice.desk import AnswerWindowOpened, Leveled, Made, Served, Woken
+from hands.voice.handsvoice import HandsVoice
 from hands.voice.turnlife import Ears
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
@@ -260,19 +262,22 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
 
             yield buffers()
 
-        async def on_move(made: Made) -> None:
-            moves.append((captured, made.move))
-            match made.move:
-                case "stop" | "drop" | "timeout" as how:
-                    gate.end(gate.gate.turn, how, made.by)
-                case move:
-                    gate.move(move, made.by)
-
-        async def on_level(leveled: Leveled) -> None:
-            pass
+        async def served(act: Served) -> None:
+            match act:
+                case Made(move=move, by=by):
+                    moves.append((captured, move))
+                    match move:
+                        case "stop" | "drop" | "timeout" as how:
+                            gate.end(gate.gate.turn, how, by)
+                        case beginning:
+                            gate.move(beginning, by)
+                case Leveled():
+                    pass
+                case AnswerWindowOpened():
+                    raise AssertionError(f"an answer window opened though hands never spoke: {act}")
 
         driving = asyncio.create_task(
-            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), levels, on_move, on_level, record)
+            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), Fanout[HandsVoice]().subscribed, levels, served, record)
         )
         # Heard to its last frame, past the owner, or the drive failed on the way, which is said; then every hearing the
         # owner was given has its event.

@@ -904,8 +904,9 @@ def listening_tools(levels: Listening, at_phone: Callable[[], PhoneLevel | None]
         returned readback.
 
         Args:
-            level: "off", the microphone closed between turns; "wake word", listening for the wake word; or "engaged",
-                where speech alone opens each turn.
+            level: "off", the microphone closed between turns but for a few seconds after each reply at the desk, for
+                the user's answer; "wake word", listening for the wake word, and for an answer as "off" does; or
+                "engaged", where speech alone opens each turn.
         """
         match at_phone():
             case None:

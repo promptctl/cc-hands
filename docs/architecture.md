@@ -2012,6 +2012,7 @@ turn's `UserAsked` says it:
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
 | `wake word` | at the wake word level, openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
+| `answer window` | off or at the wake word level, Silero hears speech start within `ANSWER_WINDOW_SECONDS` of hands falling quiet at the desk, with a microphone there (`hands.voice.desk`) | as `engaged conversation`'s |
 | `phone wake word` | the phone page's detector heard the wake word and sent `wake`, while the phone's level is `wake word` and hands is at the phone (`hands.voice.phone`) | as `wake word`'s, by the same code, followed by the phone's driver (`hands.voice.atphone`) |
 
 The gate's transitions are one exhaustive match over (position, move, trigger), so who may
@@ -2079,7 +2080,16 @@ even one opened at the same instant, ends nothing. A verdict that ends a turn is
 
 **A listening desk listens between turns.** The levels move the gate with the
 shortcut's own moves, plus two of their own: `listen` as the desk leaves `off` and
-`deafen` as it returns. While the desk listens, the key rests at `listening`
+`deafen` as it returns. Off, the answer window makes the same two, `listen` as it opens and `deafen` once it and what
+it opened are over. Both come from one rule in the desk's step, for every move of its phase: the gate is told the desk
+hears the room exactly while `hears` says it does, each move named for what it hears for: the level where that listens,
+off the window (`voice/desk.py`). The step also says what closed each window, and why hands falling quiet opened none;
+`desk.anew`, beside it, says when the models hear the room afresh or take up speech under way, so the driver only
+carries out what the desk decides. Hands falling quiet is the speaker's: it tells each time hands leaves who is
+speaking, with where hands spoke, so a reply played on the phone, or to a desk with no microphone, opens no window
+there. For a TTS's audio, Pipecat says hands stopped
+only on the stop frame the TTS sends behind a response's last audio, so the window follows a reply played to its end,
+not a pause between its sentences. While the desk listens, the key rests at `listening`
 between turns rather than `up`: the microphone's bytes reach Whisper, which keeps the last
 second of them as Pipecat keeps audio nobody is speaking in, so the turn the voice opens
 starts with the words said while Silero made sure of them (about 0.2 s). Listening is each

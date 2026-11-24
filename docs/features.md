@@ -284,12 +284,13 @@ Need 2.
 
 Need 8. Where the microphone is.
 
-- **Gate triggers as values of one type.** `shortcut | engaged conversation | wake word | phone button`
+- **Gate triggers as values of one type.** `shortcut | engaged conversation | wake word | answer window | phone button`
   as `Trigger` (`hands.voice.clips`); the desk's level says which of its triggers open turns
   besides the shortcut. The `shortcut` trigger is a macOS event tap that reports real key-down and
   key-up. Done when holding the key in another app drives a turn and releasing ends it.
 - **One desk mode, off by default.** Right Shift held alone talks at every level.
-  The microphone is off between turns until a triple tap of Right Command turns on
+  The microphone is off between turns, but for the answer window after each reply, until a
+  triple tap of Right Command turns on
   the wake word, or one of Right Shift turns on engaged conversation; the same tap
   turns it off again, and the other switches across. Each change is cued, and the
   brain can set the level by voice (`promptctl-voice-oalb.6xh`).
@@ -305,6 +306,17 @@ Need 8. Where the microphone is.
   as while it is quiet, except on the Mac's own microphone and speakers, where said over hands it wakes nothing. Done when, with speakers on, a turn completes with no key and
   none of hands' own words in its transcript, and room talk without the wake word
   opens no turn.
+- **The answer window.** Off and under the wake word, once hands has finished a reply at the
+  desk, a short cue, a falling tone and a rising one, says the user may answer for the next few
+  seconds with no key and no wake word: speech started in that time opens a turn, its trigger
+  `answer window`, and end-of-turn detection closes it as in an engaged conversation. An answer
+  begun just before the window closes, or over hands' last words, still counts. Nothing said,
+  the window closes and the desk is back at its level; hands speaking again closes it too, and
+  each reply opens one. Under the wake word, saying it in the window opens its own turn. The
+  desk's event counts each window by what closed it, and each reply that opened none by why
+  (`voice/desk.py`, `promptctl-voice-oalb.w9n`). Engaged has none, since speech already opens
+  every turn there; nor does the phone, whose page listens for its own wake word; nor a desk
+  with no microphone.
 - **Phone over WebRTC.** A hold-to-talk page served over HTTPS on the LAN and the
   tailnet, beside the desk for the whole run; the place the last turn opened at is
   where hands hears and speaks. Done when a full turn round-trips from a phone with

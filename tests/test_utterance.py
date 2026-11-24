@@ -24,6 +24,7 @@ from test_synthesis import speech
 from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering, uttering
 
 from conftest import running
+from hands.voice.handsvoice import HandsQuiet, HandsSpeaking, HandsVoice
 from hands.voice.devicechoice import DefaultDevices, Hardware
 from hands.voice.microphone import KeyedAudioTransport, Pull
 from hands.voice.ptt import PushToTalk
@@ -218,6 +219,23 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
     [event] = recorded
     assert isinstance(event, WideEvent) and event.facts["fate"] == "played" and isinstance(event.facts["first_audio_ms"], float)
     assert speakers.speaker.sounded  # the line reached the device
+
+
+async def test_the_speaker_says_hands_started_speaking_and_once_its_audio_has_played_out_that_it_fell_quiet_at_the_desk() -> None:
+    speakers = Speakers()
+    params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda: Room()).output()
+    told: list[HandsVoice] = []
+    async with speaker.spoken() as edges, running([speaker]) as run:
+        await run.worker.queue_frames(synthesized(1))
+        async with asyncio.timeout(5):
+            async for edge in edges:
+                told.append(edge)
+                if isinstance(edge, HandsQuiet):
+                    break
+    assert [type(edge) for edge in told] == [HandsSpeaking, HandsQuiet]
+    # No microphone was set up beside the speaker, so none is said to be missing.
+    assert isinstance(told[-1], HandsQuiet) and told[-1].to == "desk" and speakers.speaker.sounded
 
 
 async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_audio_cuts_it_and_its_close_still_arrives() -> None:

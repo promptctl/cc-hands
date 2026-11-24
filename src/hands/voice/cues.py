@@ -40,12 +40,15 @@ SENT = Cue("turn: ended", ((990.0, 660.0),))
 DROPPED = Cue("turn: dropped", ((330.0, 330.0), (330.0, 330.0)))
 # Sent, as a release sends: the line alone says the limit ended it, with the key perhaps still down.
 TIMED_OUT = Cue(f"turn: ended, open {TURN_LIMIT_SECONDS:.0f}s", SENT.glides)
-# The desk's level changing (`hands.voice.desk`): two falling tones as the microphone goes off between turns, two
-# rising as it listens for the wake word, and three rising as it is engaged. Two tones or more, so none is taken for a
-# turn opening or ending, and the wake word's and engagement's told apart by count.
+# The desk's level changing (`hands.voice.desk`): two falling tones as the microphone goes off between turns, but for the
+# answer window, two rising as it listens for the wake word, and three rising as it is engaged. Two tones or more, so none
+# is taken for a turn opening or ending, and the wake word's and engagement's told apart by count.
 OFF = Cue("desk: microphone off", ((990.0, 660.0), (990.0, 660.0)))
 WAKE_WORD = Cue("desk: listening for the wake word", ((660.0, 990.0), (660.0, 990.0)))
 ENGAGED = Cue("desk: engaged", ((660.0, 990.0), (660.0, 990.0), (660.0, 990.0)))
+# The answer window opening (`hands.voice.desk`): a dip, one tone falling and one rising, above the key's pitches, so it
+# is taken neither for a turn's edge, one tone, nor for a level, whose tones all go one way.
+ANSWER_WINDOW = Cue("desk: the answer window is open", ((1175.0, 880.0), (880.0, 1175.0)))
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,7 @@ WORKING = QuietCue(Cue("working", ((880.0, 880.0),)), 2.0)
 
 def cues(move: Move) -> tuple[Cue, ...]:
     """What a move shows and plays: the turn's edges; nothing of the microphone arming, which every Shift does; and
-    nothing of the desk's listening, which its level's cue says (`level_cue`)."""
+    nothing of the desk's hearing the room, which its level's cue says (`level_cue`), or the answer window's."""
     match move:
         case "start":
             return (OPENED,)

@@ -38,7 +38,8 @@ from hands.voice.shortcut import Beginning, Ending, Instant, Move
 from hands.voice.trigger import PhoneLevel, Trigger, by_hand, place_of
 from hands.voice.voiceturn import TurnId
 
-# [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
+# [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, or off
+# in the answer window, so a turn the voice
 # opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
 # so the words said before it does are kept; or down, a clip. The edges decide every move, so the gate never sees one
 # that is not a transition.

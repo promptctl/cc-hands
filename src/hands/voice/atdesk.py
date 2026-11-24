@@ -12,9 +12,10 @@ from hands.clock import Clock
 from hands.sessions.wide import WideEvent, annotate, begun, unit
 from hands.voice import wake
 from hands.voice.wakemodels import WakeModels
-from hands.voice.cues import Cue, Played, level_cue
-from hands.voice.desk import Leveled, Made
+from hands.voice.cues import ANSWER_WINDOW, Cue, Played, level_cue
+from hands.voice.desk import AnswerWindowOpened, Leveled, Made, Served
 from hands.voice.engaged import Hears, drive, loaded
+from hands.voice.handsvoice import HandsVoice
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.listening import Driving
@@ -32,9 +33,11 @@ class Microphone(Protocol):
 
 
 class Speaker(Protocol):
-    """The speaker attached now: it plays a cue at once."""
+    """The speaker attached now: it plays a cue at once, and says each time hands starts and stops speaking."""
 
     def cue(self, cue: Cue) -> Played: ...
+
+    def spoken(self) -> AbstractAsyncContextManager[AsyncIterator[HandsVoice]]: ...
 
 
 async def serve_desk(
@@ -59,8 +62,9 @@ async def serve_desk(
     on the Mac's own microphone and speakers: what the wake word is heard with (`hands.voice.wake.listening`)."""
 
     async def at_desk(made: Made) -> None:
-        # [LAW:single-enforcer] a clip is ended only through `PushToTalk.end`, which the gate lets only the trigger that opened it do;
-        # the desk names the turn open now, until `Made` carries the turn it decided about (promptctl-phone-app-9d9y.3hd).
+        # [LAW:single-enforcer] the desk ends a clip only through `PushToTalk.end`, which the gate lets only the trigger that
+        # opened it do; the desk names the turn open now, until `Made` carries the turn it decided about
+        # (promptctl-phone-app-9d9y.3hd).
         match made.move:
             case "stop" | "drop" | "timeout" as how:
                 moves = key.end(key.gate.turn, how, made.by)
@@ -70,11 +74,19 @@ async def serve_desk(
         for move in moves:
             await taken(move)
 
-    async def at_level(leveled: Leveled) -> None:
-        cue = level_cue(leveled)
+    def cued(cue: Cue) -> None:
         logger.info(cue.line)
         speaker().cue(cue)
-        beat()
+
+    async def served(act: Served) -> None:
+        match act:
+            case Made():
+                await at_desk(act)
+            case Leveled():
+                cued(level_cue(act))
+                beat()
+            case AnswerWindowOpened():
+                cued(ANSWER_WINDOW)
 
     @asynccontextmanager
     async def hearing() -> AsyncGenerator[tuple[Ears, Hears]]:
@@ -91,4 +103,4 @@ async def serve_desk(
         async with loaded(clock, rate, record, "desk.loaded") as ears, wake.loaded(clock, rate, files, word, record) as heard:
             yield ears, wake.listening(clock, heard, over_hands, built_in, record)
 
-    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels, at_desk, at_level, record)
+    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, lambda: speaker().spoken(), levels, served, record)

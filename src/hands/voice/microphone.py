@@ -28,8 +28,8 @@ import asyncio
 import queue
 import threading
 from collections import defaultdict, deque
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from functools import partial
 from dataclasses import dataclass
 from datetime import timedelta
@@ -50,7 +50,9 @@ from pipecat.transports.local.audio import (
 )
 
 from hands.clock import Clock
+from hands.fanout import Fanout
 from hands.voice import coreaudio
+from hands.voice.handsvoice import HandsQuiet, HandsSpeaking, HandsVoice, Spoken
 from hands.voice.devicechoice import Auto, BuiltIns, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, built_in, hears_nothing, lost_microphone, placed
 from hands.voice.clips import Playhead
 from hands.voice.cues import Cue, sound
@@ -352,9 +354,11 @@ class Speaker(LocalAudioOutputTransport):
     """The local speaker, whose stream gives the echo canceller everything the device plays, and which hands the sound
     to the phone instead while hands is there."""
 
-    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, echo: Echo, record: Record, clock: Clock, choice: Choice) -> None:
+    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, echo: Echo, record: Record, clock: Clock, choice: Choice, deaf: Callable[[], bool]) -> None:
         super().__init__(py_audio, params)
         self._key = key
+        # Whether the desk has no microphone to hear an answer with, read as hands falls quiet.
+        self._deaf = deaf
         self._phone = phone
         self._choice = choice
         # The canceller the first stream is opened with; each stream after it is opened with its own.
@@ -372,6 +376,8 @@ class Speaker(LocalAudioOutputTransport):
         self._speaking: set[Literal["hands", "user"]] = set()
         self.quiet = asyncio.Event()
         self.quiet.set()
+        # Hands' speech starting and stopping, told to each listener.
+        self._spoken: Fanout[HandsVoice] = Fanout()
         # [LAW:one-source-of-truth] whose each byte of hands' speech is travels with it (`hands.voice.synthesis`): cut
         # into the sender's chunks at ingress, and at egress, the synthesis of the last `SpeakingIn` the sender wrote.
         self._cutter = Cutter()
@@ -382,6 +388,10 @@ class Speaker(LocalAudioOutputTransport):
     def hands_speaking(self) -> bool:
         """Whether hands is speaking, between its sender's start and stop."""
         return "hands" in self._speaking
+
+    def spoken(self) -> AbstractAsyncContextManager[AsyncIterator[HandsVoice]]:
+        """Each time hands starts speaking, and stops, with where it spoke, as its sender says, from now on."""
+        return self._spoken.subscribed()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # [LAW:one-source-of-truth] Pipecat's local setup is only the base's and an open; the open is open_stream's, so
@@ -537,6 +547,7 @@ class Speaker(LocalAudioOutputTransport):
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
         # [LAW:one-source-of-truth] the sender pushes both edges of hands' speech through here, an interruption stops it,
         # and the user's turn edges pass through on their way out.
+        was = self.hands_speaking
         match frame:
             case BotStartedSpeakingFrame():
                 self._speaking.add("hands")
@@ -553,7 +564,25 @@ class Speaker(LocalAudioOutputTransport):
             self.quiet.clear()
         else:
             self.quiet.set()
+        # [LAW:one-source-of-truth] each edge of hands' speech is told as it moves who is speaking, once, though Pipecat
+        # pushes each edge both ways; the gate says where hands is, read as its speech stops: where it was heard.
+        match was, self.hands_speaking:
+            case False, True:
+                self._spoken.publish(HandsSpeaking())
+            case True, False:
+                self._spoken.publish(HandsQuiet(self._clock.now(), self._spoken_to()))
+            case _:
+                pass
         await super().push_frame(frame, direction)
+
+    def _spoken_to(self) -> Spoken:
+        """Where hands spoke, as its speech stops: where the gate says hands is, and at the desk, whether a microphone is
+        there to hear an answer."""
+        match self._key.gate.place:
+            case "phone":
+                return "phone"
+            case "desk":
+                return "deaf desk" if self._deaf() else "desk"
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at
@@ -642,9 +671,9 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self._listening: asyncio.Task[None] | None = None
         # What the attached stream was opened on; None until setup opens the first.
         self.opened: Input | None = None
-        # [LAW:no-shared-mutable-globals] who hears the desk whatever the gate says, each with the loop it hears on:
-        # replaced whole on the event loop, read whole on the capture thread.
-        self._overhearing: tuple[asyncio.Queue[bytes], ...] = ()
+        # Who hears the desk whatever the gate says. [LAW:no-shared-mutable-globals] published to on the event loop
+        # alone: the capture thread hands each buffer over to it.
+        self._overheard: Fanout[bytes] = Fanout()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # As for the speaker: the base's setup, then the one way the stream is opened.
@@ -720,21 +749,10 @@ class KeyedMicrophone(LocalAudioInputTransport):
             finally:
                 count(**opened.echo.counts())
 
-    @asynccontextmanager
-    async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
+    def overheard(self) -> AbstractAsyncContextManager[AsyncIterator[bytes]]:
         """Every buffer the desk's microphone captures while open, heard through the echo canceller whatever the key
         says, and silent while hands is at the phone: what a trigger listens to for when to open and close the turn."""
-        heard: asyncio.Queue[bytes] = asyncio.Queue()
-        self._overhearing = (*self._overhearing, heard)
-
-        async def buffers() -> AsyncIterator[bytes]:
-            while True:
-                yield await heard.get()
-
-        try:
-            yield buffers()
-        finally:
-            self._overhearing = tuple(each for each in self._overhearing if each is not heard)
+        return self._overheard.subscribed()
 
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
@@ -769,8 +787,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the clip owner: while hands is at the
         # phone, the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
         overheard = cancelled.heard if gate.hears("desk") else bytes(len(cancelled.heard))
-        for overhearing in self._overhearing:
-            loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
+        loop.call_soon_threadsafe(self._overheard.publish, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches the clip owner; while hands is at the
         # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
         if not gate.hears("desk"):
@@ -830,7 +847,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         # devices' room from nothing and holds none of the old one's sound.
         cancelling = echo()
         self._echo = echo
-        self._speaker = Speaker(self._pyaudio, params, key, phone, cancelling, record, clock, choices.output)
+        self._speaker = Speaker(self._pyaudio, params, key, phone, cancelling, record, clock, choices.output, lambda: self.deaf)
         self._microphone = KeyedMicrophone(self._pyaudio, params, key, phone, cancelling, record, clock, choices.input)
         self._portaudio = portaudio
 
