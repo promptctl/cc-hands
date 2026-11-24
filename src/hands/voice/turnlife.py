@@ -90,14 +90,19 @@ class Life:
         """Forget the silence the last buffer was heard in, so the speech the next buffer says starts as any speech does."""
         self._detected = VADState.QUIET
 
-    def opened(self, turn: Turn) -> None:
-        """A turn has just opened (`voiceturn.opened` says which): it is heard afresh from where it opened, if a wake
-        opened it, and its deadlines are set."""
+    def moved(self, was: Turn | None, now: Turn | None) -> None:
+        """The owner's turn went from `was` to `now`, by its own rules or by something outside its life, a gate that took
+        it. Smart Turn starts the next turn with no speech of the last in it: Pipecat clears it only as a verdict or the
+        silence completes a turn, so a turn thrown away, sent at the limit or taken is cleared here. A turn that opened is
+        heard afresh if a wake opened it, and its deadlines are set."""
+        if voiceturn.closed(was, now) is not None:
+            with self._using("clear"):
+                self._ears.clear()
         # [LAW:types-are-the-program] the wake word's own speech is no part of what is asked: heard afresh from where it
         # opened the turn, what is asked starts as any speech does, and Smart Turn judges it alone.
-        if isinstance(turn, voiceturn.Waiting):
+        if isinstance(voiceturn.opened(was, now), voiceturn.Waiting):
             self.afresh()
-        for at, told in voiceturn.deadlines(turn):
+        for at, told in voiceturn.asked(was, now):
             self._clock.call_at(at, partial(self._later, told))
 
     async def hear(self, audio: bytes, speech_allowed: bool, turn: Turn | None) -> Detected:
@@ -109,7 +114,7 @@ class Life:
             silent_too_long = self._ears.heard(audio, speech_allowed and state == VADState.SPEAKING)
         changes = _changed(self._detected, state, self._clock)
         self._detected = state
-        return Detected(changes, TurnEnded("silence", turn.since) if silent_too_long and turn is not None else None)
+        return Detected(changes, TurnEnded("silence", turn.id) if silent_too_long and turn is not None else None)
 
     async def judge(self, turn: Turn) -> TurnEnded | None:
         """Ask Smart Turn whether the speech that just stopped ends `turn`: its own unit of work, with its verdict. The
@@ -118,14 +123,7 @@ class Life:
             complete, metrics = await self._ears.judge()
             # [LAW:nothing-unseen] the verdict, and how sure of it the model was; no metrics is a segment with no audio in it.
             annotate(complete=complete, probability=None if metrics is None else metrics.probability, inference_ms=None if metrics is None else metrics.e2e_processing_time_ms)
-        return TurnEnded("verdict", turn.since) if complete else None
-
-    def ended(self) -> None:
-        """A voice turn is over, by its own rules or by something outside its life, a gate that took it: Smart Turn starts
-        the next with no speech of this one in it. Pipecat clears it only as a verdict or the silence completes a turn, so a
-        turn thrown away or sent at the limit is cleared here."""
-        with self._using("clear"):
-            self._ears.clear()
+        return TurnEnded("verdict", turn.id) if complete else None
 
 
 def _changed(was: VADState, now: VADState, clock: Clock) -> tuple[Told, ...]:

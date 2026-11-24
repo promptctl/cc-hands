@@ -6,9 +6,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 
 import pytest
-from conftest import hearing_with
-from pipecat.audio.vad.vad_analyzer import VADState
-from pipecat.metrics.metrics import TurnMetricsData
+from conftest import ScriptedEars, hearing_with
 
 from hands.virtualclock import VirtualClock
 from hands.sessions.wide import WideEvent
@@ -16,42 +14,13 @@ from hands.voice.desk import Level, Leveled, Made
 from hands.voice.engaged import Hears, drive
 from hands.voice.turnlife import Ears
 from hands.voice.trigger import Choice
-from hands.voice.voiceturn import ASK_SECONDS
+from hands.voice import voiceturn
 from hands.voice.shortcut import KeyEvent, Move, Pressed, Released, Ripe
 
 # Right Shift's triple tap: what engages, and what disengages.
 TAP: tuple[KeyEvent, ...] = tuple(e for i in range(3) for e in (Pressed(1.0 + i / 10), Released()))
 # What the gate is handed for the taps themselves: each press arms the microphone and its release disarms it.
 TAPPED: list[Move] = ["arm", "disarm", "arm", "disarm", "arm"]
-
-
-class ScriptedEars:
-    """The models, as a script: each buffer of audio names the detector's state, and the verdicts are given in turn."""
-
-    def __init__(self, verdicts: Sequence[bool]) -> None:
-        self._verdicts = list(verdicts)
-        self.cleared = 0
-        # Set to keep Smart Turn thinking until it is cleared, as audio goes on being heard.
-        self.thinking: asyncio.Event | None = None
-
-    async def detect(self, audio: bytes) -> VADState:
-        return {b"q": VADState.QUIET, b"s": VADState.STARTING, b"S": VADState.SPEAKING, b"x": VADState.QUIET}[audio]
-
-    def heard(self, audio: bytes, speech: bool) -> bool:
-        # b"x" is quiet run past Smart Turn's stop_secs.
-        return audio == b"x"
-
-    async def judge(self) -> tuple[bool, TurnMetricsData | None]:
-        if self.thinking is not None:
-            await self.thinking.wait()
-        complete = self._verdicts.pop(0)
-        return complete, TurnMetricsData(processor="test", is_complete=complete, probability=0.9 if complete else 0.1, e2e_processing_time_ms=40.0)
-
-    def clear(self) -> None:
-        self.cleared += 1
-
-    def afresh(self) -> None:
-        pass
 
 
 class Rig:
@@ -297,7 +266,9 @@ async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks(
     assert rig.made[:7] == ["listen", "arm", "start", "stop", "arm", "start", "stop"]
 
 
-async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out() -> None:
+async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The ask window is moved in its one place, and the desk's drop moves with it.
+    monkeypatch.setattr("hands.voice.voiceturn.ASK_SECONDS", 3.0)
     rig = Rig(verdicts=[])
     spoke = [False]
 
@@ -309,8 +280,8 @@ async def test_a_wake_nothing_is_asked_after_is_dropped_when_the_ask_runs_out() 
     await rig.choose("wake word")
     await rig.hear(b"q")
     # The wake word's deadlines are set as it opens the turn, from the instant it was heard.
-    await rig.clock.scheduled(ASK_SECONDS)
-    rig.clock.advance_to(ASK_SECONDS)
+    await rig.clock.scheduled(voiceturn.ASK_SECONDS)
+    rig.clock.advance_to(voiceturn.ASK_SECONDS)
     await rig.settle(4)
     await stopped(driving)
     assert rig.made_by == [Made("listen", "wake word"), Made("arm", "wake word"), Made("start", "wake word"), Made("drop", "wake word")]

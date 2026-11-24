@@ -2043,12 +2043,13 @@ that cannot be fails the run with what could not be loaded.
 `hands.voice.voiceturn`: a pure step over a turn that is `Waiting` (the wake word opened it
 and what is asked has not started) or `Speaking`, and what it is told, which gives the turn
 after or how it ended: sent, sent at the limit, or thrown away. The work around Silero and Smart
-Turn is `hands.voice.turnlife.Life`: hearing a buffer, judging, clearing as a turn ends, and
-setting the deadlines a turn asks for. The owner of the turn holds which one is open and steps
+Turn is `hands.voice.turnlife.Life`: hearing a buffer, judging, and, as the owner's turn moves
+from one to the next (`Life.moved`), clearing Smart Turn of a turn that closed and setting the
+deadlines of one that opened. The owner of the turn holds which one is open and steps
 it in the order things were told: the desk's phase at the Mac, the gate for the phone. `Life`
-holds no turn, so each end, verdict, limit and ask names the instant its turn opened and
-the owner applies it only to that turn; one for a turn that has since been replaced ends
-nothing. The models take one use at a time, and `Life` refuses a use begun beside another.
+holds no turn, so each end, verdict, limit and ask names the number its owner minted as the turn
+opened, and the owner applies it only to that turn; one for a turn that has since been replaced,
+even one opened at the same instant, ends nothing. The models take one use at a time, and `Life` refuses a use begun beside another.
 
 **A listening desk listens between turns.** The levels move the gate with the
 shortcut's own moves, plus two of their own: `listen` as the desk leaves `off` and

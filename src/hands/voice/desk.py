@@ -19,7 +19,7 @@ from hands.voice import voiceturn
 from hands.voice.clips import Trigger
 from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, Typing, step as shortcut_step
 from hands.voice.taps import TapKey, Taps, counted
-from hands.voice.voiceturn import Ended, Going, NothingAsked, SpeechStarted, SpeechStarting, SpeechStopped, Speaking, Told, Turn, TurnEnded, TurnTooLong, Waiting
+from hands.voice.voiceturn import Ended, Going, Judging, NothingAsked, SpeechStarted, SpeechStarting, SpeechStopped, Speaking, Told, Turn, TurnEnded, TurnId, TurnTooLong, Waiting
 
 # The levels the desk listens at between turns; it is deaf under "off" alone.
 Listens = Literal["wake word", "engaged"]
@@ -100,10 +100,12 @@ Phase = Resting | Starting | Woke | Voiced | Keyed
 
 @dataclass(frozen=True)
 class Desk:
-    """Where the desk is, and the presses a triple tap has counted so far."""
+    """Where the desk is, the presses a triple tap has counted so far, and how many turns the voice has opened, which names
+    the next."""
 
     phase: Phase = Resting("off")
     taps: Taps = Taps()
+    turns: TurnId = 0
 
     @property
     def level(self) -> Level:
@@ -137,9 +139,16 @@ class Leveled:
     by: Chooser
 
 
+@dataclass(frozen=True)
+class Judge:
+    """Smart Turn is to be asked whether the speech that just stopped ends `turn`."""
+
+    turn: Turn
+
+
 # What the desk does: a move of the gate, a change of level, or asking Smart Turn whether the speech that just stopped
 # ends the turn.
-Act = Made | Leveled | Literal["judge"]
+Act = Made | Leveled | Judge
 
 
 def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
@@ -149,8 +158,11 @@ def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
             phase, acts = _leveled(desk.phase, level, "tool")
             return replace(desk, phase=phase), acts
         case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong() | NothingAsked():
-            phase, acts = _heard(desk.phase, event)
-            return replace(desk, phase=phase), acts
+            phase, acts = _heard(desk.phase, event, desk.turns + 1)
+            # [LAW:one-source-of-truth] a turn opens where the voiceturn rules say it does, and that is the one place a
+            # number is spent on it.
+            minted = voiceturn.opened(turn_of(desk.phase), turn_of(phase)) is not None
+            return replace(desk, phase=phase, turns=desk.turns + 1 if minted else desk.turns), acts
         case _:
             taps, tapped = counted(desk.taps, event)
             phase, acts = _keyed(desk.phase, event)
@@ -160,7 +172,7 @@ def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
             if tapped is not None:
                 phase, more = _leveled(phase, toggled(level_of(phase), tapped), "tap")
                 acts = (*acts, *more)
-            return Desk(phase, taps), acts
+            return replace(desk, phase=phase, taps=taps), acts
 
 
 def toggled(level: Level, key: TapKey) -> Level:
@@ -238,16 +250,17 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
             return Keyed(now, shortcut), (*listening, Leveled(was, now, by))
 
 
-def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
+def _heard(phase: Phase, heard: Heard, next_turn: TurnId) -> tuple[Phase, tuple[Act, ...]]:
+    """The phase after `heard`, and what the desk does: a turn it opens is named `next_turn`."""
     match phase, heard:
         case Resting(level="wake word"), Woken(at=at):
-            return Woke(Waiting(at)), (Made("arm", "wake word"), Made("start", "wake word"))
+            return Woke(Waiting(next_turn, at)), (Made("arm", "wake word"), Made("start", "wake word"))
         case Resting(level="engaged"), SpeechStarting():
             return Starting(), (Made("arm", "engaged conversation"),)
         case Resting(level="engaged"), SpeechStarted(at=at):
-            return Voiced("engaged", Speaking(at)), (Made("arm", "engaged conversation"), Made("start", "engaged conversation"))
+            return Voiced("engaged", Speaking(next_turn, at)), (Made("arm", "engaged conversation"), Made("start", "engaged conversation"))
         case Starting(key=key), SpeechStarted(at=at):
-            return Voiced("engaged", Speaking(at), key), (Made("start", "engaged conversation"),)
+            return Voiced("engaged", Speaking(next_turn, at), key), (Made("start", "engaged conversation"),)
         case Starting(key=key), SpeechStopped():
             return _rest("engaged", key, Made("disarm", "engaged conversation"))
         case Woke() | Voiced(), SpeechStarting() | SpeechStarted() | SpeechStopped() | TurnEnded() | TurnTooLong() | NothingAsked():
@@ -259,13 +272,24 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
 def _in_turn(phase: Woke | Voiced, told: Told) -> tuple[Phase, tuple[Act, ...]]:
     """What a turn the voice opened is told, by the rules of its end (`voiceturn.step`): what they decide the desk makes
     of it, ending it by the move that names how, with the trigger that opened it."""
+    level = _listens(phase)
     match voiceturn.step(phase.turn, told):
-        case Going(turn=Speaking() as speaking, judge=judge) if isinstance(phase, Woke):
-            return Voiced("wake word", speaking, phase.key), ("judge",) if judge else ()
-        case Going(judge=judge):
-            return phase, ("judge",) if judge else ()
+        # The phase is the turn the rules made of it, whole.
+        case Judging(turn=speaking):
+            return _holding(level, phase.key, speaking), (Judge(speaking),)
+        case Going(turn=turn):
+            return _holding(level, phase.key, turn), ()
         case Ended(how=how):
-            return _rest(level_of(phase), phase.key, Made(how, _voice(phase)))
+            return _rest(level, phase.key, Made(how, _voice_of(level)))
+
+
+def _holding(level: Listens, key: VoiceKey, turn: Turn) -> Woke | Voiced:
+    """The phase of a turn the voice has open: a wake's, waiting for what is asked, or one with speech in it."""
+    match turn:
+        case Waiting():
+            return Woke(turn, key)
+        case Speaking():
+            return Voiced(level, turn, key)
 
 
 def turn_of(phase: Phase) -> Turn | None:
@@ -277,13 +301,18 @@ def turn_of(phase: Phase) -> Turn | None:
             return None
 
 
-def _voice(turn: Woke | Voiced) -> Trigger:
-    """The trigger that opened a turn the voice has open."""
-    match turn:
+def _listens(phase: Woke | Voiced) -> Listens:
+    """The level a turn the voice has open was opened at."""
+    match phase:
         case Woke():
             return "wake word"
         case Voiced(level=level):
-            return _voice_of(level)
+            return level
+
+
+def _voice(phase: Woke | Voiced) -> Trigger:
+    """The trigger that opened a turn the voice has open."""
+    return _voice_of(_listens(phase))
 
 
 def _voice_of(level: Listens) -> Trigger:

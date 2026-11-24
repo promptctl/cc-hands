@@ -36,7 +36,7 @@ from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
-from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Keyed, Leveled, Made, Woken, listens, step, turn_of
+from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Judge, Keyed, Leveled, Made, Woken, listens, step, turn_of
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
 from hands.voice.turnlife import Ears, Life
@@ -190,6 +190,15 @@ class Overheard:
     woken: Hears
 
 
+def _models(life: Life | None) -> Life:
+    """The life of the models a voice turn is made of: what it is heard and judged with is heard with them, so none opens
+    or is judged before they are loaded."""
+    # [LAW:no-silent-failure] a turn that moved with no models loaded is a desk that was stepped wrongly, and says so.
+    if life is None:
+        raise RuntimeError("a voice turn moved or was judged before the models that hear it were loaded")
+    return life
+
+
 async def drive(
     clock: Clock,
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
@@ -225,6 +234,9 @@ async def drive(
     desk = Desk()
     # The life of the models the last buffer was heard with: None until they are loaded, while Smart Turn has heard nothing.
     life: Life | None = None
+    # Whether the key has come up since the last buffer was heard: speech the desk ignored while it was down starts for it
+    # as the key comes up, so a tap of Shift as the user began does not lose what they say.
+    key_came_up = False
     heard: deque[Event] = deque()
     # The level the last buffer was heard at: off, where nothing has heard it, as the desk starts.
     overheard_at: Level = "off"
@@ -250,6 +262,9 @@ async def drive(
                                 overheard_at = desk.level
                                 if begun:
                                     life.afresh()
+                                if key_came_up:
+                                    life.quiet()
+                                key_came_up = False
                                 # Smart Turn hears speech only with no key down, so the room it hears otherwise is
                                 # trimmed as silence is.
                                 detected = await life.hear(audio, not isinstance(desk.phase, Keyed), turn_of(desk.phase))
@@ -268,34 +283,22 @@ async def drive(
                     each = heard.popleft()
                     was = desk
                     desk, acts = step(desk, each)
-                    if (opened := voiceturn.opened(turn_of(was.phase), turn_of(desk.phase))) is not None:
-                        # Only a buffer heard with the models opens a voice turn.
-                        assert life is not None
-                        life.opened(opened)
-                    # Speech the desk ignored while the key was down starts for it as the key comes up, so a tap of Shift
-                    # as the user began does not lose what they say; before the models load there is none to forget.
-                    if life is not None and isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed):
-                        life.quiet()
+                    was_turn, turn = turn_of(was.phase), turn_of(desk.phase)
+                    if was_turn != turn:
+                        _models(life).moved(was_turn, turn)
+                        if voiceturn.closed(was_turn, turn) is not None and isinstance(each, TurnEnded) and each.by == "silence":
+                            count(ended_on_silence=1)
+                    key_came_up = key_came_up or (isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed))
                     for act in acts:
                         match act:
-                            case "judge":
-                                # Only speech the detector heard is judged, and it is heard with the models, for the
-                                # turn the speech is in.
-                                assert life is not None
-                                turn = turn_of(desk.phase)
-                                assert turn is not None
-                                if (verdict := await life.judge(turn)) is not None:
+                            case Judge(turn=judged):
+                                # Only speech the detector heard is judged, and it is heard with the models.
+                                if (verdict := await _models(life).judge(judged)) is not None:
                                     heard.appendleft(verdict)
                                 else:
                                     count(held_open=1)
                             case Made(move=move, by=by):
                                 count(**{move: 1, f"by_{by.replace(' ', '_')}": 1})
-                                if move == "stop" and isinstance(each, TurnEnded) and each.by == "silence":
-                                    count(ended_on_silence=1)
-                                # [LAW:no-ambient-temporal-coupling] Smart Turn starts each turn with no speech of the
-                                # last one in it, whoever ended it; before the models load it has heard none.
-                                if move in get_args(voiceturn.How) and life is not None:
-                                    life.ended()
                                 await on_move(act)
                             case Leveled(was=was_level, now=now, by=chooser):
                                 count(**{f"to_{now.replace(' ', '_')}": 1})

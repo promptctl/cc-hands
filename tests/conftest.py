@@ -32,7 +32,9 @@ from loguru import logger
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Hears
 from hands.voice.turnlife import Ears
+from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.frames.frames import ErrorFrame, Frame
+from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
@@ -1227,3 +1229,36 @@ def hearing_with(ears: Ears, woken: Hears) -> Callable[[], AbstractAsyncContextM
         yield ears, woken
 
     return hearing
+
+
+class ScriptedEars:
+    """The models, as a script: each buffer of audio names the detector's state, and the verdicts are given in turn."""
+
+    def __init__(self, verdicts: Sequence[bool]) -> None:
+        self._verdicts = list(verdicts)
+        self.cleared = 0
+        self.afreshed = 0
+        # Set to keep Smart Turn thinking until it is let go, as audio goes on being heard.
+        self.thinking: asyncio.Event | None = None
+        # Set once Smart Turn has been asked, so a test waits on that and not on time passing.
+        self.judging = asyncio.Event()
+
+    async def detect(self, audio: bytes) -> VADState:
+        return {b"q": VADState.QUIET, b"s": VADState.STARTING, b"S": VADState.SPEAKING, b"x": VADState.QUIET}[audio]
+
+    def heard(self, audio: bytes, speech: bool) -> bool:
+        # b"x" is quiet run past Smart Turn's stop_secs.
+        return audio == b"x"
+
+    async def judge(self) -> tuple[bool, TurnMetricsData | None]:
+        self.judging.set()
+        if self.thinking is not None:
+            await self.thinking.wait()
+        complete = self._verdicts.pop(0)
+        return complete, TurnMetricsData(processor="test", is_complete=complete, probability=0.9 if complete else 0.1, e2e_processing_time_ms=40.0)
+
+    def clear(self) -> None:
+        self.cleared += 1
+
+    def afresh(self) -> None:
+        self.afreshed += 1

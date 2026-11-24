@@ -824,7 +824,7 @@ def play_out[S, E](
                 heapq.heappush(due, (at, next(arrival), later))
             for act in acts:
                 match act:
-                    case "judge" | desk.Leveled():
+                    case desk.Judge() | desk.Leveled():
                         pass
                     case desk.Made(move=move, by=trigger):
                         moves.append(move)
@@ -841,18 +841,12 @@ def shortcut_timeline(told: Sequence[tuple[float, KeyEvent]], seconds: float) ->
     return play_out(shortcut.step, Idle(), lambda _was, event, _now: shortcut.asked(event), told, seconds, "shortcut")
 
 
-def deadlines(was: desk.Desk, now: desk.Desk) -> tuple[tuple[float, desk.Event], ...]:
-    """What the turn the desk just opened asks to be told later, as `engaged.drive` sets it."""
-    opened = voiceturn.opened(desk.turn_of(was.phase), desk.turn_of(now.phase))
-    return () if opened is None else voiceturn.deadlines(opened)
-
-
 def engaged_conversation(told: Sequence[tuple[float, desk.Event]], seconds: float) -> Timeline:
     """The desk, told `told`, with its key's presses told as `keys.tapped` tells them and each turn's limit as
     `engaged.drive` tells it."""
 
     def asked(was: desk.Desk, event: desk.Event, now: desk.Desk) -> tuple[tuple[float, desk.Event], ...]:
-        return (*(shortcut.asked(event) if isinstance(event, KeyEvent) else ()), *deadlines(was, now))
+        return (*(shortcut.asked(event) if isinstance(event, KeyEvent) else ()), *voiceturn.asked(desk.turn_of(was.phase), desk.turn_of(now.phase)))
 
     return play_out(desk.step, desk.Desk(), asked, told, seconds, "engaged conversation")
 
@@ -870,7 +864,7 @@ async def test_a_shortcut_turn_of_three_minutes_of_speech_reaches_the_brain_whol
 
 async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
     engage = [(1.0, desk.Chosen("engaged"))]
-    timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0)), (182.0, voiceturn.TurnEnded("verdict", 2.0))], 183.0)
+    timeline = engaged_conversation([*engage, (2.0, voiceturn.SpeechStarted(2.0)), (182.0, voiceturn.TurnEnded("verdict", 1))], 183.0)
     assert timeline.moves == ["listen", "arm", "start", "stop"]
     await rig.play(timeline)
     await rig.texts.put("three minutes of conversation")
