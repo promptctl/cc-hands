@@ -26,8 +26,8 @@ class MainTurn:
     """The session's own loop asking the model for its next step: the one kind of request whose reply is the session speaking.
 
     `prompt` is the turn it asks for, the id its hooks carry as prompt_id; None when the request names none. Claude Code
-    names it only when its ANTHROPIC_BASE_URL is Anthropic's API: a session given a gateway, and the brain
-    through hands' proxy, name none.
+    names it only when it takes what it talks to for Anthropic's own API: a session given a gateway in its
+    ANTHROPIC_BASE_URL names none, and the brain, which reaches hands' proxy through brioche, names it.
     """
 
     prompt: PromptId | None

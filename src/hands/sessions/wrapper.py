@@ -21,14 +21,13 @@ from pathlib import Path
 from typing import Final, Literal
 
 from hands.core.wire import UPSTREAM
-from hands.packaged import FRITTER
+from hands.packaged import FRITTER, installed
 from hands.sessions.files import Unread, replace_whole
 from hands.sessions.home import Home
 from hands.sessions.untap import TRUST, untap_script
 
-# The fritter hands' own package carries, put there by hatch_build.py's one build of it: a wheel's install and a
-# checkout's editable install alike. It changes only when the package is rebuilt.
-PACKAGED = Path(__file__).resolve().parents[1] / FRITTER
+# The fritter hands' own package carries.
+PACKAGED = installed(FRITTER)
 
 # Every shim's second line, by which a shim knows another hands shim on PATH for what it is.
 MARK = "# A hands claude shim, written whole by `hands install-fritter`: change hands.sessions.wrapper, not this."

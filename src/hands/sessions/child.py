@@ -328,7 +328,17 @@ class Terminal:
     closed: queue.SimpleQueue[None]
 
 
-type Stdio = Null | Terminal
+@dataclass(frozen=True)
+class Pipes:
+    """A child run on the ends of pipes its caller made: what it reads, and where it writes and complains. The caller
+    holds the other ends, and closes these once the child is started, so each pipe ends when the child's end does."""
+
+    stdin: int
+    stdout: int
+    stderr: int
+
+
+type Stdio = Null | Terminal | Pipes
 
 
 class _Process(Protocol):
@@ -491,7 +501,7 @@ def _waited[T](policy: _Policy, child: _Supervised, ended: queue.SimpleQueue[T],
 
 @dataclass(frozen=True)
 class Running:
-    """A child started on a terminal or with no stdio, for as long as it runs."""
+    """A child started on a terminal, on pipes, or with no stdio, for as long as it runs."""
 
     pid: int
     _ended: asyncio.Future[Ending | Lost]
@@ -645,7 +655,7 @@ class Children:
                 except queue.Empty:
                     return {"drained": False}
                 return {"drained": True}
-            case Null():
+            case Null() | Pipes():
                 return {}
 
     def _event(self, began: wide.Begun, parsed: Command, limit: float | None, raised: BaseException | None, failure: str | None, /, **told: wide.Fact) -> None:
@@ -701,6 +711,8 @@ def _streams(stdio: Stdio) -> tuple[int, int, int]:
             return slave, slave, slave
         case Null():
             return subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL
+        case Pipes(stdin=stdin, stdout=stdout, stderr=stderr):
+            return stdin, stdout, stderr
 
 
 def _read(output: IO[bytes]) -> tuple[bytes, bool]:

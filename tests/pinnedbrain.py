@@ -255,7 +255,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
         config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT, brain=_runnable(brain)), voice=voicechoice.DEFAULT)
         out = Spoken()
         store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-        async with mind(SYSTEM, config, [], BrainDoor({}, [stay_silent_tool()], Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
+        async with mind(SYSTEM, config, [], BrainDoor({}, [stay_silent_tool()], Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, tmp_path / "brioche-trusted.pem", wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:

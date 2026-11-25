@@ -110,6 +110,12 @@ class Home:
         return self.root / "brain"
 
     @property
+    def brioche_trust(self) -> Path:
+        """The certificates the brain's Claude Code trusts: those it trusted already, and the authority of brioche, its
+        HTTPS proxy, written by brioche as each run starts it."""
+        return self.root / "brioche-trusted.pem"
+
+    @property
     def phone(self) -> Path:
         """The phone's key, made by whichever of the daemon and `hands phone` asks first, and the certificates its page
         is served with, which the daemon alone writes."""

@@ -54,9 +54,13 @@ mocks.
 
 **`sessions`** is every edge on the Claude Code side: the unix socket the hook shims
 POST to, the session files the shims write, Claude Code's own status files, the JSONL tail, the git delta reader, the
-process-liveness check, the audit log, and the wire proxy a Claude Code process reaches
-the API through (`ANTHROPIC_BASE_URL`), which passes every byte unchanged and reads a
-copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The
+process-liveness check, the audit log, and the wire proxy the brain reaches the API
+through, which passes every byte unchanged and reads a copy into `core.wire`'s typed
+events, one `Exchanged` audit line per request. The brain reaches it through brioche
+(`brain/brioche.py`, built from `fritter/brioche`), its HTTPS proxy, which answers its
+TLS for Anthropic's API under an authority the brain is given to trust and sends each
+request on to the wire proxy as it was sent: the brain takes brioche for Anthropic's
+own API, and behaves first-party, as it does not given a gateway in `ANTHROPIC_BASE_URL`. The
 working sessions' exchanges reach the same observer by another path, the tap
 (`sessions/tap.py`): each session's fritter is its proxy, forwards its requests to the API it
 still names, and copies each exchange to `<hands home>/wire.sock`, read into the same values, so a session

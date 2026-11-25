@@ -1,6 +1,7 @@
 """The proxy: a Claude Code process reaches the API through it, and hands hears every request and every byte back.
 
-    ANTHROPIC_BASE_URL=<the proxy's url> claude ...
+The brain reaches it through brioche, its HTTPS proxy, which sends each request for Anthropic's API on to it, in plain
+HTTP, as it was sent (`hands.brain.brioche`); hands' side questions are asked of it directly.
 
 It forwards each request upstream as it came, or with the changes its route gives it made to it, and
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
@@ -130,7 +131,7 @@ class Proxy:
 
 
 async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clock) -> Proxy:
-    """Listen on a free local port until the returned proxy is closed; its url is what ANTHROPIC_BASE_URL is set to."""
+    """Listen on a free local port until the returned proxy is closed; its url is where brioche sends the brain's requests."""
     # The client's own timeouts govern a request: a long reply streams as long as the client keeps reading it.
     # Replies are read as sent, compressed or not, so the client gets the bytes the API wrote; and no header the client
     # left out is added, so the API is asked for no encoding the client did not ask for.

@@ -8,7 +8,6 @@ login is the one refusal the preflight leaves out: only a Claude Code can say it
 from collections.abc import Mapping
 
 from hands.core.session import Runnable
-from hands.core.wire import UPSTREAM
 from hands.daemon.config import Claude
 from hands.sessions.child import Children
 from hands.sessions.home import Home
@@ -26,7 +25,7 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
     from hands.brain.process import NotLoggedIn, logged_in
 
     try:
-        account = logged_in(children, brain.claude.path, home.brain, UPSTREAM, environment)
+        account = logged_in(children, brain.claude.path, home.brain, environment)
     except NotLoggedIn as error:
         raise Rejected(str(error)) from error
     return ClaudeCodeBackend(model=llm.model, config_dir=home.brain, account=account, brain=brain)

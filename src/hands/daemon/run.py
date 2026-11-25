@@ -116,7 +116,8 @@ from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
 from hands.brain import pinned
 from hands.brain.configdir import Unstartable
-from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
+from hands.brain.brioche import BriocheFailed, proxied
+from hands.brain.process import Brain, Launch, Station, conversation, exited, passed_on, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -216,12 +217,13 @@ async def front_now(sessions: Sessions, processes: Processes, environment: Mappi
 
 @asynccontextmanager
 async def mind(
-    clock: Clock, config: VoiceConfig, tools: Sequence[Tool[Answer]], turn: BrainDoor, tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    clock: Clock, config: VoiceConfig, tools: Sequence[Tool[Answer]], turn: BrainDoor, tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, trust: Path, wire: Wire, store: Store,
     log: Path, hands: str, record: Record, environment: Mapping[str, str], next_barge_in: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
-    """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
-    speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is served
-    hands' own `tools`, and the one that reads its usage, through the voice `turn`, and each call is its event."""
+    """The model for the whole conversation: the brain's process, brioche, the HTTPS proxy it reaches hands' proxy at
+    `proxy_url` through, which writes the certificates it trusts to `trust`, the MCP server it reaches hands through, the
+    stage that speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is
+    served hands' own `tools`, and the one that reads its usage, through the voice `turn`, and each call is its event."""
     llm = config.llm
     spans = CallSpans()
     talk = conversation(llm.config_dir, SessionId(dashed(clock)))
@@ -234,26 +236,36 @@ async def mind(
     served = turn.serve([*tools, usage_tool(usage)])
     server = await serve_mcp(clock, [each.tool for each in served], record, spans)
     try:
-        station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
-        try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
-        except Unstartable as error:
-            # hands runs on no brain it could not start: its start is refused, saying why.
-            raise CannotStart(str(error)) from error
-        # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
-        # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        asides = Asides(clock, proxy_url, Newest(session), record)
-        try:
-            stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
-            keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
-            with wire.joined(Kept(stage, keeper, asides, brain, usage)):
-                watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
-                # A summary is as long as its reply makes it: only its time is the summary's own.
-                # The brain's stage notes each turn of the user's itself, as it types it.
-                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login))
-        finally:
-            await asides.close()
-            await brain.stop()
+        async with AsyncExitStack() as proxying:
+            try:
+                brioche = await proxying.enter_async_context(proxied(Children(clock, record), proxy_url, trust, passed_on(environment), record))
+            except BriocheFailed as error:
+                # hands runs no brain it could not give a way to Anthropic's API: its start is refused, saying why.
+                raise CannotStart(str(error)) from error
+            station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, brioche.environment, environment)
+            try:
+                brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
+            except Unstartable as error:
+                # hands runs on no brain it could not start: its start is refused, saying why.
+                raise CannotStart(str(error)) from error
+            # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
+            # brain's newest main turn: nothing but the user's turns is ever typed into the brain. Asked of hands' proxy
+            # itself, as the brain's own requests reach it through brioche.
+            asides = Asides(clock, proxy_url, Newest(session), record)
+            try:
+                stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
+                keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
+                with wire.joined(Kept(stage, keeper, asides, brain, usage)):
+                    watches = (
+                        Watch("the brain", lambda: outlived(brain)), Watch("the brain's HTTPS proxy", brioche.outlived),
+                        Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking),
+                    )
+                    # A summary is as long as its reply makes it: only its time is the summary's own.
+                    # The brain's stage notes each turn of the user's itself, as it types it.
+                    yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login))
+            finally:
+                await asides.close()
+                await brain.stop()
     finally:
         await server.close()
 
@@ -315,7 +327,7 @@ async def run(
         wire = Wire(clock, logged)
         proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=clock)
         held.push_async_callback(proxy.close)
-        # The url a Claude Code process's ANTHROPIC_BASE_URL is set to.
+        # Where brioche sends each request of the brain's for Anthropic's API, and where hands' side questions are asked.
         run_start.heard(proxy=proxy.url, upstream=UPSTREAM)
         tap = await serve_tap(home.wire, tap_observer(logged, sessions.hear), record, clock=clock)
         held.push_async_callback(tap.close)
@@ -351,7 +363,7 @@ async def run(
             switches = Switches(player)
             gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, switches=switches, wake=config.wake, models=CLAUDE_MODELS)
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(sessions, processes, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(sessions, processes, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, home.brioche_trust, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
