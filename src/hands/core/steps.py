@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from hands.core.progress import Skill
 from hands.core.testrun import report_of
 from hands.core.delta import Branched, Committed, GitChange, PullRequested, Pushed
 from hands.core.turn import AgentId, Edited, Looked, Other, Planned, Question, Questioned, Ran, Ref, Step, SubagentDispatched, Tested
@@ -125,7 +126,7 @@ def _forked(call: Call) -> Step | None:
     name = _text(structured.get("commandName")) or _text(call.input.get("skill"))
     if name is None:
         return None
-    asked = " ".join(part for part in (f"/{name}", _text(call.input.get("args"))) if part)
+    asked = Skill(name, _text(call.input.get("args"))).typed
     # Run in the background, it reports back as a notification, as an async agent does; run in the foreground, its
     # result is its report, which the record holds apart from the line Claude Code heads it with.
     report = None if in_background(structured) else _text(structured.get("result"))

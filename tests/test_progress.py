@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 from loguru import logger
@@ -15,7 +15,7 @@ from hands.core.attention import Amount, Attention, Level, Overlay, Route, Switc
 from hands.core.effects import Progress
 from hands.core.events import Displayed, Progressed, Read, StatusReported, Tick
 from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
-from hands.core.progress import EDITING, READING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, said
+from hands.core.progress import LINE, EDITING, READING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, intent, said
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Idle, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
 from hands.core import status
@@ -56,7 +56,7 @@ def edit(name: str) -> Doing:
         pytest.param("Glob", {"pattern": "**/*.py"}, "search the code", id="a glob is code, never read out"),
         pytest.param("Bash", {"command": "gh pr view", "description": "PR status"}, "PR status", id="an initialism kept as written"),
         pytest.param("Edit", {"file_path": "/code/a/src/tail.py"}, "edit tail.py", id="an edit by the file's name"),
-        pytest.param("Write", {"file_path": "/code/a/new.md", "content": "x"}, "edit new.md", id="a write is an edit"),
+        pytest.param("Write", {"file_path": "/code/a/new.md", "content": "x"}, "write new.md", id="a write"),
         pytest.param("Read", {"file_path": "/code/a/README.md"}, "read README.md", id="a read"),
         pytest.param("Grep", {"pattern": "Progressed"}, "search for Progressed", id="a search"),
         pytest.param("WebFetch", {"url": "https://docs.python.org/3/library/re.html"}, "read a page on docs.python.org", id="a fetch by its site"),
@@ -73,6 +73,64 @@ def test_a_call_is_said_by_what_it_sets_out_to_do(tool: str, input: Mapping[str,
 def test_a_call_that_asks_the_user_is_no_progress(tool: str) -> None:
     # Its PermissionRequest hook speaks it as it is asked.
     assert doing(tool, {}) is None
+
+
+CWD = PurePath("/code/a")
+
+
+@pytest.mark.parametrize(
+    ("tool", "input", "heard", "line"),
+    [
+        pytest.param("Bash", {"command": "uv run pytest -q\nmake check", "description": "Run the tests"}, "run the tests", "run the tests", id="a command by its description"),
+        pytest.param("Bash", {"command": "uv run pytest -q\nmake check"}, "run a command", "uv run pytest -q", id="a command with none by its first line, which the voice does not read"),
+        pytest.param("Edit", {"file_path": "/code/a/src/tail.py"}, "edit tail.py", "edit src/tail.py", id="an edit by the file and its path from the cwd"),
+        pytest.param("MultiEdit", {"file_path": "/code/a/src/tail.py"}, "edit tail.py", "edit src/tail.py", id="a multi edit"),
+        pytest.param("NotebookEdit", {"notebook_path": "/code/a/n.ipynb"}, "edit n.ipynb", "edit n.ipynb", id="a notebook edit"),
+        pytest.param("Write", {"file_path": "/code/a/new.md", "content": "x"}, "write new.md", "write new.md", id="a write"),
+        pytest.param("Read", {"file_path": "/elsewhere/README.md"}, "read README.md", "read /elsewhere/README.md", id="a path outside the cwd is shown whole"),
+        pytest.param("Grep", {"pattern": "Progressed", "path": "/code/a/src"}, "search for Progressed", "search for Progressed in src", id="a search of words, with where"),
+        pytest.param("Grep", {"pattern": r"def\s+_\w+\("}, "search the code", r"search for def\s+_\w+\(", id="a regular expression, which the voice does not read"),
+        pytest.param("Glob", {"pattern": "**/*.py"}, "search the code", "search for **/*.py", id="a glob"),
+        pytest.param("WebFetch", {"url": "https://docs.python.org/3/library/re.html"}, "read a page on docs.python.org", "read a page on docs.python.org", id="a fetch by its site"),
+        pytest.param("WebSearch", {"query": "xterm.js mobile"}, "search the web for xterm.js mobile", "search the web for xterm.js mobile", id="a web search"),
+        pytest.param("Agent", {"description": "Find hook callers", "subagent_type": "Explore", "prompt": "..."}, "start a subagent to find hook callers", "start a subagent to find hook callers (Explore)", id="a subagent and its type"),
+        pytest.param("Task", {"description": "Find hook callers"}, "start a subagent to find hook callers", "start a subagent to find hook callers", id="a subagent by its older name"),
+        pytest.param("Skill", {"skill": "laws:law-review", "args": "557 1"}, "use the law review skill", "/laws:law-review 557 1", id="a skill and its arguments"),
+        pytest.param("SendMessage", {"to": "a471895fc050c643e", "summary": "Plan revised", "message": "The plan\nis revised"}, "send a message saying Plan revised", "send a message to a471895fc050c643e: Plan revised", id="a message by its summary, to an id the voice does not say"),
+        pytest.param("SendMessage", {"to": "main", "message": "Done.\nSee the PR."}, "send a message to main saying Done.", "send a message to main: Done.", id="a message with no summary by its first line"),
+        pytest.param("TaskCreate", {"subject": "Implement decode_octal", "description": "..."}, "add task Implement decode_octal", "add task Implement decode_octal", id="a task by its subject"),
+        pytest.param("TaskUpdate", {"taskId": "3", "status": "completed"}, "update task 3: completed", "update task 3: completed", id="a task's status change beside its id"),
+        pytest.param("TaskUpdate", {"taskId": "3", "status": "in_progress"}, "update task 3: in progress", "update task 3: in progress", id="a task's status said as words, not as Claude Code's key"),
+        pytest.param("TaskUpdate", {"taskId": "3", "status": "archived"}, "update task 3", "update task 3", id="a status hands does not know is left unsaid"),
+        pytest.param("Skill", {"skill": "review"}, "use the review skill", "/review", id="a skill with no arguments"),
+        pytest.param("TodoWrite", {"todos": []}, "update its plan", "update its plan", id="a todo list"),
+        pytest.param("mcp__claude_ai_Firecrawl__firecrawl_search", {"query": "x"}, "use firecrawl search", 'use firecrawl search {"query": "x"}', id="an MCP tool by its own name and its input"),
+    ],
+)
+def test_a_call_is_one_intent_the_voice_and_the_page_each_tell(tool: str, input: Mapping[str, object], heard: str, line: str) -> None:
+    made = doing(tool, input)
+    assert made is not None and said((made,)) == heard
+    assert intent(tool, input).line(CWD) == line
+
+
+@pytest.mark.parametrize(
+    ("tool", "input", "line"),
+    [
+        pytest.param("AskUserQuestion", {"questions": [{"question": "Which way?", "options": ["a", "b"]}, {"question": "And then?", "options": ["c"]}]}, "Which way?", id="the first question"),
+        pytest.param("ExitPlanMode", {"plan": "1. do it"}, "asked to approve its plan", id="a plan to approve"),
+    ],
+)
+def test_a_call_that_asks_the_user_has_a_line_though_the_voice_leaves_it_to_its_hook(tool: str, input: Mapping[str, object], line: str) -> None:
+    assert intent(tool, input).line(CWD) == line
+
+
+def test_a_tool_the_page_has_no_row_for_is_cut_to_a_line() -> None:
+    assert len(intent("mcp__s__t", {"text": "x" * 500}).line(CWD)) == LINE
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Read", "Grep", "WebFetch", "WebSearch", "Agent", "Skill", "SendMessage", "TaskCreate", "TaskUpdate", "AskUserQuestion"])
+def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(tool: str) -> None:
+    assert intent(tool, {}).of is None
 
 
 @pytest.mark.parametrize(
