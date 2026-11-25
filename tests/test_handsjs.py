@@ -13,14 +13,41 @@ from jsmodule import JsModule
 from hands.voice.longpoll import WAIT_SECONDS, Read
 
 # The browser as the module meets it: an address whose fragment is the key, a page's clock that stands still, a fetch
-# hands answers when the test says, a timer that fires when the test says, and the bound each request was given.
+# hands answers when the test says, a timer that fires when the test says, the bound each request was given, and signals
+# that end a fetch as the browser's do: a request ended by its signal is no longer asked of hands.
 BROWSER = """
-var console = {error() {}};
+var faults = [], requests = [], timers = [], drawn = [], unread = [];
+var console = {error: (...said) => faults.push(said.join(" "))};
 Date.now = () => 1000000;
-var requests = [], timers = [], drawn = [], unread = [];
-function fetch(path, init) { return new Promise((resolve, reject) => requests.push({path, init, resolve, reject})); }
-function setTimeout(fire, ms) { timers.push({fire, ms}); }
-var AbortSignal = {timeout: ms => ({bound: ms})};
+function ended() { return Object.assign(new Error("aborted"), {name: "AbortError"}); }
+class Signal {
+  constructor(bound) { this.bound = bound; this.aborted = false; this.reason = undefined; this.listeners = []; }
+  addEventListener(_kind, listen) { this.listeners.push(listen); }
+  removeEventListener(_kind, listen) { this.listeners = this.listeners.filter(each => each !== listen); }
+  throwIfAborted() { if (this.aborted) throw this.reason; }
+  end(reason) { if (this.aborted) return; this.aborted = true; this.reason = reason; [...this.listeners].forEach(listen => listen()); }
+}
+class AbortController {
+  constructor() { this.signal = new Signal(); }
+  abort() { this.signal.end(ended()); }
+}
+var AbortSignal = {
+  timeout: ms => new Signal(ms),
+  any: signals => {
+    const joined = new Signal(signals.find(signal => signal.bound !== undefined)?.bound);
+    for (const signal of signals) signal.aborted ? joined.end(signal.reason) : signal.addEventListener("abort", () => joined.end(signal.reason));
+    return joined;
+  },
+};
+function fetch(path, init) {
+  return new Promise((resolve, reject) => {
+    const request = {path, init, resolve, reject};
+    requests.push(request);
+    init.signal.addEventListener("abort", () => { requests = requests.filter(each => each !== request); reject(init.signal.reason); });
+  });
+}
+function setTimeout(fire, ms) { const timer = {fire, ms}; timers.push(timer); return timer; }
+function clearTimeout(timer) { timers = timers.filter(each => each !== timer); }
 function answer(status, text) {
   requests.shift().resolve({ok: status >= 200 && status < 300, status, text: async () => text});
 }
@@ -211,3 +238,39 @@ def test_hands_clock_is_as_every_read_last_said_it_changed_or_not(reading: Page)
 @pytest.mark.parametrize(("fragment", "carries"), [("#the%20key", True), ("", False), ("#", False)])
 def test_a_page_knows_whether_its_address_carries_a_key(fragment: str, carries: bool) -> None:
     assert Page(fragment).seen("carriesKey") is carries
+
+
+LEAVING = "var leaving = new AbortController();"
+READ = 'reading("/state", shown => drawn.push(shown), why => unread.push(why), leaving.signal)'
+
+
+def test_a_view_leaving_ends_the_read_waiting_at_hands_and_asks_for_no_other(page: Page) -> None:
+    page.run(f"{LEAVING} {READ}")
+    page.read("v1", {"voice": "mary"})
+    # The second read is at hands, waiting for what is shown to change.
+    assert [asked.path for asked in page.asking()] == ["/state?seen=v1"]
+    page.run("leaving.abort()")
+    assert (page.asking(), page.timers()) == ([], [])
+    # Leaving is no failure to read: nothing is said of it, and nothing is drawn after it.
+    assert (page.seen("unread"), page.seen("faults"), page.seen("drawn")) == ([], [], [{"voice": "mary"}])
+
+
+def test_a_view_leaving_in_the_pause_after_a_lost_read_asks_for_no_other(page: Page) -> None:
+    page.run(f"{LEAVING} {READ}")
+    page.run('lose("TypeError")')
+    assert page.timers() == [2000]
+    page.run("leaving.abort()")
+    assert (page.asking(), page.timers()) == ([], [])
+    assert (page.seen("unread"), page.seen("faults")) == (["hands is out of reach: lost; reading it again…"], [])
+
+
+def test_a_view_already_left_starts_no_read(page: Page) -> None:
+    page.run(f"{LEAVING} leaving.abort(); {READ}")
+    assert (page.asking(), page.timers(), page.seen("unread"), page.seen("faults")) == ([], [], [], [])
+
+
+def test_a_request_its_caller_cuts_is_thrown_as_the_cut_and_never_answered_as_hands_lost_it(page: Page) -> None:
+    page.run('var leaving = new AbortController(), outcome = "pending", thrown = null; asked("GET", "/state", undefined, 60000, leaving.signal).then(said => { outcome = said; }, error => { thrown = error.name; })')
+    assert [asked.path for asked in page.asking()] == ["/state"]
+    page.run("leaving.abort()")
+    assert (page.asking(), page.seen("outcome"), page.seen("thrown")) == ([], "pending", "AbortError")
