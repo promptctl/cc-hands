@@ -8,7 +8,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hands.sessions.processes import ControllingTerminal, Process, StartedAs, TerminalProcess, Undescribed
+from hands.sessions.processes import ControllingTerminal, Process, StartedAs, TerminalProcess, Undescribed, parse_pid
 from processescontract import KILL, LAUNCHD, PIDPATH, PROCARGS2, VNODEPATHINFO
 
 # The user a fake's processes run as, and hands with them, unless a test names another.
@@ -110,6 +110,7 @@ class FakeProcesses:
                 return None
 
     def signal(self, pid: int, signum: signal.Signals) -> bool:
+        pid = parse_pid(pid)
         if (refusal := self._refusal(pid, KILL)) is not None:
             # As os.kill raises it, naming nothing but the errno.
             raise OSError(refusal, os.strerror(refusal))

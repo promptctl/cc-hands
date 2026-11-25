@@ -139,7 +139,8 @@ class Processes(Protocol):
 
     def signal(self, pid: int, signum: signal.Signals) -> bool:
         """Send `signum` to the process `pid` names: whether it was sent, False where no process has the pid. Raises
-        OSError where the kernel refused it."""
+        Rejected for a number no process could have, as 0 or a negative one, which would name a group; and OSError where
+        the kernel refused it."""
         ...
 
 

@@ -10,7 +10,7 @@ from collections.abc import Callable, Collection
 from pathlib import Path
 
 from hands.darwin import libc, libproc
-from hands.sessions.processes import ControllingTerminal, Process, StartedAs, TerminalProcess, Undescribed
+from hands.sessions.processes import ControllingTerminal, Process, StartedAs, TerminalProcess, Undescribed, parse_pid
 
 
 class KernelProcesses:
@@ -51,6 +51,8 @@ class KernelProcesses:
         return _described(process.pid, process.parent, lambda: all(_device(process.pid, fd) in terminal for fd in (0, 1)))
 
     def signal(self, pid: int, signum: signal.Signals) -> bool:
+        # [LAW:parse-dont-validate] kill(0) and a negative pid signal a whole group, and kern.proc.pid answers for 0.
+        pid = parse_pid(pid)
         # A process that has exited and is not yet reaped takes a signal, and nothing comes of it.
         if _process_start(pid) is None:
             return False

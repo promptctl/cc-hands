@@ -14,6 +14,7 @@ from typing import Literal, Protocol
 
 import pytest
 
+from hands.sessions.payload import Rejected
 from hands.sessions.processes import ControllingTerminal, Processes, StartedAs, TerminalProcess, Undescribed, ancestors, terminal_processes
 
 # How a child is started on a terminal: none, with no controlling terminal at all; or controlled by a terminal of the test's
@@ -278,6 +279,12 @@ class ProcessesContract:
             assert isinstance(world.processes.started_as(world.processes.table()[child.pid]), StartedAs)
         finally:
             world.stopped(child)
+
+    @pytest.mark.parametrize("pid", [0, -1])
+    def test_a_signal_is_never_sent_to_a_number_that_names_a_group(self, world: World, pid: int) -> None:
+        # SIGCONT, which would leave each process of the group running were it sent.
+        with pytest.raises(Rejected, match="is not a process id"):
+            world.processes.signal(pid, signal.SIGCONT)
 
     def test_a_signal_the_kernel_will_not_send_raises_the_errno_it_refused_with(self, world: World) -> None:
         # Root's launchd, which this user may not signal; SIGCONT, which would leave it running were it sent.
