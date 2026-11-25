@@ -40,7 +40,7 @@ from hands.brain.configdir import Unstartable
 from hands.brain.pinned import ENV as PINNED
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
-from hands.clock import Clock, wait
+from hands.clock import Clock, wait_all
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, ToldByRecord, ToldByStop, TurnEnding, Withdraw
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
@@ -1617,17 +1617,24 @@ class Brain:
 
     async def started(self, by: float) -> None:
         """Returns once the launch's own start is applied, the conversation it launched in held. Raises Unstartable,
-        saying which, when no start comes by `by`, the launch's deadline, or the brain is adrift by then."""
-        # [LAW:no-ambient-temporal-coupling] the first of the two ends the wait. A healthy start never sets `_adrift`, so a
-        # wait on both (`hands.clock.wait`) would hold every start to its deadline.
-        with contextlib.suppress(TimeoutError):
-            async with self._clock.timeout(by - self._clock.now()):
-                await asyncio.wait({self._launch_started, self._adrift}, return_when=asyncio.FIRST_COMPLETED)
+        saying which, when the brain is adrift, its Claude Code ends or hands stops reading it first, or no start comes by
+        `by`, the launch's deadline."""
+        # [LAW:no-ambient-temporal-coupling] the first of them ends the wait, so a start is up the moment it is applied and
+        # a launch that cannot come up fails the moment hands knows it.
+        await self._waited(by - self._clock.now(), self._launch_started, self._adrift, self._reading, self._exit)
+        # Before the start: a start applied in a conversation that could not be held is adrift all the same (`_entered`).
         if self._adrift.done():
             raise Unstartable(str(self._adrift.exception()))
-        if not self._launch_started.done():
-            ended = f", {exited(self._exit.result())}" if self._exit.done() else ""
-            raise Unstartable(f"the brain's Claude Code posted no start of its session within {START_SECONDS:.0f}s{ended}; it showed:\n{self._claude.shown()}")
+        if self._launch_started.done():
+            return
+        shown = self._claude.shown()
+        if self._exit.done():
+            raise Unstartable(f"the brain's Claude Code posted no start of its session, {exited(self._exit.result())}; it showed:\n{shown}")
+        # As `exited` reads it: a reading that ended with the brain's end is that end's, said above.
+        if self._reading.done():
+            stopped = self._reading.exception()
+            raise Unstartable(f"hands stopped reading the brain's Claude Code before it posted the start of its session: {stopped!r}; it showed:\n{shown}") from stopped
+        raise Unstartable(f"the brain's Claude Code posted no start of its session within {START_SECONDS:.0f}s; it showed:\n{shown}")
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many
@@ -1884,7 +1891,7 @@ class Brain:
             case Permission() as permission if turn is not None and holds(self._modelled(), request):
                 asked = Asked(permission, request, replying, self._sessions, hook.session)
                 turn.asks(asked)
-                await wait(self._clock, {replying}, by - self._clock.now())
+                await wait_all(self._clock, {replying}, by - self._clock.now())
                 asked.settle(Deny(UNANSWERED))
             case Permission() if turn is not None:
                 # Refused as it was held: its turn is ending.

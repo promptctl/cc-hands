@@ -9,13 +9,13 @@ import pytest
 
 from conftest import BrokenClock, VirtualClock
 from fixtures.clocks import Interrupting
-from hands.clock import SYSTEM, Clock, dashed, wait
+from hands.clock import SYSTEM, Clock, dashed, wait_all
 
 
 async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_time_has_passed() -> None:
     clock = VirtualClock()
     first, second = asyncio.get_running_loop().create_future(), asyncio.get_running_loop().create_future()
-    waiting = asyncio.create_task(wait(clock, (first, second), 5.0))
+    waiting = asyncio.create_task(wait_all(clock, (first, second), 5.0))
     first.set_result("one")
     await clock.sleeping(5.0)
     assert not waiting.done()
@@ -28,7 +28,7 @@ async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_ti
 async def test_a_wait_whose_time_is_up_leaves_what_it_waited_on_running() -> None:
     clock = VirtualClock()
     reading = asyncio.get_running_loop().create_future()
-    waiting = asyncio.create_task(wait(clock, (reading,), 5.0))
+    waiting = asyncio.create_task(wait_all(clock, (reading,), 5.0))
     await clock.sleeping(5.0)
     clock.advance(4.9)
     assert clock.waking == (5.0,)
@@ -40,12 +40,12 @@ async def test_a_wait_whose_time_is_up_leaves_what_it_waited_on_running() -> Non
 
 async def test_a_clock_that_fails_is_a_failure_and_not_the_time_running_out() -> None:
     with pytest.raises(RuntimeError, match="no timer"):
-        await wait(BrokenClock(), (asyncio.get_running_loop().create_future(),), 5.0)
+        await wait_all(BrokenClock(), (asyncio.get_running_loop().create_future(),), 5.0)
 
 
 async def test_a_wait_on_nothing_is_a_mistake_and_not_everything_done() -> None:
     with pytest.raises(ValueError):
-        await wait(VirtualClock(), (), 5.0)
+        await wait_all(VirtualClock(), (), 5.0)
 
 
 async def test_a_sleep_already_due_wakes_without_the_clock_moving() -> None:
@@ -245,7 +245,7 @@ async def test_an_interrupting_clock_s_first_wait_of_any_kind_is_a_ctrl_c_and_a_
 async def test_a_wait_on_a_clock_whose_sleep_raises_as_it_is_asked_leaves_nothing_of_it_running() -> None:
     reading = asyncio.get_running_loop().create_future()
     with pytest.raises(KeyboardInterrupt):
-        await wait(Interrupting(VirtualClock()), (reading,), 5.0)
+        await wait_all(Interrupting(VirtualClock()), (reading,), 5.0)
     assert asyncio.all_tasks() == {asyncio.current_task()}
 
 

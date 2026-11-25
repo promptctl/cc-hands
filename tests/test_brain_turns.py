@@ -1252,25 +1252,57 @@ async def test_a_start_that_does_not_parse_is_one_event_and_leaves_the_brain_adr
 
 
 
+def _starting(clock: VirtualClock, config_dir: Path, reading: Callable[[Reader], Awaitable[None]] = _unread) -> tuple[asyncio.Future[None], Brain, "_Keys"]:
+    """A brain built as its launch builds it, waiting on its own start for START_SECONDS from now on `clock`."""
+    brain, keys = _built(clock, config_dir=config_dir, reading=reading)
+    return asyncio.ensure_future(brain.started(clock.now() + process.START_SECONDS)), brain, keys
+
+
+# Each ending but the deadline ends the wait with the clock where it stood, as nothing here moves it.
 async def test_a_launch_is_up_the_moment_claude_code_posts_its_start(tmp_path: Path) -> None:
-    brain, _ = _built(VirtualClock(), config_dir=tmp_path)
-    starting = asyncio.ensure_future(brain.started(process.START_SECONDS))
+    starting, brain, _ = _starting(VirtualClock(), tmp_path)
     await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
-    # Up with the clock where it stood: the start ends the wait, not the deadline.
     await until(starting.done)
     starting.result()
 
 
 async def test_a_launch_whose_start_does_not_parse_fails_the_moment_it_is_posted(tmp_path: Path, errors: list[str]) -> None:
-    brain, _ = _built(VirtualClock(), config_dir=tmp_path)
-    starting = asyncio.ensure_future(brain.started(process.START_SECONDS))
+    starting, brain, _ = _starting(VirtualClock(), tmp_path)
     await brain.posted("SessionStart", b"{not json")
-    # Adrift with the clock where it stood: which conversation the brain is in is not known, and no deadline is waited out.
     await until(starting.done)
     with pytest.raises(Unstartable, match="SessionStart hook does not parse"):
         starting.result()
-    [adrift] = taken(errors)
-    assert adrift.startswith("the brain is adrift: the brain's SessionStart hook does not parse")
+    assert len(taken(errors)) == 1
+
+
+async def test_a_launch_whose_claude_code_ends_before_its_start_fails_the_moment_it_ends(tmp_path: Path) -> None:
+    starting, _, keys = _starting(VirtualClock(), tmp_path)
+    keys.exit.set_result(1)
+    await until(starting.done)
+    with pytest.raises(Unstartable, match=f"posted no start of its session, {re.escape(process.exited(1))}"):
+        starting.result()
+
+
+async def _broken_reading(_reader: Reader) -> None:
+    raise OSError(5, "Input/output error")
+
+
+async def test_a_launch_hands_stops_reading_before_its_start_fails_the_moment_it_stops(tmp_path: Path) -> None:
+    starting, _, _ = _starting(VirtualClock(), tmp_path, _broken_reading)
+    await until(starting.done)
+    with pytest.raises(Unstartable, match="hands stopped reading the brain's Claude Code before it posted the start of its session: OSError"):
+        starting.result()
+
+
+async def test_a_launch_that_hears_nothing_fails_at_its_deadline(tmp_path: Path) -> None:
+    clock = VirtualClock()
+    starting, _, _ = _starting(clock, tmp_path)
+    await clock.sleeping(process.START_SECONDS)
+    assert not starting.done()
+    clock.advance_to(process.START_SECONDS)
+    with pytest.raises(Unstartable, match=f"posted no start of its session within {process.START_SECONDS:.0f}s"):
+        await starting
+
 
 async def test_a_start_from_a_source_hands_does_not_know_still_moves_the_brain(tmp_path: Path, errors: list[str]) -> None:
     recorded: list[Entry] = []

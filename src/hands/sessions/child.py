@@ -33,7 +33,7 @@ from functools import partial
 from pathlib import Path
 from typing import IO, Literal, Protocol
 
-from hands.clock import Clock, wait
+from hands.clock import Clock, wait_all
 from hands.sessions import wide
 from hands.threads import tell
 
@@ -452,7 +452,7 @@ async def _awaited[T](policy: _Policy, child: _Supervised, ended: asyncio.Future
                     child.signal(step)
                 case _Wait(seconds=seconds):
                     try:
-                        await wait(clock, (ended,), seconds)
+                        await wait_all(clock, (ended,), seconds)
                     except GeneratorExit:
                         # A coroutine being closed cannot wait: its child is killed with its group, and its thread reaps it.
                         child.signal(Kill(Cancelled()))

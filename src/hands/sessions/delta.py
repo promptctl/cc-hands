@@ -31,7 +31,7 @@ from hands.sessions.audit import Record, said
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.tasks import settled
-from hands.clock import Clock, wait
+from hands.clock import Clock, wait_all
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, begun, count, unit
 
@@ -379,7 +379,7 @@ class Deltas:
                     held.appendleft(Unread(turns - 1))
                 return Delta()
             case Held(reading=reading):
-                await wait(self._clock, (reading,), self._patience)
+                await wait_all(self._clock, (reading,), self._patience)
                 if reading.done():
                     return reading.result()
                 logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
@@ -739,7 +739,7 @@ class Deltas:
             # No capture under way is no wait, where timing one would time the asking.
             return 0.0
         began = self._clock.now()
-        await wait(self._clock, [capture.tree for capture in captures], max(0.0, deadline - began))
+        await wait_all(self._clock, [capture.tree for capture in captures], max(0.0, deadline - began))
         return round(self._clock.now() - began, 3)
 
 

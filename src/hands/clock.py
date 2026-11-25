@@ -145,7 +145,7 @@ class SystemClock:
 SYSTEM = SystemClock()
 
 
-async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout: float) -> None:
+async def wait_all[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout: float) -> None:
     """`asyncio.wait(futures, timeout=timeout)` on `clock`: until every one of `futures` is done or `timeout` has passed,
     cancelling none of them, so what is still running when the time is up runs on for whoever reads it next."""
     import asyncio

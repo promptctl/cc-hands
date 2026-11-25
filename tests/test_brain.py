@@ -564,9 +564,6 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
         ("brain.turn", "ok", {"looks": 1, "taken": "p2", "queued": False, "offered": (), "told": "p2", "order_lost": None, "ids": ("p2",), "matched": "id"}),
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
-    # Up the moment its start was posted, which came before the deadline or the launch would have failed: a launch held to
-    # its deadline lasts the whole of it.
-    assert launched.duration_ms < process.START_SECONDS * 1000
     assert launched.facts == {
         "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
         "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
