@@ -4,11 +4,12 @@ beside the list of the commit's files the hub keeps once it starts a fetch, and 
 import json
 from collections.abc import Generator
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 import huggingface_hub.constants
 import pytest
-from huggingface_hub import set_client_factory
+from huggingface_hub import hf_hub_url, set_client_factory
 from huggingface_hub.errors import IncompleteSnapshotError
 from huggingface_hub.utils import _http  # pyright: ignore[reportPrivateUsage]  (the hub exports no name for its default client factory)
 from huggingface_hub.utils.sha import git_hash
@@ -44,19 +45,23 @@ def cut_short(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[None
     transcription.weights.cache_clear()
 
 
+def served_at(name: str) -> str:
+    """The path the hub's client asks for the commit's file `name` at."""
+    return urlparse(hf_hub_url(transcription.MODEL, name, revision=transcription.REVISION)).path
+
+
 @pytest.fixture
 def hub(monkeypatch: pytest.MonkeyPatch) -> Generator[list[str]]:
-    """A hub serving the commit's files to the hub's client, online; what it was asked for of them, in order. Any other
-    request, the client's own among them, is one this hub does not serve."""
+    """A hub serving the commit's files to the hub's client, online; the path of each request for one of them, in order. Any
+    other path is a 404."""
     asked: list[str] = []
-    contents: dict[str, bytes] = dict((FETCHED, MISSING))
-    commit = f"/{transcription.MODEL}/resolve/{transcription.REVISION}/"
+    contents = {served_at(name): content for name, content in (FETCHED, MISSING)}
 
     def serve(request: httpx.Request) -> httpx.Response:
-        if not request.url.path.startswith(commit):
+        content = contents.get(request.url.path)
+        if content is None:
             return httpx.Response(404)
-        asked.append(f"{request.method} {request.url.path}")
-        content = contents[request.url.path.rsplit("/", 1)[-1]]
+        asked.append(request.url.path)
         headers = {"X-Repo-Commit": transcription.REVISION, "ETag": f'"{git_hash(content)}"', "Content-Length": str(len(content))}
         return httpx.Response(200, headers=headers, content=b"" if request.method == "HEAD" else content)
 
@@ -71,8 +76,7 @@ def test_a_snapshot_a_fetch_cut_short_is_fetched_whole_from_the_hub(hub: list[st
 
     assert {name: (weights / name).read_bytes() for name in (FETCHED[0], MISSING[0])} == dict((FETCHED, MISSING))
     # Only what the snapshot was missing is fetched.
-    assert hub
-    assert all(asked.endswith(f"/{transcription.REVISION}/{MISSING[0]}") for asked in hub)
+    assert set(hub) == {served_at(MISSING[0])}
 
 
 def test_offline_a_snapshot_a_fetch_cut_short_fails_naming_the_file_it_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
