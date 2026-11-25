@@ -57,6 +57,9 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> Generator[list[str]]:
         return httpx.Response(200, headers=headers, content=b"" if request.method == "HEAD" else content)
 
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    # The hub client's first request in a process also fetches its agent-harness registry for its user agent unless a day-old
+    # copy is in the home: a fresh machine would record that fetch as one the weights asked for. Telemetry off ends it.
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_TELEMETRY", True)
     set_client_factory(lambda: httpx.Client(transport=httpx.MockTransport(serve)))
     yield asked
     set_client_factory(_http.default_client_factory)
