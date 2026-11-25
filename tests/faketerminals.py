@@ -186,6 +186,8 @@ class FakeTerminals:
         match self.servers.get(pane.socket):
             case FakeServer(answering=Wedged(said=said)):
                 raise Unconfirmed(f"tmux at {pane.socket} was asked to type into pane {pane.id} and never said whether it did: tmux {said}")
+            case FakeServer(answering=Answering()) as server if (typed := server.pane(pane.id)) is not None and typed.dead:
+                raise Untyped(f"tmux at {pane.socket} did not type into pane {pane.id}: its program has exited")
             case FakeServer(answering=Answering()) as server if (typed := server.pane(pane.id)) is not None:
                 typed.read += keyed(input)
             case server:

@@ -10,7 +10,6 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
-import pytest
 from conftest import children_on
 from fakeprocesses import FakeProcesses, Running, processes
 from faketerminals import DEAD, FakePane, FakeServer, FakeTerminals, Wedged
@@ -174,7 +173,6 @@ async def test_a_session_that_joins_outside_fritter_is_said_to_be_one_hands_cann
     assert error.startswith("session s0 joined hands in tmux pane %0, but not under fritter, so hands cannot type into it")
 
 
-@pytest.mark.outside
 async def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not_started(tmp_path: Path) -> None:
     starts = Starts(home_in(tmp_path))
     # Found on PATH, and no program the OS will run: its interpreter is not there.

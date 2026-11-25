@@ -377,6 +377,11 @@ class Sessions:
         except Unconfirmed as error:
             self._record(TypingUnconfirmed(effect, str(error)))
             return MaybeTyped(effect.session, effect.input, str(error))
+        except BaseException as error:
+            # Stopped while typing, by a cancel or a fault: what reached the session is unknown, and its Typing line is
+            # ended so before the stop goes on.
+            self._record(TypingUnconfirmed(effect, f"the typing was stopped before its writer said whether it typed: {error!r}"))
+            raise
         self._record(TypingConfirmed(effect))
         return Typed(effect.session, effect.input)
 

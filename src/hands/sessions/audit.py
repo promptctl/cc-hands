@@ -48,7 +48,7 @@ from hands.sessions.wide import WideEvent, chain
 class Typing:
     """What is about to be typed into a session: written before the typing, so the log holds every send, and the span of
     the unit of work that typed it, whose event says why. The line its typing ends with follows it: a TypingConfirmed,
-    a TypingFailed, or a TypingUnconfirmed."""
+    a TypingFailed, or a TypingUnconfirmed, unless hands itself ended while it typed."""
 
     effect: Type[Input]
     span: Span

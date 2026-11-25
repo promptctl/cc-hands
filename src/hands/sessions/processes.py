@@ -13,7 +13,6 @@ was already running when it was remembered; one that started later took the numb
 sweep and the daemon's heartbeat both ask that, and both answer it here.
 """
 
-import asyncio
 import signal
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
@@ -155,6 +154,9 @@ class TableRefused:
 async def table_of(processes: Processes) -> dict[int, Process] | TableRefused:
     """[LAW:single-enforcer] the process table, read off the event loop, or the refusal the kernel answered with, which
     Processes declares and which is no fault of hands'."""
+    # Imported here rather than with the module, which the hook shim imports: as hands.clock has it.
+    import asyncio
+
     try:
         return await asyncio.to_thread(processes.table)
     except OSError as refused:

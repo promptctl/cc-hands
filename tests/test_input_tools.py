@@ -253,6 +253,20 @@ async def test_a_send_fritter_never_answered_for_is_said_to_have_maybe_been_sent
     assert [entry for entry in recorded if isinstance(entry, TypingUnconfirmed | TypingFailed)] == [TypingUnconfirmed(typing.effect, "the fritter wrapping 4242 was asked to type and never said whether it did: timed out")]
 
 
+async def test_a_send_cancelled_while_it_is_typed_is_logged_as_maybe_typed_and_stays_cancelled(tmp_path: Path) -> None:
+    def cancelled(_: Type[Input]) -> None:
+        raise asyncio.CancelledError
+
+    recorded: list[Entry] = []
+    sessions, id = await wrapped(tmp_path, cancelled, recorded.append)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    with pytest.raises(asyncio.CancelledError):
+        await call(tools, "send_draft", session=id)
+    [typing] = [entry for entry in recorded if isinstance(entry, Typing)]
+    assert [entry for entry in recorded if isinstance(entry, TypingUnconfirmed | TypingFailed)] == [TypingUnconfirmed(typing.effect, "the typing was stopped before its writer said whether it typed: CancelledError()")]
+
+
 async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survives(tmp_path: Path) -> None:
     sessions, id = await joined(tmp_path)
     tools = draft_tools(sessions)

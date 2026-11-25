@@ -203,11 +203,14 @@ class TerminalsContract:
         await world.terminals.type(pane, input)
         assert await world.reads(pane, keyed(input)) == keyed(input)
 
-    async def test_typing_into_a_pane_that_closed_raises_untyped_naming_the_pane(self, world: World) -> None:
+    @pytest.mark.parametrize("ending", get_args(Ending))
+    @pytest.mark.parametrize("input", INPUTS, ids=TYPED)
+    async def test_typing_into_a_pane_whose_program_ended_raises_untyped_naming_the_pane(self, world: World, ending: Ending, input: Input) -> None:
+        # A dead pane takes keys without a word and refuses a paste: neither is typed, whatever tmux exits with.
         window, _ = await world.window("work"), await world.window("work")
-        await world.end(window, "closed")
+        await world.end(window, ending)
         with pytest.raises(Untyped, match=re.escape(f"did not type into pane {window.pane}")):
-            await world.terminals.type(Pane(world.socket, window.pane, "work", 0), Text(PromptText("hello")))
+            await world.terminals.type(Pane(world.socket, window.pane, "work", 0), input)
 
     @pytest.mark.parametrize("input", INPUTS, ids=TYPED)
     async def test_each_input_typed_into_a_fritter_reaches_the_program_it_wrapped_as_its_keys(self, world: World, input: Input) -> None:

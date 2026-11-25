@@ -156,13 +156,16 @@ class TmuxTerminals:
         [LAW:no-ambient-temporal-coupling] one tmux command list, so no other keys come between what is typed and the
         Return that sends it. tmux stops a list at its first failure and keeps what ran before it, so all that can fail
         with nothing typed runs ahead of the first key, and TYPING is printed between: a list that fails before it typed
-        nothing, and one that fails after it may have left keys in the input for a retry to double. And an Escape is
-        answered only once it has been read alone, so whatever is typed next cannot be read with it as one chord.
+        nothing, and one that fails after it may have left keys in the input for a retry to double. A pane whose program
+        has exited, kept by remain-on-exit, takes no key at all, and says so by EXITED. And an Escape is answered only
+        once it has been read alone, so whatever is typed next cannot be read with it as one chord.
         """
         # A buffer of its own per paste, so two sends cannot paste each other's text; loaded from tmux's stdin, since a
         # command tmux is handed is far shorter than a prompt can be.
         buffer = f"hands-{self._children.clock.uuid()}"
         match await ran_at(self._children, self._tmux, pane.socket, _typing(pane.id, input, buffer), self._answer, given=_pasted(input)):
+            case TmuxExit(out=out) if EXITED.encode() in out.splitlines():
+                raise Untyped(f"tmux at {pane.socket} did not type into pane {pane.id}: its program has exited")
             case TmuxExit(code=0):
                 await self._children.clock.sleep(_quiet(input))
             case TmuxExit(out=out) as stopped if TYPING.encode() in out.splitlines():
@@ -304,34 +307,39 @@ def _quiet(input: Input) -> float:
             return 0.0
 
 
-# What a typing list prints once all that can fail with nothing typed has run, and before its first key.
-TYPING = "hands-typing"
+# What a typing list prints once all that can fail with nothing typed has run, and before its first key; and what it
+# prints where its pane's program has exited, which tmux sends keys to without a word and refuses a paste.
+TYPING, EXITED = "hands-typing", "hands-exited"
 
 
 def _typing(pane: str, input: Input, buffer: str) -> list[str]:
     """The tmux command list that types `input` into `pane`, tmux's stdin holding what of it is pasted.
 
     The pane is looked for first, by typing nothing into it, so a pane gone since it was read stops the list before the
-    prompt sits in a buffer that only a paste would delete; then what is pasted is loaded, then TYPING is printed, and
-    only then is a key typed. A paste is bracketed (-p), so its newlines stay in the prompt rather than send it; pasted
+    prompt sits in a buffer that only a paste would delete; then what is pasted is loaded where the pane's program runs,
+    and EXITED printed where it has exited, in its place; then TYPING is printed, and only then is a key typed. The
+    names in the commands `if-shell` parses are a uuid's and hands' own, which hold nothing tmux would read as syntax. A
+    paste is bracketed (-p), so its newlines stay in the prompt rather than send it; pasted
     as they are rather than as carriage returns (-r); and its buffer is deleted once pasted (-d). A command's name and
     the space behind it are pressed as keys and its arguments pasted after them, as fritter types one, so a long paste
     Claude Code folds into a placeholder cannot fold the command in with it.
     """
-    found = ["send-keys", "-t", pane, "-l", "", ";"]
-    load = ["load-buffer", "-b", buffer, "-", ";"]
+    # if-shell does not look for its pane: send-keys, which does, comes first.
+    found = ["send-keys", "-t", pane, "-l", "", ";", "if-shell", "-F", "-t", pane, "#{pane_dead}", f"display-message -p {EXITED}"]
+    loaded = [*found, f"load-buffer -b {buffer} -", ";"]
+    unloaded = [*found, ";"]
     typing = ["display-message", "-p", TYPING, ";"]
     paste = ["paste-buffer", "-p", "-r", "-d", "-b", buffer, "-t", pane, ";"]
     enter = ["send-keys", "-t", pane, "Enter"]
     match input:
         case Text():
-            return [*found, *load, *typing, *paste, *enter]
+            return [*loaded, *typing, *paste, *enter]
         case Command(args=None) as command:
-            return [*found, *typing, "send-keys", "-t", pane, "-l", command.word, ";", *enter]
+            return [*unloaded, *typing, "send-keys", "-t", pane, "-l", command.word, ";", *enter]
         case Command() as command:
-            return [*found, *load, *typing, "send-keys", "-t", pane, "-l", f"{command.word} ", ";", *paste, *enter]
+            return [*loaded, *typing, "send-keys", "-t", pane, "-l", f"{command.word} ", ";", *paste, *enter]
         case Key(key=key):
-            return [*found, *typing, "send-keys", "-t", pane, tmux_key(key)]
+            return [*unloaded, *typing, "send-keys", "-t", pane, tmux_key(key)]
 
 
 # How long an Escape keeps the session's input to itself: fritter's loneEscape (fritter/control.go).
@@ -367,15 +375,15 @@ def tmux_key(key: Keystroke) -> str:
             return "BTab"
 
 
-async def ran_at(children: Children, tmux: Path, socket: Path, arguments: Sequence[str], limit: float = ANSWER_SECONDS, environment: Mapping[str, str] | None = None, given: bytes | None = None) -> TmuxExit | TmuxUnstarted | Unanswered:
+async def ran_at(children: Children, tmux: Path, socket: Path, arguments: Sequence[str], limit: float = ANSWER_SECONDS, given: bytes | None = None) -> TmuxExit | TmuxUnstarted | Unanswered:
     """How the tmux server at `socket` exited from `arguments`, `given` on tmux's stdin: or that tmux was not run, so did
-    nothing; or why it gave no answer within `limit`, so may have done any of it. `environment` is the one tmux runs in,
-    the daemon's where none is given."""
-    return await _ran(children, tmux, ("-S", str(socket), *arguments), f"tmux at {socket} did not answer {arguments[0]}", limit, environment, given)
+    nothing; or why it gave no answer within `limit`, so may have done any of it. tmux runs in the daemon's environment."""
+    return await _ran(children, tmux, ("-S", str(socket), *arguments), f"tmux at {socket} did not answer {arguments[0]}", limit, None, given)
 
 
 async def _ran(children: Children, tmux: Path, arguments: Sequence[str], unanswered: str, limit: float, environment: Mapping[str, str] | None, given: bytes | None = None) -> TmuxExit | TmuxUnstarted | Unanswered:
-    """[LAW:single-enforcer] the one run of tmux: its exit, or that it did nothing, or `unanswered` and why."""
+    """[LAW:single-enforcer] the one run of tmux that hands waits on (the brain's pane runs one from its own shell,
+    src/hands/brain/process.py): its exit, or that it did nothing, or `unanswered` and why."""
     ran = await children.run(str(tmux), *arguments, limit=limit, env=environment, given=given)
     match ran:
         case child.Ran(ending=child.Exited(code=code), out=out, err=err):
