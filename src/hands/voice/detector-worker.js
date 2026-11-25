@@ -6,7 +6,7 @@
 //
 // The phone's key reaches it in its address's fragment, as it reaches a page, so it asks hands through hands.js as a page does.
 
-import { AGAIN_MS, asked, askedForBytes, unanswered, wording } from "/hands.js";
+import { asked, askedForBytes, patiently, unanswered, wording } from "/hands.js";
 import { BANDS, EMBEDDING_SIZE, MEL_WINDOW, RATE, resampler, wakeStream } from "/wakestream.js";
 
 // The models by the role each plays in wakeStream's steps, which is the name hands serves each by.
@@ -26,32 +26,20 @@ function settingsOf(body) {
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
 
-// hands that did not answer, or could not be reached, is waited for and never given up on: on a cold first run `/wake/settings`
-// waits on the models' fetch for longer than any one request is given, and a `failed` is final, so a page that gave up there
-// could only be recovered by reloading it. A refusal is hands' word and fails as it is: hands refuses a model it cannot fetch,
-// and says why, which asking again would not change. A wait is over when hands answers, said as a `waiting` with no `why`.
-async function patiently(ask) {
-  let waited = false;
-  for (;;) {
-    const outcome = await ask();
-    if (outcome.kind !== "lost") {
-      if (waited) postMessage({ kind: "waiting", why: null });
-      return outcome;
-    }
-    waited = true;
-    postMessage({ kind: "waiting", why: outcome.why });
-    await new Promise(resolve => setTimeout(resolve, AGAIN_MS));
-  }
-}
+// hands that did not answer, or could not be reached, is waited for and never given up on (`patiently`): on a cold first run
+// `/wake/settings` waits on the models' fetch for longer than any one request is given, and a `failed` is final, so a page
+// that gave up there could only be recovered by reloading it. hands refuses a model it cannot fetch, and says why, which
+// asking again would not change. Each wait is a `waiting` with why, and its end a `waiting` with no `why`.
+const waitingFor = why => postMessage({ kind: "waiting", why });
 
 async function fileOf(path) {
-  const outcome = await patiently(() => askedForBytes(path));
+  const outcome = await patiently(() => askedForBytes(path), waitingFor);
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   return outcome.body;
 }
 
 async function load() {
-  const outcome = await patiently(() => asked("GET", "/wake/settings"));
+  const outcome = await patiently(() => asked("GET", "/wake/settings"), waitingFor);
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   const settings = settingsOf(outcome.body);
   const ort = await import(settings.runtime);

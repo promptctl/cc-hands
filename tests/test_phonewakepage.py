@@ -5,6 +5,7 @@ at hands: the gate the phone moves and the clips a real clip owner cuts from the
 
 import asyncio
 import base64
+import re
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
@@ -371,8 +372,8 @@ async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_th
     await browser.context.route("**/wake/settings", lose_the_first)
     await browser.context.route("**/wake/models/melspectrogram", partial(held_open, models_come_in))
     page = await connected(browser, hands)
-    # Lost, as a request past the page's bound is too (tests/test_handsjs.py): waited on, saying why.
-    await expect(page.locator("#wake-note")).to_contain_text("The wake word is waiting on hands: hands is out of reach")
+    # Lost, as a request past the page's bound is too, and waited on the same (`patiently`, tests/test_handsjs.py).
+    await expect(page.locator("#wake-note")).to_have_text(re.compile(r"The wake word is waiting on hands: \S"))
     # hands answered: the models still coming in is no wait on hands, and the page does not go on saying it is.
     await expect(page.locator("#wake-note")).to_have_text("")
     await expect(page.locator("#state")).to_have_text(LOADING)
@@ -503,4 +504,3 @@ async def test_a_browser_with_no_screen_wake_lock_says_the_screen_may_sleep_and_
     await until(lambda: bool(events(hands.recorded, "phone.screen")))
     [unkept] = events(hands.recorded, "phone.screen")
     assert unkept.outcome == "failed" and unkept.facts["state"] == "unkept" and unkept.error == "this browser has no screen wake lock"
-

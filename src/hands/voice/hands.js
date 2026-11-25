@@ -9,7 +9,8 @@
 const key = decodeURIComponent(location.hash.slice(1));
 export const carriesKey = key !== "";
 
-// How long any request is given to be answered once hands has it: a minute, past anything hands does before it answers.
+// How long any request is given to be answered once hands has it: a minute. What takes hands longer, as `/wake/settings`
+// on a cold first run waits on the models' fetch, is lost to its asker, which asks again (`patiently`).
 // A read that has seen something waits at hands, for as long as hands said its reads wait, and is then answered at
 // once: it is given that wait and the time an answer takes to cross back, so a phone that lost its way to hands says
 // so soon after.
@@ -84,6 +85,23 @@ export const handsNow = () => Date.now() / 1000 + ahead;
 
 // How long a page, or its worker, waits to ask hands again after an ask that got no answer.
 export const AGAIN_MS = 2000;
+
+// What `ask` comes to once hands answers it, refusing or not: one that got no answer is asked again after a pause, for as
+// long as it takes, with `waiting` told why each time and told null once hands answers after a wait. A refusal is hands'
+// word, returned as it is: asking again would not change it.
+export async function patiently(ask, waiting) {
+  let waited = false;
+  for (;;) {
+    const outcome = await ask();
+    if (outcome.kind !== "lost") {
+      if (waited) waiting(null);
+      return outcome;
+    }
+    waited = true;
+    waiting(outcome.why);
+    await new Promise(resolve => setTimeout(resolve, AGAIN_MS));
+  }
+}
 
 // Read `path` for as long as the page is open: each read says what it last saw and waits at hands until what it shows
 // changes from it (hands.voice.longpoll), bounded by the wait hands said; a read that has seen nothing is answered at once.

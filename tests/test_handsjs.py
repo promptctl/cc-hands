@@ -55,7 +55,7 @@ class Page:
 
     def __init__(self, fragment: str = "#the%20key") -> None:
         self._js = JsModule(
-            "hands.js", "asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
+            "hands.js", "asked, askedForBytes, unanswered, patiently, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
         )
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
         self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
@@ -126,6 +126,7 @@ def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) 
 @pytest.mark.parametrize(("settled", "outcome"), [
     ("answerBytes(503, [1, 2])", {"kind": "refused", "status": 503, "text": "refused in words"}),
     ('cutOffBytes("network reset")', {"kind": "lost", "why": "hands' answer was cut off: network reset"}),
+    ('lose("TimeoutError")', {"kind": "lost", "why": "hands did not answer within 60 s"}),
     ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
 ])
 def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
@@ -133,6 +134,28 @@ def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(pag
     page.run(settled)
     assert page.seen("outcome") == outcome
 
+
+
+PATIENTLY = 'var outcome, waits = []; patiently(() => asked("GET", "/wake/settings"), why => waits.push(why)).then(said => { outcome = said; })'
+
+
+def test_a_request_hands_does_not_answer_in_time_is_asked_again_after_a_pause_saying_why_until_hands_answers(page: Page) -> None:
+    page.run(PATIENTLY)
+    page.run('lose("TimeoutError")')
+    # Nothing is asked until the pause is over.
+    assert (page.seen("waits"), page.asking(), page.timers()) == (["hands did not answer within 60 s"], [], [2000])
+    page.run("fire()")
+    assert [asked.path for asked in page.asking()] == ["/wake/settings"]
+    page.answer(200, '{"phrase": "hey jarvis"}')
+    # The wait is over once hands answers, and said to be.
+    assert (page.seen("waits"), page.seen("outcome")) == (["hands did not answer within 60 s", None], {"kind": "answered", "body": {"phrase": "hey jarvis"}})
+
+
+def test_a_request_hands_refuses_is_its_word_and_is_not_asked_again(page: Page) -> None:
+    page.run(PATIENTLY)
+    page.answer(503, "hands could not fetch the word's model")
+    assert (page.seen("waits"), page.asking(), page.timers()) == ([], [], [])
+    assert page.seen("outcome") == {"kind": "refused", "status": 503, "text": "hands could not fetch the word's model"}
 
 def test_an_answer_that_is_not_json_is_lost_with_why(page: Page) -> None:
     page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
