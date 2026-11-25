@@ -12,7 +12,7 @@ import datetime
 import os
 import ssl
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +27,8 @@ from hands.sessions.untap import TRUST
 
 # The one HTTP the proxy serves, so the only one a client may speak inside the TLS it ends.
 ALPN = "http/1.1"
+# The port of the TLS the proxy ends for the API's host: HTTPS's, which a client reaching https://<host> opens.
+HTTPS_PORT = 443
 
 
 class Uninterceptable(Exception):
@@ -45,6 +47,12 @@ class Authority:
     certificate: x509.Certificate
     answer: ssl.SSLContext
 
+    def intercepts(self, host: str | None, port: int | None) -> bool:
+        """[LAW:single-enforcer] whether a client asking the proxy for `host` at `port`, by a CONNECT or a request in
+        absolute form, is asking for the API: https://<its host>, the origin whose TLS the proxy ends, at HTTPS's port.
+        Any other port of the same host is another origin (RFC 6454 §4), and none of the API's."""
+        return (host, port) == (self.host, HTTPS_PORT)
+
 
 def mint(host: str, clock: Clock) -> Authority:
     """An authority valid from an hour before now for a year, as fritter's tap's is, and a certificate for `host`
@@ -56,35 +64,18 @@ def mint(host: str, clock: Clock) -> Authority:
     now = clock.wall()
     key = ec.generate_private_key(ec.SECP256R1())
     named = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"hands' proxy {os.getpid()}")])
-    begins, ends = now - datetime.timedelta(hours=1), now + datetime.timedelta(days=365)
-    root = (
-        x509.CertificateBuilder()
-        .subject_name(named)
-        .issuer_name(named)
-        .public_key(key.public_key())
-        .serial_number(_serial(clock))
-        .not_valid_before(begins)
-        .not_valid_after(ends)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-        .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
-        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
-        .sign(key, hashes.SHA256())
-    )
+    root = _signed(clock, now, named, key.public_key(), named, key, (
+        (x509.BasicConstraints(ca=True, path_length=0), True),
+        (x509.KeyUsage(False, False, False, False, False, True, True, False, False), True),
+        (x509.SubjectKeyIdentifier.from_public_key(key.public_key()), False),
+    ))
     leaf_key = ec.generate_private_key(ec.SECP256R1())
-    leaf = (
-        x509.CertificateBuilder()
-        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)]))
-        .issuer_name(named)
-        .public_key(leaf_key.public_key())
-        .serial_number(_serial(clock))
-        .not_valid_before(begins)
-        .not_valid_after(ends)
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
-        .add_extension(x509.KeyUsage(True, False, False, False, False, False, False, False, False), critical=True)
-        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()), critical=False)
-        .sign(key, hashes.SHA256())
-    )
+    leaf = _signed(clock, now, x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)]), leaf_key.public_key(), named, key, (
+        (x509.SubjectAlternativeName([x509.DNSName(host)]), False),
+        (x509.KeyUsage(True, False, False, False, False, False, False, False, False), True),
+        (x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False),
+        (x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()), False),
+    ))
     answer = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     answer.set_alpn_protocols([ALPN])
     # [LAW:effects-at-boundaries] exception: Python's ssl loads a key from a file alone. The leaf's is written for the
@@ -99,6 +90,32 @@ def mint(host: str, clock: Clock) -> Authority:
     except OSError as error:
         raise Uninterceptable(f"cannot load the certificate hands' proxy answers {host} with, through a file of its own: {error}") from error
     return Authority(host, root, answer)
+
+
+def _signed(
+    clock: Clock,
+    now: datetime.datetime,
+    subject: x509.Name,
+    key: ec.EllipticCurvePublicKey,
+    issuer: x509.Name,
+    signer: ec.EllipticCurvePrivateKey,
+    extensions: Sequence[tuple[x509.ExtensionType, bool]],
+) -> x509.Certificate:
+    """[LAW:one-source-of-truth] a certificate as the authority makes each, itself and the leaf it signs: `subject`'s
+    `key`, signed by `issuer`'s `signer` with SHA-256, valid from an hour before `now` for a year, under a serial of its
+    own, with `extensions`, each with whether it is critical."""
+    built = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key)
+        .serial_number(_serial(clock))
+        .not_valid_before(now - datetime.timedelta(hours=1))
+        .not_valid_after(now + datetime.timedelta(days=365))
+    )
+    for extension, critical in extensions:
+        built = built.add_extension(extension, critical=critical)
+    return built.sign(signer, hashes.SHA256())
 
 
 def _serial(clock: Clock) -> int:

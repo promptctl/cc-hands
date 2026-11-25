@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 import aiohttp
+from aiohttp import hdrs
 
 from hands.brain.fork import Forked, Newest, Turn, Unmarked, fork
 from hands.clock import Clock
 from hands.core.trace import Span
-from hands.core.wire import Fork, Garbled, Observed, Send, Sent, UnreadableRequest, Written
+from hands.core.wire import Fork, Garbled, Observed, Send, Sent, ThroughProxy, UnreadableRequest, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.replies import reply_reader
@@ -79,9 +80,9 @@ Within = Deadline | TimeLimit
 class Asides:
     """What answers hands' side questions: `ask` forks the brain's newest main turn with the question, through the proxy."""
 
-    def __init__(self, clock: Clock, proxy_url: str, newest: Newest, record: Record) -> None:
+    def __init__(self, clock: Clock, through: ThroughProxy, newest: Newest, record: Record) -> None:
         self._clock = clock
-        self._proxy_url = proxy_url
+        self._through = through
         self._newest = newest
         self._record = record
         # One at a time: nothing asked here is waited on by the user, and the brain's account answers the user's turns first.
@@ -165,7 +166,10 @@ class Asides:
                 annotate(marked=point)
         self._sending = (here(), forked.body)
         try:
-            async with self._client.post(self._proxy_url + turn.path, headers=list(forked.headers), data=json.dumps(forked.body).encode()) as response:
+            # Posted to the proxy's own origin on the run's credential, as every request the proxy serves is: the
+            # proxy takes the credential off before the API is asked.
+            headers = [*forked.headers, (hdrs.PROXY_AUTHORIZATION, self._through.authorization)]
+            async with self._client.post(self._through.origin + turn.path, headers=headers, data=json.dumps(forked.body).encode()) as response:
                 # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
                 reader = reply_reader(Fork(), response.headers, lambda _event: None)
                 async for chunk in response.content.iter_any():

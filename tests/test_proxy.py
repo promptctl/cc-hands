@@ -181,9 +181,14 @@ async def streamed(request: web.Request) -> web.StreamResponse:
     return response
 
 
-async def post(url: str, body: bytes = REQUEST, path: str = "/v1/messages?beta=true", headers: dict[str, str] = HEADERS) -> tuple[int, dict[str, str], bytes]:
+def admitted(proxy: Proxy, headers: dict[str, str] = HEADERS) -> dict[str, str]:
+    """`headers` with the run's credential, as every request posted to the proxy's own origin presents it."""
+    return {**headers, "Proxy-Authorization": proxy.through.authorization}
+
+
+async def post(proxy: Proxy, body: bytes = REQUEST, path: str = "/v1/messages?beta=true", headers: dict[str, str] = HEADERS) -> tuple[int, dict[str, str], bytes]:
     async with aiohttp.ClientSession(auto_decompress=False) as client:
-        async with client.post(url + path, data=body, headers=headers) as response:
+        async with client.post(proxy.through.origin + path, data=body, headers=admitted(proxy, headers)) as response:
             return response.status, dict(response.headers), await response.read()
 
 
@@ -196,7 +201,7 @@ def only_exchange(wire: Wire) -> Exchanged:
 @pytest.mark.outside
 async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchange(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    status, headers, body = await post(wire.proxy.url)
+    status, headers, body = await post(wire.proxy)
 
     assert (status, body, headers["request-id"]) == (200, b"".join(STREAM), "req_1")
     [(path, asked_headers, asked_body)] = upstream.asked
@@ -217,7 +222,7 @@ async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchang
 async def test_an_exchange_records_the_class_claude_code_named_it_beside_the_kind_read(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     # A loop-shaped body Claude Code names auxiliary: what it was named, and what hands read it as, are both on the record.
     _, wire = await serve(streamed)
-    await post(wire.proxy.url, headers={**HEADERS, "x-claude-code-request-class": "auxiliary"})
+    await post(wire.proxy, headers={**HEADERS, "x-claude-code-request-class": "auxiliary"})
     exchange = only_exchange(wire)
     assert isinstance(wire.seen[0], Sent) and wire.seen[0].named == "auxiliary"
     assert (exchange.named, exchange.kind) == ("auxiliary", Auxiliary("claude-opus-5-5"))
@@ -226,7 +231,7 @@ async def test_an_exchange_records_the_class_claude_code_named_it_beside_the_kin
 @pytest.mark.outside
 async def test_the_request_is_heard_before_the_reply_and_text_as_it_arrives(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     _, wire = await serve(streamed)
-    await post(wire.proxy.url)
+    await post(wire.proxy)
     assert isinstance(wire.seen[0], Sent) and wire.seen[0].kind == MainTurn(None)
     texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
     assert texts == ["hello ", "from the wire"]
@@ -252,7 +257,7 @@ async def test_a_message_sent_whole_is_heard_as_the_message_it_is(serve: Callabl
         return web.Response(body=answer, headers={"Content-Type": "application/json"})
 
     _, wire = await serve(whole)
-    assert (await post(wire.proxy.url))[::2] == (200, answer)
+    assert (await post(wire.proxy))[::2] == (200, answer)
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and reply.body == Written(Message("msg_2", "m", (Text("said whole"),), "end_turn", usage), False)
     texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
@@ -283,7 +288,7 @@ async def test_a_message_sent_whole_is_heard_before_the_client_has_a_byte_of_it(
 
     _, wire = await serve(halves)
     async with aiohttp.ClientSession() as client:
-        async with client.post(wire.proxy.url + "/v1/messages?beta=true", data=REQUEST, headers=HEADERS) as response:
+        async with client.post(wire.proxy.through.origin + "/v1/messages?beta=true", data=REQUEST, headers=admitted(wire.proxy)) as response:
             first = await response.content.readany()
             texts = [seen.event.text for seen in wire.seen if isinstance(seen, Heard) and isinstance(seen.event, TextDelta)]
             assert texts == ["in two parts"]
@@ -298,7 +303,7 @@ async def test_a_compressed_answer_reaches_the_client_compressed_and_is_read_dec
         return web.Response(body=packed, headers={"Content-Type": "application/json", "Content-Encoding": "gzip"})
 
     _, wire = await serve(counted)
-    status, headers, body = await post(wire.proxy.url, path="/v1/messages/count_tokens?beta=true")
+    status, headers, body = await post(wire.proxy, path="/v1/messages/count_tokens?beta=true")
     assert (status, body, headers["Content-Encoding"]) == (200, packed, "gzip")
     exchange = only_exchange(wire)
     assert exchange.kind == CountTokens()
@@ -321,7 +326,7 @@ async def test_every_encoding_claude_code_asks_for_is_read(
         return web.Response(body=packed, headers={"Content-Type": "text/event-stream", "Content-Encoding": encoding})
 
     _, wire = await serve(compressed)
-    assert (await post(wire.proxy.url))[::2] == (200, packed)
+    assert (await post(wire.proxy))[::2] == (200, packed)
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and isinstance(reply.body, Written)
     assert reply.body.message.content == (Text("hello from the wire"),)
@@ -341,7 +346,7 @@ async def test_a_reply_hands_cannot_read_still_reaches_the_client_whole(serve: C
         return response
 
     _, wire = await serve(unreadable)
-    assert (await post(wire.proxy.url))[::2] == (200, b"".join(sent))
+    assert (await post(wire.proxy))[::2] == (200, b"".join(sent))
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body.reason.startswith("hands could not read it: UnicodeDecodeError")
 
@@ -350,7 +355,7 @@ async def test_a_reply_hands_cannot_read_still_reaches_the_client_whole(serve: C
 async def test_no_header_the_client_left_out_is_added_on_the_way_up(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     async with aiohttp.ClientSession(skip_auto_headers=("Accept-Encoding", "User-Agent", "Content-Type")) as client:
-        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST) as response:
+        async with client.post(wire.proxy.through.origin + "/v1/messages", data=REQUEST, headers=admitted(wire.proxy, {})) as response:
             await response.read()
     [(_, asked_headers, _)] = upstream.asked
     assert {"Accept-Encoding", "User-Agent", "Content-Type"}.isdisjoint(asked_headers)
@@ -364,7 +369,7 @@ async def test_an_error_status_passes_through_with_its_body_read(serve: Callable
         return web.Response(status=529, body=error, headers={"Content-Type": "application/json"})
 
     _, wire = await serve(overloaded)
-    assert (await post(wire.proxy.url))[::2] == (529, error)
+    assert (await post(wire.proxy))[::2] == (529, error)
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and (reply.status, reply.body) == (529, Answered({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
 
@@ -379,7 +384,7 @@ async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_reaches_the_clie
         return web.Response(body=hello, headers={"Content-Type": "application/json"})
 
     _, wire = await serve(answered)
-    assert (await post(wire.proxy.url, path="/api/hello"))[::2] == (200, hello)
+    assert (await post(wire.proxy, path="/api/hello"))[::2] == (200, hello)
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and (reply.reply_bytes, reply.body) == (len(hello), Unkept(None))
 
@@ -395,7 +400,7 @@ async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(
     await probe.cleanup()
     proxy = await serve_proxy(dead, seen.append, forward, VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, tmp_path / "trusted.pem", lambda _: None)
     try:
-        status, _, body = await post(proxy.url)
+        status, _, body = await post(proxy)
     finally:
         await proxy.close()
     assert status == 502 and dead.encode() in body
@@ -440,7 +445,7 @@ async def test_a_refusal_routed_final_is_the_proxys_own_502_the_client_does_not_
 
     _, wire = await serve(answered)
     wire.route = lambda _sent: Send(refusal=refusal, span=root(SYSTEM))
-    got, headers, body = await post(wire.proxy.url)
+    got, headers, body = await post(wire.proxy)
     told = {name.lower(): value for name, value in headers.items()}.get("x-should-retry")
     if final:
         # Nothing of the API's answer that Claude Code would ask again after reaches it; what it was, and its id, do.
@@ -476,7 +481,7 @@ async def test_a_spent_usage_limit_routed_final_reaches_the_client_as_nothing_it
 
     _, wire = await serve(answered)
     wire.route = lambda _sent: Send(refusal=refusal, span=root(SYSTEM))
-    got, headers, body = await post(wire.proxy.url)
+    got, headers, body = await post(wire.proxy)
     named = {name.lower(): value for name, value in headers.items()}
     if final:
         # No limit for Claude Code to arm its continue on: neither the status, nor the headers, nor the error it reads.
@@ -499,7 +504,7 @@ async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Li
     await probe.cleanup()
     proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root(SYSTEM)), VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, tmp_path / "trusted.pem", lambda _: None)
     try:
-        status, headers, _ = await post(proxy.url)
+        status, headers, _ = await post(proxy)
     finally:
         await proxy.close()
     assert (status, headers.get("x-should-retry")) == (502, "false" if final else None)
@@ -525,7 +530,7 @@ async def test_a_client_that_hangs_up_mid_stream_ends_the_upstream_reply_and_is_
 
     _, wire = await serve(endless)
     async with aiohttp.ClientSession() as client:
-        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
+        async with client.post(wire.proxy.through.origin + "/v1/messages", data=REQUEST, headers=admitted(wire.proxy)) as response:
             await response.content.readany()
     # The hang-up is the only way the rest stops coming, so both ends are waited on rather than timed.
     await asyncio.wait_for(asyncio.gather(wire.exchanged.wait(), upstream_ended.wait()), timeout=10)
@@ -544,7 +549,7 @@ async def test_a_client_that_hangs_up_before_the_api_answers_ends_its_exchange_u
         return web.Response()
 
     _, wire = await serve(silent)
-    posting = asyncio.create_task(post(wire.proxy.url))
+    posting = asyncio.create_task(post(wire.proxy))
     await asyncio.wait_for(asked.wait(), timeout=10)
     posting.cancel()
     try:
@@ -567,7 +572,7 @@ async def test_a_request_upstream_that_raises_ends_its_exchange_naming_the_error
         raise RuntimeError("the client broke")
 
     monkeypatch.setattr(wire.proxy.client, "request", broken)
-    status, _, _ = await post(wire.proxy.url)
+    status, _, _ = await post(wire.proxy)
     # The handler raised, so aiohttp answered its own 500: the error was not swallowed.
     assert (status, upstream.asked) == (500, [])
     reply = only_exchange(wire).reply
@@ -583,7 +588,7 @@ async def test_a_route_change_that_cannot_be_made_ends_its_exchange_naming_the_e
         raise KeyError("messages")
 
     monkeypatch.setattr(proxy, "edited", broken)
-    status, _, _ = await post(wire.proxy.url)
+    status, _, _ = await post(wire.proxy)
     assert (status, upstream.asked) == (500, [])
     reply = only_exchange(wire).reply
     assert isinstance(reply, Unfinished) and reply.reason == "KeyError: 'messages'"
@@ -604,7 +609,7 @@ async def test_closing_the_proxy_mid_stream_stops_at_once_and_records_the_reply(
 
     _, wire = await serve(endless)
     async with aiohttp.ClientSession() as client:
-        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
+        async with client.post(wire.proxy.through.origin + "/v1/messages", data=REQUEST, headers=admitted(wire.proxy)) as response:
             await response.content.readany()
             # A stop does not wait on a reply that may stream for minutes.
             await asyncio.wait_for(wire.proxy.close(), timeout=5)
@@ -630,7 +635,7 @@ async def test_a_chunk_is_heard_before_the_client_can_have_it(serve: Callable[[H
 
     _, wire = await serve(paused)
     async with aiohttp.ClientSession() as client:
-        async with client.post(wire.proxy.url + "/v1/messages", data=REQUEST, headers=HEADERS) as response:
+        async with client.post(wire.proxy.through.origin + "/v1/messages", data=REQUEST, headers=admitted(wire.proxy)) as response:
             got = b""
             while not got.endswith(STREAM[2]):
                 got += await response.content.readany()
@@ -682,7 +687,7 @@ async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_cli
         return response
 
     _, wire = await serve(refused)
-    asked = asyncio.create_task(post(wire.proxy.url))
+    asked = asyncio.create_task(post(wire.proxy))
     while not any(isinstance(seen, Answering) for seen in wire.seen):
         await asyncio.sleep(0.01)
     [answering] = [seen for seen in wire.seen if isinstance(seen, Answering)]
@@ -697,7 +702,7 @@ async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_cli
 async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_routes_words(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Synthesize("(stayed silent)", root(SYSTEM))
-    status, headers, body = await post(wire.proxy.url)
+    status, headers, body = await post(wire.proxy)
     assert upstream.asked == []
     assert status == 200 and headers["Content-Type"].startswith("text/event-stream")
     # A whole message with the one text block, ended, as the API would have streamed it.
@@ -721,7 +726,7 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
 async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newest_block_and_says_so(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Send((Tail("[hands] how they stand"),), span=root(SYSTEM))
-    status, _, body = await post(wire.proxy.url)
+    status, _, body = await post(wire.proxy)
     assert (status, body) == (200, b"".join(STREAM))
     [(_, _, asked_body)] = upstream.asked
     came = json.loads(REQUEST)
@@ -740,7 +745,7 @@ UNIT = Span("4bf92f3577b34da6a3ce929d0e0e4736", "1111111111111111", "00f067aa0ba
 async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_synthesized(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Route) -> None:
     _, wire = await serve(streamed)
     wire.route = lambda _sent: route
-    await post(wire.proxy.url)
+    await post(wire.proxy)
     assert only_exchange(wire).span == UNIT
 
 
@@ -751,7 +756,7 @@ async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        status, _, _ = await post(wire.proxy.url, body=b"not json")
+        status, _, _ = await post(wire.proxy, body=b"not json")
     finally:
         logger.remove(sink)
     [(_, _, asked_body)] = upstream.asked
@@ -765,7 +770,7 @@ async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_t
     wire.route = lambda _sent: Send((Tail("tail"),), span=root(SYSTEM))
     # JSON.stringify writes half a surrogate pair as its escape; parsed, it is a lone surrogate UTF-8 cannot encode.
     cut = REQUEST.replace(b'"text": "hi"', b'"text": "hi \\ud83d"')
-    status, _, _ = await post(wire.proxy.url, body=cut)
+    status, _, _ = await post(wire.proxy, body=cut)
     [(_, _, asked_body)] = upstream.asked
     [newest] = json.loads(asked_body)["messages"]
     assert (status, newest["content"][0]["text"], newest["content"][-1], only_exchange(wire).changes) == (200, "hi \ud83d", {"type": "text", "text": "tail"}, (Tail("tail"),))
@@ -775,7 +780,7 @@ async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_t
 async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Synthesize("(interrupted)", root(SYSTEM))
-    status, headers, body = await post(wire.proxy.url, REQUEST.replace(b'"stream": true', b'"stream": false'))
+    status, headers, body = await post(wire.proxy, REQUEST.replace(b'"stream": true', b'"stream": false'))
     assert upstream.asked == [] and status == 200 and headers["Content-Type"].startswith("application/json")
     answer = json.loads(body)
     assert (answer["content"], answer["stop_reason"], answer["model"]) == ([{"type": "text", "text": "(interrupted)"}], "end_turn", "claude-opus-5-5")
@@ -792,7 +797,7 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        status, _, body = await post(wire.proxy.url)
+        status, _, body = await post(wire.proxy)
     finally:
         logger.remove(sink)
     assert (status, body) == (200, b"".join(STREAM)) and len(upstream.asked) == 1
@@ -855,7 +860,7 @@ async def test_a_400_on_a_request_hands_built_or_changed_is_logged_as_hands_bug(
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        await post(wire.proxy.url)
+        await post(wire.proxy)
     finally:
         logger.remove(sink)
     exchange = only_exchange(wire).exchange

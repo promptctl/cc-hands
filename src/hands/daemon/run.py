@@ -244,8 +244,7 @@ async def mind(
             raise CannotStart(str(error)) from error
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        # Posted to the proxy's own origin, as hands' own requests: never through a CONNECT, so with no credential.
-        asides = Asides(clock, through.origin, Newest(session), record)
+        asides = Asides(clock, through, Newest(session), record)
         try:
             stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
@@ -324,7 +323,7 @@ async def run(
         held.push_async_callback(proxy.close)
         # The proxy's origin, which the brain's HTTPS_PROXY names with the run's credential, never recorded; and the file
         # its NODE_EXTRA_CA_CERTS names.
-        run_start.heard(proxy=proxy.url, trust=proxy.through.trust, upstream=UPSTREAM)
+        run_start.heard(proxy=proxy.through.origin, trust=proxy.through.trust, upstream=UPSTREAM)
         tap = await serve_tap(home.wire, tap_observer(logged, sessions.hear), record, clock=clock)
         held.push_async_callback(tap.close)
         run_start.heard(tap=home.wire)

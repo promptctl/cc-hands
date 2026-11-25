@@ -1,9 +1,9 @@
 """How hands' proxy answers a CONNECT, the method a client asks its HTTPS proxy for a tunnel to a host with, and how the
 proxy reaches every host it does not answer for.
 
-A CONNECT is a request aiohttp's parser reads like any other, answered only on this run's credential (`admission`), and
-its handler here takes the connection it came on over from aiohttp's once it has answered it (`hands.sessions.takeover`).
-To the API's host, the proxy ends the client's TLS itself, with its authority's
+A CONNECT is a request aiohttp's parser reads like any other, answered, as every request is, only on this run's
+credential (`admission`), and its handler here takes the connection it came on over from aiohttp's once it has answered
+it (`hands.sessions.takeover`). To the API's host, the proxy ends the client's TLS itself, with its authority's
 certificate for the host (`hands.sessions.authority`), and the HTTP inside it is served by the API's own server, every
 request of it the API's. To any other host, the connection is a tunnel, its bytes piped both ways as they came. Each
 CONNECT is one unit of work, its event emitted as its connection ends.
@@ -31,8 +31,6 @@ from hands.sessions.takeover import TlsRefused, streamed, tls_ended
 from hands.sessions.wide import annotate, begun, count, fail, unit
 from hands.tasks import cancel_and_wait
 
-# The port of the TLS the proxy ends for the API's host: HTTPS's, which a client reaching https://<host> opens.
-HTTPS_PORT = 443
 # How long reaching a host a tunnel is asked to may take, through an outer proxy's CONNECT or directly.
 REACH_SECONDS = 30.0
 # How long a client may take to finish its TLS to the API's host: one round trip on loopback, given a loaded machine.
@@ -103,20 +101,21 @@ class OuterRefused(Exception):
 
 @dataclass(frozen=True)
 class Admitted:
-    """[LAW:parse-dont-validate] a request that carried this run's credential as its Proxy-Authorization: what a CONNECT
-    and a relay are answered on, so no other process on the machine reaches past the proxy with hands' way out."""
+    """[LAW:parse-dont-validate] a request that carried this run's credential as its Proxy-Authorization: what every
+    request on the proxy's own socket is answered on, so no other process on the machine reaches past the proxy with
+    hands' way out, the API on hands' outer proxy among it."""
 
 
 @dataclass(frozen=True)
 class Unadmitted:
-    """A request that asked the proxy for another place without this run's credential, and why; never the credential."""
+    """A request that came to the proxy without this run's credential, and why; never the credential."""
 
     why: str
 
 
 def admission(told: str | None, credential: str) -> Admitted | Unadmitted:
     """The Proxy-Authorization a request was `told` with, an auth-scheme and its token68 (RFC 9110 §11.6.2), against
-    `credential`, the run's, as aiohttp.encode_basic_auth writes it."""
+    `credential`, the run's, as `proxy_authorization` writes it."""
     match told:
         case None:
             return Unadmitted("it sent no Proxy-Authorization")
@@ -171,7 +170,7 @@ class Connects:
                 refused = f"a CONNECT names a host and a port that is not 0, not {request.raw_path!r}"
                 fail(refused)
                 return web.Response(status=400, text=refused)
-        intercepted = (host, port) == (self._authority.host, HTTPS_PORT)
+        intercepted = self._authority.intercepts(host, port)
         annotate(host=host, port=port, intercepted=intercepted)
         return await (self._intercepted(request) if intercepted else self._tunnelled(request, host, port))
 

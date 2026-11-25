@@ -62,7 +62,7 @@ async def through(proxy: Proxy, path: str = "/v1/messages?beta=true", body: byte
 
 
 async def connected(proxy: Proxy) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    url = URL(proxy.url)
+    url = URL(proxy.through.origin)
     return await asyncio.open_connection(url.host, url.port)
 
 
@@ -75,6 +75,12 @@ def credential(proxy: Proxy) -> str:
             return aiohttp.encode_basic_auth(user, password)
         case _:
             raise AssertionError("the proxy's url carries no credential")
+
+
+def at_origin(proxy: Proxy, path: str = "/v1/messages?beta=true") -> bytes:
+    """A request of the API's posted to the proxy's own origin in origin form, as hands' side questions are, on the run's
+    credential."""
+    return posted(path, host=URL(proxy.through.origin).authority, also={"Proxy-Authorization": credential(proxy)})
 
 
 def connect(proxy: Proxy, authority: str) -> bytes:
@@ -95,6 +101,7 @@ async def tunnel(proxy: Proxy, authority: str) -> AsyncGenerator[tuple[asyncio.S
 
 
 def posted(path: str = "/v1/messages?beta=true", host: str = API_HOST, also: Mapping[str, str] = {}) -> bytes:
+    """A request of the API's to `path`, with `also` among its headers."""
     headers = "".join(f"{name}: {value}\r\n" for name, value in (HEADERS | dict(also)).items())
     return f"POST {path} HTTP/1.1\r\nHost: {host}\r\n{headers}Content-Length: {len(REQUEST)}\r\n\r\n".encode() + REQUEST
 
@@ -294,7 +301,7 @@ async def test_a_connect_after_a_request_on_the_same_connection_is_answered_and_
     reader, writer = await connected(wire.proxy)
     try:
         # A side question to the proxy's own origin, its connection kept alive, then a CONNECT on it.
-        writer.write(posted(host=URL(wire.proxy.url).authority))
+        writer.write(at_origin(wire.proxy))
         assert (await answered(reader))[0] == b"HTTP/1.1 200 OK"
         tls = ByHand(wire.proxy)
         writer.write(connect(wire.proxy, f"{API_HOST}:443"))
@@ -312,13 +319,14 @@ async def test_whose_a_request_is_is_said_by_its_connection_and_its_form_never_b
     reader, writer = await connected(wire.proxy)
     try:
         # Origin form, though its path begins as a scheme-relative URL would: the API's.
-        writer.write(posted("//v1/messages", host=URL(wire.proxy.url).authority))
+        writer.write(at_origin(wire.proxy, "//v1/messages"))
         assert (await answered(reader))[0] == b"HTTP/1.1 200 OK"
     finally:
         writer.close()
     async with tunnel(wire.proxy, f"{API_HOST}:443") as (reader, writer):
         await writer.start_tls(trusting(wire.proxy), server_hostname=API_HOST)
-        # Inside the TLS the proxy ended, absolute form too: every request there is the API's.
+        # Inside the TLS the proxy ended, absolute form too: every request there is the API's, on the connection its
+        # CONNECT was admitted on, so with no credential of its own.
         writer.write(posted(f"https://{API_HOST}/v1/messages?beta=true"))
         assert (await answered(reader))[0] == b"HTTP/1.1 200 OK"
     assert [path for path, _, _ in upstream.asked] == ["//v1/messages", "/v1/messages?beta=true"]
@@ -479,34 +487,36 @@ async def listening() -> AsyncIterator[tuple[str, list[tuple[asyncio.StreamReade
     ],
     ids=["none", "not-basic", "not-the-runs"],
 )
-@pytest.mark.parametrize("asked", ["CONNECT {authority}", "GET http://{authority}/"], ids=["connect", "absolute-form"])
-async def test_a_request_past_the_proxy_without_the_runs_credential_is_refused_407_and_reaches_nothing(
+@pytest.mark.parametrize("asked", ["CONNECT {authority}", "GET http://{authority}/", "POST /v1/messages?beta=true"], ids=["connect", "absolute-form", "origin-form"])
+async def test_a_request_to_the_proxy_without_the_runs_credential_is_refused_407_and_reaches_nothing(
     serve: Serve, listening: tuple[str, list[tuple[asyncio.StreamReader, asyncio.StreamWriter]]], authorization: str, why: str, asked: str
 ) -> None:
-    # Any process on the machine reaches the proxy's loopback port: without the run's credential it goes no further.
+    # Any process on the machine reaches the proxy's loopback port: without the run's credential it goes no further, to
+    # another host or to the API, whose requests would go out on hands' way to it.
     authority, reached = listening
-    _, wire = await serve(streamed)
+    upstream, wire = await serve(streamed)
     reader, writer = await connected(wire.proxy)
     try:
         writer.write(f"{asked.format(authority=authority)} HTTP/1.1\r\nHost: {authority}\r\n{authorization}\r\n".encode())
         lines, body = await headed(reader)
     finally:
         writer.close()
-    said = f"hands' proxy answers a CONNECT or a request for another origin on this run's credential alone, and {why}"
+    said = f"hands' proxy answers a request on this run's credential alone, and {why}"
     assert lines[0] == "HTTP/1.1 407 Proxy Authentication Required" and 'Proxy-Authenticate: Basic realm="hands"' in lines[1:]
-    assert body.decode().startswith(said) and reached == []
+    # Nothing reached the host, nor the API, and nothing was taken for an exchange of the API's.
+    assert body.decode().startswith(said) and (reached, upstream.asked, wire.seen) == ([], [], [])
     event = await recorded_as(wire.recorded, "proxy.unadmitted")
     method, target = asked.format(authority=authority).split(" ")
     assert (event.outcome, event.error, event.facts) == ("failed", body.decode(), {"method": method, "target": target})
     # The credential is said nowhere hands records: not in the refusal, and not in the url hands records the proxy by.
-    assert wire.proxy.through.password not in f"{body!r}{event!r}{wire.proxy.url}{wire.proxy.through!r}"
+    assert wire.proxy.through.password not in f"{body!r}{event!r}{wire.proxy.through.origin}{wire.proxy.through!r}"
 
 
-async def test_a_request_in_absolute_form_for_the_apis_own_host_is_the_apis(serve: Serve) -> None:
+async def test_a_request_in_absolute_form_for_the_apis_origin_is_the_apis(serve: Serve) -> None:
     upstream, wire = await serve(whole)
     reader, writer = await connected(wire.proxy)
     try:
-        writer.write(posted(f"http://{API_HOST}/v1/messages?beta=true", also={"Proxy-Authorization": credential(wire.proxy)}))
+        writer.write(posted(f"https://{API_HOST}/v1/messages?beta=true", also={"Proxy-Authorization": credential(wire.proxy)}))
         assert await answered(reader) == (b"HTTP/1.1 200 OK", b'{"asked": "/v1/messages?beta=true"}')
     finally:
         writer.close()
@@ -732,10 +742,24 @@ async def test_an_outer_proxy_that_never_answers_is_given_up_on_at_the_deadline(
 async def test_a_request_to_the_api_goes_through_the_outer_proxy_hands_environment_names(tmp_path: Path) -> None:
     async with outer_proxy() as outer, proxied(tmp_path, {"http_proxy": outer.url}, upstream="http://api.example:8080") as (proxy, _):
         async with aiohttp.ClientSession() as client:
-            async with client.post(proxy.url + "/v1/messages?beta=true", data=REQUEST, headers=HEADERS) as response:
+            async with client.post(proxy.through.origin + "/v1/messages?beta=true", data=REQUEST, headers={**HEADERS, "Proxy-Authorization": credential(proxy)}) as response:
                 assert (response.status, await response.json()) == (200, {"outer": True})
     [head] = outer.asked
-    assert head.startswith(b"POST http://api.example:8080/v1/messages?beta=true HTTP/1.1\r\n") and b"\r\nProxy-Authorization: Basic dTpw\r\n" in head
+    # With the outer proxy's credentials alone: the run's is the proxy's, taken off before it goes on.
+    assert head.startswith(b"POST http://api.example:8080/v1/messages?beta=true HTTP/1.1\r\n") and head.count(b"Proxy-Authorization:") == 1 and b"\r\nProxy-Authorization: Basic dTpw\r\n" in head
+
+
+async def test_a_request_in_absolute_form_for_another_port_of_the_apis_host_is_relayed_and_none_of_the_apis(tmp_path: Path) -> None:
+    # http://api.anthropic.com:8080 is another origin than the API's (`Authority.intercepts`): relayed there as asked,
+    # through the outer proxy, and never sent to the API in its place.
+    async with outer_proxy() as outer, proxied(tmp_path, {"http_proxy": outer.url}) as (proxy, recorded):
+        async with aiohttp.ClientSession() as client:
+            async with client.get(f"http://{API_HOST}:8080/x", proxy=proxy.through.url) as response:
+                assert (response.status, await response.json()) == (200, {"outer": True})
+        event = await recorded_as(recorded, "proxy.relay")
+    assert (event.outcome, event.facts["origin"]) == ("ok", f"http://{API_HOST}:8080")
+    [head] = outer.asked
+    assert head.startswith(f"GET http://{API_HOST}:8080/x HTTP/1.1\r\n".encode())
 
 
 

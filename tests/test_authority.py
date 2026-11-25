@@ -37,6 +37,17 @@ def test_the_authority_signs_certificates_alone_from_an_hour_before_it_was_made_
     assert (root.not_valid_before_utc, root.not_valid_after_utc) == (datetime(2026, 11, 24, 11, tzinfo=UTC), datetime(2027, 11, 24, 12, tzinfo=UTC))
 
 
+@pytest.mark.parametrize(
+    ("host", "port", "intercepted"),
+    [(API_HOST, 443, True), (API_HOST, 8080, False), (API_HOST, 80, False), ("example.com", 443, False), (None, None, False)],
+    ids=["the-api", "another-port", "http", "another-host", "no-host"],
+)
+def test_what_a_client_asks_for_is_the_apis_at_the_apis_host_and_https_port_alone(host: str | None, port: int | None, intercepted: bool) -> None:
+    # The one reading of what is the API's, which a CONNECT and a request in absolute form are both judged by: the
+    # origin https://api.anthropic.com, and no other port of its host.
+    assert AUTHORITY.intercepts(host, port) is intercepted
+
+
 def test_a_client_trusts_the_authority_and_what_hands_environment_already_trusts(tmp_path: Path) -> None:
     named = tmp_path / "corp.pem"
     named.write_bytes(pem(ELSEWHERE))

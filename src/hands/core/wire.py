@@ -6,6 +6,7 @@ one change of rule: nothing it cannot read is defaulted into something it can. A
 `Unparsed`, and a reply built from one is `Garbled`, never a message missing a part.
 """
 
+import base64
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -25,6 +26,12 @@ UPSTREAM = f"https://{API_HOST}"
 PROXY_USER = "hands"
 
 
+def proxy_authorization(password: str) -> str:
+    """[LAW:one-source-of-truth] the run's credential of `password` as a Proxy-Authorization carries it: Basic
+    credentials of PROXY_USER (RFC 7617), as a client writes them from its proxy url's userinfo."""
+    return "Basic " + base64.b64encode(f"{PROXY_USER}:{password}".encode()).decode()
+
+
 @dataclass(frozen=True)
 class ThroughProxy:
     """How a client reaches the API with hands' proxy as its HTTPS proxy: the proxy's address, its host and port as a
@@ -39,13 +46,19 @@ class ThroughProxy:
 
     @property
     def origin(self) -> str:
-        """The proxy's own origin, which a request posted to is the API's and needs no credential."""
+        """The proxy's own origin, which a request posted to in origin form is the API's, as hands' side questions are."""
         return f"http://{self.address}"
 
     @property
     def url(self) -> str:
         """The url a client is given as its HTTPS proxy, the credential in its userinfo (RFC 3986 §3.2.1)."""
         return f"http://{PROXY_USER}:{self.password}@{self.address}"
+
+    @property
+    def authorization(self) -> str:
+        """The Proxy-Authorization a request posted to `origin` presents the run's credential in, as a client given
+        `url` as its proxy sends it."""
+        return proxy_authorization(self.password)
 
 
 @dataclass(frozen=True)
