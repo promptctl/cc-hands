@@ -24,12 +24,14 @@ from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.session import Membership, CommandName, Idle, KEYSTROKES, PromptText, RequestId, Resolution, Running, SessionId, Staged, delegating
+from hands.core.session import Membership, CommandName, KEYSTROKES, PromptText, RequestId, Resolution, Session, SessionId, Staged
 from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
+from hands.core.standing import AtDialog, AtPrompt, AtUnheldDialog, Delegating, ShellRunning, UnknownStatus, Working, spoken_state
+from hands.core.standing import standing as standing_of
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.processes import Processes
 from hands.sessions.child import Children
@@ -41,7 +43,7 @@ from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
-from hands.sessions.registry import Sessions
+from hands.sessions.registry import Listing, Sessions
 from hands.sessions import attention as settings
 from hands.core.place import Modality
 from hands.voice.listening import Level, Listening
@@ -49,7 +51,7 @@ from hands.voice.trigger import PhoneLevel, described, described_at_phone
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.summaries import Sighted, SummaryStore, sighted
-from hands.voice.readback import describe_listing, keyboard_readback, readback, spoken_name, spoken_state
+from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import Voices
 from hands.voice.voicechoice import VOICES, parse_voice, spoken
@@ -246,8 +248,8 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
         # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
         # status has not been read yet may be mid-turn, and a summary of half a turn would be kept for good. One whose
         # only work is subagents in the background is at its prompt too, though Claude Code says busy.
-        delegates = live is not None and delegating(live)
-        over = live is None or isinstance(live.state, Idle) or delegates
+        stands = None if live is None else standing_of(live)
+        over = stands is None or isinstance(stands, AtPrompt | ShellRunning | Delegating)
         entries: list[dict[str, object]] = []
         due: list[Due] = []
         for number in range(start + 1, end + 1):
@@ -263,7 +265,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
             "turns": entries,
             "earlier": start,
             "unsummarised": len(due),
-            "working": live is not None and isinstance(live.state, Running) and not delegates,
+            "working": isinstance(stands, Working | AtDialog | AtUnheldDialog | UnknownStatus),
         }
 
     async def read_turn(session: str, turn: int, since: str = "") -> Result:
@@ -469,6 +471,15 @@ def _ticket_line(backlog: Backlog, said: Mapping[str, str], id: str) -> dict[str
 def standing(sessions: Sessions) -> list[dict[str, str]]:
     """Every live session by its id, name, state and mode, as list_sessions describes each before what it adds."""
     return [describe_listing(listing) for listing in sessions.live()]
+
+
+def describe_listing(listing: Listing[Session]) -> dict[str, str]:
+    return {
+        "id": listing.session.membership.id,
+        "name": identifier(listing),
+        "state": spoken_state(listing.session),
+        "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
+    }
 
 
 def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool[Result]:

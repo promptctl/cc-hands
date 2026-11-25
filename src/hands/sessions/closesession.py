@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.clock import Clock
-from hands.core import status
+from hands.core.standing import AtPrompt, standing
 from hands.core.events import Attached, Died, MovedOn
-from hands.core.session import Idle, Session, SessionId, Told, Untold
+from hands.core.session import Session, SessionId
 from hands.sessions import audit, liveness, wide
 from hands.sessions.home import Home
 from hands.sessions.processes import Processes
@@ -52,16 +52,8 @@ Outcome = Closed | LeftRunning
 
 
 def done(session: Session) -> bool:
-    """Whether a session is done: at its prompt, with no dialog up, no turn opened, and no shell or subagent running in
-    the background."""
-    # [LAW:one-source-of-truth] at its prompt is Claude Code's status; a background shell or subagent still running is
-    # work it was set to and has not finished, which ending the session would kill. A turn opens on its prompt's hook, before the
-    # status that says it is busy is read, so an opened turn runs whatever the status still says.
-    match session:
-        case Session(state=Idle(status=status.Idle()), dialogs=(), turn=Untold() | Told()):
-            return True
-        case _:
-            return False
+    """Whether a session is done: at its prompt with nothing out, so that ending it kills no work."""
+    return isinstance(standing(session), AtPrompt)
 
 
 async def close(processes: Processes, home: Home, clock: Clock, record: audit.Record, live: Callable[[SessionId], Session | None], session: SessionId, asked: Asked) -> Outcome:

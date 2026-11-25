@@ -28,7 +28,7 @@ from hands.voice.speech import Aloud, Unprompted, frames, relay, sent
 from hands.voice.utterance import Fate, Utterance, Utterances
 from hands.voice.summary import SummaryFailed
 from hands.voice.working import Playing, keep_playing
-from hands.voice.readback import describe_listing
+from hands.voice.tools import describe_listing
 from hands.sessions.registry import Listing
 
 from test_narrator import heard, rendered
