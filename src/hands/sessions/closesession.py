@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.clock import Clock
-from hands.core.standing import AtPrompt, standing
+from hands.core.standing import AtRest, standing_of
 from hands.core.events import Attached, Died, MovedOn
 from hands.core.session import Session, SessionId
 from hands.sessions import audit, liveness, wide
@@ -53,7 +53,7 @@ Outcome = Closed | LeftRunning
 
 def done(session: Session) -> bool:
     """Whether a session is done: at its prompt with nothing out, so that ending it kills no work."""
-    return isinstance(standing(session), AtPrompt)
+    return isinstance(standing_of(session), AtRest)
 
 
 async def close(processes: Processes, home: Home, clock: Clock, record: audit.Record, live: Callable[[SessionId], Session | None], session: SessionId, asked: Asked) -> Outcome:

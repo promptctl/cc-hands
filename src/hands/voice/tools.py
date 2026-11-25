@@ -30,8 +30,7 @@ from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
-from hands.core.standing import AtDialog, AtPrompt, AtUnheldDialog, Delegating, ShellRunning, UnknownStatus, Working, spoken_state
-from hands.core.standing import standing as standing_of
+from hands.core.standing import on_a_turn, spoken_state, standing_of, turn_over
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.processes import Processes
 from hands.sessions.child import Children
@@ -249,7 +248,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
         # status has not been read yet may be mid-turn, and a summary of half a turn would be kept for good. One whose
         # only work is subagents in the background is at its prompt too, though Claude Code says busy.
         stands = None if live is None else standing_of(live)
-        over = stands is None or isinstance(stands, AtPrompt | ShellRunning | Delegating)
+        over = stands is None or turn_over(stands)
         entries: list[dict[str, object]] = []
         due: list[Due] = []
         for number in range(start + 1, end + 1):
@@ -265,7 +264,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
             "turns": entries,
             "earlier": start,
             "unsummarised": len(due),
-            "working": isinstance(stands, Working | AtDialog | AtUnheldDialog | UnknownStatus),
+            "working": stands is not None and on_a_turn(stands),
         }
 
     async def read_turn(session: str, turn: int, since: str = "") -> Result:

@@ -13,9 +13,11 @@ from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrappe
 from hands.core.session import (
     CommandName,
     Gone,
+    Held,
     Idle,
     Membership,
     Opened,
+    Permission,
     PromptId,
     PromptText,
     Registry,
@@ -76,11 +78,22 @@ def test_an_interrupt_presses_escape_even_at_a_dialog(state: SessionState) -> No
 
 
 @pytest.mark.parametrize("state", [IDLE, SHELLING])
-@pytest.mark.parametrize("turn", [Told(), Opened(PromptId("p1"))])
-def test_a_session_at_its_prompt_has_nothing_to_interrupt_whatever_turn_was_heard(state: SessionState, turn: Turn) -> None:
-    """Claude Code's status alone says whether anything runs: it is set busy before a prompt's hooks run. A shell
-    command running in the background is no turn, and Escape at the prompt does not stop it."""
-    assert decide(registry(state, turn=turn), Interrupt(ONE.id), NotInTmux()) == NothingRunning(ONE.id)
+def test_a_session_at_its_prompt_with_no_turn_open_has_nothing_to_interrupt(state: SessionState) -> None:
+    """A shell command running in the background is no turn, and Escape at the prompt does not stop it."""
+    assert decide(registry(state), Interrupt(ONE.id), NotInTmux()) == NothingRunning(ONE.id)
+
+
+@pytest.mark.parametrize("state", [IDLE, SHELLING])
+def test_a_turn_opened_before_the_status_says_busy_is_interrupted(state: SessionState) -> None:
+    """A turn opens on its prompt's hook, and Claude Code sets busy before that hook runs but hands may read the status
+    after it: the turn runs whatever the status still says (docs/claude-code-behavior.md)."""
+    assert decide(registry(state, turn=Opened(PromptId("p1"))), Interrupt(ONE.id), NotInTmux()) == Type(ONE.id, FRITTER, Key("escape"))
+
+
+def test_a_session_held_at_a_dialog_before_its_status_says_waiting_is_sent_no_command() -> None:
+    held = Held(Permission("Bash", {}), RequestId("r"), asked=1.0)
+    at_dialog = Registry(sessions={ONE.id: Session(ONE, IDLE, mode=None, dialogs=(held,))}, drafts={})
+    assert decide(at_dialog, SendCommand(ONE.id, COMPACT), NotInTmux()) == AtItsDialog(ONE.id)
 
 
 @pytest.mark.parametrize("request_", [SendCommand(ONE.id, COMPACT), Interrupt(ONE.id)])
