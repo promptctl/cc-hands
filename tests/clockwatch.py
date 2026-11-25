@@ -136,6 +136,8 @@ UNMOVED = frozenset({
     "test_usage.py",
     "test_utterance.py",
     "test_voice_turns.py",
+    # huggingface_hub reads the wall clock for its cache's age on the first download a process makes.
+    "test_voiceprints.py",
     "test_voices.py",
     "test_wake.py",
     "test_watchdog.py",
@@ -172,17 +174,17 @@ TIMED: dict[str, tuple[type, str, int, str]] = {
 }  # fmt: skip
 
 # The event loop's clock and timers, each with whether a call is a reach. asyncio reads the clock to schedule, and the
-# wait it schedules is the timer's; a timer asyncio asks of itself is the loop's, and one due now or before is a poll, as
-# a wait of none is.
-LOOP: dict[str, tuple[str, Callable[[asyncio.BaseEventLoop, tuple[Any, ...]], bool]]] = {
-    "time.monotonic": ("time", lambda _loop, _args: not in_asyncio(asking())),
-    "asyncio.BaseEventLoop.call_later": ("call_later", lambda _loop, args: not asked_by_the_loop() and args[0] > 0),
-    "asyncio.BaseEventLoop.call_at": ("call_at", lambda loop, args: not asked_by_the_loop() and args[0] > loop.time()),
+# wait it schedules is the timer's; a timer asyncio sets on its own work is the loop's, and one due now or before is a
+# poll, as a wait of none is.
+LOOP: dict[str, tuple[str, Callable[[asyncio.BaseEventLoop, tuple[Any, ...], dict[str, Any]], bool]]] = {
+    "time.monotonic": ("time", lambda _loop, _args, _kwargs: not in_asyncio(asking())),
+    "asyncio.BaseEventLoop.call_later": ("call_later", lambda _loop, args, kwargs: not asyncios_own() and argument(args, kwargs, 0, "delay") > 0),
+    "asyncio.BaseEventLoop.call_at": ("call_at", lambda loop, args, kwargs: not asyncios_own() and argument(args, kwargs, 0, "when") > loop.time()),
 }  # fmt: skip
 
-# Where the loop runs its own machinery, and steps the tasks and callbacks it holds: what asyncio asks of the loop from
-# here, with no caller outside asyncio between, it asks for itself.
-DISPATCH: frozenset[CodeType] = frozenset({getattr(asyncio.BaseEventLoop, "_run_once").__code__, getattr(asyncio.Handle, "_run").__code__})
+# The work asyncio bounds by a timer of its own, whoever asked for the work: `asyncio.run` gives its executor's shutdown
+# a deadline. A coroutine of asyncio's a test hands the loop, as `asyncio.run(asyncio.sleep(1))` does, is the test's.
+BOUNDED: frozenset[CodeType] = frozenset({asyncio.BaseEventLoop.shutdown_default_executor.__code__})
 ASYNCIO = f"{Path(asyncio.__file__).parent}{os.sep}"
 
 ORIGIN: contextvars.ContextVar[str | None] = contextvars.ContextVar("clockwatch.origin")
@@ -244,11 +246,11 @@ class Watch:
         facility: a uuid4 reads os.urandom and an Event's wait a Condition's, and the reach is the call the test made,
         not its parts. Only the outer call walks the stack."""
         outer = not getattr(self._within, "facility", False)
-        # Set first: what the watch reads to decide the charge, as the loop's time for a timer, is no reach of its own.
-        self._within.facility = True
-        if outer and (module := charged()) is not None and module not in CLOCK_TESTS:
-            self.record[module].add(facility)
         try:
+            # Set first: what the watch reads to decide the charge, as the loop's time for a timer, is no reach of its own.
+            self._within.facility = True
+            if outer and (module := charged()) is not None and module not in CLOCK_TESTS:
+                self.record[module].add(facility)
             return function(*args, **kwargs)
         finally:
             self._within.facility = not outer
@@ -261,7 +263,7 @@ class Watch:
 
         @functools.wraps(function)
         def reached(*args: object, **kwargs: object) -> object:
-            reads = (given is None or len(args) <= given or args[given] is None) and (polled is None or (args[polled[0]] if len(args) > polled[0] else kwargs.get(polled[1])) != 0)
+            reads = (given is None or len(args) <= given or args[given] is None) and (polled is None or argument(args, kwargs, *polled) != 0)
             return self._through(facility, functools.partial(self._charged, carried) if reads else lambda: None, function, *args, **kwargs)
 
         return reached
@@ -271,19 +273,19 @@ class Watch:
 
         @functools.wraps(method)
         def waited(owner: object, *args: object, **kwargs: object) -> object:
-            timeout = args[at] if len(args) > at else kwargs.get(keyword)
+            timeout = argument(args, kwargs, at, keyword)
             # A wait of no seconds is a poll, as a sleep of none is a yield: it waits on no time.
             waits = isinstance(timeout, int | float) and timeout > 0
             return self._through(facility, functools.partial(self._charged, False) if waits else lambda: None, method, owner, *args, **kwargs)
 
         return waited
 
-    def looped(self, facility: str, method: Callable[..., object], reaches: Callable[[asyncio.BaseEventLoop, tuple[Any, ...]], bool]) -> Callable[..., object]:
+    def looped(self, facility: str, method: Callable[..., object], reaches: Callable[[asyncio.BaseEventLoop, tuple[Any, ...], dict[str, Any]], bool]) -> Callable[..., object]:
         """`method` of the event loop, recording each call that `reaches` as a reach of `facility`."""
 
         @functools.wraps(method)
         def asked(loop: asyncio.BaseEventLoop, *args: object, **kwargs: object) -> object:
-            return self._through(facility, lambda: self._charged(False) if reaches(loop, args) else None, method, loop, *args, **kwargs)
+            return self._through(facility, lambda: self._charged(False) if reaches(loop, args, kwargs) else None, method, loop, *args, **kwargs)
 
         return asked
 
@@ -350,7 +352,9 @@ class Watch:
         its setup starts copies that, and is the fixture's work, whichever test it was set up for."""
         if fixturedef.scope == "function":
             return (yield)
-        token = ORIGIN.set(self._module(fixturedef.func.__code__.co_filename) or None)
+        # The fixture's own function, innermost of the layers a plugin wraps it in, as pytest-asyncio's synchronizer does.
+        *_, own = layers(fixturedef.func)
+        token = ORIGIN.set(self._module(own.co_filename) or None)
         try:
             return (yield)
         finally:
@@ -413,15 +417,20 @@ def in_asyncio(frame: FrameType) -> bool:
     return frame.f_code.co_filename.startswith(ASYNCIO)
 
 
-def asked_by_the_loop() -> bool:
-    """Whether what the event loop is asked for now comes from asyncio's code alone, from where the loop dispatches
-    (DISPATCH) to the call: no caller outside asyncio between."""
+def asyncios_own() -> bool:
+    """Whether what the event loop is asked for now is asyncio's, setting a timer on work of its own (BOUNDED): no caller
+    outside asyncio between."""
     frame: FrameType | None = asking()
     while frame is not None and in_asyncio(frame):
-        if frame.f_code in DISPATCH:
+        if frame.f_code in BOUNDED:
             return True
         frame = frame.f_back
     return False
+
+
+def argument(args: tuple[Any, ...], kwargs: dict[str, Any], at: int, keyword: str) -> Any:
+    """The argument a call passed at place `at` or by `keyword`: None, passed neither way."""
+    return args[at] if len(args) > at else kwargs.get(keyword)
 
 
 def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:

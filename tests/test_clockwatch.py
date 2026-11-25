@@ -150,12 +150,22 @@ def test_a_test_is_charged_for_the_waits_it_asks_the_loop_for_and_its_reads_of_t
         test_sleeps=ran("        await asyncio.sleep(0.001)"),
         test_bounds=ran("        async with asyncio.timeout(1):\n            pass"),
         test_reads=ran("        asyncio.get_running_loop().time()"),
-        # A job on the loop's executor, whose shutdown asyncio.run bounds by a timer of its own.
-        test_polls=ran("        loop = asyncio.get_running_loop()\n        loop.call_later(0, lambda: None)\n        loop.call_soon(lambda: None)\n        await asyncio.sleep(0)\n        await asyncio.to_thread(int)"),
+        test_named=ran("        asyncio.get_running_loop().call_later(delay=1, callback=lambda: None).cancel()"),
+        # asyncio's own coroutines handed the loop straight: the waits are the test's all the same.
+        test_handed="import asyncio\n\ndef test_runs():\n    asyncio.run(asyncio.sleep(0.001))\n",
+        test_bounded="import asyncio\n\ndef test_runs():\n    asyncio.run(asyncio.wait_for(asyncio.sleep(0), 1))\n",
+        # The loop's own clock read by the test, for a timer already due.
+        test_late=ran("        loop = asyncio.get_running_loop()\n        loop.call_at(loop.time() - 1, lambda: None)"),
+        # A job on the loop's executor, whose shutdown asyncio.run bounds by a timer of its own; and a log record.
+        test_polls=ran("        loop = asyncio.get_running_loop()\n        loop.call_later(0, lambda: None)\n        loop.call_soon(lambda: None)\n        await asyncio.sleep(0)\n        await asyncio.to_thread(int)\n        import logging\n        logging.getLogger('x').warning('w')"),
     )  # fmt: skip
     assert "test_sleeps.py: ['asyncio.BaseEventLoop.call_later']" in lines
     assert "test_bounds.py: ['asyncio.BaseEventLoop.call_at']" in lines
     assert "test_reads.py: ['time.monotonic']" in lines
+    assert "test_named.py: ['asyncio.BaseEventLoop.call_later']" in lines
+    assert "test_handed.py: ['asyncio.BaseEventLoop.call_later']" in lines
+    assert "test_bounded.py: ['asyncio.BaseEventLoop.call_at']" in lines
+    assert "test_late.py: ['time.monotonic']" in lines
     assert not any(line.startswith("test_polls.py") for line in lines)
 
 
