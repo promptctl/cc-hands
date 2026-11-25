@@ -135,9 +135,145 @@ def test_a_task_a_test_spawns_is_charged_to_the_test_and_a_wait_of_none_to_no_on
     helper = "import time\n\nasync def poll():\n    time.strftime('%H')\n"
     user = "import asyncio, threading, time\nfrom helper import poll\n\ndef test_spawns():\n    async def main():\n        await asyncio.create_task(poll())\n    asyncio.run(main())\n\ndef test_yields():\n    time.sleep(0)\n    threading.Timer(0, lambda: None).cancel()\n"
     lines = reached(pytester, monkeypatch, helper=helper, test_user=user)
-    # The loop asyncio.run drives reads the machine's monotonic clock too.
-    assert "test_user.py: ['time.monotonic', 'time.strftime']" in lines
+    # The loop asyncio.run drives reads the machine's clock as it runs: the loop's own.
+    assert "test_user.py: ['time.strftime']" in lines
     assert not any(line.startswith("helper.py") for line in lines)
+
+
+def runs(body: str) -> dict[str, str]:
+    """A test whose body is `body`'s lines, as a sync test under `asyncio.run` and as an async test under pytest-asyncio."""
+    lines = [line for line in body.split("\n") if line]
+    return {
+        "sync": "import asyncio, logging\n\ndef test_runs():\n    async def main():\n" + "".join(f"        {line}\n" for line in lines) + "    asyncio.run(main())\n",
+        "async": "import asyncio, logging, pytest\n\n@pytest.mark.asyncio\nasync def test_runs():\n" + "".join(f"    {line}\n" for line in lines),
+    }
+
+
+@pytest.mark.outside
+def test_a_test_is_charged_for_the_waits_it_and_its_tasks_ask_the_loop_for_however_the_loop_is_run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    charged: dict[str, tuple[str, list[str]]] = {
+        "sleeps": ("await asyncio.sleep(0.001)", ["asyncio.BaseEventLoop.call_later"]),
+        "bounds": ("async with asyncio.timeout(1):\n    pass", ["asyncio.BaseEventLoop.call_at"]),
+        "reads": ("asyncio.get_running_loop().time()", ["time.monotonic"]),
+        "spawns": ("await asyncio.create_task(asyncio.sleep(0.001))", ["asyncio.BaseEventLoop.call_later"]),
+        "gathers": ("await asyncio.gather(asyncio.sleep(0.001))", ["asyncio.BaseEventLoop.call_later"]),
+        "groups": ("async with asyncio.TaskGroup() as group:\n    group.create_task(asyncio.wait_for(asyncio.sleep(0), 1))", ["asyncio.BaseEventLoop.call_at"]),
+        # The test's own read of the loop's clock, for a timer already due.
+        "late": ("loop = asyncio.get_running_loop()\nloop.call_at(loop.time() - 1, lambda: None)", ["time.monotonic"]),
+        # Polls, a log record, and a job on the loop's executor, whose shutdown asyncio.run bounds by a timer of its own.
+        "polls": ("loop = asyncio.get_running_loop()\nloop.call_later(0, lambda: None)\nloop.call_soon(lambda: None)\nawait asyncio.sleep(0)\nlogging.getLogger('x').warning('w')\nawait asyncio.to_thread(int)", []),
+    }  # fmt: skip
+    modules = {f"test_{way}_{name}": source for name, (body, _) in charged.items() for way, source in runs(body).items()}
+    result = run(pytester, monkeypatch, **modules)
+    result.assert_outcomes(passed=len(modules))
+    for name, (_, facilities) in charged.items():
+        for way in ("sync", "async"):
+            expected = [f"test_{way}_{name}.py: {facilities}"] if facilities else []
+            assert [line for line in result.outlines if line.startswith(f"test_{way}_{name}.py:")] == expected, (way, name)
+
+
+# A library outside tests/: a thread and a task it starts for itself, and a wait it is handed.
+LIBRARY = """
+import asyncio, threading, time
+
+class Monitor(threading.Thread):
+    def run(self):
+        threading.Event().wait(0.001)
+
+def watch():
+    monitor = Monitor()
+    monitor.start()
+    monitor.join()
+
+def offload():
+    return asyncio.ensure_future(asyncio.to_thread(time.sleep, 0.001))
+
+def snooze():
+    return asyncio.ensure_future(asyncio.sleep(0.001))
+
+def nap(*_):
+    time.sleep(0.001)
+"""
+
+# A pool and a SerialThread another module makes, shared by the tests that hand them work.
+SHARED = """
+import concurrent.futures
+import library, pytest
+from hands.threads import SerialThread
+
+@pytest.fixture(scope='session')
+def pool():
+    with concurrent.futures.ThreadPoolExecutor(1, initializer=library.nap) as pool:
+        yield pool
+
+@pytest.fixture(scope='session')
+def serial():
+    return SerialThread('serial')
+"""
+
+
+@pytest.mark.outside
+def test_a_wait_handed_to_a_thread_a_job_or_a_serial_thread_is_charged_to_the_test_that_handed_it(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytester.makepyfile(library=LIBRARY)
+    handed: dict[str, tuple[str, list[str]]] = {
+        "test_offloads": ("import asyncio, threading\n\ndef test_runs():\n    asyncio.run(asyncio.to_thread(threading.Event().wait, 0.001))\n", ["threading.Event.wait"]),
+        "test_slept": ("import asyncio, time\n\ndef test_runs():\n    asyncio.run(asyncio.to_thread(time.sleep, 0.001))\n", ["time.sleep"]),
+        "test_threaded": ("import threading, time\n\ndef test_runs():\n    thread = threading.Thread(target=time.sleep, args=(0.001,))\n    thread.start()\n    thread.join()\n", ["time.sleep"]),
+        "test_submitted": ("import concurrent.futures, time\n\ndef test_runs():\n    with concurrent.futures.ThreadPoolExecutor(1) as pool:\n        pool.submit(time.sleep, 0.001).result()\n", ["time.sleep"]),
+        "test_off_loop": ("import asyncio, functools, time\nfrom hands.threads import off_loop\n\ndef test_runs():\n    asyncio.run(off_loop(functools.partial(time.sleep, 0.001), 'slow'))\n", ["time.sleep"]),
+        "test_gathered": ("import asyncio, pytest, time\n\n@pytest.mark.asyncio\nasync def test_runs():\n    await asyncio.gather(asyncio.to_thread(time.sleep, 0.001))\n", ["time.sleep"]),
+        # Work handed to a SerialThread and a pool conftest.py made, which charges conftest.py the pool's initializer.
+        "test_given": ("import asyncio, functools, time\n\ndef test_runs(serial):\n    asyncio.run(serial.run(functools.partial(time.sleep, 0.001)))\n", ["time.sleep"]),
+        "test_a_fills": ("def test_runs(pool):\n    pool.submit(int).result()\n", []),
+        # A done callback run on the worker the first module started.
+        "test_b_calls": ("import threading, library\n\ndef test_runs(pool):\n    gate = threading.Event()\n    future = pool.submit(gate.wait)\n    future.add_done_callback(library.nap)\n    gate.set()\n    future.result()\n", ["time.sleep"]),
+        # A thread and a task the library starts for itself.
+        "test_monitored": ("import library\n\ndef test_runs():\n    library.watch()\n", []),
+        "test_offloaded": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.offload()\n    asyncio.run(main())\n", []),
+        "test_snoozed": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.snooze()\n    asyncio.run(main())\n", []),
+    }  # fmt: skip
+    result = run(pytester, monkeypatch, hooks=SHARED, **{name: source for name, (source, _) in handed.items()})
+    result.assert_outcomes(passed=len(handed))
+    assert "conftest.py: ['time.sleep']" in result.outlines
+    for name, (_, facilities) in handed.items():
+        expected = [f"{name}.py: {facilities}"] if facilities else []
+        assert [line for line in result.outlines if line.startswith(f"{name}.py:")] == expected, name
+
+
+@pytest.mark.outside
+def test_a_task_a_wider_fixtures_setup_starts_is_charged_to_the_fixture_and_not_the_test_it_was_set_up_for(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A decorator from outside tests/ is the fixture's outermost layer: its own module is its innermost layer's.
+    pytester.makepyfile(swap="import functools\n\ndef wrapped(fixture):\n    @functools.wraps(fixture)\n    async def run():\n        async for value in fixture():\n            yield value\n    return run\n")
+    hooks = (
+        "\nimport asyncio\nimport helper, pytest_asyncio\nfrom swap import wrapped\n\n"
+        "@pytest_asyncio.fixture(scope='session', loop_scope='session')\n@wrapped\nasync def started():\n"
+        "    asked, stamped = asyncio.Event(), asyncio.Event()\n\n"
+        "    async def stamp():\n        await asked.wait()\n        helper.stamp()\n        stamped.set()\n\n"
+        "    task = asyncio.create_task(stamp())\n    yield asked, stamped\n    await task\n"
+    )
+    user = "import pytest\n\n@pytest.mark.asyncio(loop_scope='session')\nasync def test_uses(started):\n    asked, stamped = started\n    asked.set()\n    await stamped.wait()\n"
+    result = run(pytester, monkeypatch, hooks=hooks, helper="import time\n\ndef stamp():\n    time.strftime('%H')\n", test_user=user)
+    result.assert_outcomes(passed=1)
+    # The task reaches the clock, through a helper, while the test runs, and is the fixture's work all the same.
+    assert "conftest.py: ['time.strftime']" in result.outlines
+    assert not any(line.startswith(("test_user.py", "helper.py")) for line in result.outlines)
+
+
+@pytest.mark.outside
+def test_a_thread_a_tests_helper_starts_for_a_wider_fixture_is_charged_to_the_fixture_and_not_the_helper(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A sync fixture, so the decorator from outside tests/ is its outermost layer and the fixture's own its innermost.
+    pytester.makepyfile(swap="import functools\n\ndef wrapped(fixture):\n    @functools.wraps(fixture)\n    def run():\n        yield from fixture()\n    return run\n")
+    helper = "import threading, time\n\ndef start(asked):\n    thread = threading.Thread(target=lambda: (asked.wait(), time.strftime('%H')))\n    thread.start()\n    return thread\n"
+    hooks = (
+        "\nimport threading\nimport helper, pytest\nfrom swap import wrapped\n\n"
+        "@pytest.fixture(scope='module')\n@wrapped\ndef started():\n"
+        "    asked = threading.Event()\n    thread = helper.start(asked)\n    yield asked\n    thread.join()\n"
+    )
+    user = "def test_uses(started):\n    started.set()\n"
+    result = run(pytester, monkeypatch, hooks=hooks, helper=helper, test_user=user)
+    result.assert_outcomes(passed=1)
+    assert "conftest.py: ['time.strftime']" in result.outlines
+    assert not any(line.startswith(("test_user.py", "helper.py")) for line in result.outlines)
 
 
 @pytest.mark.outside

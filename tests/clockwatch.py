@@ -6,15 +6,29 @@ tests hold src and the composition roots, which run under no harness: datetime's
 type, a C lock's timed acquire, and code run in another process, written out by a test or a script under fixtures/. A
 reference to a facility taken before the watch installs, as a default argument or a class attribute, escapes both.
 
-A reach made with a frame of a module under tests/ on the stack is charged to the origin the running code carries: the
-module whose item was running when it, or the task, the thread, or the executor job that makes it, was started, so a
-test is charged for what its helpers wait on; the harness's own code, a hook or a finalizer, is charged to its module. A read the machine's clock makes for hands code, through `SystemClock`,
-is charged to that origin with no such frame. Nothing reads which test runs now, so a thread that outlives its test is
-charged to that test and not to the next.
+A reach is charged by the unit of work it runs in: the item pytest runs, a task, a thread, an executor job, a piece of
+work given to a `SerialThread`, or a done callback. Each unit keeps a record made when it was made: the module its work
+is charged to, and whether test code, or the harness running an item or a fixture, handed it that work. A task's record
+is kept by the task and the rest on a stack per thread, so no context a caller made is touched. A walk out from a reach
+stops at its unit's edge, the loop's dispatch, the frame that runs a unit, or the harness's own, and never crosses it.
+With a frame of a module under tests/ inside the unit, the reach is charged to the unit's module, or to that frame's with
+none, so a test is charged for what its helpers wait on; the harness's own code, a hook or a finalizer, to its module.
+With none, it is charged to the unit's module if the reach is `SystemClock`'s or the unit was handed its work, as
+`asyncio.to_thread(time.sleep, 1)` is; a thread or a task a library starts for itself, as tqdm's monitor, is no one's.
+Nothing reads which test runs now, so a thread that outlives its test is charged to that test and not to the next.
+
+The event loop's clock and timers are charged as the unit that asks the loop for them: a test's `loop.time()`, its
+`asyncio.sleep` or `asyncio.timeout`, but not the loop's own reads of its clock as it runs, nor the timers of
+`asyncio.run`'s close, asyncio's own shutdown. A log record's timestamp is no reach.
 """
 
+import asyncio
+import asyncio.events
+import asyncio.runners
+import concurrent.futures
 import contextvars
 import functools
+import logging
 import os
 import random
 import secrets
@@ -22,15 +36,19 @@ import sys
 import threading
 import time
 import uuid
+import weakref
 from collections import defaultdict
 from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from types import CodeType
+from types import CodeType, FrameType
+from typing import Any, NamedTuple
 
 import pytest
 
+import hands.threads
 from hands.clock import SystemClock
+from hands.threads import SerialThread
 from test_clock_boundary import offenders, reached, written
 
 # The clock's own tests, which prove the adapter against the machine it reads, and the two checks', whose samples
@@ -56,11 +74,9 @@ UNMOVED = frozenset({
     "test_brain.py",
     "test_brain_turns.py",
     "test_brainpage.py",
-    "test_catch_up.py",
     "test_child.py",
     "test_clipowner.py",
     "test_command_event.py",
-    "test_command_imports.py",
     "test_conversation.py",
     "test_conversationpage.py",
     "test_cues.py",
@@ -79,7 +95,6 @@ UNMOVED = frozenset({
     "test_library.py",
     "test_liveness.py",
     "test_microphone.py",
-    "test_naming.py",
     "test_narrator.py",
     "test_npm_registry.py",
     "test_occurrences.py",
@@ -100,12 +115,8 @@ UNMOVED = frozenset({
     "test_processes_contract_kernel.py",
     "test_progress.py",
     "test_proxy.py",
-    "test_read_session.py",
     "test_readiness.py",
     "test_recall.py",
-    "test_recorded_turns.py",
-    "test_recorder.py",
-    "test_refocus.py",
     "test_render.py",
     "test_restart.py",
     "test_sentences.py",
@@ -119,7 +130,6 @@ UNMOVED = frozenset({
     "test_start.py",
     "test_startsession.py",
     "test_status.py",
-    "test_steps.py",
     "test_streaming.py",
     "test_subagents.py",
     "test_summary_store.py",
@@ -136,7 +146,6 @@ UNMOVED = frozenset({
     "test_update.py",
     "test_usage.py",
     "test_utterance.py",
-    "test_vocabulary.py",
     "test_voice_turns.py",
     "test_voiceprints.py",
     "test_voices.py",
@@ -173,9 +182,48 @@ TIMED: dict[str, tuple[type, str, int, str]] = {
     "threading.Event.wait": (threading.Event, "wait", 0, "timeout"),
     "threading.Condition.wait": (threading.Condition, "wait", 0, "timeout"),
     "threading.Thread.join": (threading.Thread, "join", 0, "timeout"),
+    # ThreadPoolExecutor.submit polls its idle semaphore with a timeout of none.
+    "threading.Semaphore.acquire": (threading.Semaphore, "acquire", 1, "timeout"),
 }  # fmt: skip
 
-ORIGIN: contextvars.ContextVar[str] = contextvars.ContextVar("clockwatch.origin")
+# The event loop's clock and timers, each with whether a call reaches: the loop's clock read by asyncio as it runs is its
+# own, and a timer due now or before, or after no delay, is a poll.
+LOOP: dict[str, tuple[str, Callable[[asyncio.BaseEventLoop, tuple[Any, ...], dict[str, Any]], bool]]] = {
+    "time.monotonic": ("time", lambda _loop, _args, _kwargs: not asking().f_code.co_filename.startswith(ASYNCIO)),
+    "asyncio.BaseEventLoop.call_later": ("call_later", lambda _loop, args, kwargs: argument(args, kwargs, 0, "delay") > 0),
+    "asyncio.BaseEventLoop.call_at": ("call_at", lambda loop, args, kwargs: argument(args, kwargs, 0, "when") > loop.time()),
+}  # fmt: skip
+
+ASYNCIO = f"{Path(asyncio.__file__).parent}{os.sep}"
+# This module and the code that makes units of work on a caller's behalf: a unit's maker is the first frame outside them.
+RELAYS = (__file__, threading.__file__, f"{Path(concurrent.futures.__file__).parent}{os.sep}", ASYNCIO, hands.threads.__file__)
+# The loop's dispatch: every task's step and every callback the loop runs is called from it.
+DISPATCH = asyncio.events.Handle._run.__code__  # pyright: ignore[reportPrivateUsage]
+# asyncio's own work, done for no caller: the tasks `asyncio.run` makes as it closes, to cancel what is left, close async
+# generators, and shut its executor down within a timeout.
+OWN = frozenset({asyncio.runners.Runner.close.__code__})
+
+# The module the item pytest runs is charged to, or the wide fixture being set up: the record of the unit pytest's own
+# thread runs.
+ORIGIN: contextvars.ContextVar[str | None] = contextvars.ContextVar("clockwatch.origin")
+
+
+class Unit(NamedTuple):
+    """What a unit of work records when it is made: the module its work is charged to, and whether test code, or the
+    harness running an item or a fixture, handed it that work."""
+
+    origin: str | None
+    handed: bool
+
+
+NOBODY = Unit(None, False)
+
+
+class Running(threading.local):
+    """The units running on a thread now, innermost last, each pushed by the frame that runs it."""
+
+    def __init__(self) -> None:
+        self.units: list[Unit] = []
 
 
 class Watch:
@@ -187,6 +235,10 @@ class Watch:
         self._patch = patch
         self._originals: dict[int, Callable[..., object]] = {}
         self._within = threading.local()
+        self._running = Running()
+        self._tasks: weakref.WeakKeyDictionary[asyncio.Task[Any], Unit] = weakref.WeakKeyDictionary()
+        # A pool's record, which its own threads run as: an executor starts them as it is handed its first jobs.
+        self._pools: weakref.WeakKeyDictionary[ThreadPoolExecutor, Unit] = weakref.WeakKeyDictionary()
         self.record: defaultdict[str, set[str]] = defaultdict(set)
         self._modules: dict[str, str | None] = {}
         self._ran: set[str] = set()
@@ -197,60 +249,115 @@ class Watch:
 
     def _module(self, filename: str) -> str | None:
         """The module `filename` is, relative to tests/; "" for a file outside it, and this one, that a test may have
-        called into; None for pytest's and pluggy's, below which no test frame lies, since pytest calls every test."""
+        called into; None for the harness's, pytest's, pluggy's and pytest-asyncio's, which run every test."""
         if filename not in self._modules:
             path = Path(filename)
             self._modules[filename] = (
                 path.relative_to(self.tests).as_posix() if path.is_relative_to(self.tests) and path != Path(__file__)
-                else None if {"_pytest", "pluggy"} & set(path.parts) else ""
+                else None if {"_pytest", "pluggy", "pytest_asyncio"} & set(path.parts) else ""
             )  # fmt: skip
         return self._modules[filename]
 
-    def _entered(self) -> tuple[str, bool] | None:
-        """The innermost frame's module under tests/, and whether the code it runs in is the harness's: entered from
-        pytest's own frame directly through anything but a test or a fixture of the item's own, as a hook or a finalizer
-        is. A task or a thread, entered from the event loop or the thread's start, is the code that started it. None
-        with no frame under tests/."""
-        frame, innermost, harness = sys._getframe(), "", False  # pyright: ignore[reportPrivateUsage]
-        while frame is not None and (module := self._module(frame.f_code.co_filename)) is not None:
-            if module:
+    def _edge(self, frame: FrameType) -> Unit | None:
+        """The record of the unit whose edge `frame` is, None for a frame inside a unit. The loop's dispatch is the edge
+        of the task it steps, or, for a callback, of the unit that runs the loop; the frame that runs a unit, of the unit
+        it pushed; the harness's own frame, of the item."""
+        code = frame.f_code
+        if code is DISPATCH:
+            task = asyncio.current_task()
+            return self._enclosing(frame.f_back) if task is None else self._tasks.get(task, NOBODY)
+        if code is RUNS:
+            return self._running.units[-1]
+        return Unit(ORIGIN.get(None), False) if self._module(code.co_filename) is None else None
+
+    def _enclosing(self, frame: FrameType | None) -> Unit:
+        """The record of the unit `frame` runs in: its first edge out, or nobody's at a thread's bottom."""
+        while frame is not None:
+            if (unit := self._edge(frame)) is not None:
+                return unit
+            frame = frame.f_back
+        return NOBODY
+
+    def _charge(self, frame: FrameType | None, carried: bool) -> str | None:
+        """The module a reach made at `frame` is charged to, from the frames out to its unit's edge and the unit's
+        record. With a frame under tests/, the harness's code's module, a hook's or a finalizer's: entered from the
+        harness's own frame directly through anything but a test or a fixture of the item's own; else the unit's
+        module; else, as no item runs while a module's code runs as it is collected, the innermost such frame's. With
+        none, the unit's module if the reach is `carried` or the unit was handed its work, else no one."""
+        innermost, harness, unit = "", False, NOBODY
+        while frame is not None:
+            if (edge := self._edge(frame)) is not None:
+                unit = edge
+                break
+            if module := self._module(frame.f_code.co_filename):
                 innermost = innermost or module
                 caller = frame.f_back
                 harness = caller is not None and self._module(caller.f_code.co_filename) is None and frame.f_code not in self._tests
             frame = frame.f_back
-        return (innermost, harness) if innermost else None
+        if innermost:
+            return innermost if harness else unit.origin or innermost
+        return unit.origin if carried or unit.handed else None
 
-    def _charged(self, carried: bool) -> str | None:
-        """The module a reach is charged to: with a frame under tests/ on the stack, the origin, unless the harness
-        makes it, or no item runs, as a module's code runs as it is collected: then the innermost such frame's module.
-        With none, the origin if `carried`, else none."""
-        if (entered := self._entered()) is None:
-            return ORIGIN.get(None) if carried else None
-        innermost, harness = entered
-        return innermost if harness else ORIGIN.get(innermost)
+    def _made(self) -> Unit:
+        """The record of a unit of work made now, from its maker, the first frame out outside RELAYS. The harness,
+        running an item or a fixture, hands it the item's module; test code, the module it would be charged to; asyncio's
+        own close, src and a library hand it nothing, and give it the module of the unit they run in. An edge met first,
+        as when asyncio makes a task from a callback or a pool starts its threads, gives it that edge's unit."""
+        frame: FrameType | None = sys._getframe(1)  # pyright: ignore[reportPrivateUsage]
+        while frame is not None and frame.f_code not in (DISPATCH, RUNS, *OWN) and frame.f_code.co_filename.startswith(RELAYS):
+            frame = frame.f_back
+        if frame is None or frame.f_code in (DISPATCH, RUNS):
+            return self._enclosing(frame)
+        if frame.f_code in OWN:
+            return Unit(self._enclosing(frame).origin, False)
+        match self._module(frame.f_code.co_filename):
+            case None:
+                return Unit(ORIGIN.get(None), True)
+            case "":
+                return Unit(self._enclosing(frame).origin, False)
+            case _:
+                return Unit(self._charge(frame, carried=True), True)
+
+    def _runs(self, unit: Unit, run: Callable[..., object], /, *args: object, **kwargs: object) -> object:
+        """`run` called as the unit `unit` records: this frame is the unit's edge."""
+        units = self._running.units
+        units.append(unit)
+        try:
+            return run(*args, **kwargs)
+        finally:
+            units.pop()
+
+    def handing(self, work: Callable[..., object]) -> Callable[..., object]:
+        """`work`, handed off to run later, wherever it runs, as a unit of its own made by the code handing it."""
+        return functools.partial(self._runs, self._made(), work)
 
     def _through(self, facility: str, charged: Callable[[], str | None], function: Callable[..., object], /, *args: object, **kwargs: object) -> object:
         """`function` called, as a reach of `facility` by the module `charged` names unless it is made inside another
-        facility: a uuid4 reads os.urandom and an Event's wait a Condition's, and the reach is the call the test made,
-        not its parts. Only the outer call walks the stack."""
+        facility's call: a uuid4 reads os.urandom and an Event's wait a Condition's, and the reach is the call the test
+        made, not its parts. A timer armed after the call returns, as `asyncio.timeout`'s is on entry, is a reach of its
+        own. Only the outer call walks the stack."""
         outer = not getattr(self._within, "facility", False)
-        if outer and (module := charged()) is not None and module not in CLOCK_TESTS:
-            self.record[module].add(facility)
-        self._within.facility = True
         try:
+            # Set first: what the watch reads to work out the charge, as the loop's time for a timer, is no reach.
+            self._within.facility = True
+            if outer and (module := charged()) is not None and module not in CLOCK_TESTS:
+                self.record[module].add(facility)
             return function(*args, **kwargs)
         finally:
             self._within.facility = not outer
 
+    def _charged(self, carried: bool) -> str | None:
+        return self._charge(sys._getframe(1), carried)  # pyright: ignore[reportPrivateUsage]
+
     def wrap(self, facility: str, function: Callable[..., object], carried: bool) -> Callable[..., object]:
-        """`function`, recording each call as a reach of `facility`: by a test frame alone, or, `carried`, by the
-        origin the running code carries when no test frame is on the stack."""
+        """`function`, recording each call as a reach of `facility`, by a test frame or a unit handed its work, or,
+        `carried`, by the module of the unit it runs in."""
 
         given, polled = GIVEN.get(facility), POLLED.get(facility)
 
         @functools.wraps(function)
         def reached(*args: object, **kwargs: object) -> object:
-            reads = (given is None or len(args) <= given or args[given] is None) and (polled is None or (args[polled[0]] if len(args) > polled[0] else kwargs.get(polled[1])) != 0)
+            reads = (given is None or len(args) <= given or args[given] is None) and (polled is None or argument(args, kwargs, *polled) != 0)
             return self._through(facility, functools.partial(self._charged, carried) if reads else lambda: None, function, *args, **kwargs)
 
         return reached
@@ -260,20 +367,21 @@ class Watch:
 
         @functools.wraps(method)
         def waited(owner: object, *args: object, **kwargs: object) -> object:
-            timeout = args[at] if len(args) > at else kwargs.get(keyword)
+            timeout = argument(args, kwargs, at, keyword)
             # A wait of no seconds is a poll, as a sleep of none is a yield: it waits on no time.
             waits = isinstance(timeout, int | float) and timeout > 0
             return self._through(facility, functools.partial(self._charged, False) if waits else lambda: None, method, owner, *args, **kwargs)
 
         return waited
 
-    def carrying(self, run: Callable[..., object]) -> Callable[..., object]:
-        """`run`, made to carry the origin of the code that starts it, wherever it runs, and nothing else of its context:
-        a thread starts in an empty one, as it does unwatched."""
-        context = contextvars.Context()
-        if (origin := self._charged(carried=True)) is not None:
-            context.run(ORIGIN.set, origin)
-        return functools.partial(context.run, run)
+    def looped(self, facility: str, method: Callable[..., object], reaches: Callable[[asyncio.BaseEventLoop, tuple[Any, ...], dict[str, Any]], bool]) -> Callable[..., object]:
+        """`method` of the event loop, recording each call that `reaches` as a reach of `facility`."""
+
+        @functools.wraps(method)
+        def asked(loop: asyncio.BaseEventLoop, *args: object, **kwargs: object) -> object:
+            return self._through(facility, lambda: self._charged(False) if reaches(loop, args, kwargs) else None, method, loop, *args, **kwargs)
+
+        return asked
 
     def install(self) -> None:
         patch, originals = self._patch, self._originals
@@ -286,22 +394,62 @@ class Watch:
             patch.setattr(SystemClock, method, self.wrap(f"SystemClock.{method}", getattr(SystemClock, method), carried=True))
         for facility, (owner, method, at, keyword) in TIMED.items():
             patch.setattr(owner, method, self.timed(facility, getattr(owner, method), at, keyword))
+        for facility, (method, reaches) in LOOP.items():
+            patch.setattr(asyncio.BaseEventLoop, method, self.looped(facility, getattr(asyncio.BaseEventLoop, method), reaches))
         timer = threading.Timer.__init__
         patch.setattr(threading.Timer, "__init__", self.wrap("threading.Timer", timer, carried=False))
+        stamp = logging.LogRecord.__init__
+
+        @functools.wraps(stamp)
+        def stamped(record: logging.LogRecord, *args: Any, **kwargs: Any) -> None:
+            # A record stamps the time it was made: no wait, and no test's reach.
+            self._through("logging.LogRecord", lambda: None, stamp, record, *args, **kwargs)
+
+        patch.setattr(logging.LogRecord, "__init__", stamped)
+        create = asyncio.BaseEventLoop.create_task
+
+        def created(loop: asyncio.BaseEventLoop, coro: Any, /, **kwargs: Any) -> asyncio.Task[Any]:
+            unit = self._made()
+            task = create(loop, coro, **kwargs)
+            self._tasks[task] = unit
+            return task
+
+        patch.setattr(asyncio.BaseEventLoop, "create_task", created)
         start = threading.Thread.start
 
         def started(thread: threading.Thread) -> None:
-            # The instance's run, which a subclass's override is, made to carry the origin of the code starting it.
-            thread.run = self.carrying(thread.run)  # pyright: ignore[reportAttributeAccessIssue]
+            # The instance's run, which a subclass's override is.
+            thread.run = self.handing(thread.run)  # pyright: ignore[reportAttributeAccessIssue]
             start(thread)
 
         patch.setattr(threading.Thread, "start", started)
-        submit = ThreadPoolExecutor.submit
+        init, adjust = ThreadPoolExecutor.__init__, ThreadPoolExecutor._adjust_thread_count  # pyright: ignore[reportPrivateUsage]
+
+        def made(pool: ThreadPoolExecutor, *args: Any, **kwargs: Any) -> None:
+            self._pools[pool] = self._made()
+            init(pool, *args, **kwargs)
+
+        def adjusted(pool: ThreadPoolExecutor) -> None:
+            # The threads a pool starts for itself are its maker's: each job they run is a unit of its own.
+            self._runs(self._pools.get(pool, NOBODY), adjust, pool)
+
+        patch.setattr(ThreadPoolExecutor, "__init__", made)
+        patch.setattr(ThreadPoolExecutor, "_adjust_thread_count", adjusted)
+        submit, give = ThreadPoolExecutor.submit, SerialThread.give
+        add: Callable[[Future[object], Callable[[Future[object]], object]], None] = Future.add_done_callback  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
         def submitted(pool: ThreadPoolExecutor, fn: Callable[..., object], /, *args: object, **kwargs: object) -> Future[object]:
-            return submit(pool, self.carrying(fn), *args, **kwargs)
+            return submit(pool, self.handing(fn), *args, **kwargs)
+
+        def given(serial: SerialThread, work: Callable[[], None]) -> None:
+            give(serial, self.handing(work))  # pyright: ignore[reportArgumentType]
+
+        def added(future: Future[object], fn: Callable[[Future[object]], object]) -> None:
+            add(future, self.handing(fn))
 
         patch.setattr(ThreadPoolExecutor, "submit", submitted)
+        patch.setattr(SerialThread, "give", given)
+        patch.setattr(Future, "add_done_callback", added)
 
     def rebind(self) -> None:
         """Every module attribute bound to a facility by `from time import monotonic` and its like, bound to its wrapper."""
@@ -313,6 +461,20 @@ class Watch:
     @pytest.hookimpl(tryfirst=True)
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         self.rebind()
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_fixture_setup(self, fixturedef: pytest.FixtureDef[object]) -> Generator[None, object, object]:
+        """A fixture wider than its test is set up as its own module's, or no one's, defined outside tests/: what its
+        setup hands off is the fixture's work, whichever test it was set up for."""
+        if fixturedef.scope == "function":
+            return (yield)
+        # The fixture's own function, innermost of the layers a plugin wraps it in, as pytest-asyncio's does.
+        *_, own = layers(fixturedef.func)
+        token = ORIGIN.set(self._module(own.co_filename) or None)
+        try:
+            return (yield)
+        finally:
+            ORIGIN.reset(token)
 
     @pytest.hookimpl(wrapper=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, object, object]:
@@ -364,6 +526,23 @@ def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -
     of the whole suite, each it holds that never did. A part of the suite sees only its part's reaches, so only the whole
     can prove an entry stale."""
     return {module: found for module, found in record.items() if module not in unmoved}, set(unmoved - record.keys()) if whole else set()
+
+
+# The frame that runs a unit of work: the unit's edge.
+RUNS = Watch._runs.__code__  # pyright: ignore[reportPrivateUsage]
+
+
+def argument(args: tuple[Any, ...], kwargs: dict[str, Any], at: int, keyword: str) -> Any:
+    """A call's argument at place `at` or by `keyword`, None if given neither way."""
+    return args[at] if len(args) > at else kwargs.get(keyword)
+
+
+def asking() -> FrameType:
+    """The frame that called into the watch now: the innermost outside this module."""
+    depth = 1
+    while (frame := sys._getframe(depth)).f_code.co_filename == __file__:  # pyright: ignore[reportPrivateUsage]
+        depth += 1
+    return frame
 
 
 def layers(function: Callable[..., object]) -> Iterator[CodeType]:
