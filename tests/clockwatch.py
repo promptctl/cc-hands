@@ -8,10 +8,12 @@ reference to a facility taken before the watch installs, as a default argument o
 
 A reach made with a frame of a module under tests/ on the stack is charged to the origin the running code carries: the
 module whose item was running when it, or the task, the thread, or the executor job that makes it, was started, so a
-test is charged for what its helpers wait on; the harness's own code, a hook or a finalizer, is charged to its module. A read the machine's clock makes for hands code, through `SystemClock`,
-is charged to that origin with no such frame. Nothing reads which test runs now, so a thread that outlives its test is
-charged to that test and not to the next. A wider fixture's setup carries its own module, so a task it starts is charged
-to the fixture and not to the test it was set up for.
+test is charged for what its helpers wait on; the harness's own code, a hook or a finalizer, is charged to its module. A
+read the machine's clock makes for hands code, through `SystemClock`, is charged to that origin with no such frame, and
+so is all a thread or an executor job reaches that a test handed its work, as `asyncio.to_thread(time.sleep, 1)` does; a
+thread a library starts for itself, as tqdm's monitor, is not. Nothing reads which test runs now, so a thread that
+outlives its test is charged to that test and not to the next. A wider fixture's setup carries its own module, so a task
+it starts is charged to the fixture and not to the test it was set up for.
 
 The event loop's clock and timers are charged to the code that asked the loop for them: a test's `loop.time()`, its
 `asyncio.sleep` or `asyncio.timeout`, but not the loop's own reads of its clock as it runs nor a timer asyncio asks of
@@ -19,6 +21,7 @@ itself, as `asyncio.run` bounds its executor's shutdown. A log record's timestam
 """
 
 import asyncio
+import concurrent.futures
 import contextvars
 import functools
 import logging
@@ -186,6 +189,9 @@ LOOP: dict[str, tuple[str, Callable[[asyncio.BaseEventLoop, tuple[Any, ...], dic
 # a deadline. A coroutine of asyncio's a test hands the loop, as `asyncio.run(asyncio.sleep(1))` does, is the test's.
 BOUNDED: frozenset[CodeType] = frozenset({asyncio.BaseEventLoop.shutdown_default_executor.__code__})
 ASYNCIO = f"{Path(asyncio.__file__).parent}{os.sep}"
+# This module and the standard library's ways to hand work to a thread: the code that starts a thread or a job is the
+# first frame outside them.
+RELAYS = (__file__, threading.__file__, f"{Path(concurrent.futures.__file__).parent}{os.sep}", ASYNCIO)
 
 ORIGIN: contextvars.ContextVar[str | None] = contextvars.ContextVar("clockwatch.origin")
 
@@ -199,6 +205,11 @@ class Watch:
         self._patch = patch
         self._originals: dict[int, Callable[..., object]] = {}
         self._within = threading.local()
+        # The origin of the thread or executor job running on a thread now, if a test handed it its work: it charges
+        # what the job reaches with no frame of tests/ on its stack, as a C function it was handed does. The thread's,
+        # not the context's: asyncio.to_thread runs its function in the task's context. Never set on the thread pytest
+        # runs on, where what reaches with no test frame is pytest's own.
+        self._job = threading.local()
         self.record: defaultdict[str, set[str]] = defaultdict(set)
         self._modules: dict[str, str | None] = {}
         self._ran: set[str] = set()
@@ -232,12 +243,20 @@ class Watch:
             frame = frame.f_back
         return (innermost, harness) if innermost else None
 
+    def _handed(self) -> bool:
+        """Whether the code starting a thread or an executor job now is a test's, or the harness's: the first frame
+        outside RELAYS is under tests/."""
+        frame: FrameType | None = sys._getframe(1)  # pyright: ignore[reportPrivateUsage]
+        while frame is not None and frame.f_code.co_filename.startswith(RELAYS):
+            frame = frame.f_back
+        return frame is not None and bool(self._module(frame.f_code.co_filename))
+
     def _charged(self, carried: bool) -> str | None:
         """The module a reach is charged to: with a frame under tests/ on the stack, the origin, unless the harness
         makes it, or no item runs, as a module's code runs as it is collected: then the innermost such frame's module.
-        With none, the origin if `carried`, else none."""
+        With none, the origin if `carried`, else the origin of the thread or job running, if a test handed it its work."""
         if (entered := self._entered()) is None:
-            return ORIGIN.get(None) if carried else None
+            return ORIGIN.get(None) if carried else getattr(self._job, "origin", None)
         innermost, harness = entered
         return innermost if harness else ORIGIN.get(innermost)
 
@@ -295,7 +314,18 @@ class Watch:
         context = contextvars.Context()
         if (origin := self._charged(carried=True)) is not None:
             context.run(ORIGIN.set, origin)
-        return functools.partial(context.run, run)
+        handed = origin if self._handed() else None
+
+        def job(*args: object, **kwargs: object) -> object:
+            # An executor's thread runs its jobs inside its own run: each is its own starter's while it runs.
+            outer = getattr(self._job, "origin", None)
+            self._job.origin = handed
+            try:
+                return context.run(run, *args, **kwargs)
+            finally:
+                self._job.origin = outer
+
+        return job
 
     def install(self) -> None:
         patch, originals = self._patch, self._originals

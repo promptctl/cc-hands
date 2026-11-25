@@ -170,15 +170,36 @@ def test_a_test_is_charged_for_the_waits_it_asks_the_loop_for_and_its_reads_of_t
 
 
 @pytest.mark.outside
+def test_a_wait_handed_to_a_thread_or_an_executor_job_is_charged_to_the_test_that_handed_it(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A library outside tests/ that starts a thread for itself, as tqdm does its monitor: the thread's waits are no test's.
+    pytester.makepyfile(library="import threading\n\nclass Monitor(threading.Thread):\n    def run(self):\n        threading.Event().wait(0.001)\n\ndef start():\n    monitor = Monitor()\n    monitor.start()\n    monitor.join()\n")
+    lines = reached(
+        pytester, monkeypatch,
+        test_monitored="import library\n\ndef test_runs():\n    library.start()\n",
+        # No frame of tests/ is on the stack that waits: the wait is the callable the test handed over.
+        test_offloads="import asyncio, threading\n\ndef test_runs():\n    asyncio.run(asyncio.to_thread(threading.Event().wait, 0.001))\n",
+        test_slept="import asyncio, time\n\ndef test_runs():\n    asyncio.run(asyncio.to_thread(time.sleep, 0.001))\n",
+        test_threaded="import threading, time\n\ndef test_runs():\n    thread = threading.Thread(target=time.sleep, args=(0.001,))\n    thread.start()\n    thread.join()\n",
+    )  # fmt: skip
+    assert "test_offloads.py: ['threading.Event.wait']" in lines
+    assert "test_slept.py: ['time.sleep']" in lines
+    assert "test_threaded.py: ['time.sleep']" in lines
+    assert not any(line.startswith("test_monitored.py") for line in lines)
+
+
+@pytest.mark.outside
 def test_a_task_a_wider_fixtures_setup_starts_is_charged_to_the_fixture_and_not_the_test_it_was_set_up_for(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A decorator from outside tests/ is the fixture's outermost layer: its own module is the innermost layer's.
+    swap = "import functools\n\ndef wrapped(fixture):\n    @functools.wraps(fixture)\n    async def run():\n        async for value in fixture():\n            yield value\n    return run\n"
     hooks = (
-        "\nimport asyncio, time\nimport pytest_asyncio\n\n"
-        "@pytest_asyncio.fixture(scope='session', loop_scope='session')\nasync def started():\n"
+        "\nimport asyncio, time\nimport pytest_asyncio\nfrom swap import wrapped\n\n"
+        "@pytest_asyncio.fixture(scope='session', loop_scope='session')\n@wrapped\nasync def started():\n"
         "    asked, stamped = asyncio.Event(), asyncio.Event()\n\n"
         "    async def stamp():\n        await asked.wait()\n        time.strftime('%H')\n        stamped.set()\n\n"
         "    task = asyncio.create_task(stamp())\n    yield asked, stamped\n    await task\n"
     )
     user = "import pytest\n\n@pytest.mark.asyncio(loop_scope='session')\nasync def test_uses(started):\n    asked, stamped = started\n    asked.set()\n    await stamped.wait()\n"
+    pytester.makepyfile(swap=swap)
     result = run(pytester, monkeypatch, hooks=hooks, test_user=user)
     result.assert_outcomes(passed=1)
     # The task reaches the clock while the test runs, and is the fixture's work all the same.
