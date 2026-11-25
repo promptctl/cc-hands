@@ -46,11 +46,15 @@ def cut_short(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[None
 
 @pytest.fixture
 def hub(monkeypatch: pytest.MonkeyPatch) -> Generator[list[str]]:
-    """A hub serving the commit's files to the hub's client, online; what it was asked for, in order."""
+    """A hub serving the commit's files to the hub's client, online; what it was asked for of them, in order. Any other
+    request, the client's own among them, is one this hub does not serve."""
     asked: list[str] = []
     contents: dict[str, bytes] = dict((FETCHED, MISSING))
+    commit = f"/{transcription.MODEL}/resolve/{transcription.REVISION}/"
 
     def serve(request: httpx.Request) -> httpx.Response:
+        if not request.url.path.startswith(commit):
+            return httpx.Response(404)
         asked.append(f"{request.method} {request.url.path}")
         content = contents[request.url.path.rsplit("/", 1)[-1]]
         headers = {"X-Repo-Commit": transcription.REVISION, "ETag": f'"{git_hash(content)}"', "Content-Length": str(len(content))}
