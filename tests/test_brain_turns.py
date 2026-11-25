@@ -17,6 +17,7 @@ import pytest
 from hands.virtualclock import VirtualClock
 
 from hands.brain import process
+from hands.brain.configdir import Unstartable
 from hands.sessions.reader import Reader
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, EXIT_SECONDS, INTERRUPT_SECONDS, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Untaken, _listen, _Turn  # pyright: ignore[reportPrivateUsage]
@@ -1249,6 +1250,27 @@ async def test_a_start_that_does_not_parse_is_one_event_and_leaves_the_brain_adr
     [adrift] = taken(errors)
     assert adrift.startswith("the brain is adrift: the brain's SessionStart hook does not parse")
 
+
+
+async def test_a_launch_is_up_the_moment_claude_code_posts_its_start(tmp_path: Path) -> None:
+    brain, _ = _built(VirtualClock(), config_dir=tmp_path)
+    starting = asyncio.ensure_future(brain.started(process.START_SECONDS))
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
+    # Up with the clock where it stood: the start ends the wait, not the deadline.
+    await until(starting.done)
+    starting.result()
+
+
+async def test_a_launch_whose_start_does_not_parse_fails_the_moment_it_is_posted(tmp_path: Path, errors: list[str]) -> None:
+    brain, _ = _built(VirtualClock(), config_dir=tmp_path)
+    starting = asyncio.ensure_future(brain.started(process.START_SECONDS))
+    await brain.posted("SessionStart", b"{not json")
+    # Adrift with the clock where it stood: which conversation the brain is in is not known, and no deadline is waited out.
+    await until(starting.done)
+    with pytest.raises(Unstartable, match="SessionStart hook does not parse"):
+        starting.result()
+    [adrift] = taken(errors)
+    assert adrift.startswith("the brain is adrift: the brain's SessionStart hook does not parse")
 
 async def test_a_start_from_a_source_hands_does_not_know_still_moves_the_brain(tmp_path: Path, errors: list[str]) -> None:
     recorded: list[Entry] = []

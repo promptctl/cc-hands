@@ -1618,7 +1618,11 @@ class Brain:
     async def started(self, by: float) -> None:
         """Returns once the launch's own start is applied, the conversation it launched in held. Raises Unstartable,
         saying which, when no start comes by `by`, the launch's deadline, or the brain is adrift by then."""
-        await wait(self._clock, {self._launch_started, self._adrift}, by - self._clock.now())
+        # [LAW:no-ambient-temporal-coupling] the first of the two ends the wait. A healthy start never sets `_adrift`, so a
+        # wait on both (`hands.clock.wait`) would hold every start to its deadline.
+        with contextlib.suppress(TimeoutError):
+            async with self._clock.timeout(by - self._clock.now()):
+                await asyncio.wait({self._launch_started, self._adrift}, return_when=asyncio.FIRST_COMPLETED)
         if self._adrift.done():
             raise Unstartable(str(self._adrift.exception()))
         if not self._launch_started.done():
