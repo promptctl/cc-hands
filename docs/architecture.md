@@ -2390,9 +2390,14 @@ doubling with each refusal up to a day. The page is open to anyone who reaches t
 offer must carry the phone's key, a secret in the home that travels in the page
 address's fragment, which a browser never sends with the page request. `hands phone`
 prints the addresses with the key, the first as a QR code. A call ends when its page closes its channel, a newer
-call replaces it, its connection fails, or hands stops, and never because it has been quiet: a page gone without a word
-(closed outright, the phone asleep, the network gone) stops answering ICE's consent checks (RFC 7675), and its
-connection fails some 35 s later. The page sends a message every 20 ms for as long as it is open. Those messages are the pipeline's clock, each one a frame, and
+call replaces it, its connection fails, or hands stops, and never because it has been quiet: hands times no silence of
+its own. A page gone without a word (closed outright, the phone asleep, the network gone) stops answering ICE's consent
+checks (RFC 7675), which aioice makes about every 5 s and gives up on at the sixth unanswered in a row; some 35 s on,
+measured, DTLS closes under the call and aiortc closes the connection (as closed, never as failed), which `Phone` records
+as the connection failed. A call's event says when hands last read a message from its page, so a call that ended long
+after its page fell silent shows it. The page sends a message every 20 ms for as long as its microphone runs, and wakes
+the microphone each time it is brought back to the front, a call still up or not: a phone may put it to sleep in the
+background. Those messages are the pipeline's clock, each one a frame, and
 what is in one depends on whether a turn is open: inside a turn, the microphone as 16-bit audio; outside one, a `quiet`,
 `{"kind": "quiet", "samples": N}`, which counts the samples the page held back and carries none of them, and which `Phone`
 hears as that much silence at the call's rate, through the path audio takes. No microphone sample leaves the phone outside

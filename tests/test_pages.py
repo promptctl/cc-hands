@@ -362,6 +362,31 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
     assert isinstance(ended, CallLeft) and ended.rejected == 0 and ended.held_back > 0
 
 
+# The page's own audio, the one its tap runs on, kept where a test can put it to sleep as a phone does a page it moves to the
+# background. Added after NEVER_SILENT, whose tap it wraps.
+TAPPED = """
+if (window.isSecureContext) {
+  const TapNode = AudioWorkletNode;
+  window.AudioWorkletNode = class extends TapNode {
+    constructor(context, ...made) { super(context, ...made); window.tapped = context; }
+  };
+}
+"""
+
+
+async def test_a_page_brought_back_to_the_front_wakes_its_microphone_and_its_call_carries_it_again(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(NEVER_SILENT)
+    await browser.context.add_init_script(TAPPED)
+    page = await on_the_call(browser, hands)
+    await until_sent(page, "quiet", 3)
+    # Put away, the page's microphone sleeps and sends nothing, while its call stays up.
+    await page.evaluate("tapped.suspend()")
+    # And brought back to the front, as the browser says it, the page sends again on the call it had.
+    await page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    await until_sent(page, "quiet", 3)
+    assert hands.requests.count("/offer") == 1
+    assert hands.gate.gate.place == "phone"
+
 
 async def test_the_page_says_it_heard_nothing_from_a_press_hands_opened_no_clip_for_and_from_a_clip_hands_threw_away(browser: Opened, hands: Hands) -> None:
     await browser.context.add_init_script(WAKE_OFF)

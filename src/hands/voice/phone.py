@@ -37,7 +37,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Literal, NewType
 
 import numpy as np
-from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerConnection, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCDtlsTransport, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 from loguru import logger
@@ -59,8 +59,10 @@ FRAME_SECS = 0.02
 
 
 # Why a call ended: a newer call took its place, the page hung up, the connection failed, or hands stopped.
-# [LAW:no-ambient-temporal-coupling] each is an event, never a silence timed out: a page gone without a word (closed
-# outright, the phone asleep, the network gone) is a connection failed, once ICE's consent checks (RFC 7675) go unanswered.
+# [LAW:no-ambient-temporal-coupling] hands times no silence of its own: a page gone without a word (closed outright, the
+# phone asleep, the network gone) is ended by ICE consent freshness (RFC 7675), the connection's owner of whether the
+# other end is there, which aioice runs: about every 5 s a check, and the sixth unanswered in a row fails the connection.
+# What the page sends, or does not, ends nothing.
 PhoneGone = Literal["replaced", "hung up", "failed", "stopped"]
 
 # What an offer asks of the phone: to take it from whatever page has it, as a press of the page's Connect asks, or to
@@ -94,10 +96,13 @@ class CallUnreached:
 class CallLeft:
     """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended, its page `told` that many
     milestones of its turns and that many `lines` of the transcript. The page held back `held_back` samples of its
-    microphone as `quiet` messages, and sent `rejected` messages hands could not read."""
+    microphone as `quiet` messages, and sent `rejected` messages hands could not read. `heard_ms` after its offer hands
+    last read a message from the page, None if it read none: a page sends one every 20 ms while its microphone runs, so the
+    span from there to the end is how long it had sent nothing."""
 
     reason: PhoneGone
     arrived_ms: float
+    heard_ms: float | None
     told: int
     lines: int
     held_back: int
@@ -503,6 +508,14 @@ class Call:
     # The samples its page has held back as `quiet` messages, and the messages it sent that hands could not read.
     held_back: int = 0
     rejected: int = 0
+    # How long after its offer hands last read a message from the page, until it reads one.
+    heard_ms: float | None = None
+
+
+def carried(peer: RTCPeerConnection) -> set[RTCDtlsTransport]:
+    """Every DTLS transport a call runs over, once its offer is read: its audio's and its channel's, one and the same where
+    the page bundles them, as every browser does."""
+    return {each.receiver.transport for each in peer.getTransceivers()} | {sctp.transport for sctp in (peer.sctp,) if sctp is not None}
 
 
 class Phone:
@@ -560,23 +573,21 @@ class Phone:
         call = Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began)
         peer.addTrack(outbound)
 
+        async def gone(reason: PhoneGone) -> None:
+            # [LAW:single-enforcer] every end of this call that hands does not make itself comes here, up or still offered:
+            # a call hands has let go of was ended as it let go, and is nothing to end again.
+            if self._call is call:
+                await self.hang_up(reason)
+            elif self._offered is call:
+                self._offered = None
+                await self._let_go(call, reason)
+
         @peer.on("datachannel")
         async def opened(channel: RTCDataChannel) -> None:  # pyright: ignore[reportUnusedFunction]
             # The page closes its channel as it goes: the plainest word that the user hung up.
             @channel.on("close")
             async def closed() -> None:  # pyright: ignore[reportUnusedFunction]
-                if self._call is call:
-                    await self.hang_up("hung up")
-
-            # A connection that fails closes DTLS under the channel, and aiortc then closes the channel itself; a page that
-            # hangs up closes the channel over a DTLS still up. So whichever closes first is how the call ended, and its
-            # handler, scheduled first, runs first.
-            dtls = channel.transport.transport
-
-            @dtls.on("statechange")
-            async def lost() -> None:  # pyright: ignore[reportUnusedFunction]
-                if dtls.state == "closed" and self._call is call:
-                    await self.hang_up("failed")
+                await gone("hung up")
 
             @channel.on("message")
             def said(message: object) -> None:  # pyright: ignore[reportUnusedFunction]
@@ -590,19 +601,17 @@ class Phone:
                     call.rejected += 1
                     logger.error(str(error))
                     return
+                call.heard_ms = since(call.began.clock, call.began.began)
                 self.hear(call, said)
 
             if self._offered is call:
                 await self._arrive(call, channel)
 
+        # The connection failing as it is set up: ICE's checks, or DTLS's handshake.
         @peer.on("connectionstatechange")
         async def changed() -> None:  # pyright: ignore[reportUnusedFunction]
             if peer.connectionState == "failed":
-                if self._call is call:
-                    await self.hang_up("failed")
-                if self._offered is call:
-                    self._offered = None
-                    await self._let_go(call, "failed")
+                await gone("failed")
 
         try:
             await peer.setRemoteDescription(RTCSessionDescription(offer.sdp, offer.type))
@@ -612,6 +621,22 @@ class Phone:
             call_ended(self._record, began, remote, offer.asked, error)
             await peer.close()
             raise
+        # A connection lost once it was up, its consent expired, closes DTLS under the call, and aiortc then closes the
+        # peer by itself: its connectionState goes from connected to closed, never to failed, so the close of DTLS is how
+        # hands hears of it. A page that hangs up closes its channel while DTLS is still up.
+        # [LAW:no-ambient-temporal-coupling] the order is aiortc's: a lost connection's DTLS closes before aiortc closes the
+        # channel over it, and asyncio starts each handler's task in the order its event came, so the end heard first is
+        # how the call ended (test_phone proves both against aiortc). A page whose hang-up reaches hands only as DTLS's own
+        # close, its channel's close lost on the way, is recorded as failed: hands heard no hang-up.
+        transports = carried(peer)
+
+        async def lost() -> None:
+            if any(each.state == "closed" for each in transports):
+                await gone("failed")
+
+        for each in transports:
+            each.on("statechange", lost)
+
         # [LAW:single-enforcer] checked where the offer is put in, after every await of its answering: a press put in
         # while a resume was being answered is the page in the user's hand.
         if offer.asked.claim == "resume" and any(held.asked.page != offer.asked.page for held in (self._call, self._offered) if held is not None):
@@ -772,7 +797,7 @@ class Phone:
                 with continuing(call.began.span):
                     self._key.go("desk")
                 call.outbound.stop()
-                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told, call.lines, call.held_back, call.rejected))
+                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.heard_ms, call.told, call.lines, call.held_back, call.rejected))
                 return call
 
     async def hang_up(self, reason: PhoneGone) -> None:

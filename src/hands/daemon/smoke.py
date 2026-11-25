@@ -206,7 +206,7 @@ class Caller:
 
     async def keep_sending(self) -> None:
         """A message every FRAME_SECS for as long as the call is up, a `quiet` where no turn is open, as the page sends one:
-        hands hangs up a call that goes quiet, as it does a page that is closed."""
+        the messages are the clock hands' pipeline runs the call's audio on."""
         start, sent = self.clock.now(), 0
         held_back = quiet_message(FRAME_BYTES // 2)
         while True:

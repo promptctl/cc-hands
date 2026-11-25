@@ -13,7 +13,7 @@ from pathlib import Path
 from importlib import resources
 from types import SimpleNamespace
 from unittest.mock import Mock
-from typing import cast, get_args
+from typing import Literal, cast, get_args
 
 import aioice.ice
 import aioice.stun
@@ -37,7 +37,7 @@ from hands.voice.clips import Clip
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import UNHEARD, ClipDiscarded, ClipOpened, ClipReleased, Milestone, Told, TurnUnopened
-from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Opened, Phone, Quiet, Unopened, UnopenedReason, answer, kind, parse_said, quiet_message
+from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Opened, Phone, Quiet, Unopened, UnopenedReason, answer, carried, kind, parse_said, quiet_message
 from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -379,20 +379,24 @@ def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
     assert [kind(line) for line in get_args(Line) if f'"{kind(line)}": ' not in table] == []
 
 
+# What a page closes as it hangs up: its channel and then its connection, as call.js does; or either alone, as a browser
+# tearing a page down may.
+Closed = Literal["channel", "channel and connection", "connection"]
+
+
 @pytest.mark.outside
-@pytest.mark.parametrize("closed", ["channel", "channel and connection", "connection"])
-async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call, closed: str) -> None:
+@pytest.mark.parametrize("closed", get_args(Closed))
+async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call, closed: Closed) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
     playing = call.phone.play(bytes(24000 * 2 * 60))  # a minute that will never be heard
-    # As call.js hangs up, its channel and then its connection; or either alone, as a browser tearing a page down does.
     match closed:
         case "channel":
             call.page.channel.close()
         case "channel and connection":
             call.page.channel.close()
             await call.page.peer.close()
-        case _:
+        case "connection":
             await call.page.peer.close()
     await call.until(lambda: call.key.gate.place == "desk")
     # The clip open at the phone is sent as it stands.
@@ -402,6 +406,8 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     assert (event.outcome, event.parent_id, event.facts["remote"]) == ("ok", None, "192.168.7.20")
     ended = left(event)
     assert ended.reason == "hung up" and 0 < ended.arrived_ms <= event.duration_ms
+    # The press was the last of the page that hands read.
+    assert ended.heard_ms is not None and ended.arrived_ms < ended.heard_ms <= event.duration_ms
     # A call whose page was told nothing, held nothing back, and sent nothing unreadable says so: zero, written down.
     assert (ended.told, ended.lines, ended.held_back, ended.rejected) == (0, 0, 0, 0)
 
@@ -633,7 +639,8 @@ async def test_what_hands_cannot_read_is_said_makes_no_silence_and_is_counted_on
     assert call.key.gate.place == "phone"
     await call.phone.stop()
     [event] = calls(call.recorded)
-    assert (left(event).rejected, left(event).held_back) == (1, 0)
+    # Nor is it heard: a page that sent only this sent hands nothing it read.
+    assert (left(event).rejected, left(event).held_back, left(event).heard_ms) == (1, 0, None)
 
 
 @pytest.mark.outside
@@ -893,26 +900,75 @@ async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_
     await call.until(lambda: any(np.abs(frame.to_ndarray()).max() > 1000 for frame in call.page.played))
 
 
-async def vanished(page: Page) -> None:
+async def vanished(page: RTCPeerConnection) -> None:
     """The page's browser killed outright, or its phone gone from the network: every socket it reached hands on shuts with
     nothing sent over it, so hands is told of no channel closed and no alert, and its consent checks go unanswered."""
-    sctp = page.peer.sctp
-    assert sctp is not None
-    for ice in {sctp.transport.transport, *(each.receiver.transport.transport for each in page.peer.getTransceivers())}:
-        await ice.stop()
+    for dtls in carried(page):
+        await dtls.transport.stop()
+
+
+def consent_shortened(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
+    """aiortc's own ICE, its consent checks every 50 ms and each given 50 ms, the six unanswered in a row that fail a
+    connection kept: and how many checks either end has answered so far."""
+    monkeypatch.setattr(aioice.ice, "CONSENT_INTERVAL", 0.05)
+    monkeypatch.setattr(aioice.stun, "RETRY_RTO", 0.05)
+    answered = 0
+    answer = aioice.ice.Connection.request_received
+
+    def answering(connection: aioice.ice.Connection, message: aioice.stun.Message, addr: tuple[str, int], protocol: aioice.ice.StunProtocol, raw: bytes) -> None:
+        nonlocal answered
+        answered += 1
+        answer(connection, message, addr, protocol, raw)
+
+    monkeypatch.setattr(aioice.ice.Connection, "request_received", answering)
+    return lambda: answered
 
 
 @pytest.mark.outside
-async def test_a_page_gone_without_a_word_fails_its_call_and_hands_is_at_the_desk_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    # aiortc's own ICE, its timers shortened and its six unanswered consent checks kept: the end is the connection's.
-    monkeypatch.setattr(aioice.ice, "CONSENT_INTERVAL", 0.05)
-    monkeypatch.setattr(aioice.stun, "RETRY_RTO", 0.05)
+async def test_a_page_that_sends_nothing_outlasts_consent_and_one_gone_without_a_word_fails_its_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    answered = consent_shortened(monkeypatch)
     async with calling() as up:
         up.page.send(LOUD)
-        await vanished(up.page)
+        # There, and sending nothing, through twice the checks each end makes before it gives up on one gone: still up.
+        await up.until(lambda: answered() >= 4 * aioice.ice.CONSENT_FAILURES)
+        assert (up.key.gate.place, calls(up.recorded)) == ("phone", [])
+        await vanished(up.page.peer)
         await up.until(lambda: up.key.gate.place == "desk")
         [event] = calls(up.recorded)
-        assert left(event).reason == "failed"
+        ended = left(event)
+        assert ended.reason == "failed"
+        # What the page sent last came before all of that: the record says how long it had sent nothing.
+        assert ended.heard_ms is not None and ended.heard_ms < event.duration_ms
+
+
+@pytest.mark.outside
+async def test_an_offer_whose_page_is_gone_before_its_channel_opens_is_let_go_and_another_pages_resume_is_answered(monkeypatch: pytest.MonkeyPatch) -> None:
+    consent_shortened(monkeypatch)
+    recorded = list[Entry]()
+    key = PushToTalk(SYSTEM, recorded.append)
+    phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
+    # A channel agreed on out of band is never opened over the connection: hands hears of no channel, and the offer stays
+    # one, connected and never arrived, as a page gone between its connection and its channel leaves it.
+    page = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+    page.addTransceiver("audio", direction="recvonly")
+    page.createDataChannel("talk", negotiated=True, id=0)
+    await page.setLocalDescription(await page.createOffer())
+    await page.setRemoteDescription(await answered(phone, Offer(page.localDescription.sdp, "offer", PAGE_RATE, FIRST), "192.168.7.20"))
+    async with asyncio.timeout(10):
+        while page.connectionState != "connected":
+            await asyncio.sleep(0.01)
+    await vanished(page)
+    async with asyncio.timeout(10):
+        while not calls(recorded):
+            await asyncio.sleep(0.01)
+    [event] = calls(recorded)
+    assert event.facts["ended"] == CallUnreached("failed")
+    assert key.gate.place == "desk"
+    # Let go of, it holds the phone from no other page: one calling again on its own is answered.
+    other = await connected(phone, Asked("another page", "resume"))
+    await other.peer.close()
+    await page.close()
+    await phone.stop()
 
 
 async def nobody_types(text: str) -> None:

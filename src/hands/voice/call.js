@@ -352,7 +352,7 @@ async function connect(claim) {
   talk.disabled = true;
   if (!media) media = await open();
   const {audio, tap} = media;
-  // A page brought back from the background may find its microphone asleep: a call over it would send nothing.
+  // A microphone asleep sends nothing: a call is made only over one awake.
   await audio.resume();
   const pc = new RTCPeerConnection();
   pc.addTransceiver("audio", {direction: "recvonly"});
@@ -505,8 +505,8 @@ async function connect(claim) {
   };
   channel.onmessage = ({data}) => told(made, JSON.parse(data));
   channel.onclose = () => dropped(made, "hands hung up.");
-  // [LAW:no-ambient-temporal-coupling] a call ends on an event, never on a silence timed out: a phone that slept through
-  // hands hanging up, or a hands gone without a word, stops being answered on ICE's consent checks (RFC 7675), and fails.
+  // [LAW:no-ambient-temporal-coupling] the page times no silence of its own: a phone that slept through hands hanging up,
+  // or a hands gone without a word, fails ICE consent freshness (RFC 7675), the connection's own check that hands is there.
   pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") dropped(made, "The connection to hands failed."); };
 
   // From here on, what fails is this call, settled against it: never another call made since, as this one ended.
@@ -606,6 +606,9 @@ talk.addEventListener("contextmenu", (event) => event.preventDefault());
 document.addEventListener("visibilitychange", () => {
   syncLock();
   if (document.hidden) { up(); return; }
+  // A page brought back from the background may find its microphone asleep with its call still up: woken here, or the
+  // call would carry nothing while hands stays at the phone.
+  media?.audio.resume().catch((error) => end(`The microphone could not be woken: ${error.message}`));
   if (retry) { clearTimeout(retry); retry = null; place("resume"); }
 });
 wakeButton.addEventListener("click", () => setWake(!wakeOn));
