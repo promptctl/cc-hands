@@ -1,0 +1,111 @@
+# The tests marked `outside` (the real speech models, the pinned Claude Code, a Chrome page), fritter's Go tests and wake-training's
+# suite: what test.yml leaves out. They run daily and on request (`gh workflow run outside.yml`), not on a PR or in the merge queue,
+# and the check named `outside` says whether they passed.
+#
+# They are not on the path a merge waits on because they cannot be inside 5 minutes there: they are about 1,800 s of tests, a job
+# that loads the speech models spends 150 s before its first test (the runner and the tools, then restoring the 3.8 GB Hugging
+# Face cache), and so cutting them into 5-minute jobs takes 60 and more, against a Free plan's 5 macOS runners, which every PR,
+# the queue and master share. The `pair` and `rest` jobs below are the two tiers as they were, with the limit each needs.
+name: outside
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+# A dispatch while the daily run is going waits for it, and does not end it.
+concurrency:
+  group: outside
+  cancel-in-progress: false
+
+jobs:
+  # One matrix is the one list of tiers; the Makefile's targets are what each runs.
+  tiers:
+    name: ${{ matrix.tier }}
+    runs-on: macos-15
+    # A hung test fails the check instead of holding it for GitHub's 6 hours. These are not 5 minutes, which the jobs of test.yml
+    # are: the limit is a hung test's bound, set from the slowest runner seen (pytest's time swings nearly 2x), not a budget.
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      matrix:
+        include:
+          - { tier: pair, target: check-pair, timeout: 40 }
+          - { tier: rest, target: check-rest, timeout: 30 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs reads the version from the history's tags when `uv sync` installs the checkout.
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+      - uses: ./.github/actions/testbed
+      # The run fetches openWakeWord's models into pytest's cache before its first test; kept across runs, a download outage
+      # cannot fail a run that never touched the wake word.
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/wake-word
+          key: wake-word-${{ hashFiles('src/hands/voice/wakemodels.py') }}
+      # The runtime the phone's page runs the wake word on, 15 MB, fetched by the run from a CDN at the version and digests
+      # src/hands/voice/ortweb.py pins; kept the same way, for the same reason.
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/onnxruntime-web
+          key: onnxruntime-web-${{ hashFiles('src/hands/voice/ortweb.py') }}
+      # The brain's end-to-end tests run the pinned Claude Code, fetched from npm's registry into pytest's cache against its
+      # checksum, and the mock of Anthropic's API at the release they name, installed with go; kept the same way, keyed on the
+      # pin and on the release.
+      - name: The brain's pinned Claude Code and the mock's release
+        id: e2e
+        run: |
+          # PIN's version= literal, as Python parses the module: no import, so nothing is installed for it. Any other shape
+          # prints nothing, which the check below names.
+          claude=$(python3 -I -c 'import ast, sys; print(next((k.value.value for n in ast.parse(open(sys.argv[1]).read()).body if isinstance(n, ast.Assign) and [t.id for t in n.targets if isinstance(t, ast.Name)] == ["PIN"] and isinstance(n.value, ast.Call) for k in n.value.keywords if k.arg == "version" and isinstance(k.value, ast.Constant)), ""))' src/hands/brain/pinned.py)
+          mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/fetches.py)
+          test -n "$claude" || { echo "src/hands/brain/pinned.py pins no version this step can read" >&2; exit 1; }
+          test -n "$mock" || { echo "tests/fetches.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
+          echo "claude=$claude" >> "$GITHUB_OUTPUT"
+          echo "mock=$mock" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/claude-code
+          key: claude-code-${{ steps.e2e.outputs.claude }}
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/mock-anthropic
+          key: mock-anthropic-${{ steps.e2e.outputs.mock }}
+      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, the engaged tests run
+      # Smart Turn on MLX, the voiceprint tests run ERes2Net, and the Whisper tests Whisper, on real sound, fetched into the
+      # Hugging Face cache at the revisions hands pins; kept across runs, so a download outage cannot fail a run. The whole hub: a model's
+      # directory holds only links into the hub's shared store of blobs, where its weights are.
+      # [LAW:one-source-of-truth] keyed on tests/fetches.py's WEIGHTS, the list the run fetches, so a weight added to the
+      # fetch is a new key and never a hit on a cache saved without it; an edit to the rest of any file still finds them.
+      - name: The speech models' cache key
+        id: speech
+        # Python writes the output itself: whatever an import prints on stdout cannot become part of the key.
+        run: uv run --locked python -c 'import os, sys; sys.path.insert(0, "tests"); from fetches import hub_key; open(os.environ["GITHUB_OUTPUT"], "a").write(f"key={hub_key()}\n")'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: speech-${{ steps.speech.outputs.key }}
+      # [LAW:one-source-of-truth] what each tier runs is the Makefile's: `make check-pair` for the real streaming pair,
+      # `make check-rest` for every other test that needs the outside.
+      - name: make ${{ matrix.target }}
+        id: check
+        run: make ${{ matrix.target }}
+      # What each test cost, into this job's log, so a cancelled or failed run keeps its numbers (the step of test.yml's of the
+      # same name).
+      - name: What each test cost
+        if: always() && steps.check.outcome != 'skipped'
+        continue-on-error: true
+        run: uv run --no-sync python tests/costs.py .pytest_cache/${{ matrix.target }}-log.jsonl
+
+  # The verdict of the tiers, on ubuntu for the same reason as test.yml's.
+  outside:
+    needs: tiers
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every tier passed
+        env:
+          TIERS: ${{ needs.tiers.result }}
+        run: test "$TIERS" = success || { echo "the tiers' result is $TIERS, not success" >&2; exit 1; }

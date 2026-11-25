@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from costs import REPORT_LOG, report
+from costs import REPORT_LOG, Cost, report, rows
 
 ROOT = Path(__file__).parents[1]
 
@@ -48,6 +48,16 @@ def test_a_report_gives_the_run_then_each_module_then_each_test_slowest_first() 
         "    2.000     0.500     1.000     0.500  tests/test_a.py::test_slower\n"
         "    1.000     0.500     0.250     0.250  tests/test_a.py::test_quick\n"
     )
+
+
+def test_the_rows_of_a_report_read_back_as_the_costs_it_was_made_from() -> None:
+    log = STARTED + spent("tests/test_a.py::test_quick", 0.5, 0.25, 0.25) + spent("tests/test_b.py::test_slow[a b-2]", 2, 4, 1) + FINISHED
+    assert rows(report(log)) == [Cost("tests/test_b.py::test_slow[a b-2]", 2, 4, 1), Cost("tests/test_a.py::test_quick", 0.5, 0.25, 0.25)]
+
+
+def test_a_job_logs_rows_are_read_through_what_ci_puts_before_each_line() -> None:
+    log = "unit\tUNKNOWN STEP\t\ufeff2026-11-25T03:25:02.5772830Z   seconds share tests  module\nunit\tUNKNOWN STEP\t2026-11-25T03:25:02.7093050Z     0.022     0.012     0.009     0.001  tests/test_a.py::test_x\n"
+    assert rows(log) == [Cost("tests/test_a.py::test_x", 0.012, 0.009, 0.001)]
 
 
 def test_a_failed_run_says_how_it_ended() -> None:
