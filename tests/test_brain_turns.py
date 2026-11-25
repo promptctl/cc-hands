@@ -1292,8 +1292,16 @@ async def test_a_launch_that_fails_says_hands_reading_of_it_failed_too(tmp_path:
     starting, _, keys = _starting(VirtualClock(), tmp_path, _broken_reading)
     keys.exit.set_result(1)
     await until(starting.done)
-    with pytest.raises(Unstartable, match=re.escape(f"{process.exited(1)} while hands' reading of the brain had failed (OSError: [Errno 5] Input/output error), and the brain's Claude Code had posted no start of its session;")):
+    with pytest.raises(Unstartable, match=re.escape(f"{process.exited(1)} while hands' reading of the brain had failed (OSError: [Errno 5] Input/output error), and the brain's Claude Code had posted no start of its session;")) as unstartable:
         starting.result()
+    # Its frames are the launch's to keep, with the reader's where it failed.
+    assert isinstance(unstartable.value.__cause__, OSError)
+
+
+async def test_a_brain_whose_reading_failed_raises_it_to_whoever_waits_on_it_while_it_runs(tmp_path: Path) -> None:
+    brain, _ = _built(VirtualClock(), config_dir=tmp_path, reading=_broken_reading)
+    with pytest.raises(OSError, match="Input/output error"):
+        await brain.exited()
 
 
 async def test_a_launch_that_hears_nothing_fails_at_its_deadline(tmp_path: Path) -> None:
