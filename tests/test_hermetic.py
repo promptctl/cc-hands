@@ -83,6 +83,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "TMPDIR": "/var/folders/t/",
         "CI": "true",
         "HF_HUB_OFFLINE": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
         "HF_HUB_CACHE": "/Users/developer/.cache/huggingface/hub",
         "NLTK_DATA": "/run/sentences",
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -102,6 +103,9 @@ def test_a_test_runs_in_the_hermetic_environment(environment: dict[str, str], ma
     assert shutil.which("claude") is None
     # Nor does the hub in this process read the developer's token, from under the HOME it found as it was imported.
     assert not Path(huggingface_hub.constants.HF_TOKEN_PATH).is_relative_to(machine["HOME"])
+    # Nor does it send a request for the registry of agents to build its user agent from, or keep one of the developer's.
+    assert huggingface_hub.constants.HF_HUB_DISABLE_TELEMETRY
+    assert not Path(huggingface_hub.constants.AGENT_HARNESSES_PATH).is_relative_to(machine["HOME"])
     assert huggingface_hub.get_token() is None
 
 

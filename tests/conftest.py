@@ -636,7 +636,7 @@ def without_claude(path: str, links: Path) -> str:
 
 def hermetic(machine: Mapping[str, str], path: str, hub: str, sentences: Path, home: Path, sockets: Path) -> dict[str, str]:
     """The environment the run and each test run in, from the `machine`'s: the names PASSED, a `path` of its tools, the
-    Hugging Face `hub` cache the run fetched the weights into and the hub offline, NLTK's data looked for first in
+    Hugging Face `hub` cache the run fetched the weights into, the hub offline and its telemetry off, NLTK's data looked for first in
     `sentences`, no git config but a repository's own and one identity to commit as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a
     `home` and a tmux socket directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
     tmux's or a proxy, which hands reads as a session's own, is absent."""
@@ -644,6 +644,7 @@ def hermetic(machine: Mapping[str, str], path: str, hub: str, sentences: Path, h
         "PATH": path,
         "HF_HUB_CACHE": hub,
         "HF_HUB_OFFLINE": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
         "NLTK_DATA": str(sentences),
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
@@ -697,7 +698,9 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     starts, reaches past loopback or finds the machine's Claude Code policy.
 
     The environment is entered first, so the fetches run as the tests do, with no credential of the developer's: the hub
-    took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Then
+    took its token's path, and the path of the agent registry its user agent is built from, from the developer's HOME as they were
+    imported, so both are pointed under the run's own HOME, and its telemetry is off in this process as in a child's, so
+    nothing a test does asks the hub for what only that telemetry needs, and a fake hub holds only what the test put there. Then
     the hub in this process goes offline for the rest of the run, as a child's is by its environment, so a weight the run
     did not fetch fails the test that loads it and never downloads inside it. Undone by the config's cleanup, which runs however the session ends, but for the sandbox: the OS lifts it
     from no process, so this interpreter stays offline after the session, and a second session in it can fetch nothing."""
@@ -714,7 +717,10 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     (home := run / "home").mkdir()
     tools = without_claude(machine["PATH"], links)
     monkeypatch = stack.enter_context(pytest.MonkeyPatch.context())
-    monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
+    hub_home = home / ".cache" / "huggingface"
+    monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(hub_home / "token"))
+    monkeypatch.setattr(huggingface_hub.constants, "AGENT_HARNESSES_PATH", str(hub_home / ".agent_harnesses.json"))
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_DISABLE_TELEMETRY", True)
     nltk_data = config.cache.mkdir("nltk-data")
     sentences = PUNKT_TAB.data(nltk_data)
     # NLTK read its data's path, the developer's ~/nltk_data among it, as it was imported; a child reads NLTK_DATA before
