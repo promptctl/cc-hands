@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from hands.core.effects import Fritter, NotTyped, Text, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
-from hands.core.session import Gone, Known, Registry, Running, Session, SessionId, Staged
-from hands.core.status import Waiting
+from hands.core.session import Gone, Known, Registry, Session, SessionId, Staged
+from hands.core.standing import AtDialog, standing_of
 from hands.core.tmux import Keyboard, Pane
 
 
@@ -102,11 +102,11 @@ def _decide(registry: Registry, request: Decidable, session: Known, staged: Stag
             return registry.stage(id, draft), DraftStaged(id, draft, replaced=staged)
         case (AmendDraft(draft=after), Staged() as before, _):
             return registry.stage(id, after), DraftAmended(id, before, after)
-        case (Sending(pane=pane), Staged() as draft, Session(state=state, membership=member)):
-            match (state, writer(member, pane)):
+        case (Sending(pane=pane), Staged() as draft, Session(membership=member) as session):
+            match (standing_of(session), writer(member, pane)):
                 case (_, Unwrapped() as unwrapped):
                     return registry, unwrapped
-                case (Running(status=Waiting()), _):
+                case (AtDialog(), _):
                     return registry, AtItsDialog(id)
                 case (_, Fritter() | Pane() as by):
                     # Sent the moment it is decided: the draft leaves the registry here, so there is never a second send

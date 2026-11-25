@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from hands.core.effects import Command, Fritter, Key, NotTyped, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
 from hands.core.session import Gone, Registry, Session, SessionId
-from hands.core.standing import AtDialog, AtRest, AtUnheldDialog, Delegating, ShellRunning, standing_of
+from hands.core.standing import AtDialog, AtRest, Delegating, ShellRunning, standing_of
 from hands.core.tmux import Keyboard, Pane
 
 
@@ -58,7 +58,7 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
             match (request, standing_of(session), writer(member, pane)):
                 case (_, _, Unwrapped() as unwrapped):
                     return unwrapped
-                case (SendCommand(), AtDialog() | AtUnheldDialog(), _):
+                case (SendCommand(), AtDialog(), _):
                     # A dialog takes the command's characters and its Return as the answer to what it asked.
                     return AtItsDialog(id)
                 case (SendCommand(command=command), _, Fritter() | Pane() as by):

@@ -1,12 +1,17 @@
 """How a live session stands: at its prompt, at a dialog, working, and the rest; and the one sentence that says it.
 
 [LAW:one-source-of-truth] `standing_of` is the one place a session's registry state, its dialogs and its turn are read into
-a standing, and `turn_over` and `on_a_turn` the one place each standing answers what callers ask of it. The brain's
-listing says it as `spoken_state`; `read_session`, `close_session` and the keyboard read it; none re-derives what the
-others read.
+a standing, and `phase` the one place a standing says where the session's turn is. The brain's listing says it as
+`spoken_state`; `read_session`, `close_session`, the keyboard and the draft send read it; none re-derives what the others
+read.
+
+What the hooks tell hands outruns the status it reads: Claude Code sets the status before a prompt's hooks run, but hands may
+read it after them. So a dialog hands holds, and a turn its prompt opened, decide the standing ahead of the status, whatever
+the status still says; the status decides only where neither is known.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 from hands.core.progress import Doing, said
 from hands.core.session import Blocker, Held, Idle, Opened, Permission, Plan, Question, Running, Session, Unreported, delegating
@@ -16,16 +21,10 @@ from hands.core.status import Busy, Going, Reason, Shell, Unknown, UnknownReason
 
 @dataclass(frozen=True)
 class AtDialog:
-    """At a dialog whose hook hands holds, said by what it asks, though the status saying it waits may not be read yet."""
+    """At a dialog: one whose hook hands holds, said by what it asks, though the status saying it waits may not be read yet;
+    or one Claude Code says it waits at and hands holds no hook for, which nothing hands can read says the content of."""
 
-    held: Held
-
-
-@dataclass(frozen=True)
-class AtUnheldDialog:
-    """Claude Code says it waits at a dialog, and hands holds no hook for it: nothing hands can read says what it asks."""
-
-    reason: Reason | UnknownReason
+    by: Held | Reason | UnknownReason
 
 
 @dataclass(frozen=True)
@@ -37,7 +36,7 @@ class Working:
 
 @dataclass(frozen=True)
 class Delegating:
-    """At its prompt, with only subagents it started in the background working (`delegating`)."""
+    """At its prompt, with only subagents it started in the background working."""
 
     agents: int
 
@@ -49,13 +48,13 @@ class ShellRunning:
 
 @dataclass(frozen=True)
 class AtRest:
-    """At its prompt with nothing out: no dialog, no turn open, no shell or subagent in the background. Not `status.AtPrompt`,
-    which a background shell is at too."""
+    """At its prompt with nothing out: no dialog, no turn open, no words queued behind its last turn, no shell or subagent
+    in the background. Not `status.AtPrompt`, which a background shell is at too."""
 
 
 @dataclass(frozen=True)
 class NotReported:
-    """Heard of, with no status read for it yet."""
+    """Heard of, with no status read for it yet, and no turn opened."""
 
 
 @dataclass(frozen=True)
@@ -65,7 +64,7 @@ class UnknownStatus:
     name: str
 
 
-Standing = AtDialog | AtUnheldDialog | Working | Delegating | ShellRunning | AtRest | NotReported | UnknownStatus
+Standing = AtDialog | Working | Delegating | ShellRunning | AtRest | NotReported | UnknownStatus
 
 
 def standing_of(session: Session) -> Standing:
@@ -79,11 +78,15 @@ def standing_of(session: Session) -> Standing:
 
 def _undialoged(session: Session) -> Standing:
     match session.state:
+        case Unreported() | Idle() if isinstance(session.turn, Opened):
+            return Working(None)
         case Unreported():
             return NotReported()
-        case Idle() if isinstance(session.turn, Opened):
-            # A turn opened at its prompt, before the status that says it is busy is read, whether or not a shell it
-            # started in the background still runs.
+        case Idle() if session.background:
+            # A subagent's launch written before the idle that came after it: still out, whatever the status says.
+            return Delegating(len(session.background))
+        case Idle() if session.turn.waiting:
+            # Words queued behind its last turn run as a turn of their own once its Stop returns.
             return Working(None)
         case Idle(status=Shell()):
             # No turn runs: it does nothing until that task ends and its notification opens one.
@@ -108,18 +111,36 @@ def _going(session: Session, going: Going) -> Standing:
                 case _:
                     return Working(None)
         case Waiting(reason=reason):
-            return AtUnheldDialog(reason)
+            return AtDialog(reason)
         case Unknown(name=name):
             return UnknownStatus(name)
 
 
+# Where a session's turn is: "ended" for a session the registry no longer has, "unknown" while no status says.
+Phase = Literal["ended", "over", "mid-turn", "unknown"]
+
+
+def phase(of: Standing | None) -> Phase:
+    """Where the session's last turn is, which only a session at its prompt, or one whose only work is in the background,
+    proves over. None is a session no longer live."""
+    match of:
+        case None:
+            return "ended"
+        case AtRest() | ShellRunning() | Delegating():
+            return "over"
+        case AtDialog() | Working() | UnknownStatus():
+            return "mid-turn"
+        case NotReported():
+            return "unknown"
+
+
 def spoken(of: Standing) -> str:
     match of:
-        case AtDialog(held=Held(on=on)):
+        case AtDialog(by=Held(on=on)):
             return _waiting_on(on)
-        case AtUnheldDialog(reason=UnknownReason(name=name)):
+        case AtDialog(by=UnknownReason(name=name)):
             return f"waiting at a dialog: {name}"
-        case AtUnheldDialog(reason=reason):
+        case AtDialog(by=reason):
             return f"waiting at a dialog: {reason}"
         case Working(latest=Doing() as latest):
             return f"working; the last thing it set out to do: {said((latest,))}"
@@ -140,25 +161,6 @@ def spoken(of: Standing) -> str:
 def spoken_state(session: Session) -> str:
     """How a live session stands, in the one sentence the brain's listing says of it."""
     return spoken(standing_of(session))
-
-
-def turn_over(of: Standing) -> bool:
-    """Whether the session's last turn is over, which only a session at its prompt, or one whose only work is in the
-    background, proves: one whose status has not been read yet may be mid-turn."""
-    match of:
-        case AtRest() | ShellRunning() | Delegating():
-            return True
-        case AtDialog() | AtUnheldDialog() | Working() | NotReported() | UnknownStatus():
-            return False
-
-
-def on_a_turn(of: Standing) -> bool:
-    """Whether the session is in the middle of a turn: working, or stopped at a dialog in it."""
-    match of:
-        case AtDialog() | AtUnheldDialog() | Working() | UnknownStatus():
-            return True
-        case AtRest() | ShellRunning() | Delegating() | NotReported():
-            return False
 
 
 def _waiting_on(on: Blocker) -> str:

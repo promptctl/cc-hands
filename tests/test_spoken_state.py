@@ -9,7 +9,7 @@ from hands.core.session import AskedQuestion, Held, Idle as Parked, Membership, 
 from hands.core.status import Busy, Idle, Shell, Stamp, Unknown, UnknownReason, Waiting
 from hands.core.turn import AgentId
 from hands.sessions.registry import Listing
-from hands.core.standing import AtDialog, AtRest, AtUnheldDialog, Delegating, NotReported, ShellRunning, Standing, UnknownStatus, Working, on_a_turn, spoken_state, standing_of, turn_over
+from hands.core.standing import AtDialog, AtRest, Delegating, NotReported, ShellRunning, Standing, UnknownStatus, Working, phase, spoken_state, standing_of
 from hands.voice.tools import describe_listing
 
 MEMBER = Membership(SessionId("s"), pid=4242, cwd=Path("/code/cc-hands"), transcript=Path("/code/cc-hands/t.jsonl"))
@@ -61,21 +61,31 @@ def test_the_listing_says_a_session_as_the_one_sentence_does() -> None:
 
 
 @pytest.mark.parametrize(
-    ("standing", "over", "on_a_turn_"),
+    ("standing", "where"),
     [
-        pytest.param(AtRest(), True, False, id="at rest"),
-        pytest.param(ShellRunning(), True, False, id="a shell out"),
-        pytest.param(Delegating(2), True, False, id="subagents out"),
-        pytest.param(Working(None), False, True, id="working"),
-        pytest.param(AtUnheldDialog("permission prompt"), False, True, id="at a dialog hands does not hold"),
-        pytest.param(UnknownStatus("compacting"), False, True, id="a status hands does not know"),
-        pytest.param(NotReported(), False, False, id="no status read yet: it may be mid-turn, and nothing says it is"),
+        pytest.param(AtRest(), "over", id="at rest"),
+        pytest.param(ShellRunning(), "over", id="a shell out"),
+        pytest.param(Delegating(2), "over", id="subagents out"),
+        pytest.param(Working(None), "mid-turn", id="working"),
+        pytest.param(AtDialog("permission prompt"), "mid-turn", id="at a dialog hands does not hold"),
+        pytest.param(AtDialog(held(Permission("Bash", {}))[0]), "mid-turn", id="at a dialog hands holds"),
+        pytest.param(UnknownStatus("compacting"), "mid-turn", id="a status hands does not know"),
+        pytest.param(NotReported(), "unknown", id="no status read yet: it may be mid-turn, and nothing says it is"),
+        pytest.param(None, "ended", id="no live session"),
     ],
 )
-def test_what_a_standing_says_of_the_turn(standing: Standing, over: bool, on_a_turn_: bool) -> None:
-    assert (turn_over(standing), on_a_turn(standing)) == (over, on_a_turn_)
+def test_where_a_standing_says_the_turn_is(standing: Standing | None, where: str) -> None:
+    assert phase(standing) == where
 
 
-def test_a_session_held_at_its_dialog_is_mid_turn_and_not_over() -> None:
-    at = AtDialog(held(Permission("Bash", {}))[0])
-    assert (turn_over(at), on_a_turn(at)) == (False, True)
+@pytest.mark.parametrize(
+    ("session", "stands"),
+    [
+        pytest.param(Session(MEMBER, Unreported(), mode=None, turn=Opened(TURN)), Working(None), id="a prompt heard before any status is read"),
+        pytest.param(Session(MEMBER, Parked(Idle(), Stamp(1000), None), mode=None, background=frozenset({AgentId("a1")})), Delegating(1), id="a subagent launched before the idle that followed"),
+        pytest.param(Session(MEMBER, Parked(Idle(), Stamp(1000), None), mode=None, turn=Told(waiting=("next",))), Working(None), id="words queued behind the last turn"),
+    ],
+)
+def test_what_the_hooks_say_outruns_the_status_hands_has_read(session: Session, stands: Standing) -> None:
+    assert standing_of(session) == stands
+    assert standing_of(session) != AtRest()

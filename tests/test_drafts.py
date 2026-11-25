@@ -21,10 +21,13 @@ from hands.core.effects import Fritter, Text, Type
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core.session import (
     Gone,
+    Held,
     Idle,
     Membership,
+    Permission,
     PromptText,
     Registry,
+    RequestId,
     Resolution,
     Session,
     SessionId,
@@ -138,6 +141,12 @@ def test_a_send_to_a_session_nobody_wrapped_is_typed_into_its_tmux_pane_and_the_
 @pytest.mark.parametrize("state", [AT_DIALOG, running(Waiting(UnknownReason("a dialog this version does not know")))])
 def test_a_session_at_a_dialog_is_sent_nothing_and_keeps_its_draft(state: SessionState) -> None:
     before = wrapped(state, {ONE.id: FIX})
+    assert decide(before, Sending(ONE.id, NotInTmux())) == (before, AtItsDialog(ONE.id))
+
+
+def test_a_session_held_at_a_dialog_before_its_status_says_waiting_is_sent_nothing_and_keeps_its_draft() -> None:
+    held = Held(Permission("Bash", {}), RequestId("r"), asked=1.0)
+    before = Registry(sessions={ONE.id: Session(WRAPPED, IDLE, mode=None, dialogs=(held,))}, drafts={ONE.id: FIX})
     assert decide(before, Sending(ONE.id, NotInTmux())) == (before, AtItsDialog(ONE.id))
 
 

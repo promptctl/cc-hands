@@ -30,7 +30,7 @@ from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
-from hands.core.standing import on_a_turn, spoken_state, standing_of, turn_over
+from hands.core.standing import phase, spoken_state, standing_of
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.processes import Processes
 from hands.sessions.child import Children
@@ -243,12 +243,10 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
         end = len(spans) if before == 0 else before - 1
         start = max(0, end - TURNS_PAGE)
         live = sessions.live_session(member.id)
-        # [LAW:one-source-of-truth] whether a session's last turn is over is the registry's to say: the file cannot tell
-        # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
-        # status has not been read yet may be mid-turn, and a summary of half a turn would be kept for good. One whose
-        # only work is subagents in the background is at its prompt too, though Claude Code says busy.
+        # [LAW:one-source-of-truth] the file cannot tell a turn that ended from one waiting on a long call, so whether
+        # the last turn is over is the standing's to say: a summary of half a turn would be kept for good.
         stands = None if live is None else standing_of(live)
-        over = stands is None or turn_over(stands)
+        over = phase(stands) in ("ended", "over")
         entries: list[dict[str, object]] = []
         due: list[Due] = []
         for number in range(start + 1, end + 1):
@@ -264,7 +262,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
             "turns": entries,
             "earlier": start,
             "unsummarised": len(due),
-            "working": stands is not None and on_a_turn(stands),
+            "working": phase(stands) == "mid-turn",
         }
 
     async def read_turn(session: str, turn: int, since: str = "") -> Result:

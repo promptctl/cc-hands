@@ -90,6 +90,13 @@ def test_a_turn_opened_before_the_status_says_busy_is_interrupted(state: Session
     assert decide(registry(state, turn=Opened(PromptId("p1"))), Interrupt(ONE.id), NotInTmux()) == Type(ONE.id, FRITTER, Key("escape"))
 
 
+def test_an_interrupt_presses_escape_at_a_dialog_hands_holds_whatever_the_status_says() -> None:
+    held = Held(Permission("Bash", {}), RequestId("r"), asked=1.0)
+    for state in (IDLE, running()):
+        at_dialog = Registry(sessions={ONE.id: Session(ONE, state, mode=None, dialogs=(held,))}, drafts={})
+        assert decide(at_dialog, Interrupt(ONE.id), NotInTmux()) == Type(ONE.id, FRITTER, Key("escape"))
+
+
 def test_a_session_held_at_a_dialog_before_its_status_says_waiting_is_sent_no_command() -> None:
     held = Held(Permission("Bash", {}), RequestId("r"), asked=1.0)
     at_dialog = Registry(sessions={ONE.id: Session(ONE, IDLE, mode=None, dialogs=(held,))}, drafts={})
