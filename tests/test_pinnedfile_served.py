@@ -26,9 +26,9 @@ DIGEST = hashlib.sha256(BODY).hexdigest()
 
 @pytest.fixture(autouse=True)
 def unproxied(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Each fetch from the test's own server goes straight to it, past any proxy: a proxy the environment names, which
-    urllib takes in place of the machine's own settings, as a Mac's system proxy, is one that never answers, and no fetch
-    reaches it."""
+    """Each fetch from the test's own loopback server goes direct. The environment names a proxy, so urllib ignores the
+    machine's own proxy settings, as a Mac's system proxy, and `no_proxy` exempts 127.0.0.1. The proxy named is a listener
+    nobody accepts on, and the test fails at teardown if any fetch connected to it."""
     with socket.socket() as proxy:
         proxy.bind(("127.0.0.1", 0))
         proxy.listen()
