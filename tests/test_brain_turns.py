@@ -1287,11 +1287,12 @@ async def _broken_reading(_reader: Reader) -> None:
     raise OSError(5, "Input/output error")
 
 
-async def test_a_launch_hands_stops_reading_before_its_start_fails_the_moment_it_stops(tmp_path: Path) -> None:
-    starting, _, _ = _starting(VirtualClock(), tmp_path, _broken_reading)
+async def test_a_launch_whose_reading_fails_still_comes_up_on_its_start(tmp_path: Path) -> None:
+    # hands failing to read the brain is no conversation that cannot come up, which its launch would let go.
+    starting, brain, _ = _starting(VirtualClock(), tmp_path, _broken_reading)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
     await until(starting.done)
-    with pytest.raises(Unstartable, match="hands stopped reading the brain's Claude Code before it posted the start of its session: OSError"):
-        starting.result()
+    starting.result()
 
 
 async def test_a_launch_that_hears_nothing_fails_at_its_deadline(tmp_path: Path) -> None:

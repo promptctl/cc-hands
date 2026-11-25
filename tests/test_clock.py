@@ -9,7 +9,7 @@ import pytest
 
 from conftest import BrokenClock, VirtualClock
 from fixtures.clocks import Interrupting
-from hands.clock import SYSTEM, Clock, dashed, wait_all
+from hands.clock import SYSTEM, Clock, dashed, wait_all, wait_first
 
 
 async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_time_has_passed() -> None:
@@ -37,6 +37,28 @@ async def test_a_wait_whose_time_is_up_leaves_what_it_waited_on_running() -> Non
     assert not reading.done()
     reading.set_result("still read, for whoever comes for it")
 
+
+
+async def test_a_wait_for_the_first_ends_once_any_one_is_done_and_leaves_the_rest_running() -> None:
+    clock = VirtualClock()
+    first, second = asyncio.get_running_loop().create_future(), asyncio.get_running_loop().create_future()
+    waiting = asyncio.create_task(wait_first(clock, (first, second), 5.0))
+    await clock.sleeping(5.0)
+    second.set_result("two")
+    await waiting
+    assert not first.done() and clock.waking == ()
+    first.set_result("one, for whoever comes for it")
+
+
+async def test_a_wait_for_the_first_whose_time_is_up_ends_with_none_of_them_done() -> None:
+    clock = VirtualClock()
+    first = asyncio.get_running_loop().create_future()
+    waiting = asyncio.create_task(wait_first(clock, (first,), 5.0))
+    await clock.sleeping(5.0)
+    clock.advance(5.0)
+    await waiting
+    assert not first.done()
+    first.set_result("still read, for whoever comes for it")
 
 async def test_a_clock_that_fails_is_a_failure_and_not_the_time_running_out() -> None:
     with pytest.raises(RuntimeError, match="no timer"):

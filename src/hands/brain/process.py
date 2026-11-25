@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, 
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from aiohttp import web
 from loguru import logger
@@ -40,7 +40,7 @@ from hands.brain.configdir import Unstartable
 from hands.brain.pinned import ENV as PINNED
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
-from hands.clock import Clock, wait_all
+from hands.clock import Clock, wait_all, wait_first
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, ToldByRecord, ToldByStop, TurnEnding, Withdraw
 from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSource, Stopped, UnknownSource
 from hands.core.reducer import UNTOLD
@@ -1469,19 +1469,6 @@ class Brain:
         except BrainGone as error:
             return f"(nothing: {error})"
 
-    async def _waited(self, seconds: float, *ending: "asyncio.Future[Any]") -> None:
-        """Until the first of `ending` is done, or a pause of `seconds` on the brain's clock has passed.
-
-        [LAW:no-silent-failure] a pause that failed, however the wait ended, says so, and is not taken for the time
-        running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on."""
-        sleeping = asyncio.ensure_future(self._clock.sleep(seconds))
-        try:
-            await asyncio.wait({*ending, sleeping}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            await cancel_and_wait(sleeping)
-        if not sleeping.cancelled():
-            sleeping.result()
-
     async def _clear(self, turn: _Turn | None) -> None:
         """Stops whatever Claude Code runs and empties its input, with the input held, for `turn`, and returns once the
         model holds nothing of what it stopped. Escape posts no hook for the turn it stops: the model hears it over from
@@ -1517,7 +1504,7 @@ class Brain:
             # showed.
             waiting = asyncio.ensure_future(self._told_out())
             try:
-                await self._waited(INTERRUPT_SECONDS, waiting, self._exit)
+                await wait_first(self._clock, (waiting, self._exit), INTERRUPT_SECONDS)
             finally:
                 await cancel_and_wait(waiting)
             unstopped: StopUnrecorded | None = None
@@ -1617,24 +1604,19 @@ class Brain:
 
     async def started(self, by: float) -> None:
         """Returns once the launch's own start is applied, the conversation it launched in held. Raises Unstartable,
-        saying which, when the brain is adrift, its Claude Code ends or hands stops reading it first, or no start comes by
-        `by`, the launch's deadline."""
+        saying which, when the brain is adrift or its Claude Code ends first, or no start comes by `by`, the launch's
+        deadline. hands' own reading of the brain failing is no reason the conversation cannot come up: it is said as the
+        brain is waited on (`exited`), and a launch it failed would let the conversation go."""
         # [LAW:no-ambient-temporal-coupling] the first of them ends the wait, so a start is up the moment it is applied and
         # a launch that cannot come up fails the moment hands knows it.
-        await self._waited(by - self._clock.now(), self._launch_started, self._adrift, self._reading, self._exit)
+        await wait_first(self._clock, (self._launch_started, self._adrift, self._exit), by - self._clock.now())
         # Before the start: a start applied in a conversation that could not be held is adrift all the same (`_entered`).
         if self._adrift.done():
             raise Unstartable(str(self._adrift.exception()))
         if self._launch_started.done():
             return
-        shown = self._claude.shown()
-        if self._exit.done():
-            raise Unstartable(f"the brain's Claude Code posted no start of its session, {exited(self._exit.result())}; it showed:\n{shown}")
-        # As `exited` reads it: a reading that ended with the brain's end is that end's, said above.
-        if self._reading.done():
-            stopped = self._reading.exception()
-            raise Unstartable(f"hands stopped reading the brain's Claude Code before it posted the start of its session: {stopped!r}; it showed:\n{shown}") from stopped
-        raise Unstartable(f"the brain's Claude Code posted no start of its session within {START_SECONDS:.0f}s; it showed:\n{shown}")
+        ended = f", {exited(self._exit.result())}" if self._exit.done() else f" within {START_SECONDS:.0f}s"
+        raise Unstartable(f"the brain's Claude Code posted no start of its session{ended}; it showed:\n{self._claude.shown()}")
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many
