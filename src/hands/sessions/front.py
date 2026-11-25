@@ -1,116 +1,54 @@
-# pyright: basic, reportAttributeAccessIssue=false
-"""Reads what is in front on the Mac's screen: LaunchServices for the app that is, the app itself for its front tab, tmux
-for the pane each of its clients shows, and the kernel for the terminals each session runs under.
+"""Reads what is in front on the Mac's screen: the screen for the app that is, and its front tab where it says one; tmux
+for the pane each of its clients shows; and the processes for the terminals each session runs under.
 
-hands is tied to no one terminal. An app that can say which of its tabs is in front by AppleScript is asked; any other
-shows every terminal running under it, which names the session in front whenever it holds only one.
+hands is tied to no one terminal. An app that can say which of its tabs is in front is asked; any other shows every
+terminal running under it, which names the session in front whenever it holds only one.
 """
 
-import os
-import re
+import asyncio
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
 
-from Foundation import NSAppleScript
 from loguru import logger
 
-from hands.core.front import Candidate, FrontUnread, InFront, Screen, in_front
+from hands.core.front import Candidate, FrontUnread, InFront, Shown, in_front
 from hands.core.session import SessionId
 from hands.core.tmux import Unanswered
-from hands.sessions import child
-from hands.sessions.child import Children
-from hands.sessions import tmux
+from hands.sessions import panes
 from hands.sessions.processes import Process, Processes, ancestor_terminals
-from hands.threads import SerialThread
-
-# Each app that says by AppleScript which terminal its front tab shows, by bundle id. Only the app in front is asked:
-# telling an app anything launches it. The time limit is the Apple event's own, which otherwise waits two minutes on an
-# app that does not answer, or on the user deciding whether hands may ask it at all.
-_FRONT_TAB: Mapping[str, str] = {
-    bundle: f'with timeout of 2 seconds\ntell application id "{bundle}" to {asked}\nend timeout'
-    for bundle, asked in (("com.googlecode.iterm2", "tty of current session of current window"), ("com.apple.Terminal", "tty of selected tab of front window"))
-}
-# [LAW:no-shared-mutable-globals] NSAppleScript is not thread-safe: every script is compiled and run on this one thread,
-# which owns the compiled scripts, and which a stopping daemon never waits on. Compiled once, on the first ask: the first
-# costs ~170 ms, the ones after it ~5 ms (measured with iTerm2 3.6).
-_applescript = SerialThread("AppleScript")
-_scripts: dict[str, NSAppleScript] = {}
-
-_LSAPPINFO = "/usr/bin/lsappinfo"
-# lsappinfo info -only names one field a line: "pid"=93900, "CFBundleIdentifier"="com.google.Chrome".
-_FIELD = re.compile(r'^"(\w+)"=(?:"(.*)"|(\d+))$', re.MULTILINE)
-
-class _Unread(Exception):
-    pass
+from hands.sessions.screen import FrontApp, Screen
+from hands.sessions.terminals import Terminals
 
 
-@dataclass(frozen=True)
-class _App:
-    pid: int
-    bundle: str | None
-    name: str
-
-
-async def read_front(children: Children, processes: Processes, sessions: Mapping[SessionId, tuple[int, str]], environment: Mapping[str, str]) -> InFront:
+async def read_front(screen: Screen, terminals: Terminals, processes: Processes, sessions: Mapping[SessionId, tuple[int, str]], environment: Mapping[str, str]) -> InFront:
     """What is in front now, among `sessions`, each a session's pid and its name as it is spoken; `environment` is the
-    run's, which says where tmux keeps its sockets and where tmux is."""
+    run's, which says where tmux keeps its sockets."""
     try:
-        app = await _front_app(children)
-        table = processes.table()
-        screen = await _screen(app, table)
+        app = await screen.front()
+        if isinstance(app, FrontUnread):
+            return app
+        table = await asyncio.to_thread(processes.table)
+        shown = _shown(app, table)
         # A tmux client is on screen only in a terminal the app in front shows.
-        panes = dict(await _panes(children, processes, environment, [pid for pid, _ in sessions.values()], table)) if screen.shown else {}
-    except _Unread as unread:
-        return FrontUnread(str(unread))
-    except (OSError, TimeoutError) as error:
-        # [LAW:no-silent-failure] the turn goes without the fact, and the turn's record says why it was left out.
-        return FrontUnread(f"{type(error).__name__}: {error}")
+        clients = await _clients(terminals, processes, environment, [pid for pid, _ in sessions.values()], table) if shown.shown else {}
     except Exception as error:
-        # [LAW:no-silent-failure] a read broken by a fault of its own is logged with where, and recorded the same: the
-        # screen is a fact the turn can go without, never one that ends the brain's turns.
+        # [LAW:no-silent-failure] a read broken by a fault of its own is logged with where, and the turn's record says
+        # why it was left out: the screen is a fact the turn can go without, never one that ends the brain's turns.
         logger.opt(exception=error).error("reading what is in front broke")
         return FrontUnread(f"{type(error).__name__}: {error}")
-    candidates = [Candidate(session, name, frozenset(ancestor_terminals(pid, table))) for session, (pid, name) in sessions.items()]
-    return in_front(screen, panes, candidates)
-
-
-async def _front_app(children: Children) -> _App:
-    """The app LaunchServices says is in front: the one the user is using, whether or not a window of its is on screen."""
-    serial = (await _ran(children, _LSAPPINFO, "front")).strip()
-    if not serial.startswith("ASN:"):
-        raise _Unread(f"no app is in front: lsappinfo said {serial!r}")
-    info = await _ran(children, _LSAPPINFO, "info", "-only", "pid", "-only", "bundleid", "-only", "name", serial)
-    fields = {match[1]: match[2] if match[3] is None else match[3] for match in _FIELD.finditer(info)}
-    match fields:
-        case {"pid": pid, "LSDisplayName": name}:
-            return _App(int(pid), fields.get("CFBundleIdentifier"), name)
+    match clients:
+        case Unanswered(reason=reason):
+            return FrontUnread(reason)
         case _:
-            raise _Unread(f"lsappinfo did not say which app {serial} is: {info!r}")
+            candidates = [Candidate(session, name, frozenset(ancestor_terminals(pid, table))) for session, (pid, name) in sessions.items()]
+            return in_front(shown, clients, candidates)
 
 
-async def _ran(children: Children, *argv: str) -> str:
-    ran = await children.run(*argv, limit=2)
-    match ran:
-        case child.Ran(ending=child.Exited(code=0), out=out):
-            return out.text()
-        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
-            raise _Unread(f"{' '.join(argv)} {child.said(ran)}")
-
-
-async def _screen(app: _App, table: Mapping[int, Process]) -> Screen:
-    match _FRONT_TAB.get(app.bundle or ""):
-        case str() as source:
-            return Screen(app.name, frozenset({_device(await _applescript.run(lambda: _asked(app.name, source)))}))
+def _shown(app: FrontApp, table: Mapping[int, Process]) -> Shown:
+    match app.tab:
+        case int(tab):
+            return Shown(app.name, frozenset({tab}))
         case None:
-            return Screen(app.name, frozenset(process.terminal.device for process in _under(app.pid, table) if process.terminal is not None))
-
-
-def _asked(app: str, source: str) -> str:
-    script = _scripts.setdefault(source, NSAppleScript.alloc().initWithSource_(source))
-    answer, error = script.executeAndReturnError_(None)
-    if answer is None:
-        raise _Unread(f"{app} did not say which tab is in front: {error.get('NSAppleScriptErrorMessage', error) if error else 'no answer'}")
-    return str(answer.stringValue())
+            return Shown(app.name, frozenset(process.terminal.device for process in _under(app.pid, table) if process.terminal is not None))
 
 
 def _under(pid: int, table: Mapping[int, Process]) -> Iterator[Process]:
@@ -125,19 +63,10 @@ def _under(pid: int, table: Mapping[int, Process]) -> Iterator[Process]:
         stack.extend(children.get(process.pid, ()))
 
 
-async def _panes(children: Children, processes: Processes, environment: Mapping[str, str], pids: Sequence[int], table: Mapping[int, Process]) -> list[tuple[int, int]]:
+async def _clients(terminals: Terminals, processes: Processes, environment: Mapping[str, str], pids: Sequence[int], table: Mapping[int, Process]) -> dict[int, int] | Unanswered:
     """Each tmux client's terminal, and the terminal of the pane it shows, from each server that may hold a pane of one
-    of `pids`."""
-    answers = await tmux.asked(children, processes, environment, pids, table, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
+    of `pids`; or why one of them could not be read, which might have shown the session in front."""
+    answers = await panes.across(terminals, processes, environment, pids, table, terminals.clients)
     if unanswered := [answer.reason for answer in answers if isinstance(answer, Unanswered)]:
-        raise _Unread("; ".join(unanswered))
-    # A client with no terminal, as one in control mode over a pipe, is on no screen; nor is one gone since it was listed.
-    pairs = [(tmux.device(client), tmux.device(pane)) for answer in answers if isinstance(answer, tmux.Answered) for client, pane in (line.split("\t") for line in answer.lines) if client]
-    return [(client, pane) for client, pane in pairs if client is not None and pane is not None]
-
-
-def _device(path: str) -> int:
-    try:
-        return os.stat(path).st_rdev
-    except OSError as error:
-        raise _Unread(f"the terminal {path} could not be read: {error}") from error
+        return Unanswered("; ".join(unanswered))
+    return {client: pane for answer in answers if not isinstance(answer, Unanswered) for client, pane in answer.items()}

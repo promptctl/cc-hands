@@ -30,12 +30,14 @@ from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, E
 from hands.tasks import cancel_and_wait
 from hands.core.tmux import Keyboard
 from hands.sessions.child import Children
-from hands.sessions import audit, backlog, child, filing, grouping, heartbeat, recall, tmux, wide, wrapper
+from hands.sessions import audit, backlog, child, filing, grouping, heartbeat, panes, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.kernel import KERNEL
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.sessions.processes import Processes
+from hands.sessions.terminals import Terminals
+from hands.sessions.tmux import TmuxTerminals
 from hands.threads import off_loop
 from hands.visible import VISIBLE
 from hands.voice import summarising
@@ -653,6 +655,7 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, envi
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
+    from hands.sessions.launchservices import LaunchServices
     from hands.voice import memory
 
     # Before any model loads, so no buffer any of them frees is kept past the limit.
@@ -660,6 +663,8 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, envi
 
     path = environment.get("PATH", "")
     children = Children(clock, record)
+    # [LAW:effects-at-boundaries] the run's one adapter of the user's terminals, and the one of the Mac's screen.
+    terminals = TmuxTerminals(children, environment.get("PATH"))
     # This run is hands running, and the backend it reaches is the one it was configured on.
     running = readiness.Ready("hands running", f"hands is running here: pid {os.getpid()}")
 
@@ -671,9 +676,9 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, envi
                 # Refused on its home's files, its login, a Claude Code it could not ask, or its kept voice's fetch: the reason
                 # names each, so the line claims none.
                 reached = readiness.unstartable(str(error))
-        survey(readiness.check(children, processes, home, path, True, reached, running, partial(keyboards, children, processes)))
+        survey(readiness.check(children, processes, home, path, True, reached, running, partial(keyboards, terminals, processes)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, home, heart, record, degraded, stop, after_crash, environment, pin, run_start, OwnModel(home, pin, environment, settings), clock, listening, driving)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, terminals, LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, run_start, OwnModel(home, pin, environment, settings), clock, listening, driving)
 
 
 def start_indicator(home: Home) -> int:
@@ -788,7 +793,7 @@ def check(children: Children, processes: Processes, home: Home, pin: pinned.Pin,
     # [LAW:one-source-of-truth] one look at the heartbeat, for whether hands runs and what its brain said of its login.
     running = heartbeat.look(processes, home.status, now)
     reached = readiness.configured(children, home, pin, os.environ, running)
-    findings = readiness.check(children, processes, home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(running, now), partial(keyboards, children, processes))
+    findings = readiness.check(children, processes, home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(running, now), partial(keyboards, TmuxTerminals(children, os.environ.get("PATH")), processes))
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
     missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]
@@ -809,9 +814,9 @@ def undone(findings: Sequence[readiness.Finding]) -> str:
     return "; ".join(f"{finding.step}: {finding.said.partition("\n")[0]}" for finding in findings)
 
 
-def keyboards(children: Children, processes: Processes, pids: Sequence[int]) -> list[Keyboard]:
+def keyboards(terminals: Terminals, processes: Processes, pids: Sequence[int]) -> list[Keyboard]:
     """The tmux pane whose keys reach each of `pids`, read on a loop of its own: the readiness check runs on none."""
-    return asyncio.run(tmux.keyboards(children, processes, pids, os.environ))
+    return asyncio.run(panes.keyboards(terminals, processes, pids, os.environ))
 
 
 def survey(findings: Sequence[readiness.Finding]) -> None:

@@ -4,7 +4,6 @@ import asyncio
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from functools import partial
 from typing import Literal, get_args
 
 from loguru import logger
@@ -29,7 +28,7 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import Titles
-from hands.sessions.typing import Untyped, type_into
+from hands.sessions.typing import Untyped
 
 
 # How a Stop's hook ended: decided inside the hold, let go at it with Claude Code going on undecided, or released
@@ -57,6 +56,11 @@ async def unread(pids: Sequence[int]) -> list[Keyboard]:
     return [PaneUnread("this daemon reads no tmux panes")] * len(pids)
 
 
+async def untyped(typed: Type[Input]) -> None:
+    """Nothing typed into `typed`'s session: what a Sessions told of no terminals answers."""
+    raise Untyped(f"this daemon types into no session, so nothing was typed into {typed.session}")
+
+
 @dataclass(frozen=True)
 class Listing[S: Known]:
     session: S
@@ -71,7 +75,7 @@ class Sessions:
         clock: Clock,
         record: Record,
         changes: Changes | None = None,
-        typist: Callable[[Type[Input]], Awaitable[None]] | None = None,
+        typist: Callable[[Type[Input]], Awaitable[None]] = untyped,
         keyboards: Callable[[Sequence[int]], Awaitable[list[Keyboard]]] = unread,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
@@ -90,8 +94,8 @@ class Sessions:
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
-        # What types a Type into its session, or raises Untyped. A daemon given none finds no tmux to type into.
-        self._typist = typist or partial(type_into, self.children, {})
+        # What types a Type into its session, or raises Untyped. A daemon given none types into none.
+        self._typist = typist
         # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by. A daemon
         # given none reads none, so nothing it is not told to type into is typed into.
         self._keyboards = keyboards

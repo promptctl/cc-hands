@@ -18,7 +18,8 @@ from hands.clock import SYSTEM
 from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.session import CommandName, PromptText, SessionId
 from hands.sessions import typing
-from hands.sessions.typing import Typist, Untyped, type_into
+from hands.sessions.tmux import TmuxTerminals
+from hands.sessions.typing import Typist, Untyped
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 
@@ -84,7 +85,7 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":true}\n')
     try:
-        asyncio.run(type_into(children_on(SYSTEM), {}, Type(SID, Fritter(path, pid=4242), input=Text(PromptText("/compact now")))))
+        asyncio.run(TmuxTerminals(children_on(SYSTEM), None).type(Type(SID, Fritter(path, pid=4242), input=Text(PromptText("/compact now")))))
     finally:
         fritter.close()
     assert fritter.asked is not None
@@ -103,7 +104,7 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
 )
 def test_a_command_is_typed_as_itself_and_a_key_is_pressed(input: Input, sent: dict[str, object], short_dir: Path) -> None:
     path = short_dir / "f.sock"
-    assert asked(path, b'{"ok":true}\n', lambda _: asyncio.run(type_into(children_on(SYSTEM), {}, Type(SID, Fritter(path, pid=4242), input=input)))) == sent
+    assert asked(path, b'{"ok":true}\n', lambda _: asyncio.run(TmuxTerminals(children_on(SYSTEM), None).type(Type(SID, Fritter(path, pid=4242), input=input)))) == sent
 
 
 @pytest.mark.outside

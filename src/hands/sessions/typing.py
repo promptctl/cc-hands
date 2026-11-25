@@ -1,4 +1,4 @@
-"""Typing into a session, through the fritter that wrapped it or, for a session no fritter wrapped, through tmux into the
+"""Typing into a session through the fritter that wrapped it; one no fritter wrapped is typed into through tmux, into the
 pane it runs in (`hands.sessions.tmux`).
 
 fritter runs a session's `claude` on a pseudo-terminal and listens on a unix socket
@@ -12,18 +12,13 @@ be sent to, and whether a leading slash is escaped are all settled in the core b
 reaches here `[LAW:single-enforcer]`.
 """
 
-import asyncio
 import json
 import socket
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.sessions.child import Children
-from hands.core.effects import Command, Fritter, Input, Key, Text, Type
+from hands.core.effects import Command
 from hands.core.session import Keystroke, PromptText, Submit
-from hands.core.tmux import Pane, Unanswered
-from hands.sessions import tmux
 
 # How long the exchange may take. fritter answers as soon as its one write is done.
 ANSWER_TIMEOUT = 5.0
@@ -78,28 +73,3 @@ class Typist:
                 raise Untyped(f"the fritter wrapping {self.pid} did not type: {reason}")
             case other:
                 raise Untyped(f"the fritter wrapping {self.pid} answered {other!r}")
-
-
-async def type_into(children: Children, environment: Mapping[str, str], effect: Type[Input]) -> None:
-    """Perform a Type by its writer: text or a command typed into the session and sent with Return, or a key pressed.
-    `environment` says where tmux is."""
-    match effect.writer:
-        case Fritter(socket=path, pid=pid):
-            await asyncio.to_thread(_by_fritter, Typist(path, pid), effect.input)
-        case Pane() as pane:
-            match await tmux.typed(children, environment, pane, effect.input):
-                case Unanswered(reason=reason):
-                    raise Untyped(f"tmux did not type into session {effect.session}: {reason}")
-                case None:
-                    return
-
-
-def _by_fritter(typist: Typist, input: Input) -> None:
-    match input:
-        case Text() as typed:
-            # A wrapped session runs on Claude Code's own keybindings, where Return sends the prompt.
-            typist.type(typed.typed, "enter")
-        case Command() as command:
-            typist.command(command)
-        case Key(key=key):
-            typist.press(key)

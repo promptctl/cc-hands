@@ -21,15 +21,15 @@ ADAPTERS = frozenset({"darwin.py", "sessions/kernel.py", "sessions/child.py"})
 EXCEPTION = "[LAW:effects-at-boundaries] exception"
 
 
-def kernel_importers(root: Path) -> list[str]:
-    """Each module under the package `root` that reaches hands.sessions.kernel, by its path from `root`: by an import of
+def importers(root: Path, adapter: str = KERNEL) -> list[str]:
+    """Each module under the package `root` that reaches the module `adapter`, by its path from `root`: by an import of
     it, a relative one among them, or a use of it by the package it was imported under."""
 
     def reaches(path: Path) -> bool:
         tree = ast.parse(path.read_text())
         named = imported(tree, ".".join([root.name, *path.relative_to(root).parent.parts]))
         used = (qualified(node, named) for node in ast.walk(tree) if isinstance(node, ast.Attribute))
-        return any(name == KERNEL or name.startswith(f"{KERNEL}.") for name in (*named.values(), *used))
+        return any(name == adapter or name.startswith(f"{adapter}.") for name in (*named.values(), *used))
 
     return sorted(path.relative_to(root).as_posix() for path in root.rglob("*.py") if reaches(path))
 
@@ -72,7 +72,7 @@ def _comment_above(line: int, lines: list[str]) -> str:
 
 
 def test_only_a_composition_root_reaches_the_kernels_processes() -> None:
-    assert kernel_importers(Path(hands.__file__).parent) == sorted(ROOTS)
+    assert importers(Path(hands.__file__).parent) == sorted(ROOTS)
 
 
 def test_every_other_reach_of_another_process_is_in_an_adapter_or_marked_as_an_exception() -> None:
@@ -108,4 +108,4 @@ def test_the_check_finds_each_way_of_reaching_the_kernel(tmp_path: Path) -> None
         "unrelated.py": "from hands.sessions.processes import Processes\n",
     }.items():
         (root / "sessions" / name).write_text(source)
-    assert kernel_importers(root) == ["sessions/module.py", "sessions/named.py", "sessions/relative.py", "sessions/whole.py"]
+    assert importers(root) == ["sessions/module.py", "sessions/named.py", "sessions/relative.py", "sessions/whole.py"]

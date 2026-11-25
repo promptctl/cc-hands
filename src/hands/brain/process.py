@@ -61,7 +61,11 @@ from hands.sessions.processes import parse_pid
 from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
-from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
+from hands.core.tmux import Unanswered
+from hands.sessions.panes import socket_directory
+# [LAW:effects-at-boundaries] exception: the brain runs tmux on its own pane past Terminals until its parties are
+# handed to it (promptctl-testing-c3u.fhu).
+from hands.sessions.tmux import TmuxExit, ran_at, styled
 from hands.sessions.typing import Typist, Untyped
 from hands.tasks import cancel_and_wait
 from hands.sessions.untap import untapped
