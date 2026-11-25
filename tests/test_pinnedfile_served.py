@@ -3,8 +3,10 @@ tests/test_pinnedfile.py cannot show."""
 
 import asyncio
 import hashlib
+import socket
 import threading
-from collections.abc import AsyncGenerator, Awaitable, Callable
+import urllib.request
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from http.client import IncompleteRead
 from pathlib import Path
@@ -20,6 +22,29 @@ pytestmark = pytest.mark.outside
 
 BODY = b"the pinned file"
 DIGEST = hashlib.sha256(BODY).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def unproxied(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Each fetch from the test's own server goes straight to it, past any proxy: a proxy the environment names, which
+    urllib takes in place of the machine's own settings, as a Mac's system proxy, is one that never answers, and no fetch
+    reaches it."""
+    with socket.socket() as proxy:
+        proxy.bind(("127.0.0.1", 0))
+        proxy.listen()
+        proxy.setblocking(False)
+        address = f"http://127.0.0.1:{proxy.getsockname()[1]}"
+        for name in ("http_proxy", "https_proxy"):
+            monkeypatch.setenv(name, address)
+        monkeypatch.setenv("no_proxy", "127.0.0.1")
+        # urlopen keeps the opener it builds first, with the proxies it read then: each test's is its own.
+        monkeypatch.setattr(urllib.request, "_opener", None)
+        yield
+        try:
+            proxy.accept()[0].close()
+        except BlockingIOError:
+            return
+        pytest.fail("a fetch from the test's own server went through the proxy")
 
 
 @asynccontextmanager
