@@ -784,6 +784,11 @@ class Unran(Exception):
     """Words typed for a turn, waiting to run as the turn behind another, whose turn ended before Claude Code ran them."""
 
 
+class WorkCancelled(Exception):
+    """Work of the brain's own that was cancelled, which nothing in the brain does: the turn it was kept for ends with
+    it."""
+
+
 class OrderLost(Exception):
     """Claude Code went on before hands heard which of its turns it ran: a prompt hook answered past its declared
     timeout, or a Stop let go before it was decided. Which turn ran what is not guessed: every turn open then fails."""
@@ -1148,8 +1153,8 @@ class Brain:
         says whether there was one to stop: the turn in flight, where `running` answers it, or none Claude Code has yet;
         else one Claude Code opened itself, which no turn in flight waits on, while it is open.
 
-        [LAW:single-enforcer] the one way a turn is stopped, a broken one's included: `_stop`, with the input held, so its
-        keys go in alone, and what breaks it is `_broke`'s. The turn ends BrainStopped, unless it ended by itself first.
+        [LAW:single-enforcer] the one way a turn is stopped, a broken one's included: `_stopping`, with the input held, so
+        its keys go in alone, and what breaks it is `_broke`'s. The turn ends BrainStopped, unless it ended by itself first.
         """
         turn = self._turn
         if turn is not None and not turn.answered.done() and turn.running is running:
@@ -1164,57 +1169,87 @@ class Brain:
         """Stops `running`, which the words of an untaken turn run in, taken late under `prompt`, with the input held:
         unless a turn in flight was taken since, which Claude Code, reading its input in order, filed into it. Then the
         asker's words run there too, and the turn runs on to answer them: a stop would end a turn they asked."""
-        async with self._input:
-            # [LAW:nothing-unseen] a stop hands decides itself is one event: the words, the turn they ran in, and whether
-            # it was stopped.
-            with unit("brain.late", self._record, begun(self._clock)):
+        # [LAW:nothing-unseen] a stop hands decides itself is one event, from the wait for the input on: the words, the
+        # turn they ran in, whether it was stopped, and what ended the stop short.
+        with unit("brain.late", self._record, begun(self._clock)):
+            async with self._input:
                 turn = self._turn
                 asked = turn is not None and not turn.answered.done() and turn.taken.done()
                 stopped = running in self._claude_turns.open and not asked
                 annotate(prompt=prompt, opener=running.opener, stopped=stopped)
-            if stopped:
-                await self._clear(None)
+                if stopped and (short := await self._clearing()) is not None:
+                    fail(short)
 
     async def _halt(self, running: ClaudeTurn) -> None:
         """Stops a turn Claude Code opened itself, with the input held: over once its telling ends it (`_clear`). The input
         is held until the turn in flight is taken, so a turn typed behind `running` is stopped with it, as a turn is
         stopped (`_escape`): its words ran in `running`, or waited behind it, and the Escape stops them either way."""
-        async with self._input:
-            if running not in self._claude_turns.open:
-                return
-            turn = self._turn
-            if turn is not None and not turn.answered.done() and turn.taken.done():
-                await self._stopping(turn)
-            else:
-                await self._clear(None)
+        # [LAW:nothing-unseen] one event, from the wait for the input on: the turn halted, whether a turn in flight was
+        # stopped with it, and what ended the stop short.
+        with unit("brain.halt", self._record, begun(self._clock)):
+            async with self._input:
+                turn = self._turn
+                with_turn = turn is not None and not turn.answered.done() and turn.taken.done()
+                annotate(prompts=tuple(sorted(running.ids)), opener=running.opener, open=running in self._claude_turns.open, with_turn=with_turn)
+                if running not in self._claude_turns.open:
+                    return
+                if (short := await (self._stopping(turn) if turn is not None and with_turn else self._clearing())) is not None:
+                    fail(short)
 
-    async def _stopping(self, turn: _Turn) -> None:
-        """Stops the taken `turn`, with the input held: it ends BrainStopped once Claude Code holds nothing of it."""
+    async def _clearing(self) -> str | None:
+        """Clears Claude Code for no turn in flight, and says what cut the clear short, for its stop's event: an end of the
+        brain, or a stop Claude Code did not carry out. Anything else is raised on, for `_broke` to say.
+
+        [LAW:one-source-of-truth] the turn of Claude Code's it stopped is ended by what the model reads of it, never here:
+        one Claude Code did not stop runs on to its telling, and one the brain's end cut short failed as it exited
+        (`_run_out`)."""
+        try:
+            await self._clear(None)
+        except (BrainGone, StopUnrecorded) as error:
+            return str(error)
+        return None
+
+    async def _stopping(self, turn: _Turn) -> str | None:
+        """Stops the taken `turn`, with the input held: it ends BrainStopped once Claude Code holds nothing of it. Says
+        what cut the stop short, as `_clearing` does, where the turn ended with it."""
         # Whatever way Claude Code's turn ends from here, it was stopped: an Escape went for it.
         turn.stopped = True
         try:
             await self._clear(turn)
         except (BrainGone, StopUnrecorded) as error:
             self._over(turn, error)
-            return
+            return str(error)
         except Exception as error:
             # [LAW:single-enforcer] whatever else broke the clear ends the turn it stopped here, on every stop's path (`_stop`,
             # `_halt`), as its turn was stopped; and is raised on, for `_broke` to say.
             self._over(turn, error)
             raise
+        except asyncio.CancelledError:
+            # [LAW:no-silent-failure] a stop cut short by a cancel ends its turn too, whichever work it was kept as, so no
+            # asker is left waiting: never with the CancelledError, which its asker did not ask for (`_kept`).
+            self._over(turn, WorkCancelled("the brain's stop of its turn was cancelled"))
+            raise
         # Over now Claude Code holds nothing of it: the turn the Escape stopped told, and the words it put back in the
         # input from Claude Code's queue, which Ctrl-C cleared, taken out of it.
         self._over(turn, BrainStopped())
+        return None
 
     def _keep(self, work: Coroutine[None, None, None], turn: _Turn | None) -> None:
         """Runs on in a task of the brain's own, whoever asked for it, for `turn`, the turn in flight it was begun in."""
-        task = asyncio.create_task(work)
+        # Named for what it is, which a cancel of it says (`_kept`).
+        task = asyncio.create_task(work, name=work.__qualname__)
         self._own_work.add(task)
         task.add_done_callback(lambda done: self._kept(done, turn))
 
     def _kept(self, task: "asyncio.Task[None]", turn: _Turn | None) -> None:
         self._own_work.discard(task)
-        if not task.cancelled() and (error := task.exception()) is not None:
+        if task.cancelled():
+            # [LAW:no-silent-failure] nothing in the brain cancels its own work, only the end of the loop it runs on: the
+            # turn it was kept for ends with it, so no asker is left waiting, and says so on its event; never a
+            # CancelledError raised into an asker that did not cancel, nor a stop pressed again.
+            if turn is not None:
+                self._over(turn, WorkCancelled(f"the brain's own work was cancelled: {task.get_name()}"))
+        elif (error := task.exception()) is not None:
             self._broke(turn, error)
 
     async def drained(self) -> int:
@@ -1450,14 +1485,18 @@ class Brain:
                 # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no
                 # telling will end: words the Escape put back in the input, which the Ctrl-C clears, before they ran. Each
                 # ends here, in the step the model reads it so, before any turn Claude Code opens later can be among them.
-                self._claude_turns.failed(Unran("Claude Code was stopped, and its input cleared, before they ran"))
+                self._claude_turns.failed(Unran("Claude Code was stopped before they ran, and the Ctrl-C after it clears them from its input"))
             # [LAW:dataflow-not-control-flow] every stop's Ctrl-C goes, whether Claude Code stopped or not.
             # [LAW:no-ambient-temporal-coupling] it goes once Claude Code has acted on the Escape, as the model reads it now,
             # with nothing waited on between, or once the stop's time has passed, too long after the ESC for any reader
             # still reading to take the two together: a Ctrl-C a busy Claude Code reads in one chunk with the ESC is
             # Alt+Ctrl-C, and neither key does anything.
-            await self._type(lambda typist: typist.press("ctrl_c"))
-            self._cleared = self._clock.now()
+            try:
+                await self._type(lambda typist: typist.press("ctrl_c"))
+            finally:
+                # However the write ends, the key may have gone: a write cut off here still runs to its end in its
+                # thread, so the next stop spaces its Ctrl-C from this one.
+                self._cleared = self._clock.now()
             if unstopped is None:
                 # The Escape put whatever Claude Code queued back in the input and the Ctrl-C cleared it: untaken words
                 # are in neither now, so none can come late.
@@ -1631,12 +1670,28 @@ class Brain:
                 # goes on only once the model has it, so nothing it writes after is read before it.
                 arrived = self._clock.now()
                 try:
-                    held = await self._reader.hooked(hook)
-                finally:
-                    # [LAW:no-ambient-temporal-coupling] in the step the model applied it, with nothing awaited between;
-                    # and applied whatever the model did with it, since Claude Code moved all the same.
-                    self._moved_by(hook)
-                await self._heard()
+                    try:
+                        held = await self._reader.hooked(hook)
+                    finally:
+                        # [LAW:no-ambient-temporal-coupling] in the step the model applied it, with nothing awaited
+                        # between; and applied whatever the model did with it, since Claude Code moved all the same.
+                        self._moved_by(hook)
+                    await self._heard()
+                except Exception as error:
+                    # [LAW:no-silent-failure] a hook the model may not have heard, as one that did not parse (`_unread`):
+                    # which turn a telling ends is no longer known, and is not guessed. A start opens no turn: the brain
+                    # is adrift only where it did not enter the session it names.
+                    why = f"the brain's {event} hook could not be heard: {error!r}"
+                    self._unheard(event, why)
+                    match hook.happened:
+                        case Joined(membership=membership) if self._session.id() == membership.id:
+                            # The brain entered the session the start names all the same (`_moved_by`).
+                            logger.opt(exception=error).error(why)
+                        case Joined():
+                            self._adrift_by(why)
+                        case _:
+                            self._lost(why, error)
+                    return {}
                 self._ordered(hook, held, self._clock.now() - arrived)
                 return {}
 
@@ -1689,11 +1744,11 @@ class Brain:
             case _:
                 pass
 
-    def _lost(self, why: str) -> None:
-        """The order of the brain's turns lost: every turn of Claude Code's open fails, and the turn in flight with them
-        when one of them answers it. What Claude Code still runs of them is no turn's, cleared before the next is typed
-        (`_taking`)."""
-        logger.error(f"the brain lost the order of its turns: {why}")
+    def _lost(self, why: str, cause: BaseException | None = None) -> None:
+        """The order of the brain's turns lost, by `cause` where hands' own work failed: every turn of Claude Code's open
+        fails, and the turn in flight with them when one of them answers it. What Claude Code still runs of them is no
+        turn's, cleared before the next is typed (`_taking`)."""
+        logger.opt(exception=cause).error(f"the brain lost the order of its turns: {why}")
         turn = self._turn
         if turn is not None and not turn.answered.done():
             turn.order_lost = why
@@ -1709,21 +1764,21 @@ class Brain:
                 return hook_output(Deny(UNREAD))
             case "SessionStart":
                 # [LAW:no-silent-failure] which conversation Claude Code is in now is no longer known, and is not guessed.
-                self._unheard(event, error)
+                self._unheard(event, f"the brain's {event} hook does not parse: {error}")
                 self._adrift_by(f"the brain's SessionStart hook does not parse, so which conversation it is in is not known: {error}")
                 return {}
             case _:
                 # [LAW:no-silent-failure] every other hook the brain posts opens, ends or leaves a turn (BRAIN_HOOKS): one
                 # the model never heard leaves which turn a telling ends unknown (`ClaudeTurns`), and it is not guessed.
-                self._unheard(event, error)
+                self._unheard(event, f"the brain's {event} hook does not parse: {error}")
                 self._lost(f"the brain's {event} hook does not parse: {error}")
                 return {}
 
-    def _unheard(self, event: str, error: Rejected) -> None:
-        # [LAW:nothing-unseen] one event, naming the hook, though hands could not read whose it is.
+    def _unheard(self, event: str, why: str) -> None:
+        # [LAW:nothing-unseen] one event, naming the hook, though hands could not hear whose it is.
         with unit("brain.unread", self._record, begun(self._clock)):
             annotate(hook=event)
-            fail(f"the brain's {event} hook does not parse: {error}")
+            fail(why)
 
     async def _permit(self, hook: PermissionHook) -> Allow | AllowWith | Approve | Deny | DenyAndInterrupt:
         """Answers a permission request: held in the model as it arrives, and put to the user while a turn of theirs is
@@ -1945,10 +2000,6 @@ class Brain:
             return
         if isinstance(outcome, Untaken) and turn.pasted:
             self._untaken = kept(turn.typed)
-        # Words of its waiting to run as the turn behind, which no telling has named, never run now: Ctrl-C cleared them
-        # from the input as its stop went, or nothing is left to run them.
-        if (running := turn.running) is not None and not running.ids and running in self._claude_turns.open:
-            self._claude_turns.fail(running, Unran(f"the turn they were typed for ended ({outcome!r}) before they ran"))
         # A broken turn ends with what broke it, whatever ended it: its Stop, its stop's Escape, or the brain's exit.
         match outcome if turn.broken is None else turn.broken:
             case BrainAnswered() | BrainStopped() as ended:
