@@ -182,14 +182,21 @@ func (t Trusted) Path() string {
 	return t.path
 }
 
-// Trust writes, at path, the file a client is given to trust in the place of the one
-// `variable` names in its environment, read by `client`: the certificates that one holds,
-// if it names one, and the authority, each on lines of its own. [LAW:single-enforcer] the
-// one way a client comes to trust a door, for fritter and brioche alike.
-// [LAW:effects-at-boundaries] the client's environment is given, as its proxy is: a door
-// need not run in the environment its client does.
-func (i *Interception) Trust(variable TrustVariable, client func(name string) string, path string, unread func(error)) (Trusted, error) {
-	already, err := alsoTrusted(client(variable.name))
+// Trust writes, at path, the file a client is given to trust in the place of `named`, the
+// file its `variable` names, "" where it names none: the certificates that one holds, and
+// the authority, each on lines of its own. [LAW:single-enforcer] the one way a client comes
+// to trust a door, for fritter and brioche alike. [LAW:effects-at-boundaries] what the
+// client's variable names is given, as its proxy is: a door need not run in the environment
+// its client does.
+//
+// A `named` that is the file at path, by any of its names, is refused: it is a door's file
+// given to the client before, whose authority's key is gone, and what it holds besides
+// that authority is not known.
+func (i *Interception) Trust(variable TrustVariable, named string, path string, unread func(error)) (Trusted, error) {
+	if named != "" && sameFile(named, path) {
+		return Trusted{}, fmt.Errorf("%s names %s, the file the client is given in its place: it is to name the certificates the client trusts besides a door's", variable, named)
+	}
+	already, err := alsoTrusted(named)
 	if err != nil {
 		// As Node does with a NODE_EXTRA_CA_CERTS it cannot read: says so, and goes on
 		// without them, so the client runs as it would have without the door.
@@ -214,6 +221,17 @@ func alsoTrusted(named string) ([]byte, error) {
 		return nil, err
 	}
 	return held, nil
+}
+
+// sameFile is whether a and b are one file, by any of its names: a link, or /tmp for
+// /private/tmp. Two names not both of a file are not one.
+func sameFile(a, b string) bool {
+	first, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	second, err := os.Stat(b)
+	return err == nil && os.SameFile(first, second)
 }
 
 // The variables HTTP clients read their proxy from, each spelling.

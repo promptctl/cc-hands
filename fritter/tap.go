@@ -139,7 +139,7 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot make the certificate the child is answered with for %s: %w", t.upstream, err)
 	}
-	trusted, err := interception.Trust(t.trust, os.Getenv, filepath.Join(dir, "trusted.pem"), func(unread error) { warn("%v", unread) })
+	trusted, err := interception.Trust(t.trust, os.Getenv(t.trust.String()), filepath.Join(dir, "trusted.pem"), func(unread error) { warn("%v", unread) })
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +156,9 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	// forwards and what it tunnels alike: the child reaches the world as it did before
 	// fritter stood in that place.
 	outer := http.ProxyFromEnvironment
+	// [LAW:one-source-of-truth] exception: brioche (fritter/brioche) keeps a twin of this
+	// transport and these proxies, on purpose, as its header says why: a fix to one is weighed
+	// for the other.
 	onward := &http.Transport{
 		Proxy:           outer,
 		TLSClientConfig: &tls.Config{RootCAs: t.roots},

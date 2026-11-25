@@ -2,6 +2,7 @@ package intercept
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -52,17 +53,11 @@ func interception(t *testing.T, raw string) *Interception {
 	return made
 }
 
-// environment is a client's environment holding `variables` and nothing else, as Trust
-// reads it.
-func environment(variables map[string]string) func(string) string {
-	return func(name string) string { return variables[name] }
-}
-
-// trusted is `raw` intercepted, trusted by a client of EXTRA_CERTS whose environment names
-// nothing more to trust.
+// trusted is `raw` intercepted, trusted by a client of EXTRA_CERTS that names nothing more
+// to trust.
 func trusted(t *testing.T, raw string) Trusted {
 	t.Helper()
-	made, err := interception(t, raw).Trust(trust(t, "EXTRA_CERTS"), environment(nil), filepath.Join(t.TempDir(), "trusted.pem"), func(err error) { t.Error(err) })
+	made, err := interception(t, raw).Trust(trust(t, "EXTRA_CERTS"), "", filepath.Join(t.TempDir(), "trusted.pem"), func(err error) { t.Error(err) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,29 +239,47 @@ func TestWhatTheClientTrustedAlreadyIsKeptBesideTheAuthorityEndedByALineOrNot(t 
 	if err := os.WriteFile(already, []byte(strings.TrimSuffix(string(other.pem), "\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if roots := trusting(t, environment(map[string]string{"EXTRA_CERTS": already}), func(err error) { t.Error(err) }); roots != 2 {
+	if roots := trusting(t, already, func(err error) { t.Error(err) }); roots != 2 {
 		t.Errorf("the trust file holds %d certificates a reader finds, want what was trusted already and the authority", roots)
 	}
 }
 
 func TestAVariableNamingNoFileIsNothingTrustedAndOneNamingAnUnreadableFileIsSaidAndLeftOut(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.pem")
-	// The door's own environment is not the client's: what it names is not read.
-	t.Setenv("EXTRA_CERTS", missing)
-	if roots := trusting(t, environment(nil), func(err error) { t.Error(err) }); roots != 1 {
+	if roots := trusting(t, "", func(err error) { t.Error(err) }); roots != 1 {
 		t.Errorf("an unset variable left %d certificates to trust, want the authority alone", roots)
 	}
 	var unread error
-	if roots := trusting(t, environment(map[string]string{"EXTRA_CERTS": missing}), func(err error) { unread = err }); roots != 1 || !errors.Is(unread, os.ErrNotExist) {
+	if roots := trusting(t, missing, func(err error) { unread = err }); roots != 1 || !errors.Is(unread, os.ErrNotExist) {
 		t.Errorf("a file the variable names that cannot be read left %d certificates and said %v, want the authority alone and the error reading it", roots, unread)
 	}
 }
 
+func TestAVariableNamingTheFileWrittenInItsPlaceByAnotherNameIsRefusedAndLeftAsItWas(t *testing.T) {
+	// A door before this one wrote the file, and the client was given it.
+	path := filepath.Join(t.TempDir(), "trusted.pem")
+	before := []byte("a door's before")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "linked.pem")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := interception(t, "https://api.example.com").Trust(trust(t, "EXTRA_CERTS"), link, path, func(err error) { t.Error(err) })
+	if want := "EXTRA_CERTS names " + link + ", the file the client is given in its place"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("Trust gave %v, want an error saying %q", err, want)
+	}
+	if held, err := os.ReadFile(path); err != nil || !bytes.Equal(held, before) {
+		t.Errorf("the file holds %q (%v), want it left as it was", held, err)
+	}
+}
+
 // trusting is how many certificates a reader finds in the file the door's interception
-// writes for a client of EXTRA_CERTS, with the environment `client`, to trust.
-func trusting(t *testing.T, client func(string) string, unread func(error)) int {
+// writes for a client of EXTRA_CERTS whose variable names `named`, to trust.
+func trusting(t *testing.T, named string, unread func(error)) int {
 	t.Helper()
-	trusted, err := interception(t, "https://api.example.com").Trust(trust(t, "EXTRA_CERTS"), client, filepath.Join(t.TempDir(), "trusted.pem"), unread)
+	trusted, err := interception(t, "https://api.example.com").Trust(trust(t, "EXTRA_CERTS"), named, filepath.Join(t.TempDir(), "trusted.pem"), unread)
 	if err != nil {
 		t.Fatal(err)
 	}
