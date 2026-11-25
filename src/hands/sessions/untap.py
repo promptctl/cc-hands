@@ -25,9 +25,15 @@ REPLACED = (*PROXIES, *EXEMPT, TRUST)
 # The base URL a Claude Code reaches in the API's place, a gateway's.
 BASE_URL = "ANTHROPIC_BASE_URL"
 
-# [LAW:one-source-of-truth] what decides where a Claude Code's requests to the API go: its proxy and the certificates it
-# trusts, which a tap replaces, and the base URL it would reach in the API's place.
-ROUTING = (*REPLACED, BASE_URL)
+# [LAW:one-source-of-truth] what decides where a Claude Code's requests to the API go, each by what it would do set over
+# the way hands gives the brain: its proxy and the certificates it trusts, which a tap replaces, and the base URL it
+# would reach in the API's place.
+ROUTING: dict[str, str] = {
+    **dict.fromkeys(PROXIES, "would send the brain's requests around hands' proxy"),
+    **dict.fromkeys(EXEMPT, "would override which hosts skip hands' proxy"),
+    TRUST: "would replace the trust hands gives the brain, its proxy's authority among it",
+    BASE_URL: "would make Claude Code a gateway's client in place of Anthropic's API's",
+}
 
 
 def _outer(name: str) -> str:

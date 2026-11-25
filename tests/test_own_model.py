@@ -32,6 +32,7 @@ from hands.voice.braindoor import Voiced, silent, brain_door
 from hands.voice.refocus import Refocus
 from served import voiced
 from test_playback import Heard
+from fixtures.fakemachine import UNMANAGED
 
 SPOKEN_FILE = """# hands, by hand
 [llm]
@@ -50,7 +51,7 @@ def _laid_out(tmp_path: Path) -> None:
 
 
 def _own(home: Home) -> config.OwnModel:
-    return config.OwnModel(home, LAID_OUT, {}, config.load(home))
+    return config.OwnModel(home, LAID_OUT, UNMANAGED, {}, config.load(home))
 
 
 def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_written(tmp_path: Path) -> None:
@@ -216,7 +217,7 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
 def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    flagged = config.OwnModel(home, LAID_OUT, {}, config.load(home, "claude-haiku-4-5-20251001"))
+    flagged = config.OwnModel(home, LAID_OUT, UNMANAGED, {}, config.load(home, "claude-haiku-4-5-20251001"))
     assert flagged.running() == "claude-haiku-4-5-20251001"
     with pytest.raises(Rejected, match=f"^hands was started with --model claude-haiku-4-5-20251001, which it keeps over {home.config} until it is started without it$"):
         flagged.weigh("claude-opus-5-5")
@@ -227,8 +228,8 @@ async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     running_on = config.load(home)
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, {}, lambda _entry: None, running_on, SYSTEM, period=0.01), 2.0))
-    config.OwnModel(home, LAID_OUT, {}, running_on).weigh("claude-opus-5-5").keep()
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, lambda _entry: None, running_on, SYSTEM, period=0.01), 2.0))
+    config.OwnModel(home, LAID_OUT, UNMANAGED, {}, running_on).weigh("claude-opus-5-5").keep()
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 

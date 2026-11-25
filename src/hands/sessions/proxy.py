@@ -6,7 +6,8 @@ A client given it as its HTTPS proxy, and its trust file, reaches https://api.an
 API: the proxy ends that TLS itself and serves the requests inside it (`hands.sessions.connect`), so Claude Code behaves
 as it does first-party. A request posted to the proxy's own origin, as hands' side questions are, is served the same way.
 Every other host such a client reaches is tunnelled, untouched, and a request in absolute form is relayed; the proxy
-reaches each as hands' own environment says, through its outer proxy or directly.
+reaches each as hands' own environment says, through its outer proxy or directly. A tunnel and a relay each need the
+run's credential, which the proxy's url carries in its userinfo: its loopback port is any local process's to reach.
 
 It forwards each request upstream as it came, or with the changes its route gives it made to it, and
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
@@ -33,6 +34,7 @@ from hands.clock import Clock
 from hands.core import loopback
 from hands.core.wire import (
     API_HOST,
+    PROXY_USER,
     Answered,
     Answering,
     Body,
@@ -64,17 +66,20 @@ from hands.core.wire import (
     streams,
 )
 from hands.sessions.audit import Record
-from hands.sessions.authority import also_trusted, mint, onward_trust, trusted
-from hands.sessions.connect import Connects, host_port, outward
+from hands.sessions.authority import Uninterceptable, also_trusted, mint, onward_trust, trusted
+from hands.sessions.connect import Admitted, Connects, Unadmitted, admission, host_port, outward
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
 from hands.sessions.untap import untapped
-from hands.sessions.wide import root
+from hands.sessions import wide
+from hands.sessions.wide import annotate, begun, fail, root, unit
 
 # Headers that describe one hop's connection rather than the request or reply, so each hop sets its own.
-HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
+HOP_BY_HOP = frozenset({"connection", "content-length", "host", "keep-alive", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"})
 
 # What the proxy answers a request it refuses on the API's behalf: one it could not reach, or one held final.
 REFUSED = 502
+# How many random bytes the password of the run's credential is.
+_CREDENTIAL_BYTES = 16
 
 Observe = Callable[[Observed], None]
 Router = Callable[[Sent], Route]
@@ -141,7 +146,8 @@ SHUTDOWN_SECONDS = 0.1
 @dataclass(frozen=True)
 class Proxy:
     """The proxy, serving: `through` is what a client is given to reach the API by it, and its url, the origin hands'
-    side questions are posted to."""
+    side questions are posted to, which carries no credential: a request to the proxy's own origin is the API's, and
+    needs none."""
 
     through: ThroughProxy
     runner: web.ServerRunner
@@ -151,7 +157,7 @@ class Proxy:
 
     @property
     def url(self) -> str:
-        return self.through.url
+        return self.through.origin
 
     async def close(self) -> None:
         # The requests inside each TLS the proxy ended, then each CONNECT's connection, then its own origin's.
@@ -165,21 +171,32 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
     """Listen on a free loopback port until the returned proxy is closed, ending the TLS of a CONNECT to the API's host
     with an authority of its own and forwarding the requests inside it, and those made to its own origin, to
     `upstream`. Its authority is written to `trust`, with the certificates `environ` trusts, and every other host is
-    reached as `environ` says; raises Uninterceptable when either cannot be."""
+    reached as `environ` says; raises Uninterceptable when either cannot be, or `upstream` is no URL of a host and a port.
+    A CONNECT, and a request in absolute form, are answered only on the credential the returned proxy's url carries."""
     # [LAW:one-source-of-truth] the world beyond the proxy as hands' own environment has it, wherever hands was started:
     # a hands started inside a tapped session reaches it as that session's own environment did.
     world = untapped(environ)
     reach = outward(world)
     also = also_trusted(world, trust)
-    # [LAW:types-are-the-program] the host whose TLS the proxy ends is the API's, by construction.
-    authority = mint(API_HOST, clock)
-    written = trusted(authority, also, trust)
-    api = URL(upstream)
-    match api.host, api.port:
+    try:
+        api = URL(upstream)
+        at = api.host, api.port
+    except ValueError as error:
+        raise Uninterceptable(f"the API the proxy forwards to is no URL, {upstream!r}: {error}") from error
+    match at:
         case str() as api_host, int() as api_port:
             through_api = reach.onward(api.scheme, api_host, api_port)
         case _:
-            raise ValueError(f"the API the proxy forwards to is reached at a host and a port, not {upstream}")
+            raise Uninterceptable(f"the API the proxy forwards to is reached at a host and a port, not {upstream}")
+    # Every refusal is said before the trust file is written: nothing a refused start leaves behind is anyone's to trust.
+    trusting = onward_trust(also)
+    # [LAW:types-are-the-program] the host whose TLS the proxy ends is the API's, by construction.
+    authority = mint(API_HOST, clock)
+    written = trusted(authority, also, trust)
+    # [LAW:single-enforcer] the run's credential, the one thing that has the proxy tunnel or relay a request: any other
+    # process on the machine reaches its loopback port too, and would go out the way hands does.
+    password = clock.token(_CREDENTIAL_BYTES)
+    credential = aiohttp.encode_basic_auth(PROXY_USER, password)
     # The client's own timeouts govern a request: a long reply streams as long as the client keeps reading it.
     # Replies are read as sent, compressed or not, so the client gets the bytes the API wrote; and no header the client
     # left out is added, so the API is asked for no encoding the client did not ask for. [LAW:single-enforcer] every
@@ -188,7 +205,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
         timeout=aiohttp.ClientTimeout(total=None),
         auto_decompress=False,
         skip_auto_headers=("Accept-Encoding", "Content-Type", "User-Agent"),
-        connector=aiohttp.TCPConnector(ssl=onward_trust(also)),
+        connector=aiohttp.TCPConnector(ssl=trusting),
     )
 
     tell = shielded(observe)
@@ -299,37 +316,58 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
                     _hands_bug(exchange, reached.status, reached.headers.get("request-id"), parsed, built, changes, reply)
         return response
 
-    async def relayed(request: web.BaseRequest) -> web.StreamResponse:
+    async def relayed(request: web.BaseRequest, _: Admitted) -> web.StreamResponse:
         """A request in absolute form, a client asking its proxy for another origin's answer: relayed there and back as
         sent, through the outer proxy hands' environment names for it, and none of it the API's or recorded."""
-        # aiohttp's reading of its absolute-form target (RFC 9112 §3.2.2).
-        target = request.url
-        match target.host, target.port:
-            case str() as host, int() as port if port > 0:
-                pass
-            case _:
-                return web.Response(status=400, text=f"hands' proxy relays a request to a host and a port that is not 0, not {request.raw_path!r}")
-        try:
-            reached = await client.request(request.method, target, headers=_end_to_end(request.headers), data=request.content, proxy=reach.onward(target.scheme, host, port))
-        except (aiohttp.ClientError, OSError) as error:
-            unreached = f"hands' proxy could not reach {target.origin()}: {error}"
-            logger.warning(unreached)
-            return web.Response(status=REFUSED, text=unreached)
-        async with reached:
-            return await _streamed(request, reached, reached.content.iter_any())
+        # [LAW:nothing-unseen] one event for each relay: the origin it asked, the way it went, and its answer's status or
+        # why there was none.
+        with unit("proxy.relay", record, begun(clock)):
+            # aiohttp's reading of its absolute-form target (RFC 9112 §3.2.2).
+            target = request.url
+            match target.host, target.port:
+                case str() as host, int() as port if port > 0:
+                    pass
+                case _:
+                    refused = f"hands' proxy relays a request to a host and a port that is not 0, not {request.raw_path!r}"
+                    fail(refused)
+                    return web.Response(status=400, text=refused)
+            onward = reach.onward(target.scheme, host, port)
+            annotate(origin=str(target.origin()), through="directly" if onward is None else str(onward.origin()))
+            try:
+                reached = await client.request(request.method, target, headers=_end_to_end(request.headers), data=request.content, proxy=onward)
+            except (aiohttp.ClientError, OSError) as error:
+                unreached = f"hands' proxy could not reach {target.origin()}: {type(error).__name__}: {error}"
+                fail(unreached)
+                logger.warning(unreached)
+                return web.Response(status=REFUSED, text=unreached)
+            annotate(status=reached.status)
+            async with reached:
+                return await _streamed(request, reached, reached.content.iter_any())
 
     async def served(request: web.BaseRequest) -> web.StreamResponse:
         # [LAW:dataflow-not-control-flow] on the proxy's own origin a request's form says whose it is (RFC 9112 §3.2): a
         # CONNECT asks for a tunnel, origin form, its target a path, is the API's, as hands' side questions are, and
-        # absolute form is a client asking for another origin's answer. Inside the TLS a CONNECT ended, every request is
-        # the API's: `inside` serves it.
+        # absolute form is a client asking for another origin's answer, the API's own host's among them the API's.
+        # Inside the TLS a CONNECT ended, every request is the API's: `inside` serves it.
         match request.method, request.raw_path.startswith("/"):
             case hdrs.METH_CONNECT, _:
-                return await connects.answer(request)
+                pass
             case _, True:
                 return await forward(request)
             case _, False:
-                return await relayed(request)
+                pass
+        # [LAW:single-enforcer] the one check of the run's credential, ahead of every way out past the proxy.
+        match admission(request.headers.get(hdrs.PROXY_AUTHORIZATION), credential), request.method, request.url.host:
+            case Unadmitted(why=why), _, _:
+                said = f"hands' proxy answers a CONNECT or a request for another origin on this run's credential alone, and {why}"
+                wide.ended("proxy.unadmitted", record, begun(clock), None, said, method=request.method, target=request.raw_path)
+                return web.Response(status=407, text=said, headers={hdrs.PROXY_AUTHENTICATE: f'Basic realm="{PROXY_USER}"'})
+            case Admitted() as admitted, hdrs.METH_CONNECT, _:
+                return await connects.answer(request, admitted)
+            case Admitted(), _, authority.host:
+                return await forward(request)
+            case Admitted() as admitted, _, _:
+                return await relayed(request, admitted)
 
     # A client that hangs up cancels its handler, and a stopping daemon cancels every handler within SHUTDOWN_SECONDS.
     inside = web.Server(forward, handler_cancellation=True, access_log=None)
@@ -338,7 +376,8 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
     await runner.setup()
     await web.TCPSite(runner, loopback.HOST, 0).start()
     host, port = runner.addresses[0][:2]
-    return Proxy(through=ThroughProxy(f"http://{host_port(host, port)}", written), runner=runner, inside=inside, connects=connects, client=client)
+    through = ThroughProxy(host_port(host, port), password, written)
+    return Proxy(through=through, runner=runner, inside=inside, connects=connects, client=client)
 
 
 def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, ...]) -> tuple[bytes, tuple[Change, ...]]:

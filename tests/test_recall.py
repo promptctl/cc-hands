@@ -22,6 +22,7 @@ from hands.sessions.registry import Performed
 from hands.sessions.wide import WideEvent
 from hands.voice.naming import judge
 from hands.voice.tool import audited, tool
+from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import processes
 
 MORNING = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
@@ -153,7 +154,7 @@ async def test_a_session_goes_by_the_name_its_judging_found_it_with(tmp_path: Pa
 def test_hands_recall_prints_one_line_a_moment_in_local_time_and_records_what_it_took(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
     times = written(home, [Transcribed("drop the\ntoken helper"), Transcribed("something else")])
-    assert cli.main(["--home", str(tmp_path), "recall", "token"], processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path), "recall", "token"], machine=UNMANAGED, processes=processes()) == 0
     assert capsys.readouterr().out == f"The log reaches back to {times[0].astimezone():%a %d %b %H:%M}.\n{times[0].astimezone():%a %d %b %H:%M} user: drop the token helper\n"
     # [LAW:nothing-unseen] the recall's own event, last on the log it read, with what it was asked and what it found.
     [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "memory.recall"]
@@ -162,7 +163,7 @@ def test_hands_recall_prints_one_line_a_moment_in_local_time_and_records_what_it
 
 
 def test_hands_recall_on_a_home_with_no_log_says_so_in_its_counts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["--home", str(tmp_path), "recall"], processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path), "recall"], machine=UNMANAGED, processes=processes()) == 0
     assert capsys.readouterr().out == "The log is empty.\n"
     # The recall's own event, read before the command's was written.
     [event, _] = [json.loads(line) for line in segment(Home(tmp_path).audit, 0).read_text().splitlines()]

@@ -44,6 +44,7 @@ from claudescreen import ClaudeScreen
 from hands.sessions.tmux import tmux_key
 from hands.sessions.terminals import Untyped
 from terminalcontract import CHORD
+from fixtures.fakemachine import UNMANAGED
 
 # [LAW:no-silent-failure] an error hands logs that a test does not take fails it (`errors`).
 pytestmark = pytest.mark.usefixtures("errors")
@@ -1016,7 +1017,7 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
     def checked() -> readiness.Finding:
         heart.beat("running", None, 0, listening=False, degraded=run._login(brain.login))  # pyright: ignore[reportPrivateUsage]
         # Judged as `look` judges the hands it finds running, on the brain's own clock.
-        return readiness.configured(Unstarting(clock, lambda _: None), home, LAID_OUT, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
+        return readiness.configured(Unstarting(clock, lambda _: None), home, LAID_OUT, UNMANAGED, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
 
     _took(brain, "n1", NOTICE)
     _told(brain, "n1", ("n1",), ending=ToldByStop("Done.", REFRESH_REFUSED))

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, SYSTEM_PATH, Unstarting
+from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import PROC_PID, FakeProcesses, Running, processes
 from processescontract import PROCARGS2
 from fixtures.pins import LAID_OUT
@@ -775,7 +776,7 @@ def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monk
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(root / "home")
     onboard(home.brain)
-    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), shell_without_hands_settings(), heartbeat.NeverRan(home.status))
+    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), UNMANAGED, shell_without_hands_settings(), heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -783,7 +784,7 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
-    reached = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {}, heartbeat.NeverRan(home.status))
+    reached = readiness.configured(children_on(SYSTEM), home, LAID_OUT, UNMANAGED, {}, heartbeat.NeverRan(home.status))
     # The refusal, which names the file, is the detail, and the fix names the file without the refusal again.
     assert isinstance(reached, Missing) and reached.fix == f"correct {home.config}"
     assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
@@ -792,7 +793,7 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     laid_out(home)
-    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {"HANDS_DEBUG": "1"}, heartbeat.NeverRan(home.status))
+    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, UNMANAGED, {"HANDS_DEBUG": "1"}, heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
@@ -806,7 +807,7 @@ def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: P
 def test_a_brain_whose_claude_could_not_be_asked_is_a_start_refused_and_not_a_login_to_make(root: Path, outcome: child.Outcome, said: str) -> None:
     home = Home(root / "home")
     laid_out(home)
-    found = readiness.configured(answering(outcome), home, LAID_OUT, {}, heartbeat.NeverRan(home.status))
+    found = readiness.configured(answering(outcome), home, LAID_OUT, UNMANAGED, {}, heartbeat.NeverRan(home.status))
     # The start refuses on it all the same, so the line says so, with the reason the start gives as its fix.
     assert found == readiness.unstartable(f"`{LAID_OUT.claude(home.brain)} auth status` {said}")
 
@@ -880,7 +881,7 @@ def test_a_login_the_running_brain_said_expired_is_missing_with_hands_fix_and_no
     # A daemon that stopped beating still runs its brain, whose turns said what they said.
     home = Home(root / "home")
     laid_out(home)
-    found = readiness.configured(Unstarting(SYSTEM, lambda _: None), home, LAID_OUT, {}, running(expired_beat(home)))
+    found = readiness.configured(Unstarting(SYSTEM, lambda _: None), home, LAID_OUT, UNMANAGED, {}, running(expired_beat(home)))
     assert found == Missing("brain's login expired", "the brain's login has expired, so every turn fails", "`hands login`, then `hands restart`")
     assert found.said == heartbeat.LOGIN_EXPIRED.said
 
@@ -913,7 +914,7 @@ def test_a_login_no_running_brain_said_expired_is_asked_of_its_claude_code(root:
         return logged_in(children, llm, home, environment, brain)
 
     monkeypatch.setattr(readiness, "resolve", asking)
-    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, {}, running(home))
+    found = readiness.configured(children_on(SYSTEM), home, LAID_OUT, UNMANAGED, {}, running(home))
     assert (asked, found.step) == ([home], "brain logged in as brain@example.com (claude.ai)")
 
 
@@ -953,7 +954,7 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
 @pytest.mark.outside
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 0
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running()) == 0
     assert marks(capsys) == dict.fromkeys(STEPS, "✓")
 
 
@@ -1004,7 +1005,7 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running()) == 1
     assert marks(capsys) == {step: "✗" if step in steps else "✓" for step in STEPS}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1019,10 +1020,10 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     home = set_up(root, fritter, monkeypatch, "unreadable")
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 2
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running()) == 2
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?"}
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running()) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?", "grant": "✗"}
     # Each event's reason names the steps that decided its exit: the one not looked at, then the missing one alone.
     events = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1039,14 +1040,14 @@ def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_b
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     no_hands(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
+    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running()) == 1
     *terse, hint = capsys.readouterr().out.splitlines()
     assert hint == VERBOSE_HINT
     [line] = [each for each in terse if each.startswith("✗")]
     named, fix = line.split("  → ")
     assert (named.rstrip(), fix) == ("✗ `hands` not on PATH", "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH")
     assert not any(each.startswith(" ") for each in terse)
-    assert main(["--home", str(home.root), "check", "-v"], pin=LAID_OUT, processes=hands_running()) == 1
+    assert main(["--home", str(home.root), "check", "-v"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running()) == 1
     full = capsys.readouterr().out.splitlines()
     # Each step's line is the one the terse check printed, and beneath it, what is said of it in full, less its fix.
     assert [each for each in full if not each.startswith(" ")] == terse

@@ -1,8 +1,9 @@
 """How hands' proxy answers a CONNECT, the method a client asks its HTTPS proxy for a tunnel to a host with, and how the
 proxy reaches every host it does not answer for.
 
-A CONNECT is a request aiohttp's parser reads like any other, and its handler here takes the connection it came on over
-from aiohttp's once it has answered it. To the API's host, the proxy ends the client's TLS itself, with its authority's
+A CONNECT is a request aiohttp's parser reads like any other, answered only on this run's credential (`admission`), and
+its handler here takes the connection it came on over from aiohttp's once it has answered it (`hands.sessions.takeover`).
+To the API's host, the proxy ends the client's TLS itself, with its authority's
 certificate for the host (`hands.sessions.authority`), and the HTTP inside it is served by the API's own server, every
 request of it the API's. To any other host, the connection is a tunnel, its bytes piped both ways as they came. Each
 CONNECT is one unit of work, its event emitted as its connection ends.
@@ -12,13 +13,11 @@ proxy its https_proxy or http_proxy names, for a host its no_proxy does not, or 
 """
 
 import asyncio
-import ssl
+import hmac
 import urllib.request
-from asyncio import sslproto
-from collections.abc import Callable, Generator, Mapping
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import Literal, cast
 
 import aiohttp
 from aiohttp import web
@@ -28,16 +27,16 @@ from yarl import URL
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.authority import Authority, Uninterceptable
+from hands.sessions.takeover import TlsRefused, streamed, tls_ended
 from hands.sessions.wide import annotate, begun, count, fail, unit
 from hands.tasks import cancel_and_wait
-
-if TYPE_CHECKING:
-    from aiohttp.http_websocket import WebSocketReader
 
 # The port of the TLS the proxy ends for the API's host: HTTPS's, which a client reaching https://<host> opens.
 HTTPS_PORT = 443
 # How long reaching a host a tunnel is asked to may take, through an outer proxy's CONNECT or directly.
 REACH_SECONDS = 30.0
+# How long a client may take to finish its TLS to the API's host: one round trip on loopback, given a loaded machine.
+HANDSHAKE_SECONDS = 10.0
 # What the outer proxy is told, and answers, a CONNECT in: HTTP/1.1, whose head ends on a blank line.
 _HEAD_ENDS = b"\r\n\r\n"
 _PIPED = 1 << 16
@@ -85,16 +84,50 @@ def _proxies(world: Mapping[str, str]) -> dict[str, str]:
 
 def _outer(scheme: str, named: str) -> URL:
     """The outer proxy hands' environment names for `scheme`, parsed; raises Uninterceptable for one aiohttp cannot
-    reach a host through: any but http://, and one without a host or with port 0."""
-    proxy = URL(named)
-    if proxy.scheme != "http" or not proxy.host or proxy.port == 0:
-        said = f"its scheme {proxy.scheme!r}, its host {proxy.host!r} and its port {proxy.port}"
+    reach a host through: one that is no URL, any but http://, and one without a host or with port 0."""
+    try:
+        proxy = URL(named)
+        port = proxy.port
+    except ValueError as error:
+        # The URL itself is left out of what is said: it may carry the outer proxy's credentials.
+        raise Uninterceptable(f"{scheme}_proxy or {scheme.upper()}_PROXY names an outer proxy by no URL hands' proxy can read ({error}): name it by an http:// URL with a host and a port") from error
+    if proxy.scheme != "http" or not proxy.host or port == 0:
+        said = f"its scheme {proxy.scheme!r}, its host {proxy.host!r} and its port {port}"
         raise Uninterceptable(f"{scheme}_proxy or {scheme.upper()}_PROXY names an outer proxy of {said}: hands' proxy reaches one at an http:// URL with a host and a port that is not 0")
     return proxy
 
 
 class OuterRefused(Exception):
     """The outer proxy hands' environment names did not open a tunnel to a host, saying why."""
+
+
+@dataclass(frozen=True)
+class Admitted:
+    """[LAW:parse-dont-validate] a request that carried this run's credential as its Proxy-Authorization: what a CONNECT
+    and a relay are answered on, so no other process on the machine reaches past the proxy with hands' way out."""
+
+
+@dataclass(frozen=True)
+class Unadmitted:
+    """A request that asked the proxy for another place without this run's credential, and why; never the credential."""
+
+    why: str
+
+
+def admission(told: str | None, credential: str) -> Admitted | Unadmitted:
+    """The Proxy-Authorization a request was `told` with, an auth-scheme and its token68 (RFC 9110 §11.6.2), against
+    `credential`, the run's, as aiohttp.encode_basic_auth writes it."""
+    match told:
+        case None:
+            return Unadmitted("it sent no Proxy-Authorization")
+        case str():
+            scheme, _, presented = told.partition(" ")
+    # What a request presents is never said: it may be another of the user's credentials, sent to the wrong place.
+    if scheme.lower() != "basic":
+        return Unadmitted("its Proxy-Authorization is not Basic credentials")
+    # Compared in a time that says nothing of how much of it matched.
+    same = hmac.compare_digest(presented.strip().encode(), credential.partition(" ")[2].encode())
+    return Admitted() if same else Unadmitted("its Proxy-Authorization is not this run's credential")
 
 
 class Connects:
@@ -116,58 +149,51 @@ class Connects:
         """End every CONNECT's connection, and return once each has ended."""
         await asyncio.gather(*(cancel_and_wait(answering) for answering in tuple(self._open)))
 
-    async def answer(self, request: web.BaseRequest) -> web.StreamResponse:
+    async def answer(self, request: web.BaseRequest, _: Admitted) -> web.StreamResponse:
         """The CONNECT `request`, answered, and served until its connection ends."""
-        answering = asyncio.ensure_future(self._answered(request))
-        self._open.add(answering)
-        try:
-            return await answering
-        finally:
-            self._open.discard(answering)
+        # [LAW:nothing-unseen] one event for each CONNECT, held open as long as its connection is: where it asked for,
+        # whether the proxy ended its TLS or tunnelled it, and how it ended, which is how its answering did.
+        with unit("proxy.connect", self._record, begun(self._clock), ("tunnelled_to_host", "tunnelled_to_client")):
+            answering = asyncio.ensure_future(self._answered(request))
+            self._open.add(answering)
+            try:
+                return await answering
+            finally:
+                self._open.discard(answering)
 
     async def _answered(self, request: web.BaseRequest) -> web.StreamResponse:
-        # [LAW:nothing-unseen] one event for each CONNECT, held open as long as its connection is: where it asked for,
-        # whether the proxy ended its TLS or tunnelled it, and how it ended.
-        with unit("proxy.connect", self._record, begun(self._clock), ("tunnelled_to_host", "tunnelled_to_client")):
-            # aiohttp's reading of its authority-form target (RFC 9110 §9.3.6): a host and its port, which is not 0, as
-            # its parser refuses any other before here.
-            match request.url.host, request.url.port:
-                case (str() as host, int() as port) if port > 0:
-                    pass
-                case _:
-                    refused = f"a CONNECT names a host and a port that is not 0, not {request.raw_path!r}"
-                    fail(refused)
-                    return web.Response(status=400, text=refused)
-            intercepted = (host, port) == (self._authority.host, HTTPS_PORT)
-            annotate(host=host, port=port, intercepted=intercepted)
-            return await (self._intercepted(request) if intercepted else self._tunnelled(request, host, port))
+        # aiohttp's reading of its authority-form target (RFC 9110 §9.3.6): a host and its port, which is not 0, as its
+        # parser refuses any other before here.
+        match request.url.host, request.url.port:
+            case (str() as host, int() as port) if port > 0:
+                pass
+            case _:
+                refused = f"a CONNECT names a host and a port that is not 0, not {request.raw_path!r}"
+                fail(refused)
+                return web.Response(status=400, text=refused)
+        intercepted = (host, port) == (self._authority.host, HTTPS_PORT)
+        annotate(host=host, port=port, intercepted=intercepted)
+        return await (self._intercepted(request) if intercepted else self._tunnelled(request, host, port))
 
     async def _intercepted(self, request: web.BaseRequest) -> web.StreamResponse:
         """The client's TLS to the API's host ended here, and the HTTP inside it served by the API's server."""
         established = await _established(request)
-        loop = asyncio.get_running_loop()
-        handshake = loop.create_future()
-        inside = _Inside(self._inside())
-        # [LAW:no-ambient-temporal-coupling] the TLS asyncio's start_tls would make, made here so that what the client
-        # sent past its CONNECT goes into it first; and the inside's handler told its connection was made before any
-        # byte of it is read, as SSLProtocol makes it only once its handshake is done.
-        tls = sslproto.SSLProtocol(loop, inside, self._authority.answer, handshake, server_side=True)
-        with _taken(request, tls) as (_, tail):
-            for at in range(0, len(tail), _PIPED):
-                part = tail[at : at + _PIPED]
-                tls.get_buffer(len(part))[: len(part)] = part
-                tls.buffer_updated(len(part))
+        with tls_ended(request, self._inside(), self._authority.answer) as tls:
             try:
-                await _made(handshake, inside)
-            except TlsRefused as error:
+                # [LAW:no-ambient-temporal-coupling] a client that never finishes its handshake holds its connection no
+                # longer than the deadline.
+                async with self._clock.timeout(HANDSHAKE_SECONDS):
+                    await tls.made()
+            except (TlsRefused, TimeoutError) as error:
                 # [LAW:no-silent-failure] a client refusing the proxy's TLS leaves its every request to the API unmade,
                 # and nothing answers it that: said here, as fritter says its HandshakeRefused.
-                said = f"a client of hands' proxy did not finish TLS for {self._authority.host}, so none of its requests reach the API: {error}"
+                how = f"its handshake took longer than {HANDSHAKE_SECONDS:g} seconds" if isinstance(error, TimeoutError) else str(error)
+                said = f"a client of hands' proxy did not finish TLS for {self._authority.host}, so none of its requests reach the API: {how}"
                 fail(said)
                 logger.error(said)
                 return established
             annotate(tls="made")
-            await inside.ended
+            await tls.ended
         return established
 
     async def _tunnelled(self, request: web.BaseRequest, host: str, port: int) -> web.StreamResponse:
@@ -184,61 +210,16 @@ class Connects:
             return web.Response(status=502, text=unreached)
         try:
             established = await _established(request)
-            reader = asyncio.StreamReader()
-            streamed = asyncio.StreamReaderProtocol(reader)
-            with _taken(request, streamed) as (transport, tail):
-                client = asyncio.StreamWriter(transport, streamed, reader, asyncio.get_running_loop())
+            with streamed(request) as (reader, client, tail):
                 far_writer.write(tail)
                 count(tunnelled_to_host=len(tail))
-                await asyncio.gather(_piped(reader, far_writer, lambda n: count(tunnelled_to_host=n)), _piped(far_reader, client, lambda n: count(tunnelled_to_client=n)))
+                await asyncio.gather(
+                    _piped(_Side("client", reader), _Side("host", far_writer), lambda n: count(tunnelled_to_host=n)),
+                    _piped(_Side("host", far_reader), _Side("client", client), lambda n: count(tunnelled_to_client=n)),
+                )
             return established
         finally:
             far_writer.close()
-
-
-class TlsRefused(Exception):
-    """A client that did not finish the TLS the proxy ends, saying how."""
-
-
-async def _made(handshake: asyncio.Future[None], inside: "_Inside") -> None:
-    """Returns once the client's TLS is made; raises TlsRefused when it never is: refused, or its connection gone first."""
-    try:
-        await handshake
-    except (ssl.SSLError, OSError) as error:
-        raise TlsRefused(f"{type(error).__name__}: {error}") from error
-    # SSLProtocol's handshake ends without an error on a connection lost before it was made.
-    if not inside.made:
-        raise TlsRefused("its connection ended before its TLS was made")
-
-
-class _Inside(asyncio.Protocol):
-    """The HTTP inside the TLS the proxy ends, served by `served`, a handler of the API's server: `made` once the TLS is,
-    and `ended` once its connection is gone."""
-
-    def __init__(self, served: asyncio.Protocol) -> None:
-        self._served = served
-        self.made = False
-        self.ended: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.made = True
-        self._served.connection_made(transport)
-
-    def data_received(self, data: bytes) -> None:
-        self._served.data_received(data)
-
-    def eof_received(self) -> bool | None:
-        return self._served.eof_received()
-
-    def pause_writing(self) -> None:
-        self._served.pause_writing()
-
-    def resume_writing(self) -> None:
-        self._served.resume_writing()
-
-    def connection_lost(self, exc: Exception | None) -> None:
-        self._served.connection_lost(exc)
-        self.ended.set_result(None)
 
 
 async def _established(request: web.BaseRequest) -> web.StreamResponse:
@@ -247,45 +228,6 @@ async def _established(request: web.BaseRequest) -> web.StreamResponse:
     await established.prepare(request)
     await established.write_eof()
     return established
-
-
-class _Tail:
-    """What a client sent past its CONNECT's head, as aiohttp's handler gives an upgraded connection's bytes to the
-    parser it is handed."""
-
-    def __init__(self) -> None:
-        self.data = b""
-
-    def feed_data(self, data: bytes) -> tuple[bool, bytes]:
-        self.data += data
-        return False, b""
-
-    def feed_eof(self) -> None:
-        pass
-
-
-@contextmanager
-def _taken(request: web.BaseRequest, protocol: asyncio.BaseProtocol) -> Generator[tuple[asyncio.Transport, bytes]]:
-    """The connection `request` came on, taken over from aiohttp's handler of it by `protocol`, and the bytes its
-    client sent past the request's head, which that handler read: once the body is done with it, the connection is
-    closed, and the handler told it ended, as the transport now tells `protocol` alone."""
-    transport = request.transport
-    if transport is None:
-        raise ConnectionResetError("the client hung up before its CONNECT was answered")
-    handler = request.protocol
-    tail = _Tail()
-    # aiohttp reads a CONNECT as a request that upgrades its connection, and keeps what came past its head for the
-    # parser of what it upgrades to, which it types as its WebSocketReader and asks only to be fed.
-    handler.set_parser(cast("WebSocketReader", tail))
-    transport.set_protocol(protocol)
-    protocol.connection_made(transport)
-    # Whatever aiohttp's handler left the reading at, it is `protocol`'s from here.
-    transport.resume_reading()
-    try:
-        yield transport, tail.data
-    finally:
-        transport.close()
-        handler.connection_lost(None)
 
 
 async def _reached(clock: Clock, host: str, port: int, onward: URL | None) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
@@ -326,16 +268,42 @@ async def _through(outer: URL, host: str, port: int) -> tuple[asyncio.StreamRead
         raise
 
 
-async def _piped(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, moved: Callable[[int], None]) -> None:
-    """What `reader` reads written on as it came, each part's size told to `moved`, until it ends; then the other side's
-    writing ends too."""
+@dataclass(frozen=True)
+class _Side[T]:
+    """One end of a tunnel, named as its event names it: the client, or the host it asked for."""
+
+    name: Literal["client", "host"]
+    stream: T
+
+
+class _Reset(Exception):
+    """The connection of one side of a tunnel was reset."""
+
+    def __init__(self, side: str, error: ConnectionError) -> None:
+        super().__init__(f"{type(error).__name__}: {error}")
+        self.side = side
+
+
+async def _piped(source: _Side[asyncio.StreamReader], sink: _Side[asyncio.StreamWriter], moved: Callable[[int], None]) -> None:
+    """What `source` reads written on to `sink` as it came, each part's size told to `moved`, until it ends; then the
+    sink's writing ends too. A side that resets ends the tunnel, and the CONNECT's event says which and how."""
     try:
-        while chunk := await reader.read(_PIPED):
+        while chunk := await _of(source.name, source.stream.read(_PIPED)):
             moved(len(chunk))
-            writer.write(chunk)
-            await writer.drain()
-        if writer.can_write_eof():
-            writer.write_eof()
-    except ConnectionError:
-        # The other side hung up: the tunnel ends, which closing both sides says to each.
-        writer.close()
+            sink.stream.write(chunk)
+            await _of(sink.name, sink.stream.drain())
+        if sink.stream.can_write_eof():
+            sink.stream.write_eof()
+    except _Reset as reset:
+        # [LAW:nothing-unseen] the tunnel ended by a reset, not a close: which side, and what it said. Closing both sides
+        # says the end to each.
+        annotate(reset_by=reset.side, reset=str(reset))
+        sink.stream.close()
+
+
+async def _of[T](side: str, awaited: Awaitable[T]) -> T:
+    """What `awaited` gives, its connection's reset told as `side`'s."""
+    try:
+        return await awaited
+    except ConnectionError as error:
+        raise _Reset(side, error) from error

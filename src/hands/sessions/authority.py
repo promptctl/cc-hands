@@ -141,8 +141,12 @@ def trusted(authority: Authority, also: tuple[x509.Certificate, ...], path: Path
 
 def onward_trust(also: tuple[x509.Certificate, ...]) -> ssl.SSLContext:
     """What the proxy trusts on each connection it makes onward, to the API among them: the system's authorities, and
-    `also`, as Node trusts them with NODE_EXTRA_CA_CERTS."""
+    `also`, as Node trusts them with NODE_EXTRA_CA_CERTS. Raises Uninterceptable for one of `also` OpenSSL will not
+    trust, though cryptography read it."""
     trust = ssl.create_default_context()
-    for certificate in also:
-        trust.load_verify_locations(cadata=certificate.public_bytes(serialization.Encoding.DER))
+    try:
+        for certificate in also:
+            trust.load_verify_locations(cadata=certificate.public_bytes(serialization.Encoding.DER))
+    except ssl.SSLError as error:
+        raise Uninterceptable(f"cannot trust the certificates {TRUST} names, which hands trusts besides the system's: {error}") from error
     return trust

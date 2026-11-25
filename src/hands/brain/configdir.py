@@ -38,23 +38,35 @@ STATE = ".claude.json"
 class Machine:
     """Where Claude Code reads the machine's policy on macOS (docs/claude-code-behavior.md, machine policy): the folder
     of its managed settings and their drop-ins, and the managed preferences that hold its plists, the machine's and each
-    account's."""
+    account's; and the account the brain runs as, whose plist it reads beside the machine's, Unread where it cannot be
+    told."""
 
     folder: Path
     preferences: Path
+    account: str | Unread
 
 
-MACHINE = Machine(Path("/Library/Application Support/ClaudeCode"), Path("/Library/Managed Preferences"))
 _PLIST = "com.anthropic.claudecode.plist"
+
+
+def this_machine() -> Machine:
+    """[LAW:effects-at-boundaries] the Mac hands runs on, read once by a composition root and handed to every read of a
+    config directory: macOS's policy locations, and the account this process runs as, as the brain does."""
+    try:
+        account: str | Unread = getpass.getuser()
+    except (OSError, KeyError) as error:
+        account = Unread(f"the account hands runs as cannot be told: {error}")
+    return Machine(Path("/Library/Application Support/ClaudeCode"), Path("/Library/Managed Preferences"), account)
 
 
 @dataclass(frozen=True)
 class Env:
-    """What settings.json's env puts in the brain's environment that hands weighs: the API key, by the last 20
-    characters Claude Code records its answer on, None for none; and each variable of ROUTING it sets, which Claude Code
-    puts over the environment it is started in, so over hands' way to the API."""
+    """What the env of Claude Code's settings puts in the brain's environment that hands weighs, each read apart, so
+    neither hides the other: the API key, by the last 20 characters Claude Code records its answer on, None for none;
+    and each variable of ROUTING it sets, which Claude Code puts over the environment it is started in, so over hands'
+    way to the API."""
 
-    key: str | None
+    key: str | Unread | None
     routing: tuple[str, ...]
 
 
@@ -70,12 +82,11 @@ class Settings:
 
 @dataclass(frozen=True)
 class Policy:
-    """One file of the machine's Claude Code policy, and each variable of ROUTING its env sets: Claude Code puts a
-    policy's env over the environment it is started in, as it does settings.json's (docs/claude-code-behavior.md, policy
-    env), so over hands' way to the API."""
+    """One file of the machine's Claude Code policy, and its env: Claude Code puts a policy's env over the environment it
+    is started in, as it does settings.json's (docs/claude-code-behavior.md, policy env)."""
 
     path: Path
-    routing: tuple[str, ...] | Unread
+    env: Env | Unread
 
 
 @dataclass(frozen=True)
@@ -112,8 +123,8 @@ def cwd(config_dir: Path) -> Path:
     return config_dir / "cwd"
 
 
-def read(config_dir: Path, pin: pinned.Pin) -> ConfigDir:
-    """Every file of `config_dir` the brain starts on, read, its claude weighed against `pin`, and the machine's policy;
+def read(config_dir: Path, pin: pinned.Pin, machine: Machine) -> ConfigDir:
+    """Every file of `config_dir` the brain starts on, read, its claude weighed against `pin`, and `machine`'s policy;
     never raises on what they hold. Hashes a pinned claude this process has not hashed since it changed, about
     230 MB, so it is called off the loop."""
     try:
@@ -122,7 +133,7 @@ def read(config_dir: Path, pin: pinned.Pin) -> ConfigDir:
         claude = error
     # realpath, not resolve: a link loop is a directory Claude Code trusts none of, never a raise.
     here = Path(os.path.realpath(cwd(config_dir)))
-    return ConfigDir(config_dir, here, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here), _policies(MACHINE))
+    return ConfigDir(config_dir, here, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here), _policies(machine))
 
 
 def _settings(path: Path) -> Settings | Unread:
@@ -147,28 +158,40 @@ def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
 
 
 def _env(said: Payload) -> Env | Unread:
-    """What settings.json's env sets that hands weighs. Its API key reaches the brain where the brain's own is set:
-    hands' never does (hands.brain.process.FOREIGN_LOGINS)."""
+    """[LAW:single-enforcer] the one reading of the env of Claude Code's settings, settings.json's and each policy's:
+    what it sets that hands weighs. Its API key reaches the brain where the brain's own is set: hands' never does
+    (hands.brain.process.FOREIGN_LOGINS)."""
     try:
         env = Payload.of(said.fields.get("env", {}), "its env")
+    except Rejected as error:
+        return Unread(str(error))
+    return Env(_key(env), tuple(name for name in ROUTING if name in env.fields))
+
+
+def _key(env: Payload) -> str | Unread | None:
+    try:
         key = env.optional_text("ANTHROPIC_API_KEY")
     except Rejected as error:
         return Unread(str(error))
     # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its last 20
     # characters once it is trimmed.
-    return Env(key.strip()[-20:] if key else None, _routing(env))
-
-
-def _routing(env: Payload) -> tuple[str, ...]:
-    return tuple(name for name in ROUTING if name in env.fields)
+    return key.strip()[-20:] if key else None
 
 
 def _policies(machine: Machine) -> tuple[Policy, ...]:
     # Claude Code reads every one of them, the plist of the account the brain runs as among them; a variable any of them
     # sets is put over hands' way to the API.
-    plists = (machine.preferences / _PLIST, machine.preferences / getpass.getuser() / _PLIST)
-    files = (machine.folder / "managed-settings.json", *sorted((machine.folder / "managed-settings.d").glob("*.json")), *plists)
-    return tuple(policy for file in files for policy in _policy(file))
+    files = (machine.folder / "managed-settings.json", *sorted((machine.folder / "managed-settings.d").glob("*.json")), machine.preferences / _PLIST)
+    return (*(policy for file in files for policy in _policy(file)), *_account_policy(machine))
+
+
+def _account_policy(machine: Machine) -> tuple[Policy, ...]:
+    match machine.account:
+        case Unread(reason=reason):
+            # [LAW:no-silent-failure] an account that cannot be told is a plist that cannot be read.
+            return (Policy(machine.preferences, Unread(f"the plist of the account the brain runs as is under it, and {reason}")),)
+        case str() as account:
+            return _policy(machine.preferences / account / _PLIST)
 
 
 def _policy(path: Path) -> tuple[Policy, ...]:
@@ -181,10 +204,9 @@ def _policy(path: Path) -> tuple[Policy, ...]:
         return (Policy(path, Unread(str(error))),)
     try:
         said = Payload.of(plistlib.loads(held), "the plist") if path.suffix == ".plist" else Payload.parse(held)
-        env = Payload.of(said.fields.get("env", {}), "its env")
     except (Rejected, ValueError, ExpatError) as error:
         return (Policy(path, Unread(str(error))),)
-    return (Policy(path, _routing(env)),)
+    return (Policy(path, _env(said)),)
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -224,12 +246,37 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     """What a Claude Code of hands' own is run with on `config`, or every reason none may run on it, each naming its fix:
     no pinned claude, or settings it must not start on, which a run of one, `hands login`'s among them, would load."""
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
-    refused = (*_pinned(config.claude), *_kept_out(config), *(refusal for policy in config.policy for refusal in _policed(policy)))
+    refused = (*_pinned(config.claude), *_kept_out(config), *(refusal for policy in config.policy for refusal in _unweighed(policy.env, policy.path)))
     match config.claude, config.settings:
         case PinnedClaude() as claude, Settings(mode=str() | None as mode) if not refused:
             return Runnable(claude, mode)
         case _:
             return refused
+
+
+def around_proxy(config: ConfigDir) -> tuple[str, ...]:
+    """Why a brain on `config` started through hands' proxy would reach the API some other way: each variable of ROUTING
+    its settings' env or the machine's policy sets, which Claude Code puts over the environment hands starts it in, each
+    naming its fix. None for a Claude Code that reaches the API directly, `hands login`'s, whose environment no proxy of
+    hands' is in for these to override."""
+    match config.settings:
+        case Settings(env=env):
+            own: tuple[tuple[Env | Unread, Path], ...] = ((env, config.path / SETTINGS),)
+        case Unread():
+            # Refused by runnable: what settings that cannot be read set is not known.
+            own = ()
+    return tuple(refusal for env, path in (*own, *((policy.env, policy.path) for policy in config.policy)) for refusal in _routed(env, path))
+
+
+def _routed(env: Env | Unread, path: Path) -> tuple[str, ...]:
+    """[LAW:single-enforcer] the one refusal of an env that routes the brain: settings.json's and each policy's."""
+    match env:
+        case Env(routing=()) | Unread():
+            # An env hands cannot read is refused by runnable, whatever the route.
+            return ()
+        case Env(routing=routing):
+            said = "; ".join(f"{name} {ROUTING[name]}" for name in routing)
+            return (f"{path} sets {', '.join(routing)} in its env, which Claude Code puts over the environment hands starts the brain in: {said}: remove them from it",)
 
 
 def _pinned(claude: PinnedClaude | pinned.Unpinned) -> tuple[str, ...]:
@@ -242,8 +289,7 @@ def _pinned(claude: PinnedClaude | pinned.Unpinned) -> tuple[str, ...]:
 
 def _kept_out(config: ConfigDir) -> tuple[str, ...]:
     """What settings.json would have the brain start on that it must not: a sync not kept out, a mode Claude Code does
-    not take, which would put the settings beside it in doubt, or an env hands cannot read or that routes the brain
-    around hands' proxy."""
+    not take, which would put the settings beside it in doubt, or an env hands cannot read."""
     path = config.path / SETTINGS
     match config.settings:
         case Unread(reason=reason):
@@ -254,31 +300,20 @@ def _kept_out(config: ConfigDir) -> tuple[str, ...]:
     return (
         *((f"the brain would load its account's {' and '.join(synced)}: set {kept} in {path}",) if synced else ()),
         *_moded(mode, path),
-        *_routed(env, path),
+        *_unweighed(env, path),
     )
 
 
-def _routed(env: Env | Unread, path: Path) -> tuple[str, ...]:
+def _unweighed(env: Env | Unread, path: Path) -> tuple[str, ...]:
+    """[LAW:single-enforcer] the one refusal of an env hands cannot weigh, settings.json's and each policy's: Claude Code
+    would start on what it sets, unseen, whatever way it reaches the API."""
     match env:
         case Unread(reason=reason):
-            return (f"the brain's settings set an env hands cannot read ({reason}): correct {path}",)
-        case Env(routing=()):
+            return (f"hands cannot read the env {path} gives Claude Code ({reason}): correct it",)
+        case Env(key=Unread(reason=reason)):
+            return (f"hands cannot read the API key {path} sets in its env ({reason}): correct it",)
+        case Env():
             return ()
-        case Env(routing=routing):
-            # [LAW:single-enforcer] hands' proxy is how the brain reaches the API and how hands hears it: Claude Code puts
-            # settings.json's env over the environment hands starts it in.
-            return (f"the brain's settings set {', '.join(routing)} in their env, which would send the brain's requests around hands' proxy: remove them from {path}",)
-
-
-def _policed(policy: Policy) -> tuple[str, ...]:
-    match policy.routing:
-        case Unread(reason=reason):
-            return (f"the machine's Claude Code policy at {policy.path} could not be read ({reason}), and its env may send the brain's requests around hands' proxy: correct it",)
-        case ():
-            return ()
-        case routing:
-            # [LAW:single-enforcer] as settings.json's env is refused, for the same reason.
-            return (f"the machine's Claude Code policy at {policy.path} sets {', '.join(routing)} in its env, which would send the brain's requests around hands' proxy: remove them from it",)
 
 
 def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:

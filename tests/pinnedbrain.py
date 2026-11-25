@@ -47,11 +47,14 @@ from hands.voice.summaries import SummaryStore
 from hands.voice.player import Player
 from hands.voice.braindoor import BrainDoor, stay_silent_tool
 from hands.sessions.wide import WideEvent
+from fixtures.fakemachine import UNMANAGED
 
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang. The one wait the pinned Claude
 # Code's screen forces: nothing tells a test its screen changed, so it is read until it shows what the test waits for.
 PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
+# A proxy nothing listens at: port 1 on loopback.
+DEAD = "http://127.0.0.1:1"
 # What only the brain's own turns carry, among every request its Claude Code makes: hands' tools offered to the model.
 # A title or a summary Claude Code asks for beside a turn carries the user's words too, but none of hands' tools.
 TURN = f"mcp__{SERVER_NAME}__{stay_silent_tool().tool.name}"
@@ -224,7 +227,7 @@ class Hands:
 
 def _runnable(brain: Path) -> Runnable:
     """What the start's preflight passes the brain on `brain` with, as it reads it."""
-    match configdir.runnable(configdir.read(brain, pinned.PIN)):
+    match configdir.runnable(configdir.read(brain, pinned.PIN, UNMANAGED)):
         case Runnable() as ran:
             return ran
         case refused:
@@ -260,7 +263,9 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     # environment trusts, which the brain is given to trust beside the proxy's.
     # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
     # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
-    environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
+    # ALL_PROXY, which hands does not replace for the brain, names a proxy nothing listens at: a Claude Code that took it
+    # over the HTTPS_PROXY hands gives it would reach no API at all (docs/claude-code-behavior.md).
+    environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "ALL_PROXY": DEAD, "all_proxy": DEAD, "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
     # [LAW:effects-at-boundaries] the change from the run's own wiring, beside the pinned claude: the upstream hands' proxy
     # forwards to.
     proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, SYSTEM, environment, tmp_path / "trusted.pem", recorded.append)

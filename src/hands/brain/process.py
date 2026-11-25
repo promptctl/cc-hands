@@ -618,7 +618,7 @@ type Method = Literal["claudeai", "console"]
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
-def login(children: Children, config_dir: Path, pin: pinned.Pin, route: ApiRoute, inherited: Mapping[str, str], method: Method) -> Login:
+def login(children: Children, config_dir: Path, pin: pinned.Pin, machine: configdir.Machine, route: ApiRoute, inherited: Mapping[str, str], method: Method) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
     account it holds after.
 
@@ -626,7 +626,7 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, route: ApiRoute
     them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody is at its
     keyboard. Its claude is `pin`'s, as the start's. `method` is the login asked for: `claude auth login` makes it, and on the first run's login screen, which
     offers every login, it is the one to pick. Raises LoginFailed when the brain holds another after."""
-    before = configdir.read(config_dir, pin)
+    before = configdir.read(config_dir, pin, machine)
     # [LAW:single-enforcer] what any run of hands' own Claude Code is refused on, the start's included, checked before
     # this one, which would sync what the brain's settings do not keep out. Its first screens are this run's to answer.
     match configdir.runnable(before):
@@ -647,7 +647,7 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, route: ApiRoute
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
-    if screens := configdir.first_screens(configdir.read(config_dir, pin)):
+    if screens := configdir.first_screens(configdir.read(config_dir, pin, machine)):
         raise Unstartable("; ".join(screens))
     held = logged_in(children, claude, config_dir, route, inherited)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the

@@ -116,7 +116,7 @@ from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
-from hands.brain import pinned
+from hands.brain import configdir, pinned
 from hands.brain.configdir import Unstartable
 from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
@@ -244,8 +244,8 @@ async def mind(
             raise CannotStart(str(error)) from error
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        # Posted to the proxy's own origin, as hands' own requests: never through a CONNECT.
-        asides = Asides(clock, through.url, Newest(session), record)
+        # Posted to the proxy's own origin, as hands' own requests: never through a CONNECT, so with no credential.
+        asides = Asides(clock, through.origin, Newest(session), record)
         try:
             stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
@@ -281,6 +281,7 @@ async def run(
     heart: heartbeat.Heart, record: Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     pin: pinned.Pin,
+    machine: configdir.Machine,
     run_start: Start,
     own: OwnModel,
     clock: Clock,
@@ -321,7 +322,8 @@ async def run(
             # [LAW:no-silent-failure] the brain reaches the API through hands' proxy or not at all.
             raise CannotStart(f"hands' proxy cannot serve the brain's way to the API: {error}") from error
         held.push_async_callback(proxy.close)
-        # The url the brain's HTTPS_PROXY is set to, and the file its NODE_EXTRA_CA_CERTS names.
+        # The proxy's origin, which the brain's HTTPS_PROXY names with the run's credential, never recorded; and the file
+        # its NODE_EXTRA_CA_CERTS names.
         run_start.heard(proxy=proxy.url, trust=proxy.through.trust, upstream=UPSTREAM)
         tap = await serve_tap(home.wire, tap_observer(logged, sessions.hear), record, clock=clock)
         held.push_async_callback(tap.close)
@@ -345,7 +347,7 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        read = await start(lambda: configured(configure, survey, processes, home, pin, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        read = await start(lambda: configured(configure, survey, processes, home, pin, machine, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if read is not None:
             config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
@@ -370,7 +372,7 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
+async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
@@ -378,7 +380,7 @@ async def configured(configure: Callable[[preflight.Preflight], Configured], sur
     # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
     # refusal only a Claude Code can say. [LAW:no-ambient-temporal-coupling] its facts reach the start's event here, on
     # the loop that owns it, never from the thread it ran on.
-    checked = await off_loop(partial(preflight.preflight, home, pin, environment), "the start's preflight")
+    checked = await off_loop(partial(preflight.preflight, home, pin, machine, environment), "the start's preflight")
     run_start.heard(**checked.facts())
     read = await off_loop(lambda: _attempted(partial(configure, checked)), "the configuration read")
     # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and

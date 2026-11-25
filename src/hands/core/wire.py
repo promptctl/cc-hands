@@ -21,13 +21,31 @@ API_HOST = "api.anthropic.com"
 UPSTREAM = f"https://{API_HOST}"
 
 
+# The user of the credential a client of hands' proxy is given in its url.
+PROXY_USER = "hands"
+
+
 @dataclass(frozen=True)
 class ThroughProxy:
-    """How a client reaches the API with hands' proxy as its HTTPS proxy: the proxy's url, and the file of the
-    certificates it is to trust, the proxy's authority and those hands' own environment trusts."""
+    """How a client reaches the API with hands' proxy as its HTTPS proxy: the proxy's address, its host and port as a
+    URL's authority writes them; the run's credential, the password the client's proxy url carries, which it sends as
+    its Proxy-Authorization; and the file of the certificates it is to trust, the proxy's authority and those hands'
+    own environment trusts."""
 
-    url: str
+    address: str
+    # Kept out of the repr: the credential is what keeps any other process on the machine from the proxy's tunnels.
+    password: str = field(repr=False)
     trust: Path
+
+    @property
+    def origin(self) -> str:
+        """The proxy's own origin, which a request posted to is the API's and needs no credential."""
+        return f"http://{self.address}"
+
+    @property
+    def url(self) -> str:
+        """The url a client is given as its HTTPS proxy, the credential in its userinfo (RFC 3986 §3.2.1)."""
+        return f"http://{PROXY_USER}:{self.password}@{self.address}"
 
 
 @dataclass(frozen=True)

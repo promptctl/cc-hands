@@ -4,6 +4,7 @@ other host: each refusal of the start said, naming what refused it."""
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 from cryptography import x509
@@ -11,7 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from yarl import URL
 
 from hands.core.wire import API_HOST
-from hands.sessions.authority import Uninterceptable, also_trusted, mint, trusted
+from hands.sessions.authority import Uninterceptable, also_trusted, mint, onward_trust, trusted
 from hands.sessions.connect import outward
 from hands.sessions.proxy import serve_proxy
 from hands.sessions.untap import TRUST
@@ -73,14 +74,44 @@ def test_the_proxys_own_file_named_as_what_to_trust_besides_it_is_refused(tmp_pa
         ({TRUST: "corp.pem"}, "a path relative to a directory hands does not know"),
         ({"HTTPS_PROXY": "socks5://corp:1080"}, "^https_proxy or HTTPS_PROXY names an outer proxy of its scheme 'socks5'"),
         ({"http_proxy": "http://corp:0"}, "^http_proxy or HTTP_PROXY names an outer proxy of .* its port 0"),
+        ({"HTTPS_PROXY": "http://me:secret@corp:abc"}, r"^https_proxy or HTTPS_PROXY names an outer proxy by no URL hands' proxy can read \(Invalid URL: port can't be converted to integer\)"),
+        ({"http_proxy": "http://corp:99999"}, r"^http_proxy or HTTP_PROXY names an outer proxy by no URL hands' proxy can read \(Port out of range"),
     ],
-    ids=["trust", "scheme", "port"],
+    ids=["trust", "scheme", "port", "unread-port", "port-out-of-range"],
 )
 async def test_a_proxy_that_cannot_intercept_refuses_to_start_saying_why(environ: dict[str, str], said: str, tmp_path: Path) -> None:
     # Before it listens: no connection made to it is ever answered without its TLS, or reaches the world around it.
-    with pytest.raises(Uninterceptable, match=said):
+    with pytest.raises(Uninterceptable, match=said) as refused:
         await serve_proxy("http://127.0.0.1:1", lambda _: None, lambda _: pytest.fail("routed"), VirtualClock(epoch=NOW), environ, tmp_path / "trusted.pem", lambda _: None)
     assert not (tmp_path / "trusted.pem").exists()
+    # An outer proxy's url may carry its credentials: never said.
+    assert "secret" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("upstream", "said"),
+    [
+        ("http://api:abc", r"^the API the proxy forwards to is no URL, 'http://api:abc': Invalid URL: port can't be converted to integer"),
+        ("/v1", "^the API the proxy forwards to is reached at a host and a port, not /v1"),
+    ],
+    ids=["unread-port", "no-host"],
+)
+async def test_an_api_the_proxy_cannot_forward_to_refuses_it_before_it_writes_its_trust(upstream: str, said: str, tmp_path: Path) -> None:
+    with pytest.raises(Uninterceptable, match=said):
+        await serve_proxy(upstream, lambda _: None, lambda _: pytest.fail("routed"), VirtualClock(epoch=NOW), {}, tmp_path / "trusted.pem", lambda _: None)
+    assert not (tmp_path / "trusted.pem").exists()
+
+
+class Untrustable:
+    """A stand-in for a certificate cryptography read and OpenSSL refuses to trust, its bytes none OpenSSL reads as one."""
+
+    def public_bytes(self, encoding: serialization.Encoding) -> bytes:
+        return b"\x30\x03\x02\x01\x00"
+
+
+def test_a_certificate_openssl_will_not_trust_refuses_the_proxy_naming_the_variable() -> None:
+    with pytest.raises(Uninterceptable, match=f"^cannot trust the certificates {TRUST} names, which hands trusts besides the system's: "):
+        onward_trust((ELSEWHERE, cast(x509.Certificate, Untrustable())))
 
 
 def test_the_world_is_reached_as_hands_environment_says_read_as_urllib_reads_it() -> None:
