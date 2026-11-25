@@ -35,14 +35,14 @@
   body:has(#call-view[hidden]) #view { flex: 1; min-height: 0; overflow-y: auto; }
   /* The call: one block that is the big round button on the Call view at the top of its scroll and a bar across the top of the
      screen everywhere else. --melt is how far along it is, 0 the circle and 1 the bar, and every length the button has is a calc()
-     of it: views/call.js sets it from the scroll, and a view that does not scroll the document leaves it at 1. Nothing here
-     moves by a transition, so at any scroll position the button has the shape that position gives it. */
+     of it: hero.js writes it, 1 as each view is shown and, on the Call view, from the scroll. Nothing here moves by a
+     transition, so at any scroll position the button has the shape that position gives it. */
   #hero {
-    --melt: 1;
     --circle: min(68vw, 300px);
+    --bar: 64px;
     --wake-band: 40px;
     --w: calc(var(--circle) + (62vw - var(--circle)) * var(--melt));
-    --h: calc(var(--circle) + (64px - var(--circle)) * var(--melt));
+    --h: calc(var(--circle) + (var(--bar) - var(--circle)) * var(--melt));
     position: sticky; top: env(safe-area-inset-top); z-index: 1; align-self: stretch; margin-inline: -16px;
     display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: calc(8px + var(--wake-band) * (1 - var(--melt))) 8px 8px;
     /* The bar is the opaque part: what scrolls under it is hidden, and nothing under the rest of the hero's room is. */
@@ -69,7 +69,7 @@
      layout between them is made while they cannot be seen. Reduced motion sets --melt to 0 or 1 alone, and they are not faded. */
   #told { color: var(--muted); text-align: center; align-self: center; max-width: 30ch; margin-top: 20px; opacity: calc(1 - 2 * var(--melt)); }
   #hero.bar #told {
-    flex: 1; min-width: 0; align-self: auto; max-width: none; margin: 0; height: 64px; display: flex; flex-direction: column; justify-content: center;
+    flex: 1; min-width: 0; align-self: auto; max-width: none; margin: 0; height: var(--bar); display: flex; flex-direction: column; justify-content: center;
     text-align: left; font-size: 13px; line-height: 1.3; opacity: calc(2 * var(--melt) - 1);
   }
   #told p { margin: 0; min-height: 1.4em; }
@@ -85,12 +85,11 @@
   }
   #wake .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); }
   #wake[aria-pressed="true"] .dot { background: var(--live); border-color: var(--live); }
-  #hero.bar #wake { position: static; flex: none; width: 36px; height: 36px; margin-top: 14px; padding: 0; justify-content: center; }
+  #hero.bar #wake { position: static; flex: none; align-self: center; width: 36px; height: 36px; padding: 0; justify-content: center; }
   #hero.bar #wake .words { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #wake-note:empty { display: none; }
   #shown { font: inherit; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px; padding: 6px 16px; cursor: pointer; }
-  #view, #call-view { display: flex; flex-direction: column; align-items: center; gap: 28px; }
-  #view, #call-view { width: 100%; }
+  #view, #call-view { display: flex; flex-direction: column; align-items: center; gap: 28px; width: 100%; }
   #call-view[hidden] { display: none; }
   /* The row is the router's from the moment it is on screen: hidden, in its place, until app.js has wired it. */
   #views:not([data-ready]) { visibility: hidden; }
@@ -128,9 +127,9 @@
 <body>
 <!-- The Call view's one snap position, the top of the document. -->
 <div id="top"></div>
-<!-- The call, drawn on every view: the one button and what is said of it. The Call view melts it from the circle into this bar as it
-     scrolls (views/call.js); on every other view it is the bar from the first frame. -->
-<header id="hero" class="bar">
+<!-- The call, drawn on every view: the one button and what is said of it. The Call view melts it from the circle into a bar as it
+     scrolls (views/call.js); on every other view it is the bar from the first frame. hero.js is the one that shapes it. -->
+<header id="hero">
 <button id="talk" type="button">Connect</button>
 <!-- The count changes ten times a second, so it sits outside the live region: a screen reader says each line once. -->
 <div id="told">

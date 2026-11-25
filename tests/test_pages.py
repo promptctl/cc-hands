@@ -15,7 +15,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
 from conftest import patiently
-from playwright.async_api import Browser, BrowserContext, ConsoleMessage, ElementHandle, FloatRect, Locator, Page, async_playwright, expect
+from playwright.async_api import Browser, BrowserContext, ConsoleMessage, ElementHandle, FloatRect, Locator, Page, ViewportSize, async_playwright, expect
 
 from hands.clock import SYSTEM
 from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed
@@ -609,17 +609,19 @@ async def test_a_page_opened_without_the_phones_key_is_told_so_by_hands_and_says
 CONNECTED = "Connected. Hold the button and speak."
 
 
-async def on_the_call(browser: Opened, hands: Hands, path: str = "/") -> Page:
-    """The app opened at `path`, and Connect pressed: with the call up."""
+async def on_the_call(browser: Opened, hands: Hands, path: str = "/", screen: ViewportSize | None = None) -> Page:
+    """The app opened at `path`, on a screen of the given size when one is given, and Connect pressed: with the call up."""
     await browser.context.add_init_script(WAKE_OFF)
     page = await browser.open(hands.address(path))
+    if screen is not None:
+        await page.set_viewport_size(screen)
     await page.get_by_role("button", name="Connect").click()
     await expect(page.locator("#state")).to_have_text(CONNECTED)
     await expect(page.locator("#talk")).to_have_text("Hold to talk")
     return page
 
 
-async def the_strip_and_the_row_are_there(page: Page) -> None:
+async def the_hero_and_the_row_are_there(page: Page) -> None:
     """The talk button, the state line and the count are on screen, with the row of views beneath them."""
     for each in ("#talk", "#views"):
         await expect(page.locator(each)).to_be_visible()
@@ -635,7 +637,7 @@ async def test_a_tap_on_a_view_and_the_back_gesture_move_between_the_views_with_
     page = await on_the_call(browser, hands)
     # Only the document that holds the call keeps this.
     await page.evaluate("window.theDocument = 'the same one'")
-    await the_strip_and_the_row_are_there(page)
+    await the_hero_and_the_row_are_there(page)
 
     await page.get_by_role("link", name="Sessions").click()
     await expect(page).to_have_url(hands.address("/sessions"))
@@ -643,7 +645,7 @@ async def test_a_tap_on_a_view_and_the_back_gesture_move_between_the_views_with_
     await expect(page.locator("#views a[aria-current=page]")).to_have_text("Sessions")
     # The Call view's own are the document's, shown while it is: nothing of them is on screen here.
     await expect(page.locator("#brain")).to_be_hidden()
-    await the_strip_and_the_row_are_there(page)
+    await the_hero_and_the_row_are_there(page)
     await expect(page.locator("#state")).to_be_visible()
     # What hands tells the call while another view is shown reaches the Call view, which is shown again.
     hands.phone.tell(Heard("said while the Call view was away"))
@@ -654,7 +656,7 @@ async def test_a_tap_on_a_view_and_the_back_gesture_move_between_the_views_with_
     await expect(page.locator("#brain")).to_be_visible()
     await page.get_by_role("button", name="Show transcript").click()
     await expect(page.locator("#transcript")).to_contain_text("said while the Call view was away")
-    await the_strip_and_the_row_are_there(page)
+    await the_hero_and_the_row_are_there(page)
 
     # The back gesture moves back along the views visited: Sessions, then the Call as it opened.
     await page.go_back()
@@ -689,11 +691,11 @@ async def test_a_page_not_yet_moved_into_the_app_opens_in_a_tab_with_the_key_and
 @pytest.mark.parametrize("path", APP_PATHS)
 async def test_every_path_of_the_app_opened_is_the_app_and_a_reload_ends_the_call_and_comes_back_to_the_same_view(browser: Opened, hands: Hands, path: str) -> None:
     page = await on_the_call(browser, hands, path)
-    await the_strip_and_the_row_are_there(page)
+    await the_hero_and_the_row_are_there(page)
     await page.reload()
     await expect(page).to_have_url(hands.address(path))
     await expect(page.locator("#talk")).to_have_text("Connect")
-    await the_strip_and_the_row_are_there(page)
+    await the_hero_and_the_row_are_there(page)
     await expect(page.locator("#views a[aria-current=page]")).to_have_text(next(entry.label for entry in ROW if entry.path == path))
     # hands saw the page hang up as it unloaded.
     await patiently(lambda: any(isinstance(entry, WideEvent) and entry.event == "phone.call" for entry in hands.recorded), lambda: len(hands.recorded))
@@ -722,9 +724,8 @@ MELT = 160
 # A scroll well past MELT, and past where the browser's snap goes back to the top from (a third of the screen).
 PAST_MELT = 250
 # A phone's screen, short enough that the Call view has the room to scroll past MELT.
-PHONE_SCREEN = {"width": 390, "height": 360}
+PHONE_SCREEN: ViewportSize = {"width": 390, "height": 360}
 CIRCLE = min(PHONE_SCREEN["width"] * 0.68, 300)
-BUTTON = "(() => { const box = document.getElementById('talk').getBoundingClientRect(); return {x: box.x, y: box.y, width: box.width, height: box.height}; })()"
 # What the button is in each frame the page draws, from its first: the frame's own height of it, once the call is shown at all.
 # A frame the call is not shown in is not a frame of it.
 FRAMES_OF_THE_BUTTON = """
@@ -735,25 +736,6 @@ window.drawn = [];
   requestAnimationFrame(sample);
 })();
 """
-# Every press and release the page sends hands, in the order it sends them.
-BUTTONS_SENT = """
-window.buttons = [];
-const sentOnChannel = RTCDataChannel.prototype.send;
-RTCDataChannel.prototype.send = function (message) {
-  if (message === "press" || message === "release") buttons.push(message);
-  return sentOnChannel.call(this, message);
-};
-"""
-
-
-async def on_a_phone_call(browser: Opened, hands: Hands, path: str = "/") -> Page:
-    """`on_the_call` on a phone's screen."""
-    await browser.context.add_init_script(WAKE_OFF)
-    page = await browser.open(hands.address(path))
-    await page.set_viewport_size(PHONE_SCREEN)  # pyright: ignore[reportArgumentType]
-    await page.get_by_role("button", name="Connect").click()
-    await expect(page.locator("#state")).to_have_text(CONNECTED)
-    return page
 
 
 async def scrolled_to(page: Page, y: int) -> None:
@@ -772,10 +754,6 @@ async def box_of(shown: ElementHandle | Locator) -> FloatRect:
     return box
 
 
-async def button_box(page: Page) -> FloatRect:
-    return await page.evaluate(BUTTON)
-
-
 def a_circle(box: FloatRect) -> bool:
     """The box is the large round button, centred: `min(68vw, 300px)` across and as tall."""
     return (box["width"] == pytest.approx(CIRCLE, rel=0.005) and box["height"] == pytest.approx(CIRCLE, rel=0.005)
@@ -789,7 +767,7 @@ def a_bar(box: FloatRect) -> bool:
 
 async def test_the_call_view_opens_on_the_large_circle_which_holds_near_the_top_melts_into_a_bar_past_melt_and_is_the_circle_again_at_the_top(browser: Opened, hands: Hands) -> None:
     await browser.context.add_init_script(FRAMES_OF_THE_BUTTON)
-    page = await on_a_phone_call(browser, hands)
+    page = await on_the_call(browser, hands, screen=PHONE_SCREEN)
     assert await page.evaluate("scrollY") == 0
     # The call is drawn first as the circle: no frame of it was the bar.
     drawn: list[float] = await page.evaluate("drawn")
@@ -832,20 +810,18 @@ async def test_the_call_view_opens_on_the_large_circle_which_holds_near_the_top_
 
 
 async def test_the_buttons_shape_between_the_circle_and_the_bar_is_the_scroll_positions_alone(browser: Opened, hands: Hands) -> None:
-    page = await on_a_phone_call(browser, hands)
+    page = await on_the_call(browser, hands, screen=PHONE_SCREEN)
     await without_the_snap(page)
     # The button as far along as the scroll is, however the scroll got there: the same height each time a position is come to.
-    height_at: dict[int, float] = {}
     for y in (MELT // 3, 2 * MELT // 3, MELT // 3, MELT - 30, 2 * MELT // 3):
         await scrolled_to(page, y)
-        height = (await button_box(page))["height"]
+        height = (await box_of(page.locator("#talk")))["height"]
         assert height == pytest.approx(CIRCLE + (64 - CIRCLE) * y / MELT, rel=0.005)
-        assert height_at.setdefault(y, height) == height
 
 
 async def test_a_press_begun_on_the_circle_and_held_as_the_view_scrolls_past_melt_is_one_press_and_its_release_one_release_and_one_clip_at_hands(browser: Opened, hands: Hands) -> None:
-    await browser.context.add_init_script(BUTTONS_SENT)
-    page = await on_a_phone_call(browser, hands)
+    await browser.context.add_init_script(NEVER_SILENT)
+    page = await on_the_call(browser, hands, screen=PHONE_SCREEN)
     held = await page.locator("#talk").element_handle()
     assert held is not None
     circle = await box_of(held)
@@ -872,19 +848,20 @@ async def test_a_press_begun_on_the_circle_and_held_as_the_view_scrolls_past_mel
             taken.append(await hands.phone.moves.get())
     assert [move for move in taken if move in ("start", "stop")] == ["start", "stop"]
     assert hands.phone.moves.empty()
-    assert await page.evaluate("buttons") == ["press", "release"]
+    timeline: list[dict[str, int | str]] = await page.evaluate("timeline")
+    assert [each["button"] for each in timeline if "button" in each] == ["press", "release"]
 
 
 async def test_every_view_but_the_call_shows_the_bar_from_its_first_frame_and_the_call_view_shows_the_circle_each_time_it_is_opened(browser: Opened, hands: Hands) -> None:
     await browser.context.add_init_script(FRAMES_OF_THE_BUTTON)
     await browser.context.add_init_script(WAKE_OFF)
     page = await browser.open(hands.address("/sessions"))
-    await page.set_viewport_size(PHONE_SCREEN)  # pyright: ignore[reportArgumentType]
+    await page.set_viewport_size(PHONE_SCREEN)
     await expect(page.locator("#sessions-note")).to_be_visible()
     # Every frame the call was drawn in, from the first, had the bar's button: none had the circle first.
     drawn: list[float] = await page.evaluate("drawn")
     assert drawn and set(drawn) == {64}
-    assert a_bar(await button_box(page))
+    assert a_bar(await box_of(page.locator("#talk")))
     # The document does not scroll under it: the view is the room the bar and the row leave, scrolling by itself.
     await scrolled_to(page, 200)
     assert await page.evaluate("scrollY") == 0
@@ -893,32 +870,67 @@ async def test_every_view_but_the_call_shows_the_bar_from_its_first_frame_and_th
     # The Call view is the circle at the top of its scroll; scrolled to a bar, then left and opened again, it is the circle again.
     await page.get_by_role("link", name="Call").click()
     await expect(page.locator("#brain")).to_be_visible()
-    assert a_circle(await button_box(page))
+    assert a_circle(await box_of(page.locator("#talk")))
     await scrolled_to(page, PAST_MELT)
-    assert a_bar(await button_box(page))
+    assert a_bar(await box_of(page.locator("#talk")))
     await page.get_by_role("link", name="Sessions").click()
     await expect(page.locator("#sessions-note")).to_be_visible()
     assert await page.evaluate("scrollY") == 0
-    assert a_bar(await button_box(page))
+    assert a_bar(await box_of(page.locator("#talk")))
     await page.get_by_role("link", name="Call").click()
     await expect(page.locator("#brain")).to_be_visible()
     assert await page.evaluate("scrollY") == 0
-    assert a_circle(await button_box(page))
+    assert a_circle(await box_of(page.locator("#talk")))
     # The back gesture opens the Call view as a tap on it does.
     await scrolled_to(page, PAST_MELT)
     await page.get_by_role("link", name="Sessions").click()
     await page.go_back()
     await expect(page.locator("#brain")).to_be_visible()
     assert await page.evaluate("scrollY") == 0
-    assert a_circle(await button_box(page))
+    assert a_circle(await box_of(page.locator("#talk")))
 
 
 async def test_with_reduced_motion_the_button_is_the_circle_or_the_bar_and_nothing_between(browser: Opened, hands: Hands) -> None:
-    page = await on_a_phone_call(browser, hands)
+    page = await on_the_call(browser, hands, screen=PHONE_SCREEN)
     await page.emulate_media(reduced_motion="reduce")
     await without_the_snap(page)
     for y, expected in ((0, a_circle), (MELT // 4, a_circle), (MELT // 2 - 1, a_circle), (MELT // 2, a_bar), (MELT - 1, a_bar), (PAST_MELT, a_bar), (MELT // 2 - 1, a_circle)):
         await scrolled_to(page, y)
-        box = await button_box(page)
+        box = await box_of(page.locator("#talk"))
         assert expected(box), f"at {y}: {box}"
         assert await page.locator("#hero").evaluate("el => el.style.getPropertyValue('--melt')") == ("1" if expected is a_bar else "0")
+
+
+async def test_a_position_outside_the_melt_is_the_nearest_end_of_it(browser: Opened, hands: Hands) -> None:
+    page = await on_the_call(browser, hands, screen=PHONE_SCREEN)
+    # A rubber-band at the top of the scroll reports a position below zero.
+    for reach, melt in ((-0.25, "0"), (1.7, "1")):
+        await page.evaluate("async reach => (await import('/hero.js')).shape(reach)", reach)
+        assert await page.locator("#hero").evaluate("el => el.style.getPropertyValue('--melt')") == melt
+        assert (a_circle if melt == "0" else a_bar)(await box_of(page.locator("#talk")))
+
+
+async def test_reduced_motion_turned_on_or_off_part_way_along_the_melt_changes_the_button_at_once(browser: Opened, hands: Hands) -> None:
+    page = await on_the_call(browser, hands, screen=PHONE_SCREEN)
+    await without_the_snap(page)
+    await scrolled_to(page, MELT * 3 // 8)
+    between = await box_of(page.locator("#talk"))
+    assert not a_circle(between) and not a_bar(between)
+    # The scroll does not move; the preference does.
+    await page.emulate_media(reduced_motion="reduce")
+    await page.wait_for_function("document.getElementById('hero').style.getPropertyValue('--melt') === '0'")
+    assert a_circle(await box_of(page.locator("#talk")))
+    await page.emulate_media(reduced_motion="no-preference")
+    await page.wait_for_function("document.getElementById('hero').style.getPropertyValue('--melt') === '0.375'")
+
+
+async def test_the_call_button_is_there_when_a_view_of_the_app_fails_to_load(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(WAKE_OFF)
+    await browser.context.route("**/views/sessions.js", lambda route: route.fulfill(status=500))
+    page = await browser.open(hands.address("/"))
+    await expect(page.locator("#view")).to_contain_text("The app could not load its views")
+    # The app says on its face that it has no views, and the call is still there to be made.
+    await expect(page.locator("#views")).to_be_hidden()
+    await expect(page.get_by_role("button", name="Connect")).to_be_visible()
+    assert len(browser.faults) == 1 and "uncaught" in browser.faults[0]
+    browser.faults.clear()

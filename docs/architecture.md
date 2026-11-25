@@ -2256,7 +2256,7 @@ it ran, and the wait's facts; each Stop one `brain.stop`, with the turn it named
 (`src/hands/voice/app.html`, `app.js`, `call.js`, `views/`; design-docs/phone-sessions/design.md, "The one app"). The
 call is `call.js`, loaded once with the document and never mounted or unmounted; the hero (talk button, state line,
 count, the wake word's button) is the document's, with a row of views under it: the big round button on the Call view at the
-top of its scroll, melting into a bar across the top as that view scrolls, and the bar on every other view (`views/call.js`). `ROW` in `hands.voice.phonepage` is the one place that says which
+top of its scroll, melting into a bar across the top as that view scrolls (`views/call.js`), and the bar on every other view; `hero.js` is the one writer of its shape. `ROW` in `hands.voice.phonepage` is the one place that says which
 views there are: hands draws the row from it into `app.html`, answers each path of an in-app view with the document
 (`no-store`), and serves the scripts the app is made of, so `app.js` mounts the module each link names. `app.js` mounts
 the view of `location.pathname` as `mount(root, route, signal)`; a tap on a view is `history.pushState` with the phone's key
