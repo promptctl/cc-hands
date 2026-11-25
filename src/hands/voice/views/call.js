@@ -28,6 +28,10 @@ toggle.addEventListener("click", () => {
 
 const IDLE = {doing: "idle", calls: []};
 
+// What the last Stop said, of that tap alone, until SAID_MS have passed. It is a deed's word, said whichever view is shown
+// when it comes, so it outlives the view that tapped: a view mounted within SAID_MS shows it.
+let stopSaid = null;
+
 // A call's input as a glance reads it: its values, each a line, as the call gave them.
 function inputOf(call) {
   return "unreadable" in call ? `input could not be read: ${call.unreadable}`
@@ -42,16 +46,20 @@ export function mount(root, _route, signal) {
   const within = id => root.querySelector(`#${id}`);
   const doing = within("doing"), calls = within("calls"), stopButton = within("stop"), brainSaid = within("brain-said");
 
-  // The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
-  // the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again. They are
-  // this mount's, so a view shown again draws what a load draws until its first read answers.
+  // The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; and why
+  // the brain could not be read, until it is read again. They are this mount's, so a view shown again draws what a load
+  // draws until its first read answers.
   let work = IDLE;
   let stopping = false;
-  let said = null;
   let unread = null;
-  let sayTimer = null;
 
-  function sayOfBrain(text, bad = false) { brainSaid.textContent = text; brainSaid.classList.toggle("bad", bad); }
+  // The line under the brain: what the last Stop said while it is still said, else why the brain could not be read.
+  function drawSaid() {
+    if (stopSaid !== null && Date.now() >= stopSaid.until) stopSaid = null;
+    const told = stopSaid ?? unread ?? {text: "", bad: false};
+    brainSaid.textContent = told.text;
+    brainSaid.classList.toggle("bad", told.bad);
+  }
 
   // The line that says what the brain is doing, and for how long: redrawn each second, as the time is.
   function drawDoing() {
@@ -77,18 +85,10 @@ export function mount(root, _route, signal) {
       return item;
     }));
     stopButton.disabled = stopping || work.doing !== "working";
-    const told = said ?? unread ?? {text: "", bad: false};
-    sayOfBrain(told.text, told.bad);
+    drawSaid();
   }
 
-  // What a Stop said, taken away SAID_MS later unless a later Stop has said something since; said of nothing once the view
-  // is gone.
-  function sayOfStop(stopSaid) {
-    if (signal.aborted) return;
-    said = stopSaid;
-    clearTimeout(sayTimer);
-    sayTimer = setTimeout(() => { said = null; drawBrain(); }, SAID_MS);
-  }
+  const sayOfStop = (text, bad) => { stopSaid = {text, bad, until: Date.now() + SAID_MS}; };
 
   // Stop ends the turn the page shows, and that turn alone: one the brain went on to after it is never stopped by it. It is a
   // deed, done whichever view is shown, so leaving the view does not take it back.
@@ -97,17 +97,18 @@ export function mount(root, _route, signal) {
     drawBrain();
     try {
       const outcome = await asked(PAGE_OPEN, "POST", "/brain/stop", {turn: work.turn}, STOP_MS);
-      sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
+      outcome.kind === "answered" ? sayOfStop(outcome.body.readback, false) : sayOfStop(`Could not stop it: ${unanswered(outcome)}`, true);
     } catch (error) {
-      sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
+      sayOfStop(`Could not stop it: ${error.message}`, true);
     } finally {
       stopping = false;
       drawBrain();
     }
   });
 
-  const redrawing = setInterval(drawDoing, 1000);
-  signal.addEventListener("abort", () => { clearInterval(redrawing); clearTimeout(sayTimer); content.hidden = true; }, { once: true });
+  // Taken first, so a mount that fails partway still ends cleanly when the view is left.
+  const redrawing = setInterval(() => { drawDoing(); drawSaid(); }, 1000);
+  signal.addEventListener("abort", () => { clearInterval(redrawing); content.hidden = true; }, { once: true });
   drawBrain();
   // The brain is read for as long as the view is shown: its signal ends the read, the one in flight at hands included.
   reading(signal, "/brain", shown => {

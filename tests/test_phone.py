@@ -917,9 +917,13 @@ async def nobody_types(text: str) -> None:
 
 
 class IdleBrain:
-    """A brain with no turn in flight, as the page reads and stops it."""
+    """A brain with no turn in flight, as the page reads and stops it, counting the looks taken of it."""
+
+    def __init__(self) -> None:
+        self.looks = 0
 
     def work(self) -> BrainWork:
+        self.looks += 1
         return Idle()
 
     def stop(self, turn: str) -> StopOutcome:
@@ -1114,7 +1118,8 @@ async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_saying_the_pag
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
     home = Home(tmp_path)
     key = phone_key(SYSTEM, home)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    brain = IdleBrain()
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, brain, nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
     await patiently(lambda: events(recorded, "phone.served") != [], lambda: len(recorded))
     [served] = events(recorded, "phone.served")
     unverified = ssl.create_default_context()
@@ -1124,10 +1129,17 @@ async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_saying_the_pag
     async with ClientSession() as session:
         async with session.get(address, headers=keyed, ssl=unverified) as first:
             seen = (await first.json())["seen"]
-        # The second read waits at hands for the brain to change, and the page goes away while it waits.
-        with pytest.raises(TimeoutError):
-            async with asyncio.timeout(1), session.get(f"{address}?seen={seen}", headers=keyed, ssl=unverified):
-                await asyncio.Event().wait()
+        async def second() -> None:
+            async with session.get(f"{address}?seen={seen}", headers=keyed, ssl=unverified) as read:
+                await read.read()
+
+        # The second read waits at hands for the brain to change: it has looked twice, the first look and one more. The
+        # page goes away while it waits.
+        waiting = asyncio.create_task(second())
+        await patiently(lambda: brain.looks >= 3, lambda: brain.looks)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
     await patiently(lambda: len(events(recorded, "brain.read")) == 2, lambda: len(recorded))
     answered, left = events(recorded, "brain.read")
     # The wait ended with the page, long before the 25 s it would have run.
@@ -1165,13 +1177,16 @@ async def test_a_deed_whose_phone_goes_away_before_it_is_answered_runs_to_its_en
     unverified = ssl.create_default_context()
     unverified.check_hostname, unverified.verify_mode = False, ssl.CERT_NONE
     async with ClientSession() as session:
+        async def sending() -> None:
+            async with session.post(f"https://127.0.0.1:{served.facts['port']}/conversation/typed", json={"text": "hello"}, headers={"Authorization": bearer(key)}, ssl=unverified):
+                pass
+
         # The phone goes away while hands is still typing what it sent, and hands finishes it.
-        with pytest.raises(TimeoutError):
-            async with asyncio.timeout(1) as phone_leaves:
-                async with session.post(f"https://127.0.0.1:{served.facts['port']}/conversation/typed", json={"text": "hello"}, headers={"Authorization": bearer(key)}, ssl=unverified):
-                    await typing_begun.wait()
-                    phone_leaves.reschedule(asyncio.get_running_loop().time())
-                    await asyncio.Event().wait()
+        posting = asyncio.create_task(sending())
+        await typing_begun.wait()
+        posting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await posting
     typing_may_end.set()
     await patiently(lambda: events(recorded, "conversation.typed") != [], lambda: len(recorded))
     [event] = events(recorded, "conversation.typed")

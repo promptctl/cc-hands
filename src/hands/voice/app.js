@@ -38,7 +38,13 @@ function show() {
   leaving = new AbortController();
   root.replaceChildren();
   for (const link of links) link.ariaCurrent = link.pathname === location.pathname ? "page" : null;
-  mount(root, { path: location.pathname, query: new URLSearchParams(location.search) }, leaving.signal);
+  try {
+    mount(root, { path: location.pathname, query: new URLSearchParams(location.search) }, leaving.signal);
+  } catch (error) {
+    // [LAW:no-silent-failure] a view that fails to mount says so where it was to be, as one that fails to load does.
+    root.textContent = `The app could not show ${location.pathname}: ${error.message}`;
+    throw error;
+  }
 }
 
 // A move to a view of the app: the path changes and the key stays.

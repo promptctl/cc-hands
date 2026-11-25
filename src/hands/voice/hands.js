@@ -15,8 +15,8 @@ export const carriesKey = key !== "";
 // so soon after.
 const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
-// The signal of a request nothing but the page's closing ends: what a page that is never left asks with, as the worker does,
-// and a deed that is done whichever view is shown.
+// The signal of a request no one aborts, so it lasts as long as the page: what a page that is never left asks with, as the
+// worker does, and a deed that is done whichever view is shown.
 export const PAGE_OPEN = new AbortController().signal;
 
 // [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of four

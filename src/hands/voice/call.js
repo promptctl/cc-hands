@@ -1,7 +1,7 @@
 // The call: the shell's own (app.html), run once as the document loads and never mounted or unmounted, so a move between
 // the app's views is no move of the call's. It takes the elements of the shell's strip by id, and the transcript the Call view
 // (views/call.js) shows: the call writes it whether that view is shown or not.
-import {PAGE_OPEN, asked, carriesKey, unanswered, wording} from "/hands.js";
+import {PAGE_OPEN, asked, carriesKey, wording} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
