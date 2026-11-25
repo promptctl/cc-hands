@@ -135,9 +135,45 @@ def test_a_task_a_test_spawns_is_charged_to_the_test_and_a_wait_of_none_to_no_on
     helper = "import time\n\nasync def poll():\n    time.strftime('%H')\n"
     user = "import asyncio, threading, time\nfrom helper import poll\n\ndef test_spawns():\n    async def main():\n        await asyncio.create_task(poll())\n    asyncio.run(main())\n\ndef test_yields():\n    time.sleep(0)\n    threading.Timer(0, lambda: None).cancel()\n"
     lines = reached(pytester, monkeypatch, helper=helper, test_user=user)
-    # The loop asyncio.run drives reads the machine's monotonic clock too.
-    assert "test_user.py: ['time.monotonic', 'time.strftime']" in lines
+    # The loop asyncio.run drives reads the machine's clock as it runs, and bounds its executor's shutdown: the loop's own.
+    assert "test_user.py: ['time.strftime']" in lines
     assert not any(line.startswith("helper.py") for line in lines)
+
+
+@pytest.mark.outside
+def test_a_test_is_charged_for_the_waits_it_asks_the_loop_for_and_its_reads_of_the_loops_clock(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    def ran(body: str) -> str:
+        return f"import asyncio\n\ndef test_runs():\n    async def main():\n{body}\n    asyncio.run(main())\n"
+
+    lines = reached(
+        pytester, monkeypatch,
+        test_sleeps=ran("        await asyncio.sleep(0.001)"),
+        test_bounds=ran("        async with asyncio.timeout(1):\n            pass"),
+        test_reads=ran("        asyncio.get_running_loop().time()"),
+        # A job on the loop's executor, whose shutdown asyncio.run bounds by a timer of its own.
+        test_polls=ran("        loop = asyncio.get_running_loop()\n        loop.call_later(0, lambda: None)\n        loop.call_soon(lambda: None)\n        await asyncio.sleep(0)\n        await asyncio.to_thread(int)"),
+    )  # fmt: skip
+    assert "test_sleeps.py: ['asyncio.BaseEventLoop.call_later']" in lines
+    assert "test_bounds.py: ['asyncio.BaseEventLoop.call_at']" in lines
+    assert "test_reads.py: ['time.monotonic']" in lines
+    assert not any(line.startswith("test_polls.py") for line in lines)
+
+
+@pytest.mark.outside
+def test_a_task_a_wider_fixtures_setup_starts_is_charged_to_the_fixture_and_not_the_test_it_was_set_up_for(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = (
+        "\nimport asyncio, time\nimport pytest_asyncio\n\n"
+        "@pytest_asyncio.fixture(scope='session', loop_scope='session')\nasync def started():\n"
+        "    asked, stamped = asyncio.Event(), asyncio.Event()\n\n"
+        "    async def stamp():\n        await asked.wait()\n        time.strftime('%H')\n        stamped.set()\n\n"
+        "    task = asyncio.create_task(stamp())\n    yield asked, stamped\n    await task\n"
+    )
+    user = "import pytest\n\n@pytest.mark.asyncio(loop_scope='session')\nasync def test_uses(started):\n    asked, stamped = started\n    asked.set()\n    await stamped.wait()\n"
+    result = run(pytester, monkeypatch, hooks=hooks, test_user=user)
+    result.assert_outcomes(passed=1)
+    # The task reaches the clock while the test runs, and is the fixture's work all the same.
+    assert "conftest.py: ['time.strftime']" in result.outlines
+    assert not any(line.startswith("test_user.py") for line in result.outlines)
 
 
 @pytest.mark.outside

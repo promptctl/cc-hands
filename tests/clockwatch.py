@@ -10,11 +10,18 @@ A reach made with a frame of a module under tests/ on the stack is charged to th
 module whose item was running when it, or the task, the thread, or the executor job that makes it, was started, so a
 test is charged for what its helpers wait on; the harness's own code, a hook or a finalizer, is charged to its module. A read the machine's clock makes for hands code, through `SystemClock`,
 is charged to that origin with no such frame. Nothing reads which test runs now, so a thread that outlives its test is
-charged to that test and not to the next.
+charged to that test and not to the next. A wider fixture's setup carries its own module, so a task it starts is charged
+to the fixture and not to the test it was set up for.
+
+The event loop's clock and timers are charged to the code that asked the loop for them: a test's `loop.time()`, its
+`asyncio.sleep` or `asyncio.timeout`, but not the loop's own reads of its clock as it runs nor a timer asyncio asks of
+itself, as `asyncio.run` bounds its executor's shutdown. A log record's timestamp is no reach.
 """
 
+import asyncio
 import contextvars
 import functools
+import logging
 import os
 import random
 import secrets
@@ -26,7 +33,8 @@ from collections import defaultdict
 from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from types import CodeType
+from types import CodeType, FrameType
+from typing import Any
 
 import pytest
 
@@ -55,12 +63,10 @@ UNMOVED = frozenset({
     "test_brain.py",
     "test_brain_turns.py",
     "test_brainpage.py",
-    "test_catch_up.py",
     "test_child.py",
     "test_clipowner.py",
     "test_closesession.py",
     "test_command_event.py",
-    "test_command_imports.py",
     "test_conversation.py",
     "test_cues.py",
     "test_conversationpage.py",
@@ -79,7 +85,6 @@ UNMOVED = frozenset({
     "test_library.py",
     "test_liveness.py",
     "test_microphone.py",
-    "test_naming.py",
     "test_narrator.py",
     "test_npm_registry.py",
     "test_occurrences.py",
@@ -99,12 +104,8 @@ UNMOVED = frozenset({
     "test_playback.py",
     "test_progress.py",
     "test_proxy.py",
-    "test_read_session.py",
     "test_readiness.py",
     "test_recall.py",
-    "test_recorded_turns.py",
-    "test_recorder.py",
-    "test_refocus.py",
     "test_render.py",
     "test_restart.py",
     "test_sentences.py",
@@ -118,7 +119,6 @@ UNMOVED = frozenset({
     "test_start.py",
     "test_startsession.py",
     "test_status.py",
-    "test_steps.py",
     "test_streaming.py",
     "test_subagents.py",
     "test_summary_store.py",
@@ -135,15 +135,11 @@ UNMOVED = frozenset({
     "test_update.py",
     "test_usage.py",
     "test_utterance.py",
-    "test_vocabulary.py",
     "test_voice_turns.py",
-    "test_voiceprints.py",
     "test_voices.py",
     "test_wake.py",
     "test_watchdog.py",
     "test_whisper.py",
-    "test_whisper_recorded.py",
-    "test_whisper_takes.py",
     "test_wide.py",
     "test_wrapper.py",
     "timeouts.py",
@@ -167,14 +163,29 @@ GIVEN = {"time.localtime": 0, "time.gmtime": 0, "time.ctime": 0, "time.asctime":
 # Waits handed their seconds at a place or by a keyword, which wait on none when handed none: a sleep of none is a yield.
 POLLED = {"time.sleep": (0, "secs"), "threading.Timer": (1, "interval"), "SystemClock.sleep": (1, "seconds"), "SystemClock.sleep_blocking": (1, "seconds"), "SystemClock.take": (2, "seconds")}
 
-# Waits that block on a C lock's timeout and read no Python clock, each with the place its timeout is passed. Every `acquire(timeout=)` is the scan's: Lock and RLock are C types no attribute reaches.
+# Waits handed a timeout, each with the place it is passed: the wait is the reach, not the clock it reads for its deadline, as a Semaphore's does and a C lock's does not. Every other `acquire(timeout=)` is the scan's: Lock and RLock are C types no attribute reaches.
 TIMED: dict[str, tuple[type, str, int, str]] = {
     "threading.Event.wait": (threading.Event, "wait", 0, "timeout"),
     "threading.Condition.wait": (threading.Condition, "wait", 0, "timeout"),
     "threading.Thread.join": (threading.Thread, "join", 0, "timeout"),
+    "threading.Semaphore.acquire": (threading.Semaphore, "acquire", 1, "timeout"),
 }  # fmt: skip
 
-ORIGIN: contextvars.ContextVar[str] = contextvars.ContextVar("clockwatch.origin")
+# The event loop's clock and timers, each with whether a call is a reach. asyncio reads the clock to schedule, and the
+# wait it schedules is the timer's; a timer asyncio asks of itself is the loop's, and one due now or before is a poll, as
+# a wait of none is.
+LOOP: dict[str, tuple[str, Callable[[asyncio.BaseEventLoop, tuple[Any, ...]], bool]]] = {
+    "time.monotonic": ("time", lambda _loop, _args: not in_asyncio(asking())),
+    "asyncio.BaseEventLoop.call_later": ("call_later", lambda _loop, args: not asked_by_the_loop() and args[0] > 0),
+    "asyncio.BaseEventLoop.call_at": ("call_at", lambda loop, args: not asked_by_the_loop() and args[0] > loop.time()),
+}  # fmt: skip
+
+# Where the loop runs its own machinery, and steps the tasks and callbacks it holds: what asyncio asks of the loop from
+# here, with no caller outside asyncio between, it asks for itself.
+DISPATCH: frozenset[CodeType] = frozenset({getattr(asyncio.BaseEventLoop, "_run_once").__code__, getattr(asyncio.Handle, "_run").__code__})
+ASYNCIO = f"{Path(asyncio.__file__).parent}{os.sep}"
+
+ORIGIN: contextvars.ContextVar[str | None] = contextvars.ContextVar("clockwatch.origin")
 
 
 class Watch:
@@ -233,9 +244,10 @@ class Watch:
         facility: a uuid4 reads os.urandom and an Event's wait a Condition's, and the reach is the call the test made,
         not its parts. Only the outer call walks the stack."""
         outer = not getattr(self._within, "facility", False)
+        # Set first: what the watch reads to decide the charge, as the loop's time for a timer, is no reach of its own.
+        self._within.facility = True
         if outer and (module := charged()) is not None and module not in CLOCK_TESTS:
             self.record[module].add(facility)
-        self._within.facility = True
         try:
             return function(*args, **kwargs)
         finally:
@@ -266,6 +278,15 @@ class Watch:
 
         return waited
 
+    def looped(self, facility: str, method: Callable[..., object], reaches: Callable[[asyncio.BaseEventLoop, tuple[Any, ...]], bool]) -> Callable[..., object]:
+        """`method` of the event loop, recording each call that `reaches` as a reach of `facility`."""
+
+        @functools.wraps(method)
+        def asked(loop: asyncio.BaseEventLoop, *args: object, **kwargs: object) -> object:
+            return self._through(facility, lambda: self._charged(False) if reaches(loop, args) else None, method, loop, *args, **kwargs)
+
+        return asked
+
     def carrying(self, run: Callable[..., object]) -> Callable[..., object]:
         """`run`, made to carry the origin of the code that starts it, wherever it runs, and nothing else of its context:
         a thread starts in an empty one, as it does unwatched."""
@@ -285,6 +306,16 @@ class Watch:
             patch.setattr(SystemClock, method, self.wrap(f"SystemClock.{method}", getattr(SystemClock, method), carried=True))
         for facility, (owner, method, at, keyword) in TIMED.items():
             patch.setattr(owner, method, self.timed(facility, getattr(owner, method), at, keyword))
+        for facility, (method, reaches) in LOOP.items():
+            patch.setattr(asyncio.BaseEventLoop, method, self.looped(facility, getattr(asyncio.BaseEventLoop, method), reaches))
+        stamp = logging.LogRecord.__init__
+
+        @functools.wraps(stamp)
+        def stamped(record: logging.LogRecord, *args: Any, **kwargs: Any) -> None:
+            # A record stamps the time it was made: no wait, and no test's reach.
+            self._through("logging.LogRecord", lambda: None, stamp, record, *args, **kwargs)
+
+        patch.setattr(logging.LogRecord, "__init__", stamped)
         timer = threading.Timer.__init__
         patch.setattr(threading.Timer, "__init__", self.wrap("threading.Timer", timer, carried=False))
         start = threading.Thread.start
@@ -312,6 +343,18 @@ class Watch:
     @pytest.hookimpl(tryfirst=True)
     def pytest_collection_finish(self, session: pytest.Session) -> None:
         self.rebind()
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_fixture_setup(self, fixturedef: pytest.FixtureDef[object]) -> Generator[None, object, object]:
+        """A fixture wider than its test is set up carrying its own module, or no origin, defined outside tests/: a task
+        its setup starts copies that, and is the fixture's work, whichever test it was set up for."""
+        if fixturedef.scope == "function":
+            return (yield)
+        token = ORIGIN.set(self._module(fixturedef.func.__code__.co_filename) or None)
+        try:
+            return (yield)
+        finally:
+            ORIGIN.reset(token)
 
     @pytest.hookimpl(wrapper=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, object, object]:
@@ -356,6 +399,29 @@ class Watch:
         if self.stale:
             terminalreporter.section("in UNMOVED, never reached the machine's time", red=True)
             terminalreporter.line(", ".join(sorted(self.stale)))
+
+
+def asking() -> FrameType:
+    """The frame that called into the event loop now: the innermost outside this module."""
+    depth = 1
+    while (frame := sys._getframe(depth)).f_code.co_filename == __file__:  # pyright: ignore[reportPrivateUsage]
+        depth += 1
+    return frame
+
+
+def in_asyncio(frame: FrameType) -> bool:
+    return frame.f_code.co_filename.startswith(ASYNCIO)
+
+
+def asked_by_the_loop() -> bool:
+    """Whether what the event loop is asked for now comes from asyncio's code alone, from where the loop dispatches
+    (DISPATCH) to the call: no caller outside asyncio between."""
+    frame: FrameType | None = asking()
+    while frame is not None and in_asyncio(frame):
+        if frame.f_code in DISPATCH:
+            return True
+        frame = frame.f_back
+    return False
 
 
 def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:
