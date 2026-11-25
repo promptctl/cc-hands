@@ -1,0 +1,11 @@
+# [LAW:one-source-of-truth] the locked environment every job that runs the repository's code starts from: setup's tools, and the
+# versions uv.lock names, which a lock out of step with pyproject fails here. What a job's tests run in beyond it is `testbed`.
+name: prepare
+description: The tools (setup) and the locked environment, for a checkout that has its history and tags
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup
+    - name: Install the locked environment
+      shell: bash
+      run: uv sync --locked

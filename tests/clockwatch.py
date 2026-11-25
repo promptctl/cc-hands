@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import CodeType
@@ -341,8 +341,9 @@ class Watch:
         # An xfail ran, and its report says skipped.
         self._skipped |= report.skipped and not hasattr(report, "wasxfail")
 
-    def pytest_deselected(self) -> None:
-        self._deselected = True
+    def pytest_deselected(self, items: Sequence[pytest.Item]) -> None:
+        # [LAW:dataflow-not-control-flow] what the hook carries decides, not that it fired: a run that deselects nothing may say so.
+        self._deselected |= bool(items)
 
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
         # The whole suite ran when every test module did, each test in it neither skipped nor deselected.

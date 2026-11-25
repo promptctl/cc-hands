@@ -117,6 +117,14 @@ def test_an_xfail_does_not_keep_the_whole_suite_from_proving_an_entry_stale(pyte
 
 
 @pytest.mark.outside
+def test_a_run_that_says_it_deselected_nothing_is_still_the_whole_suite(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = "\ndef pytest_collection_modifyitems(config, items):\n    config.hook.pytest_deselected(items=[])\n"
+    result = run(pytester, monkeypatch, hooks=hooks, unmoved="frozenset({'test_quiet.py'})", test_quiet="def test_waits_on_nothing():\n    pass\n")
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    assert "test_quiet.py" in result.outlines
+
+
+@pytest.mark.outside
 def test_code_a_test_writes_for_another_interpreter_is_charged_to_it(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     lines = reached(pytester, monkeypatch, test_child='import subprocess, sys\n\ndef test_spawns():\n    subprocess.run([sys.executable, "-c", "import time"], check=True)\n')
     assert any(line.startswith("test_child.py: ") and "'time'" in line for line in lines)

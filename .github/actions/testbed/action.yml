@@ -1,0 +1,55 @@
+# What the suite's tests run in beyond the locked environment (prepare): the sentence tokenizer, the echo canceller's models, lit,
+# and the machine's Claude Code policy. A job that only reads the code, as the type checks do, does not need them.
+name: testbed
+description: The tokenizer, the echo canceller's models, lit and a Claude Code policy, as the suite's tests find them on a developer's Mac
+runs:
+  using: composite
+  steps:
+    # NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, fetched by the run into pytest's cache at the pin
+    # tests/sentences.py holds; kept across runs, a download outage cannot fail a PR that never touched it.
+    - uses: actions/cache@v4
+      with:
+        path: .pytest_cache/d/nltk-data
+        key: nltk-data-${{ hashFiles('tests/sentences.py') }}
+    # The echo canceller's two models, which the unit layer's tests of it run for real (tests/fetches.py), fetched by the run at
+    # the revision src/hands/voice/dtln.py pins; kept the same way, for every shard.
+    - uses: actions/cache@v4
+      with:
+        path: .pytest_cache/d/dtln-aec
+        key: dtln-aec-${{ hashFiles('src/hands/voice/dtln.py') }}
+    # The backlog tests that run lit itself skip without one; the release its own installer hands out is what hands
+    # meets, so a lit release that changes what hands reads fails here, not days later in every brain's audit log.
+    # gh names that release under the job's token, and the installer comes from the same tag as the archive it
+    # installs: the installer's own --latest-release asks api.github.com
+    # unauthenticated, which answers a runner's shared address with a 403 once the hour's quota is spent.
+    # [LAW:no-silent-failure] the installer runs from a file: piped into bash, a failed download is an empty script
+    # that exits 0, and the suite then skips every lit test without a word.
+    - name: Install lit
+      shell: bash
+      env:
+        GOBIN: ${{ runner.temp }}/lit
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        tag="$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)"
+        curl -fsSL -o "$RUNNER_TEMP/lit-install.sh" https://raw.githubusercontent.com/promptctl/links-issue-tracker/$tag/scripts/install.sh
+        bash "$RUNNER_TEMP/lit-install.sh" --from-release "$tag"
+        # The lit tests skip without a lit on PATH: a lit put anywhere but where the next step looks fails here.
+        "$GOBIN/lit" version
+        echo "$GOBIN" >> "$GITHUB_PATH"
+    # A Claude Code policy in its folder and its plists, as a developer's Mac or a managed one has: the run's sandbox must
+    # keep it from every Claude Code the run starts (tests/offline.sb), and the run stops before any test if it finds it.
+    # [LAW:verifiable-goals] The policy allows the command the terminal contract's pinned case needs a permission dialog for
+    # (tests/test_terminal_contract_pinned.py, a symlink): a Claude Code that applied it would run the command without
+    # asking, and that case would wait for a dialog that never comes.
+    - name: A machine's Claude Code policy
+      shell: bash
+      run: |
+        policy='{"permissions": {"allow": ["Bash(ln:*)"]}}'
+        settings="/Library/Application Support/ClaudeCode/managed-settings.d"
+        preferences="/Library/Managed Preferences"
+        account="$preferences/$(id -un)"
+        sudo mkdir -p "$settings" "$account"
+        echo "$policy" | sudo tee "$settings/10-machine.json"
+        for plists in "$preferences" "$account"; do
+          echo "$policy" | sudo plutil -convert xml1 -o "$plists/com.anthropic.claudecode.plist" -
+        done
