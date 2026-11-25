@@ -22,7 +22,9 @@ async def test_a_turn_said_to_hands_goes_through_its_proxy_to_the_mock_and_the_r
     assert any(TURN in str(request.body) and "say hello" in str(request.body) for request in hands.sent)
     # The brain took brioche's certificate for Anthropic's API, and so took brioche for that API, as only its own turns
     # show: each names the prompt it answers, which Claude Code names to Anthropic's own API alone.
-    assert BriocheSaid("brioche: answering the client's TLS for api.anthropic.com:443") in hands.recorded
+    assert ("opened", {"target": "api.anthropic.com:443"}) in [(said.kind, said.facts) for said in hands.recorded if isinstance(said, BriocheSaid)]
+    # And it refused none of brioche's answers: nothing brioche said of the brain's requests was a warning or an error.
+    assert [said for said in hands.recorded if isinstance(said, BriocheSaid) and said.level != "info"] == []
     turns = [request.kind for request in hands.sent if isinstance(request.kind, MainTurn)]
     assert turns and all(turn.prompt is not None for turn in turns), turns
     # Each exchange is observed once: brioche records none of its own.

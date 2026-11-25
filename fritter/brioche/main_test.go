@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -55,10 +56,14 @@ func unproxied(*http.Request) (*url.URL, error) { return nil, nil }
 // listening is where brioche listens in a test that has no listener of its own to hand it.
 func listening() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
 
-// said is what brioche says, read while it may still be saying more.
+// said is what brioche says, read while it may still be saying more: each report, and the
+// reports in words, a "brioche: " line each, as a reader of them sees it. A line that is no
+// report is said as one of kind "unframed", which no test waits for.
 type said struct {
 	mu      sync.Mutex
 	more    *sync.Cond // broadcast at each write, and once the test is out of time
+	pending []byte     // a line not yet ended
+	reports []report
 	lines   bytes.Buffer
 	expired bool
 }
@@ -69,17 +74,45 @@ func saying() *said {
 	return s
 }
 
+// Write takes what brioche says, in whatever pieces it comes: from its sayer a report a
+// write, and from its process's standard error as a pipe gives it.
 func (s *said) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.more.Broadcast()
-	return s.lines.Write(p)
+	s.pending = append(s.pending, p...)
+	for {
+		line, rest, whole := bytes.Cut(s.pending, []byte("\n"))
+		if !whole {
+			return len(p), nil
+		}
+		s.pending = rest
+		var told report
+		if err := json.Unmarshal(line, &told); err != nil {
+			told = report{Kind: "unframed", Level: failure, Said: string(line)}
+		}
+		s.reports = append(s.reports, told)
+		fmt.Fprintf(&s.lines, "brioche: %s\n", told.Said)
+	}
 }
 
 func (s *said) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lines.String()
+}
+
+// of is each report of `kind` brioche has made.
+func (s *said) of(kind string) []report {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var found []report
+	for _, told := range s.reports {
+		if told.Kind == kind {
+			found = append(found, told)
+		}
+	}
+	return found
 }
 
 // until returns once brioche has said `line`: what the test waits for is the saying itself.
@@ -376,6 +409,10 @@ func TestAnOriginThatRefusesIsAnsweredAsA502NamingBriocheAndIsSaid(t *testing.T)
 	if !strings.Contains(brioche.said.String(), "brioche: could not reach "+down+"/v1/messages: ") {
 		t.Errorf("brioche said %q, want the request it could not take to the origin", brioche.said)
 	}
+	// Hands' proxy unreached leaves every request of the brain's failing: an error, never traffic.
+	if told := brioche.said.of("bad_gateway"); len(told) != 1 || told[0].Level != failure || told[0].URL != down+"/v1/messages" {
+		t.Errorf("brioche reported %+v, want one error naming the request it could not take", told)
+	}
 }
 
 func TestAClientThatGivesUpBeforeTheOriginAnswersIsSaidToHaveGivenUp(t *testing.T) {
@@ -523,6 +560,10 @@ func TestAClientThatRefusesBriochesCertificateIsSaidToHaveRefusedIt(t *testing.T
 		t.Fatal("a client that trusts nothing of brioche's was answered")
 	}
 	brioche.said.until(t, "brioche: the client refused brioche's answer for api.anthropic.com:443: tls: bad certificate\n")
+	// A client that distrusts brioche has every request of its own fail: an error, never traffic.
+	if told := brioche.said.of("handshake_refused"); len(told) != 1 || told[0].Level != failure || told[0].Target != "api.anthropic.com:443" {
+		t.Errorf("brioche reported %+v, want one error naming the target it was refused for", told)
+	}
 }
 
 func TestAClientThatHangsUpBeforeTLSIsSaidToHaveDoneSo(t *testing.T) {
@@ -725,5 +766,12 @@ func TestABriocheToldToStopStopsSayingSo(t *testing.T) {
 	}
 	if !strings.Contains(brioche.said.String(), "brioche: stopping: told to by terminated\n") {
 		t.Errorf("brioche said %q, want why it stopped", brioche.said)
+	}
+	// Every line its process wrote is a report: none is left for a reader to take as words.
+	if told := brioche.said.of("unframed"); len(told) != 0 {
+		t.Errorf("brioche wrote %+v, which are no reports", told)
+	}
+	if told := brioche.said.of("stopping"); len(told) != 1 || told[0].Level != info {
+		t.Errorf("brioche reported %+v, want one stop it was asked for", told)
 	}
 }

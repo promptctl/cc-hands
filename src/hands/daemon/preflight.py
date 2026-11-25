@@ -8,15 +8,17 @@ start is the brain's own API answers' to say (promptctl-phone-app-9d9y.h4s).
 [LAW:single-enforcer] the one list of the start's refusals, and what a start that passes it is run with.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
-from hands.brain import configdir, pinned
+from hands.brain import brioche, configdir, pinned
 from hands.core.session import Runnable
 from hands.sessions import wrapper
 from hands.sessions.files import Unread
 from hands.sessions.home import HOME_VARIABLE, Home
+from hands.packaged import Unpackaged
 from hands.sessions.payload import Rejected
 from hands.voice import voicechoice
 
@@ -130,11 +132,16 @@ def _environment_refusals(home: Home, stray: tuple[str, ...]) -> tuple[str, ...]
 
 
 def _unpackaged() -> tuple[str, ...]:
+    """A refusal for each binary hands' package should carry and does not: fritter, and brioche, the brain's HTTPS proxy."""
+    return tuple(refused for carried in (wrapper.packaged, brioche.carried) if (refused := _refused(carried)))
+
+
+def _refused(carried: Callable[[], Path]) -> str | None:
     try:
-        wrapper.packaged()
-    except wrapper.Unpackaged as error:
-        return (str(error),)
-    return ()
+        carried()
+    except Unpackaged as error:
+        return str(error)
+    return None
 
 
 def _fritter(home: Home) -> FritterState:

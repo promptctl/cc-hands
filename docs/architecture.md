@@ -60,7 +60,7 @@ events, one `Exchanged` audit line per request. The brain reaches it through bri
 (`brain/brioche.py`, built from `fritter/brioche`), its HTTPS proxy, which answers its
 TLS for Anthropic's API under an authority the brain is given to trust and sends each
 request on to the wire proxy as it was sent: the brain takes brioche for Anthropic's
-own API, and behaves first-party, as it does not given a gateway in `ANTHROPIC_BASE_URL`. The
+own API, and behaves first-party, as it does not when given a gateway in `ANTHROPIC_BASE_URL`. The
 working sessions' exchanges reach the same observer by another path, the tap
 (`sessions/tap.py`): each session's fritter is its proxy, forwards its requests to the API it
 still names, and copies each exchange to `<hands home>/wire.sock`, read into the same values, so a session

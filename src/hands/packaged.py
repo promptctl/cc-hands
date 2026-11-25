@@ -20,3 +20,17 @@ def installed(at: PurePosixPath) -> Path:
     """The binary at `at` in hands' package as this hands is installed: a wheel's install and a checkout's editable
     install alike. It changes only when the package is rebuilt."""
     return Path(__file__).resolve().parent / at
+
+
+class Unpackaged(Exception):
+    """hands' package carries no binary where it should: a hands built without it, which only building hands again mends."""
+
+
+def found(binary: Path) -> Path:
+    """`binary`, an installed binary of hands' package, or Unpackaged naming the rebuild.
+
+    [LAW:single-enforcer] the one check that this hands carries a binary of its own, for everything that runs or copies
+    one: a hands built without fritter or brioche is refused in the same words wherever either is wanted."""
+    if not binary.is_file():
+        raise Unpackaged(f"hands' package carries no {binary.name} at {binary}: install hands again, or in a checkout, `uv sync --reinstall-package hands`")
+    return binary

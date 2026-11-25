@@ -11,8 +11,10 @@ from pathlib import Path
 
 from hands.brain import pinned
 from hands.core.session import PERMISSION_MODES, PermissionMode, PinnedClaude, Runnable, UnknownMode
+from hands.core.wire import GATEWAYS
 from hands.sessions.files import Unread
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.untap import REPLACED
 
 
 class Unstartable(Exception):
@@ -28,16 +30,22 @@ SETTINGS_MODES: dict[str, PermissionMode] = {**PERMISSION_MODES, "manual": "defa
 SETTINGS = "settings.json"
 STATE = ".claude.json"
 
+# [LAW:single-enforcer] what decides how the brain reaches Anthropic's API, which hands alone sets: brioche's variables
+# (hands.brain.process.Through) and a gateway in the API's place. Set in settings.json's env, which outranks the
+# environment hands starts the brain in (docs/claude-code-behavior.md), any of them would send the brain around brioche.
+ROUTING = (*REPLACED, *GATEWAYS)
+
 
 @dataclass(frozen=True)
 class Settings:
-    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, and the API key
-    it puts in the brain's environment, by the last 20 characters Claude Code records its answer on. None is a mode or
-    a key it names none of."""
+    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, the API key it
+    puts in the brain's environment, by the last 20 characters Claude Code records its answer on, and the variables of
+    ROUTING its env sets. None is a mode or a key it names none of."""
 
     synced: tuple[str, ...]
     mode: PermissionMode | UnknownMode | Unread | None
     key: str | Unread | None
+    routed: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -89,10 +97,10 @@ def _settings(path: Path) -> Settings | Unread:
         said = Payload.parse(path.read_bytes())
     except FileNotFoundError:
         # Left out, each switch is on, and the brain names no mode and no key.
-        return Settings(KEPT_OUT, None, None)
+        return Settings(KEPT_OUT, None, None, ())
     except (OSError, Rejected) as error:
         return Unread(str(error))
-    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said))
+    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said), _routed(said))
 
 
 def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
@@ -115,6 +123,12 @@ def _key(said: Payload) -> str | Unread | None:
     # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its last 20
     # characters once it is trimmed.
     return key.strip()[-20:] if key else None
+
+
+def _routed(said: Payload) -> tuple[str, ...]:
+    """The variables of ROUTING settings.json's env sets. An env hands cannot read is its key's to refuse (`_key`)."""
+    env = said.fields.get("env", {})
+    return tuple(name for name in ROUTING if isinstance(env, dict) and name in env)
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -172,18 +186,19 @@ def _pinned(claude: PinnedClaude | pinned.Unpinned) -> tuple[str, ...]:
 
 def _kept_out(config: ConfigDir) -> tuple[str, ...]:
     """What settings.json would have the brain start on that it must not: a sync not kept out, a mode Claude Code does
-    not take, which would put the settings beside it in doubt, or an env hands cannot read."""
+    not take, which would put the settings beside it in doubt, an env hands cannot read, or one that routes the brain."""
     path = config.path / SETTINGS
     match config.settings:
         case Unread(reason=reason):
             return (f"the brain's settings could not be read ({reason}): correct {path}",)
-        case Settings(synced=synced, mode=mode, key=key):
+        case Settings(synced=synced, mode=mode, key=key, routed=routed):
             pass
     kept = " and ".join(f'"{switch}": false' for switch in KEPT_OUT)
     return (
         *((f"the brain would load its account's {' and '.join(synced)}: set {kept} in {path}",) if synced else ()),
         *_moded(mode, path),
         *((f"the brain's settings set an env hands cannot read ({key.reason}): correct {path}",) if isinstance(key, Unread) else ()),
+        *((f"the brain's settings set {', '.join(routed)} in its env, which would send it around brioche, its way to Anthropic's API through hands: remove {'it' if len(routed) == 1 else 'them'} from {path}",) if routed else ()),
     )
 
 

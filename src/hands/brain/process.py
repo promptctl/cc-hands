@@ -46,7 +46,7 @@ from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSourc
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
 from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PinnedClaude, PromptId, PromptText, RequestId, Runnable, Session, SessionId, Submit, all_told, holds, ids, pasted
-from hands.core.wire import MainTurn, Observed, Sent, tool_names
+from hands.core.wire import GATEWAYS, MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import LoginExpired, StopFailed, expired
 from hands.darwin import child_pids
@@ -64,7 +64,7 @@ from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, 
 from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
 from hands.tasks import cancel_and_wait
-from hands.sessions.untap import untapped
+from hands.sessions.untap import marked, untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
 from hands.voice.backends import Account
@@ -114,9 +114,6 @@ FOREIGN_LOGINS = (
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "HF_TOKEN",
     *(f"CLAUDE_CODE_USE_{provider}" for provider in ("BEDROCK", "VERTEX", "FOUNDRY", "ANTHROPIC_AWS", "ANTHROPIC_GOOGLE_CLOUD", "MANTLE", "GATEWAY")),
 )
-# What sends Claude Code to a gateway in the place of Anthropic's own API, which it then behaves as a gateway's client of:
-# a Claude Code of hands' own reaches the API as hands says (`environment`), never as hands' environment happens to.
-GATEWAYS = ("ANTHROPIC_BASE_URL",)
 
 # A dialog nobody can see would hold its turn open forever with no hook to say so. A permission its setup asks
 # about is held at its hook while the user is asked by voice, in a turn of theirs; anything else is answered no there,
@@ -179,14 +176,33 @@ def kept(prompt: str) -> str:
 
 
 @dataclass(frozen=True)
+class Through:
+    """Anthropic's API reached through brioche, the brain's HTTPS proxy: the variables that point a client at it, one
+    each of those an interceptor sets (hands.sessions.untap.REPLACED), as brioche printed them. Made only by
+    hands.brain.brioche, of what a brioche that started printed."""
+
+    variables: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class Direct:
+    """Anthropic's API reached as hands' environment, passed on, says: by a Claude Code that asks only of its login."""
+
+
+# [LAW:types-are-the-program] how a Claude Code of hands' own reaches Anthropic's API, which only these say: never
+# whatever its environment happens to hold.
+type Route = Through | Direct
+
+
+@dataclass(frozen=True)
 class Station:
     """What every slim Claude Code of hands' own runs on."""
 
     config_dir: Path
     cwd: Path
     model: str
-    # The variables it reaches Anthropic's API by: brioche's, for the brain.
-    reach: Mapping[str, str]
+    # Through brioche, for the brain.
+    route: Route
     # hands' own environment, which each is started in less what environment() keeps out; kept out of the repr, as it
     # holds keys, and out of the station's identity, which it is not part of.
     inherited: Mapping[str, str] = field(repr=False, compare=False)
@@ -323,18 +339,29 @@ def command(launch: Launch, hooks: str) -> list[str]:
 
 
 def passed_on(inherited: Mapping[str, str]) -> dict[str, str]:
-    """hands' own environment as anything it starts for a Claude Code of its own is given it: less any tap of a session
-    hands was started in, any login that would stand in for the brain's, and any gateway."""
+    """hands' own environment as anything it starts for a Claude Code of its own is given it, brioche included: less any
+    tap of a session hands was started in, any login that would stand in for the brain's, and any gateway."""
     # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped
     # session does not hand the brain that session's tap.
     return {name: value for name, value in untapped(inherited).items() if name not in FOREIGN_LOGINS and name not in GATEWAYS}
 
 
-def environment(config_dir: Path, reach: Mapping[str, str], inherited: Mapping[str, str]) -> dict[str, str]:
+def environment(config_dir: Path, route: Route, inherited: Mapping[str, str]) -> dict[str, str]:
     """A slim Claude Code's environment: hands' own, as it is passed on, with the login in `config_dir`, reaching
-    Anthropic's API as `reach` says: through brioche for the brain, by brioche's variables, and directly, by none, for a
-    Claude Code that asks of its login."""
-    return {**passed_on(inherited), **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir), **reach}
+    Anthropic's API by `route`."""
+    passed = passed_on(inherited)
+    return {**passed, **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir), **_reached(route, passed)}
+
+
+def _reached(route: Route, passed: Mapping[str, str]) -> dict[str, str]:
+    """The variables `route` sets over `passed`, the environment otherwise given."""
+    match route:
+        case Through(variables=variables):
+            # Marked as a tap's are, so whatever the brain runs, a hands or a claude among them, is given back what brioche
+            # replaced, and never reaches the API through the brain's brioche, or one that has ended.
+            return marked(variables, passed)
+        case Direct():
+            return {}
 
 
 def workdir(config_dir: Path) -> Path:
@@ -499,7 +526,7 @@ async def in_tmux(children: Children, station: Station, argv: Sequence[str], wor
     status, pid = workspace / "status", workspace / "pane"
     # env -i: a pane is otherwise given the tmux server's own environment, which would carry what environment() keeps
     # out. Its own TMUX and TMUX_PANE name the brain's pane, never the one hands was started in.
-    env = {name: value for name, value in environment(station.config_dir, station.reach, station.inherited).items() if name not in ("TMUX", "TMUX_PANE", "TERM")}
+    env = {name: value for name, value in environment(station.config_dir, station.route, station.inherited).items() if name not in ("TMUX", "TMUX_PANE", "TERM")}
     # Read from a file only hands can read, never put on a command line, which anyone on the machine can read with ps;
     # and set as it is, by hands' own Python, whatever a name holds, which a shell would refuse as no identifier.
     (workspace / "env").touch(mode=0o600)
@@ -577,14 +604,6 @@ class LoginFailed(Exception):
     """Claude Code's own login did not finish; whatever login the brain held before, it still holds."""
 
 
-@dataclass(frozen=True)
-class Login:
-    """What `hands login` left the brain holding: its account, and why it took Claude Code's first run, if it did."""
-
-    account: Account
-    first_run: str | None
-
-
 # The logins `claude auth login` makes, each named by its own flag: a Claude plan, or an Anthropic Console key.
 type Method = Literal["claudeai", "console"]
 
@@ -592,7 +611,7 @@ type Method = Literal["claudeai", "console"]
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
-def login(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapping[str, str], method: Method) -> Login:
+def login(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapping[str, str], method: Method) -> Account:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
     account it holds after.
 
@@ -609,15 +628,18 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapp
         case refused:
             raise Unstartable("; ".join(refused))
     first_run = "; ".join(configdir.unanswered(before)) or None
+    # On the login's event as soon as it is known, so a login that fails says whether it took the first run too.
+    annotate(first_run=first_run)
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
-    # run's screens are answered under the settings the brain starts with.
+    # run's screens are answered under the settings the brain starts with. Its route is Direct, as no brioche runs for it:
+    # a login asks Anthropic of the account, and has no turn of the brain's for hands to hear.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
     # [LAW:single-enforcer] exception: run in hands' own process group, the terminal's foreground job, so it reads the
     # keyboard the person logging in types at; a session of its own, as the runner starts each child in, has no terminal.
     import subprocess
 
-    signed = subprocess.run([claude, *argv], cwd=workdir(config_dir), env=environment(config_dir, {}, inherited))
+    signed = subprocess.run([claude, *argv], cwd=workdir(config_dir), env=environment(config_dir, Direct(), inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
@@ -628,7 +650,7 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapp
     # brain on another login than the one asked for.
     if held.method != AUTH_METHODS[method]:
         raise LoginFailed(f"the brain holds {held}, not the {AUTH_METHODS[method]} login asked for")
-    return Login(held, first_run)
+    return held
 
 
 def starting_settings(config_dir: Path) -> bool:
@@ -654,7 +676,7 @@ def logged_in(children: Children, claude: Path, config_dir: Path, inherited: Map
     Asked as hands starts and by `hands check`, before any brain runs to say it; never by a weigh of an edit, which starts
     no Claude Code (hands.daemon.preflight). A login lost since the start is the brain's own API answers' to say
     (promptctl-phone-app-9d9y.h4s)."""
-    asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, {}, inherited), limit=AUTH_STATUS_SECONDS)
+    asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, Direct(), inherited), limit=AUTH_STATUS_SECONDS)
     match asked:
         case Ran(ending=Exited(), out=out):
             return _account(config_dir, asked, out.data)

@@ -34,6 +34,13 @@ def tapped(environ: Mapping[str, str]) -> bool:
 KEPT = ("FRITTER_TAP", *map(_outer, REPLACED))
 
 
+def marked(replaced: Mapping[str, str], outer: Mapping[str, str]) -> dict[str, str]:
+    """An interceptor's `replaced` variables, one each of REPLACED, set over `outer`, the environment they replace, as
+    fritter's tap sets its own (fritter/tap.go): its address in FRITTER_TAP, and each one's earlier value kept, so
+    `untapped` gives them back to whatever runs inside it. brioche's are set so in the brain's environment."""
+    return {"FRITTER_TAP": replaced["HTTPS_PROXY"], **replaced, **{_outer(name): outer[name] for name in REPLACED if name in outer}}
+
+
 def untapped(environ: Mapping[str, str]) -> dict[str, str]:
     """environ with what its session's tap replaced given back, and the tap's own variables gone."""
     kept = {name: value for name, value in environ.items() if name not in KEPT}

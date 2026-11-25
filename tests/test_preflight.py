@@ -13,7 +13,7 @@ from conftest import children_on, laid_out, new_sessions, shell_without_hands_se
 from fixtures import pins
 from fixtures.pins import LAID_OUT
 from fakeprocesses import processes
-from hands.brain import process
+from hands.brain import brioche, process
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
@@ -81,6 +81,7 @@ FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("pin missing", _unpinned, f"Claude Code {LAID_OUT.version}, the brain's, is not installed at "),
     ("pin wrong", lambda home, _: LAID_OUT.claude(home.brain).write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {LAID_OUT.version}, the brain's: run `hands install-brain` to fetch it again"),
     ("hands built without its fritter", lambda home, monkeypatch: monkeypatch.setattr(wrapper, "PACKAGED", home.root / "package" / "bin" / "fritter"), "/package/bin/fritter: install hands again"),
+    ("hands built without its brioche", lambda home, monkeypatch: monkeypatch.setattr(brioche, "BRIOCHE", home.root / "package" / "bin" / "brioche"), "/package/bin/brioche: install hands again"),
     ("stale fritter copy", lambda home, _: (home.bin.mkdir(), home.fritter.write_bytes(b"#!/bin/sh\n")), "is not the fritter this hands carries"),
     ("fritter copy unreadable", lambda home, _: _dangling_fritter(home), "/fritter'): run `hands install-fritter` to copy it again"),
     ("stale shim", lambda home, _: _stale_shim(home), "is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`"),
@@ -91,6 +92,8 @@ FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("a sync not kept out", lambda home, _: (home.brain / "settings.json").write_text('{"syncClaudeAiPlugins": false}'), "the brain would load its account's syncClaudeAiSkills: "),
     # Left out, each switch is on.
     ("no settings.json", lambda home, _: (home.brain / "settings.json").unlink(), 'its account\'s syncClaudeAiSkills and syncClaudeAiPlugins: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'),
+    # Its settings' env outranks the environment hands starts it in: each would send it around brioche.
+    ("settings that route the brain", lambda home, _: (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "env": {"HTTPS_PROXY": "http://corp:3128", "ANTHROPIC_BASE_URL": "http://elsewhere", "OTHER": "1"}})), "the brain's settings set HTTPS_PROXY, ANTHROPIC_BASE_URL in its env, which would send it around brioche, its way to Anthropic's API through hands: remove them from "),
     ("a bad defaultMode", lambda home, _: (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "permissions": {"defaultMode": "acceptedits"}})), 'a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in'),
     ("a kept voice hands has no voice for", lambda home, _: home.voice.write_text("zed\n"), "says 'zed', which names no voice hands has"),
 ]

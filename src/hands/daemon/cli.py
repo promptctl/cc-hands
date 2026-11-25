@@ -981,8 +981,8 @@ def login(children: Children, home: Home, pin: pinned.Pin, method: "Method", rec
         except KeyboardInterrupt:
             wide.fail("interrupted")
             return refused("hands login", 1, "interrupted")
-        wide.annotate(first_run=signed.first_run, account=signed.account)
-    print(f"the brain at {home.brain} is logged in as {signed.account}")
+        wide.annotate(account=signed)
+    print(f"the brain at {home.brain} is logged in as {signed}")
     print("a hands already running started its brain on the login before: restart it to start the brain on this one")
     return 0
 

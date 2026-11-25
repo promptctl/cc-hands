@@ -116,8 +116,8 @@ from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
 from hands.brain import pinned
 from hands.brain.configdir import Unstartable
-from hands.brain.brioche import BriocheFailed, proxied
-from hands.brain.process import Brain, Launch, Station, conversation, exited, passed_on, start as start_brain, workdir
+from hands.brain.brioche import proxied
+from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -234,40 +234,35 @@ async def mind(
     usage = Usage(session.id)
     # [LAW:single-enforcer] one event on every tool the brain is served, the voice's own among them.
     served = turn.serve([*tools, usage_tool(usage)])
-    server = await serve_mcp(clock, [each.tool for each in served], record, spans)
-    try:
-        async with AsyncExitStack() as proxying:
-            try:
-                brioche = await proxying.enter_async_context(proxied(Children(clock, record), proxy_url, trust, passed_on(environment), record))
-            except BriocheFailed as error:
-                # hands runs no brain it could not give a way to Anthropic's API: its start is refused, saying why.
-                raise CannotStart(str(error)) from error
-            station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, brioche.environment, environment)
-            try:
-                brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
-            except Unstartable as error:
-                # hands runs on no brain it could not start: its start is refused, saying why.
-                raise CannotStart(str(error)) from error
-            # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
-            # brain's newest main turn: nothing but the user's turns is ever typed into the brain. Asked of hands' proxy
-            # itself, as the brain's own requests reach it through brioche.
-            asides = Asides(clock, proxy_url, Newest(session), record)
-            try:
-                stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
-                keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
-                with wire.joined(Kept(stage, keeper, asides, brain, usage)):
-                    watches = (
-                        Watch("the brain", lambda: outlived(brain)), Watch("the brain's HTTPS proxy", brioche.outlived),
-                        Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking),
-                    )
-                    # A summary is as long as its reply makes it: only its time is the summary's own.
-                    # The brain's stage notes each turn of the user's itself, as it types it.
-                    yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login))
-            finally:
-                await asides.close()
-                await brain.stop()
-    finally:
-        await server.close()
+    # [LAW:single-enforcer] one owner lets go of all the model took, in reverse, whichever step of taking it raised: hands'
+    # side questions, then the brain, then brioche, its way to the API, then the server it reaches hands through.
+    async with AsyncExitStack() as held:
+        server = await serve_mcp(clock, [each.tool for each in served], record, spans)
+        held.push_async_callback(server.close)
+        try:
+            brioche = await held.enter_async_context(proxied(Children(clock, record), proxy_url, trust, environment, record))
+            station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, brioche.route, environment)
+            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
+        except Unstartable as error:
+            # hands runs on no brain it could not start, or give its way to Anthropic's API: its start is refused, saying why.
+            raise CannotStart(str(error)) from error
+        held.push_async_callback(brain.stop)
+        # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the brain's
+        # newest main turn, its headers the brain's own as brioche sent them on: nothing but the user's turns, and the keys
+        # that stop one, is ever typed into the brain (`Brain`'s input). Asked of hands' proxy directly, where brioche
+        # sends the brain's own requests.
+        asides = Asides(clock, proxy_url, Newest(session), record)
+        held.push_async_callback(asides.close)
+        stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
+        keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
+        with wire.joined(Kept(stage, keeper, asides, brain, usage)):
+            watches = (
+                Watch("the brain", lambda: outlived(brain)), Watch("the brain's HTTPS proxy", brioche.outlived),
+                Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking),
+            )
+            # A summary is as long as its reply makes it: only its time is the summary's own.
+            # The brain's stage notes each turn of the user's itself, as it types it.
+            yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login))
 
 
 def _login(reported: LoginExpired | None) -> tuple[heartbeat.Degradation, ...]:

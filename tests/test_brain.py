@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 
 import aiohttp
@@ -25,12 +26,12 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from loguru import logger
 
 from hands.core.playback import Bookmark
-from hands.brain import configdir, mcp, pinned, process
+from hands.brain import brioche, configdir, mcp, pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, Request, Unanswerable, parse, serve_mcp
 from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
-from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Direct, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, Through, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.brain.configdir import Unstartable
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
@@ -38,6 +39,7 @@ from hands.core.session import DenyAndInterrupt, Permission, PinnedClaude, Runna
 from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed
+from hands.sessions.untap import untapped
 from hands.sessions.audit import BriocheSaid, Entry, Record, segment
 from conftest import children_on, events, faked, new_sessions, onboard, PATIENCE_SECS, patiently, pin, taken, unread
 import turns
@@ -324,12 +326,16 @@ async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
         await server.close()
 
 
-# What brioche prints for the brain, as a test that starts no brioche gives it.
-REACH = {"HTTPS_PROXY": "http://127.0.0.1:1", "NODE_EXTRA_CA_CERTS": "/tmp/brioche/trusted.pem"}
+# The brain's way to the API as brioche prints it, as a test that starts no brioche gives it.
+BRIOCHE_AT = "http://127.0.0.1:1"
+ROUTE = Through(MappingProxyType({
+    **dict.fromkeys(("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"), BRIOCHE_AT), "NO_PROXY": "", "no_proxy": "",
+    "NODE_EXTRA_CA_CERTS": "/tmp/brioche/trusted.pem",
+}))
 
 
 def station(tmp: Path) -> Station:
-    return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", REACH, dict(os.environ))
+    return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", ROUTE, dict(os.environ))
 
 
 def launch(tmp: Path) -> Launch:
@@ -452,11 +458,16 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
     }
-    env = environment(tmp_path / "brain", REACH, inherited)
-    # The brain reaches the API through brioche, as brioche printed: no gateway hands' environment named stands in.
-    assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), **REACH}
+    env = environment(tmp_path / "brain", ROUTE, inherited)
     # A login, and a check of it, reach the API directly, through the proxy hands' own environment names.
-    assert environment(tmp_path / "brain", {}, inherited) == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain")}
+    direct = environment(tmp_path / "brain", Direct(), inherited)
+    assert direct == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain")}
+    # The brain reaches the API through brioche, as brioche printed: no gateway hands' environment named stands in. It is
+    # marked as a tap's is, holding what brioche replaced.
+    assert env == {**direct, **ROUTE.variables, "FRITTER_TAP": BRIOCHE_AT, "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128"}
+    # So whatever the brain runs, a hands or a claude among them, is given back the way it would reach the API without
+    # brioche, never the brain's brioche, or one that has ended.
+    assert untapped(env) == direct
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
     # A background task's notification opens a turn of its own, which `ClaudeTurns` owns; no scheduled prompt opens one.
@@ -466,7 +477,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
 def test_the_brain_is_not_given_hands_hugging_face_token(tmp_path: Path) -> None:
     # Set for the voice library's fetches, and inherited by whatever the brain runs: the brain has no use for it.
     inherited = {"PATH": "/usr/bin:/bin", "HF_TOKEN": "a-hub-token"}
-    assert "HF_TOKEN" not in environment(tmp_path / "brain", REACH, inherited)
+    assert "HF_TOKEN" not in environment(tmp_path / "brain", ROUTE, inherited)
 
 
 @pytest.mark.outside
@@ -478,10 +489,10 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     recorder.write_text(f'#!/bin/sh\nprintf "updater=%s" "${{DISABLE_AUTOUPDATER-unset}}" > {tmp_path / "seen"}\n')
     recorder.chmod(0o755)
     inherited = {name: value for name, value in os.environ.items() if name != "DISABLE_AUTOUPDATER"} | given
-    assert environment(tmp_path / "brain", REACH, inherited)["DISABLE_AUTOUPDATER"] == "1"
+    assert environment(tmp_path / "brain", ROUTE, inherited)["DISABLE_AUTOUPDATER"] == "1"
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
-        running = await in_tmux(children_on(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", REACH, inherited), [str(recorder)], workspace)
+        running = await in_tmux(children_on(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", ROUTE, inherited), [str(recorder)], workspace)
         assert await running.exit == 0
     finally:
         shutil.rmtree(workspace)
@@ -1190,7 +1201,7 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
 
 @pytest.mark.outside
 async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", REACH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", ROUTE, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
@@ -1214,7 +1225,7 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
 
 @pytest.mark.outside
 async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", REACH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", ROUTE, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     assert await (await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
     (workspace / "status").unlink()
@@ -1232,7 +1243,7 @@ async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_
 
 @pytest.mark.outside
 async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_brain_neither_ends_it_nor_keeps_it(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", REACH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", ROUTE, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     go = tmp_path / "go"
     running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
@@ -1258,7 +1269,7 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
 
 @pytest.mark.outside
 async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_session(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", REACH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", ROUTE, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         ready = tmp_path / "ready"
@@ -1277,7 +1288,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
     holder = tmux_at("new-session", "-d", "-s", "theirs", "-e", "ANTHROPIC_API_KEY=theirs", "sleep 60")
     assert holder.returncode == 0, holder.stderr
     tmux_at("set-environment", "-g", "ANTHROPIC_API_KEY", "theirs")
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", REACH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", ROUTE, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         seen = tmp_path / "seen"
@@ -1696,8 +1707,9 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
             pass
     [ran], [shutdown] = events(recorded, "brain.run"), events(recorded, "brain.shutdown")
     assert (ran.outcome, shutdown.outcome, shutdown.parent_id) == ("ok", "ok", launched.span_id)
-    # brioche, the brain's way to the API, ran beside it, and stopped with it.
-    assert BriocheSaid("brioche: stopping: told to by terminated") in recorded
+    # brioche, the brain's way to the API, ran beside it, and stopped with it, as it was asked to.
+    reports = [(said.kind, said.level) for said in recorded if isinstance(said, BriocheSaid)]
+    assert reports[-1] == ("stopping", "info") and all(level == "info" for _, level in reports), reports
     # Gone with the brain: the wire forwards everything again.
     with wire.joined(minded.llm):
         pass
@@ -1775,6 +1787,23 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     assert launched.outcome == "failed" and launched.error == f"Unstartable: {refused}"
     assert launched.facts["account"] == Account("claude.ai", "brain@example.com") and "fritter" not in launched.facts and "pid" not in launched.facts
     assert events(recorded, "brain.run") == []
+
+
+@pytest.mark.outside
+async def test_a_hands_built_without_its_brioche_refuses_the_run_naming_the_rebuild_before_any_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[Entry] = []
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
+    refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
+    missing = tmp_path / "package" / "bin" / "brioche"
+    monkeypatch.setattr(brioche, "BRIOCHE", missing)
+
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
+    # The words the start's preflight refuses the same hands with.
+    refused = f"hands' package carries no brioche at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
+    with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):
+        async with mind(SYSTEM, claude, [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", tmp_path / "brioche-trusted.pem", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_barged_in, Attention):
+            pass
+    assert events(recorded, "brain.launch") == [] and events(recorded, "child.run") == []
 
 
 def test_the_brain_is_posted_no_hook_that_says_a_tool_ran() -> None:

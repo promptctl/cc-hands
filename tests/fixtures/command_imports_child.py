@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from hands.brain import pinned, process
     from hands.sessions.child import Children
     from hands.voice import phoneaddress
+    from hands.voice.backends import Account
 
 
 async def untailed(children: Children) -> str | phoneaddress.Untailed:
@@ -38,11 +39,10 @@ def lan_addresses() -> list[str]:
     return ["192.0.2.1"]
 
 
-def logged_in(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapping[str, str], method: process.Method) -> process.Login:
-    from hands.brain.process import Login
+def logged_in(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapping[str, str], method: process.Method) -> Account:
     from hands.voice.backends import Account
 
-    return Login(Account("claude.ai", "someone@example.com"), None)
+    return Account("claude.ai", "someone@example.com")
 
 
 def main() -> None:

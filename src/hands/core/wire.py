@@ -17,6 +17,8 @@ from hands.core.trace import Span
 
 # Where Claude Code reaches the API when nothing says otherwise.
 UPSTREAM = "https://api.anthropic.com"
+# What sends Claude Code to a gateway in UPSTREAM's place, which it then behaves as a gateway's client of.
+GATEWAYS = ("ANTHROPIC_BASE_URL",)
 
 # ── What a request is ────────────────────────────────────────────────────────────────────────────────────────────────
 

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from hands.core.wire import UPSTREAM
-from hands.packaged import FRITTER, installed
+from hands.packaged import FRITTER, Unpackaged, found, installed
 from hands.sessions.files import Unread, replace_whole
 from hands.sessions.home import Home
 from hands.sessions.untap import TRUST, untap_script
@@ -79,20 +79,10 @@ class Uninstallable(Exception):
     """fritter could not be copied, or the claude beside it could not be written. The message says which."""
 
 
-class Unpackaged(Exception):
-    """hands' package carries no fritter: a hands built without it, which only building hands again mends."""
-
-
 def packaged() -> Path:
-    """The fritter hands' package carries, or Unpackaged naming the rebuild.
-
-    [LAW:single-enforcer] the one check that this hands carries its fritter, for everything that runs or copies it: the
-    brain and `hands install-fritter` refuse a hands built without it in the same words."""
-    if not PACKAGED.is_file():
-        raise Unpackaged(
-            f"hands' package carries no fritter at {PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
-        )
-    return PACKAGED
+    """The fritter hands' package carries, or Unpackaged naming the rebuild: for the brain and `hands install-fritter`
+    alike (hands.packaged.found)."""
+    return found(PACKAGED)
 
 
 def carried(fritter: Path) -> bool:

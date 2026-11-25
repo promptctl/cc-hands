@@ -17,7 +17,7 @@ from pathlib import PurePosixPath
 from typing import get_args
 
 from hands.core.wire import Exchanged
-from hands.sessions.audit import Exported, Logged, Primed, LoginReported, Refocused, SettingsEdited, Severity, TypingFailed
+from hands.sessions.audit import BriocheSaid, Exported, Logged, Primed, LoginReported, Refocused, SettingsEdited, Severity, TypingFailed
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import WideEvent, exited
 
@@ -192,6 +192,7 @@ CAUSES: Mapping[str, Cause] = {
     Primed.__name__: _said("failed"),
     SettingsEdited.__name__: _said("refused"),
     LoginReported.__name__: _said("expired"),
+    BriocheSaid.__name__: _said("said"),
 }
 
 

@@ -245,16 +245,23 @@ class Rolled:
     deleted: tuple[int, ...]
 
 
-@dataclass(frozen=True)
-class BriocheSaid:
-    """A line brioche, the brain's HTTPS proxy, said of what it did with a connection or request of the brain's, or of
-    why it stopped: its own account, beside the record of each exchange hands' proxy keeps."""
-
-    line: str
-
-
 # How bad a logged record is: loguru's WARNING, or its ERROR and above.
 Severity = Literal["warning", "error"]
+LEVELS: tuple[Severity | Literal["info"], ...] = ("info", "warning", "error")
+
+
+@dataclass(frozen=True)
+class BriocheSaid:
+    """A report brioche, the brain's HTTPS proxy, made of what it did with a connection or request of the brain's, or of
+    why it stopped: its own account, beside the record of each exchange hands' proxy keeps. `kind` names it and `level`
+    is how bad brioche judged it, as fritter/brioche's account says; `said` is it in words, and `facts` what it held of
+    the connection or request: its target, url and status. A line brioche wrote that is no report, as the trace of a
+    panic is, is the error of kind "unframed", said as it was written."""
+
+    kind: str
+    level: Severity | Literal["info"]
+    said: str
+    facts: Mapping[str, str | int]
 
 
 @dataclass(frozen=True)
@@ -321,8 +328,10 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case LoginReported(expired=expired):
             return "info" if expired is None else "warning"
+        case BriocheSaid(level=told):
+            return told
         case (
-            Typing() | Exported() | CopiesLost() | BriocheSaid()
+            Typing() | Exported() | CopiesLost()
             | Transcribed() | ClipHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"

@@ -19,7 +19,8 @@
 //
 // brioche records nothing: hands' proxy, at the --to origin, is the one recorder of what
 // passes through it. brioche says, on its standard error, what it did with each connection
-// and request, and what it could not do.
+// and request, and what it could not do: one JSON object a line, its kind, how bad it is,
+// and what it is in words (`said`), so whoever started it reads each line as what it is.
 //
 // It is built from fritter's module, for the interception it shares with fritter's tap, and
 // it is not fritter: fritter's binary links none of this, so a change here restarts no
@@ -31,6 +32,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -218,43 +220,99 @@ func loopback(raw string) (intercept.Origin, error) {
 func run(args []string, client func(string) string, outer intercept.Proxy, listen func() (net.Listener, error), printed io.WriteCloser, said io.Writer, ended *stopping) int {
 	closePrinted := sync.OnceValue(printed.Close)
 	defer closePrinted()
-	// A logger, so lines said from the door's goroutines at once are never interleaved.
-	sayer := log.New(said, "brioche: ", 0)
+	sayer := &sayer{to: said}
 	asked, err := parse(args)
 	if err != nil {
-		sayer.Printf("%v\n%s", err, usage)
+		sayer.sayf("misused", failure, "%v\n%s", err, usage)
 		return misuse
 	}
 	door, err := open(asked, client(asked.trust.String()), outer, listen, sayer, ended)
 	if err != nil {
-		sayer.Print(err)
+		sayer.sayf("unopened", failure, "%v", err)
 		return failed
 	}
 	defer door.Close()
 	for _, variable := range door.Environment() {
 		if _, err := fmt.Fprintln(printed, variable); err != nil {
-			sayer.Printf("cannot print the environment that points a client at brioche: %v", err)
+			sayer.sayf("unprinted", failure, "cannot print the environment that points a client at brioche: %v", err)
 			return failed
 		}
 	}
 	if err := closePrinted(); err != nil {
-		sayer.Printf("cannot end the environment that points a client at brioche: %v", err)
+		sayer.sayf("unprinted", failure, "cannot end the environment that points a client at brioche: %v", err)
 		return failed
 	}
 	why := <-ended.why
 	if why.err != nil {
 		// [LAW:no-silent-failure] a stop for a failure, a door that stopped serving among them,
 		// ends brioche as failed: its starter sees it gone, never a brioche alive and deaf.
-		sayer.Printf("stopping: %s: %v", why.why, why.err)
+		sayer.sayf("stopping", failure, "stopping: %s: %v", why.why, why.err)
 		return failed
 	}
-	sayer.Printf("stopping: %s", why.why)
+	sayer.sayf("stopping", info, "stopping: %s", why.why)
 	return 0
+}
+
+// level is how bad a thing brioche says is, in the words of hands' audit, which judges each
+// line it records by it.
+type level string
+
+const (
+	info    level = "info"
+	warning level = "warning"
+	failure level = "error"
+)
+
+// report is one thing brioche says: what kind of thing it is, how bad, and it in words; and
+// what the door's event held of the connection or request it is of.
+type report struct {
+	Kind   string `json:"kind"`
+	Level  level  `json:"level"`
+	Said   string `json:"said"`
+	Target string `json:"target,omitempty"` // host:port, as a CONNECT named it
+	URL    string `json:"url,omitempty"`
+	Status *int   `json:"status,omitempty"` // what a request was answered with, 0 for a connection taken
+}
+
+// sayer says each thing whole on its own line, so things said from the door's goroutines
+// at once are never interleaved.
+type sayer struct {
+	mu sync.Mutex
+	to io.Writer
+}
+
+func (s *sayer) say(said report) {
+	// A struct of strings and an int, which Marshal always encodes, any line break in a
+	// string escaped: one thing said is one line.
+	line, _ := json.Marshal(said)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A standard error that cannot be written to leaves brioche nowhere to say so.
+	_, _ = s.to.Write(append(line, '\n'))
+}
+
+func (s *sayer) sayf(kind string, how level, format string, args ...any) {
+	s.say(report{Kind: kind, Level: how, Said: fmt.Sprintf(format, args...)})
+}
+
+// logger is what a server or proxy of the standard library logs, each line said as `kind`.
+func (s *sayer) logger(kind string, how level) *log.Logger {
+	return log.New(writing(func(p []byte) {
+		s.say(report{Kind: kind, Level: how, Said: strings.TrimSuffix(string(p), "\n")})
+	}), "", 0)
+}
+
+// writing is an io.Writer that hands each write to `to`, whole.
+type writing func([]byte)
+
+func (to writing) Write(p []byte) (int, error) {
+	to(p)
+	return len(p), nil
 }
 
 // open is brioche's door, for a client whose trust variable names `named`. A server of its
 // that stops serving is a stop, sent on `ended`.
-func open(asked options, named string, outer intercept.Proxy, listen func() (net.Listener, error), sayer *log.Logger, ended *stopping) (*intercept.Door, error) {
+func open(asked options, named string, outer intercept.Proxy, listen func() (net.Listener, error), sayer *sayer, ended *stopping) (*intercept.Door, error) {
 	interception, err := intercept.Intercept("brioche", asked.intercepted, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("cannot make the certificate the client is answered with for %s: %w", asked.intercepted, err)
@@ -262,7 +320,7 @@ func open(asked options, named string, outer intercept.Proxy, listen func() (net
 	if err := theirs(named, asked); err != nil {
 		return nil, err
 	}
-	trusted, err := interception.Trust(asked.trust, named, asked.file, func(unread error) { sayer.Print(unread) })
+	trusted, err := interception.Trust(asked.trust, named, asked.file, func(unread error) { sayer.sayf("untrusted", warning, "%v", unread) })
 	if err != nil {
 		return nil, err
 	}
@@ -272,15 +330,17 @@ func open(asked options, named string, outer intercept.Proxy, listen func() (net
 	}
 	// Hands' proxy, on loopback, is reached directly; anywhere else, as brioche's own
 	// environment says, so the client reaches the world as it would without brioche.
-	forwarding := asSent(func(out *httputil.ProxyRequest) { out.SetURL(asked.to.URL()) }, transport(nil), sayer)
-	passing := asSent(func(*httputil.ProxyRequest) {}, transport(outer), sayer)
+	// Hands' proxy unreached leaves every request of the brain's failing; another origin
+	// unreached, only the request for it.
+	forwarding := asSent(func(out *httputil.ProxyRequest) { out.SetURL(asked.to.URL()) }, transport(nil), sayer, failure)
+	passing := asSent(func(*httputil.ProxyRequest) {}, transport(outer), sayer, warning)
 	told := func(event intercept.Event) {
 		if stopped, ok := event.(intercept.Stopped); ok {
 			if ended.send(stop{"it stopped taking the client's requests", stopped.Err}) {
 				return // run says it, as why brioche stops
 			}
 		}
-		sayer.Print(account(event))
+		sayer.say(account(event))
 	}
 	door, err := intercept.Open(listener, intercept.Opening{Trusted: trusted, Intercepted: forwarding, Forwarded: passing, Proxy: outer, Seen: told})
 	if err != nil {
@@ -301,34 +361,36 @@ func theirs(named string, asked options) error {
 
 // account is what brioche says of what its door did. [LAW:nothing-unseen] every event,
 // whatever the client was answered with besides: this is the one account of the run
-// brioche keeps, and an event of a type this does not name is said as it is.
-func account(event intercept.Event) string {
+// brioche keeps, and an event of a type this does not name is said as it is. How bad each
+// is, is what it leaves the brain: a client that refuses brioche's TLS, or a door that
+// stops, leaves every request of the brain's failing.
+func account(event intercept.Event) report {
 	switch event := event.(type) {
 	case intercept.Opened:
-		return fmt.Sprintf("answering the client's TLS for %s", event.Target)
+		return report{Kind: "opened", Level: info, Target: event.Target, Said: fmt.Sprintf("answering the client's TLS for %s", event.Target)}
 	case intercept.HandshakeRefused:
-		return fmt.Sprintf("the client refused brioche's answer for %s: %v", event.Target, event.Alert)
+		return report{Kind: "handshake_refused", Level: failure, Target: event.Target, Said: fmt.Sprintf("the client refused brioche's answer for %s: %v", event.Target, event.Alert)}
 	case intercept.HandshakeFailed:
-		return fmt.Sprintf("the client's TLS for %s ended before it began: %v", event.Target, event.Err)
+		return report{Kind: "handshake_failed", Level: warning, Target: event.Target, Said: fmt.Sprintf("the client's TLS for %s ended before it began: %v", event.Target, event.Err)}
 	case intercept.Answered:
-		return fmt.Sprintf("%s %s: answered %d", event.Route, event.URL, event.Status)
+		return report{Kind: "answered", Level: info, URL: event.URL, Status: &event.Status, Said: fmt.Sprintf("%s %s: answered %d", event.Route, event.URL, event.Status)}
 	case intercept.Cut:
-		return fmt.Sprintf("%s %s: cut short, answered %d", event.Route, event.URL, event.Status)
+		return report{Kind: "cut", Level: warning, URL: event.URL, Status: &event.Status, Said: fmt.Sprintf("%s %s: cut short, answered %d", event.Route, event.URL, event.Status)}
 	case intercept.Tunnelled:
 		if event.Err != nil {
-			return fmt.Sprintf("tunnelled to %s, cut short: %v", event.Target, event.Err)
+			return report{Kind: "tunnelled", Level: warning, Target: event.Target, Said: fmt.Sprintf("tunnelled to %s, cut short: %v", event.Target, event.Err)}
 		}
-		return fmt.Sprintf("tunnelled to %s", event.Target)
+		return report{Kind: "tunnelled", Level: info, Target: event.Target, Said: fmt.Sprintf("tunnelled to %s", event.Target)}
 	case intercept.Unreached:
-		return fmt.Sprintf("could not tunnel to %s: %v", event.Target, event.Err)
+		return report{Kind: "unreached", Level: warning, Target: event.Target, Said: fmt.Sprintf("could not tunnel to %s: %v", event.Target, event.Err)}
 	case intercept.Refused:
-		return fmt.Sprintf("refused %s, which is no proxy request: %v", event.Asked, event.Err)
+		return report{Kind: "refused", Level: warning, Said: fmt.Sprintf("refused %s, which is no proxy request: %v", event.Asked, event.Err)}
 	case intercept.Logged:
-		return event.Line
+		return report{Kind: "logged", Level: failure, Said: event.Line}
 	case intercept.Stopped:
-		return fmt.Sprintf("stopped taking the client's requests: %v", event.Err)
+		return report{Kind: "stopped", Level: failure, Said: fmt.Sprintf("stopped taking the client's requests: %v", event.Err)}
 	default:
-		return fmt.Sprintf("%T %+v", event, event)
+		return report{Kind: "unnamed", Level: failure, Said: fmt.Sprintf("%T %+v", event, event)}
 	}
 }
 
@@ -346,8 +408,9 @@ func transport(proxy intercept.Proxy) *http.Transport {
 
 // asSent is a proxy that sends each request on where `route` says, as the client sent it,
 // the Host the client named among it, which a route to another origin would change. What it
-// could not do, and an answer cut short as it gave up copying it, it says.
-func asSent(route func(*httputil.ProxyRequest), over *http.Transport, sayer *log.Logger) *httputil.ReverseProxy {
+// could not do, and an answer cut short as it gave up copying it, it says: an origin it
+// could not reach as `unreached`.
+func asSent(route func(*httputil.ProxyRequest), over *http.Transport, sayer *sayer, unreached level) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(out *httputil.ProxyRequest) {
 			route(out)
@@ -357,14 +420,14 @@ func asSent(route func(*httputil.ProxyRequest), over *http.Transport, sayer *log
 		Transport: over,
 		// Each chunk reaches the client as it arrives: a streamed answer is the point.
 		FlushInterval: -1,
-		ErrorLog:      sayer,
+		ErrorLog:      sayer.logger("proxy_logged", warning),
 		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
 			// The request as it was sent on, whose context is the client's.
 			if request.Context().Err() != nil {
-				sayer.Printf("the client gave up on %s before it was answered: %v", request.URL.Redacted(), err)
+				sayer.sayf("abandoned", info, "the client gave up on %s before it was answered: %v", request.URL.Redacted(), err)
 				return
 			}
-			sayer.Printf("could not reach %s: %v", request.URL.Redacted(), err)
+			sayer.say(report{Kind: "bad_gateway", Level: unreached, URL: request.URL.Redacted(), Said: fmt.Sprintf("could not reach %s: %v", request.URL.Redacted(), err)})
 			http.Error(writer, fmt.Sprintf("brioche could not reach %s: %v", request.URL.Redacted(), err), http.StatusBadGateway)
 		},
 	}
