@@ -250,6 +250,8 @@ class Watch:
         self._within = threading.local()
         self._running = Running()
         self._tasks: weakref.WeakKeyDictionary[asyncio.Task[Any], Unit] = weakref.WeakKeyDictionary()
+        # The watch's task's own making, the edge of its first step, which an eager task takes inline in its maker's frames.
+        self._born: CodeType | None = None
         # A pool's record, which its own threads run as: an executor starts them as it is handed its first jobs.
         self._pools: weakref.WeakKeyDictionary[ThreadPoolExecutor, Unit] = weakref.WeakKeyDictionary()
         self.record: defaultdict[str, set[str]] = defaultdict(set)
@@ -272,25 +274,21 @@ class Watch:
     def _edge(self, frame: FrameType, entered: FrameType | None) -> Unit | None:
         """The record of the unit whose edge `frame` is, `entered` the frame it called, None for a frame inside a unit.
         The loop's dispatch is the edge of the task it steps: every other callback is a unit of its own, run inside it.
-        The frame that runs a unit is the edge of the unit it pushed. pluggy's call of a hook is the edge of the hook, its
-        own module's whichever item runs; the rest of the harness's frames, of the call of a test or a fixture the
-        harness has pushed on its thread, or of nobody between them."""
+        A task's making is the edge of the first step an eager task takes inline. The frame that runs a unit, and
+        pytest's frame that calls a test or a fixture, are the edge of the unit pushed around it. pluggy's call of a hook
+        is the edge of the hook, its own module's whichever item runs. The rest of the harness's frames are transparent."""
         code = frame.f_code
         if code is DISPATCH:
-            # The task the handle this frame runs steps, read off the handle: an eager task, whose first step runs inline
-            # in its maker's frames, is the current task there, and the dispatch below it is its maker's. Every task is
-            # recorded as it is made.
+            # The task the handle this frame runs steps, read off the handle: an eager task's first step is the current
+            # task in its maker's frames, and the dispatch below them is its maker's.
             task = stepping(frame.f_locals["self"]._callback)
             return NOBODY if task is None else self._tasks[task]
-        if code is RUNS:
-            return self._running.units[-1]
+        if code is self._born:
+            return self._tasks[frame.f_locals["self"]]
+        if code is RUNS or code in CALLS:
+            return self._current()
         if code.co_filename.startswith(PLUGGY):
             return NOBODY if entered is None else Unit(self._module(entered.f_code.co_filename) or None, False)
-        if self._module(code.co_filename) is None:
-            if code in CALLS:
-                return self._current()
-            # The harness's own code is no one's work, in the module of the unit it runs in.
-            return Unit(self._enclosing(frame.f_back, frame).origin, False)
         return None
 
     def _current(self) -> Unit:
@@ -322,17 +320,16 @@ class Watch:
             return unit.origin or innermost
         return unit.origin if carried or unit.handed else None
 
-    def _made(self) -> Unit:
-        """The record of a unit of work made now, from its maker, the first frame out outside RELAYS and the harness.
+    def _made(self, frame: FrameType | None) -> Unit:
+        """The record of a unit of work made now at `frame`, from its maker, the first frame out outside RELAYS and the harness.
         Test code hands it the module it would be charged to. asyncio's own close, src and a library hand it nothing, and
         give it the module of the unit they run in. An edge met first, as when asyncio makes a task from a callback, a
         pool starts its threads, or pytest-asyncio makes a test's task in the call pytest makes of it, gives it that
         edge's unit."""
-        frame: FrameType | None = sys._getframe(1)  # pyright: ignore[reportPrivateUsage]
-        entered = None
-        while frame is not None and frame.f_code not in (DISPATCH, RUNS, *CALLS, *OWN) and self._relays(frame.f_code.co_filename):
+        entered, edges = None, (DISPATCH, RUNS, self._born, *CALLS)
+        while frame is not None and frame.f_code not in (*edges, *OWN) and self._relays(frame.f_code.co_filename):
             entered, frame = frame, frame.f_back
-        if frame is None or frame.f_code in (DISPATCH, RUNS, *CALLS) or frame.f_code.co_filename.startswith(PLUGGY):
+        if frame is None or frame.f_code in edges or frame.f_code.co_filename.startswith(PLUGGY):
             return self._enclosing(frame, entered)
         if self._module(frame.f_code.co_filename):
             return Unit(self._charge(frame, carried=True), True)
@@ -353,7 +350,7 @@ class Watch:
 
     def handing(self, work: Callable[..., object]) -> Callable[..., object]:
         """`work`, handed off to run later, wherever it runs, as a unit of its own made by the code handing it."""
-        handed = functools.partial(self._runs, self._made(), work)
+        handed = functools.partial(self._runs, self._made(sys._getframe(1)), work)  # pyright: ignore[reportPrivateUsage]
         # What finds the source of the work, as asyncio's log of a callback that raised, finds the work's, not this watch's.
         handed.__wrapped__ = work  # pyright: ignore[reportAttributeAccessIssue]
         return handed
@@ -374,7 +371,8 @@ class Watch:
             self._within.facility = not outer
 
     def _charged(self, carried: bool) -> str | None:
-        return self._charge(sys._getframe(1), carried)  # pyright: ignore[reportPrivateUsage]
+        """The module a reach made now is charged to: no one, for a read the harness or pluggy makes itself."""
+        return None if self._module((frame := asking()).f_code.co_filename) is None else self._charge(frame, carried)
 
     def wrap(self, facility: str, function: Callable[..., object], carried: bool) -> Callable[..., object]:
         """`function`, recording each call as a reach of `facility`, by a test frame or a unit handed its work, or,
@@ -447,8 +445,11 @@ class Watch:
             """asyncio's task, recorded as it is made: before its first step, which an eager task takes inline."""
 
             def __init__(self, *args: Any, **kwargs: Any) -> None:
-                watch._tasks[self] = watch._made()  # pyright: ignore[reportPrivateUsage]
+                # Made by its maker, the frame that called this one, which is the edge of an eager first step.
+                watch._tasks[self] = watch._made(sys._getframe(1))  # pyright: ignore[reportPrivateUsage]
                 super().__init__(*args, **kwargs)  # pyright: ignore[reportUnknownMemberType]
+
+        self._born = Task.__init__.__code__
 
         # Every task is made by these names, looked up as it is made: loop.create_task's, aiohttp's own.
         for module in (asyncio, asyncio.tasks):
@@ -475,7 +476,7 @@ class Watch:
         init, adjust = ThreadPoolExecutor.__init__, ThreadPoolExecutor._adjust_thread_count  # pyright: ignore[reportPrivateUsage]
 
         def made(pool: ThreadPoolExecutor, *args: Any, **kwargs: Any) -> None:
-            self._pools[pool] = self._made()
+            self._pools[pool] = self._made(sys._getframe())  # pyright: ignore[reportPrivateUsage]
             init(pool, *args, **kwargs)
 
         def adjusted(pool: ThreadPoolExecutor) -> None:

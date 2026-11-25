@@ -210,6 +210,16 @@ def listens():
         await queue.get()
         time.sleep(0.001)
     return queue, asyncio.Task(heard(), loop=asyncio.get_running_loop(), eager_start=True)
+
+async def ticks():
+    time.sleep(0.001)
+    await asyncio.sleep(0)
+
+def ticking():
+    return asyncio.Task(ticks(), loop=asyncio.get_running_loop(), eager_start=True)
+
+def made():
+    return asyncio.create_task(ticks())
 """
 
 # A pool and a SerialThread another module makes, shared by the tests that hand them work.
@@ -257,6 +267,10 @@ def test_a_wait_handed_to_a_thread_a_job_or_a_serial_thread_is_charged_to_the_te
         "test_clocked": ("import library\n\ndef test_runs():\n    library.clocked()\n", ["SystemClock.now"]),
         # A task asyncio's eager factory makes.
         "test_factory": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)\n        await asyncio.create_task(library.dozes())\n    asyncio.run(main())\n", ["time.sleep"]),
+        # A library's eager task, which reaches in the first step it takes inline in the test's frames, as it is made
+        # and by asyncio's eager factory.
+        "test_ticked": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.ticking()\n    asyncio.run(main())\n", []),
+        "test_made": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)\n        await library.made()\n    asyncio.run(main())\n", []),
         # A library's eager task, woken by the test.
         "test_woken": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        queue, task = library.listens()\n        queue.put_nowait(1)\n        await task\n    asyncio.run(main())\n", []),
         "test_snoozed": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.snooze()\n    asyncio.run(main())\n", []),
@@ -354,12 +368,15 @@ def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pyte
     pytester.makepyfile(retry="import functools, time\n\ndef retried(test):\n    @functools.wraps(test)\n    def run():\n        time.strftime('%H')\n        test()\n    return run\n\ndef awaited(test):\n    @functools.wraps(test)\n    async def run():\n        time.strftime('%H')\n        await test()\n    return run\n")
     retried = "from retry import retried\n\n@retried\ndef test_retried():\n    pass\n"
     awaited = "import pytest\nfrom retry import awaited\n\n@pytest.mark.asyncio\n@awaited\nasync def test_awaited():\n    pass\n"
-    # pytest's own code, called by the test, reads the clock for pytest: no one's.
+    # pytest's own code, called by the test, reads the clock for pytest: no one's. A library the test hands pytest to
+    # call is the test's.
+    raised = "import pytest, queue\n\ndef test_raised():\n    pytest.raises(queue.Empty, queue.Queue().get, timeout=0.001)\n"
     timed = "from _pytest import timing\n\ndef test_timed():\n    timing.Instant()\n"
-    lines = reached(pytester, monkeypatch, helper=helper, test_user=user, test_retried=retried, test_awaited=awaited, test_timed=timed)
+    lines = reached(pytester, monkeypatch, helper=helper, test_user=user, test_retried=retried, test_awaited=awaited, test_timed=timed, test_raised=raised)
     assert "test_user.py: ['time.strftime']" in lines
     assert "test_retried.py: ['time.strftime']" in lines
     assert "test_awaited.py: ['time.strftime']" in lines
+    assert "test_raised.py: ['threading.Condition.wait', 'time.monotonic']" in lines
     assert not any(line.startswith(("helper.py", "test_timed.py")) for line in lines)
 
 
