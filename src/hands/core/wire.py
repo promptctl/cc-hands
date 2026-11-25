@@ -8,7 +8,7 @@ one change of rule: nothing it cannot read is defaulted into something it can. A
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal, cast, get_args
 
@@ -497,19 +497,26 @@ def named_class(headers: Mapping[str, str]) -> str | None:
     return _header(headers, CLASS_HEADER)
 
 
-def authorization_of(headers: Mapping[str, str]) -> str | None:
-    """The login a request carries; None from one that carries none, as a client on an API key does."""
-    return _header(headers, AUTHORIZATION_HEADER)
+def authorization_of(headers: Iterable[tuple[str, str]]) -> str | None:
+    """The login a request carries; None from one that carries none, an empty one included, as a client on an API key does."""
+    return _first(headers, AUTHORIZATION_HEADER) or None
 
 
 def with_header(headers: tuple[tuple[str, str], ...], name: str, value: str) -> tuple[tuple[str, str], ...]:
-    """`headers` with the value of `name`, a lowercase name, replaced, whatever casing the client named it in."""
+    """`headers` with `name`, a lowercase name, set to `value`: the client's own header of it, whatever casing it named it
+    in, replaced, or one added where it sent none."""
+    if _first(headers, name) is None:
+        return (*headers, (name, value))
     return tuple((given, value if given.lower() == name else current) for given, current in headers)
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
     """A header's value by its lowercase name, since HTTP names are case-insensitive whatever mapping carried them."""
-    return next((value for given, value in headers.items() if given.lower() == name), None)
+    return _first(headers.items(), name)
+
+
+def _first(headers: Iterable[tuple[str, str]], name: str) -> str | None:
+    return next((value for given, value in headers if given.lower() == name), None)
 
 
 # ── The stream back ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1222,15 +1229,16 @@ class Sent:
 class Received:
     """A request the proxy received, whichever way it is answered: its path, its end-to-end headers, and the bytes its
     conversation goes on from, sent upstream with hands' changes made or, for one hands answers itself, as the client
-    sent them. Its headers carry the client's credentials, so it is heard and never recorded."""
+    sent them. Its headers carry the credentials it was sent with, the client's or, for a request hands built, the ones hands
+    gave it, so it is heard and never recorded."""
 
     exchange: str
     path: str
     headers: tuple[tuple[str, str], ...]
     body: bytes
     # Whether hands wrote the whole request (a side question): its headers carry the credential hands gave it, never one
-    # the client sent.
-    built: bool = False
+    # the client sent. Named at every construction: a request left unnamed is taken for the client's.
+    built: bool
 
 
 @dataclass(frozen=True)

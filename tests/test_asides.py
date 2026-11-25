@@ -246,15 +246,15 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     # Another session's main turn, and a fork of the brain's, are never what a question forks from.
     for observed in (
         Sent("o1", SessionId("other"), MainTurn(None), "main", {}),
-        Received("o1", "/v1/messages", HEADERS, b"{}"),
+        Received("o1", "/v1/messages", HEADERS, b"{}", built=False),
         Sent("f1", BRAIN, Fork(), "auxiliary", {}),
-        Received("f1", "/v1/messages", HEADERS, b"{}"),
+        Received("f1", "/v1/messages", HEADERS, b"{}", built=False),
     ):
         newest.hear(observed)
     await asyncio.sleep(0)
     assert not waiting.done()
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
-    newest.hear(Received("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}'))
+    newest.hear(Received("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}', built=False))
     assert await waiting == Turn("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}', None)
     newest.hear(main_exchanged("o1", answered(message), SessionId("other")))
     newest.hear(main_exchanged("x1", answered(message)))
@@ -266,7 +266,7 @@ async def test_a_question_is_sent_with_the_newest_login_the_brain_sent_on_any_re
     main_turn(newest, "x1", OPENED, answered(reply(Text("Done."))))
     assert newest.credential() == Credential("x1", "Bearer the-brains-own")
     # The idle brain's own request renews it, whatever the request is, the casing of its header included.
-    newest.hear(Received("i1", "/api/oauth/organizations/o/skills/list-skills", logged_in("Bearer renewed", "Authorization"), b""))
+    newest.hear(Received("i1", "/api/oauth/organizations/o/skills/list-skills", logged_in("Bearer renewed", "Authorization"), b"", built=False))
     credential = newest.credential()
     assert credential == Credential("i1", "Bearer renewed")
     # The turn stays as the proxy received it: the login is the fork's own.
@@ -275,22 +275,30 @@ async def test_a_question_is_sent_with_the_newest_login_the_brain_sent_on_any_re
     assert forked(turn, "what now?", credential)[0]["authorization"] == "Bearer renewed"
     # A side question the brain's own Claude Code sends is the brain's request, and renews it.
     newest.hear(Sent("b1", BRAIN, Fork(), "auxiliary", {"messages": []}))
-    newest.hear(Received("b1", "/v1/messages", logged_in("Bearer renewed again"), b"{}"))
+    newest.hear(Received("b1", "/v1/messages", logged_in("Bearer renewed again"), b"{}", built=False))
     assert newest.credential() == Credential("b1", "Bearer renewed again")
     # A request hands built carries the login it was given: it renews nothing, or one refusal would outlive its cause.
     newest.hear(Received("f1", "/v1/messages", logged_in("Bearer stale"), b"{}", built=True))
     assert newest.credential() == Credential("b1", "Bearer renewed again")
-    # A request that carries none leaves it.
-    newest.hear(Received("i2", "/api/hello", (("x-api-key", "k"),), b""))
+    # A request that carries none, or an empty one, leaves it.
+    newest.hear(Received("i2", "/api/hello", (("x-api-key", "k"),), b"", built=False))
+    newest.hear(Received("i3", "/api/hello", logged_in(""), b"", built=False))
     assert newest.credential() == Credential("b1", "Bearer renewed again")
 
 
 async def test_a_question_to_a_brain_that_has_sent_no_login_keeps_the_login_of_the_turn_it_forks() -> None:
     newest = Newest(BrainSession(BRAIN))
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
-    newest.hear(Received("x1", "/v1/messages", (("x-api-key", "k"), *HEADERS[1:]), as_sent(OPENED)))
+    newest.hear(Received("x1", "/v1/messages", (("x-api-key", "k"), *HEADERS[1:]), as_sent(OPENED), built=False))
     assert newest.credential() is None
     assert forked(await newest.turn(), "what now?", newest.credential())[0]["x-api-key"] == "k"
+    assert fork(await newest.turn(), "what now?", newest.credential()).login_from == "x1"
+
+
+async def test_a_question_is_sent_with_the_brains_login_though_the_turn_it_forks_carried_none() -> None:
+    turn = Turn("x1", "/v1/messages", (("x-api-key", "k"), *HEADERS[1:]), as_sent(OPENED), None)
+    question = fork(turn, "what now?", Credential("i1", "Bearer renewed"))
+    assert dict(question.headers)["authorization"] == "Bearer renewed" and question.login_from == "i1"
 
 
 # The brain's held turn: its stay_silent call answered, and the proxy answering the request that carries the answer.
@@ -303,7 +311,7 @@ STAYED_SILENT = Message("msg_hands_1", "claude-opus-5-5", (Text("(stayed silent)
 def main_turn(newest: Newest, exchange: str, sent: dict[str, object], reply: Ending) -> None:
     """A main turn of the brain's as the proxy tells it, from its request to its end."""
     newest.hear(Sent(exchange, BRAIN, MainTurn(None), "main", sent))
-    newest.hear(Received(exchange, "/v1/messages", HEADERS, as_sent(sent)))
+    newest.hear(Received(exchange, "/v1/messages", HEADERS, as_sent(sent), built=False))
     newest.hear(main_exchanged(exchange, reply))
 
 
@@ -336,7 +344,7 @@ async def test_a_question_asked_as_the_brain_moves_forks_from_the_conversation_i
     held = BrainSession(BRAIN)
     newest = Newest(held)
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {}))
-    newest.hear(Received("x1", "/v1/messages", HEADERS, b'{"messages": [1]}'))
+    newest.hear(Received("x1", "/v1/messages", HEADERS, b'{"messages": [1]}', built=False))
     first = Turn("x1", "/v1/messages", HEADERS, b'{"messages": [1]}', None)
     cleared = SessionId("cleared")
     held.enter(cleared)
@@ -345,7 +353,7 @@ async def test_a_question_asked_as_the_brain_moves_forks_from_the_conversation_i
     await asyncio.sleep(0)
     assert not waiting.done()
     newest.hear(Sent("x2", cleared, MainTurn(None), "main", {}))
-    newest.hear(Received("x2", "/v1/messages", HEADERS, b'{"messages": [2]}'))
+    newest.hear(Received("x2", "/v1/messages", HEADERS, b'{"messages": [2]}', built=False))
     assert await waiting == Turn("x2", "/v1/messages", HEADERS, b'{"messages": [2]}', None)
     # Resumed back, it forks from the turn the conversation last sent before it was left.
     held.enter(BRAIN)
@@ -356,7 +364,7 @@ async def test_a_question_waiting_in_a_new_conversation_wakes_as_the_brain_resum
     held = BrainSession(BRAIN)
     newest = Newest(held)
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {}))
-    newest.hear(Received("x1", "/v1/messages", HEADERS, b'{"messages": [1]}'))
+    newest.hear(Received("x1", "/v1/messages", HEADERS, b'{"messages": [1]}', built=False))
     held.enter(SessionId("cleared"))
     waiting = asyncio.create_task(newest.turn())
     await asyncio.sleep(0)
@@ -443,8 +451,8 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         routed: list[Span] = []
 
         async def api(request: web.Request) -> web.StreamResponse:
-            # What the brain's Claude Code asks of the account while idle carries no body, and no answer of the model's.
-            if not request.can_read_body:
+            # What the brain's Claude Code asks of the account while idle: no answer of the model's.
+            if request.path.endswith("/skills/list-skills"):
                 return web.json_response({})
             asked.append((dict(request.headers), await request.json()))
             answer = answers.pop(0) if answers else stream("Hello.")
@@ -534,8 +542,9 @@ async def test_a_side_question_is_answered_on_the_brains_renewed_login_after_the
     assert await rig.asides.ask(AsideKind.NAME, "who?", Deadline(10)) == "Still here."
     [event] = events(recorded)
     assert event.facts["status"] == 200
-    # The event says the login came from a request after the turn it forks, not the turn's own.
-    assert event.facts["credential_from"] != event.facts["forked"]
+    # The event says the login came from the idle request after the turn it forks, not the turn's own.
+    renewed = rig.asides._newest.credential()  # pyright: ignore[reportPrivateUsage]
+    assert renewed is not None and event.facts["credential_from"] == renewed.exchange != event.facts["forked"]
 
 
 @pytest.mark.outside

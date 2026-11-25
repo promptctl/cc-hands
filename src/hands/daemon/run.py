@@ -598,7 +598,7 @@ def wire_to(record: Record) -> Callable[[Observed], None]:
                 # Heard as it happens by what speaks from the wire; the exchange's line already holds the request's kind and the whole reply.
                 pass
             case Received():
-                # Its headers carry the client's credentials: what side questions fork from, never written down.
+                # Its headers carry the credentials it was sent with: what side questions fork from, never written down.
                 pass
 
     return observe
