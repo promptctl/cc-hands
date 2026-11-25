@@ -172,6 +172,8 @@ func startTap(t tapping, dir string) (*Tap, error) {
 	copying := &httputil.ReverseProxy{
 		Rewrite: func(out *httputil.ProxyRequest) {
 			out.SetURL(t.upstream.URL())
+			// What the upstream is sent is the request the copy holds.
+			intercept.AsSent(out)
 		},
 		Transport: onward,
 		// Each chunk reaches the child as it arrives: a streamed reply is the point.
@@ -213,7 +215,16 @@ func startTap(t tapping, dir string) (*Tap, error) {
 		copying.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), copyKey{}, copied)))
 	})
 	// What the child asks of anywhere else, in plain HTTP, goes on as it was asked.
-	passing := &httputil.ReverseProxy{Rewrite: func(*httputil.ProxyRequest) {}, Transport: onward, FlushInterval: -1, ErrorLog: quiet}
+	passing := &httputil.ReverseProxy{
+		Rewrite:       intercept.AsSent,
+		Transport:     onward,
+		FlushInterval: -1,
+		// The request as it was sent on: the child is told what fritter could not reach.
+		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
+			http.Error(writer, fmt.Sprintf("fritter could not reach %s: %v", request.URL.Redacted(), err), http.StatusBadGateway)
+		},
+		ErrorLog: quiet,
+	}
 	tap.door, err = intercept.Open(listener, intercept.Opening{Trusted: trusted, Intercepted: copied, Forwarded: passing, Proxy: outer, Seen: told})
 	if err != nil {
 		listener.Close()

@@ -196,7 +196,7 @@ func loopback(raw string) (intercept.Origin, error) {
 	if named.User != nil || strings.TrimSuffix(named.Path, "/") != "" || named.RawQuery != "" || named.ForceQuery || named.Fragment != "" {
 		return intercept.Origin{}, fmt.Errorf("%q names more than an origin: each request goes to the path it was sent to", raw)
 	}
-	if host := named.Hostname(); host != "localhost" && !net.ParseIP(host).IsLoopback() {
+	if host := named.Hostname(); !strings.EqualFold(host, "localhost") && !net.ParseIP(host).IsLoopback() {
 		return intercept.Origin{}, fmt.Errorf("%q is not on loopback, where hands' proxy listens", raw)
 	}
 	return intercept.ParseOrigin(raw)
@@ -335,22 +335,15 @@ func transport(proxy intercept.Proxy) *http.Transport {
 	}
 }
 
-// asSent is a proxy that sends each request on where `route` says, as the client sent it:
-// ReverseProxy drops the client's forwarding headers and rewrites a query it cannot parse
-// before `route` sees it, which this puts back, and keeps the Host the client named, which
-// a route to another origin would change. What it could not do, and an answer cut short as
-// it gave up copying it, it says.
+// asSent is a proxy that sends each request on where `route` says, as the client sent it,
+// the Host the client named among it, which a route to another origin would change. What it
+// could not do, and an answer cut short as it gave up copying it, it says.
 func asSent(route func(*httputil.ProxyRequest), over *http.Transport, sayer *log.Logger) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(out *httputil.ProxyRequest) {
 			route(out)
+			intercept.AsSent(out)
 			out.Out.Host = out.In.Host
-			out.Out.URL.RawQuery = out.In.URL.RawQuery
-			for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
-				if values, sent := out.In.Header[name]; sent {
-					out.Out.Header[name] = values
-				}
-			}
 		},
 		Transport: over,
 		// Each chunk reaches the client as it arrives: a streamed answer is the point.

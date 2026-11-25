@@ -114,4 +114,4 @@ timeout_method = "signal"
 environments = ["sys_platform == 'darwin'"]
 # A new commit or tag rebuilds the checkout's own install, so `hands --version` there is the checkout's, and so does an
 # edit to fritter's source or its build, so the fritter in src/hands/bin is the checkout's.
-cache-keys = [{ file = "pyproject.toml" }, { file = "hatch_build.py" }, { file = "fritter/go.mod" }, { file = "fritter/go.sum" }, { file = "fritter/**/*.go" }, { git = { commit = true, tags = true } }]
+cache-keys = [{ file = "pyproject.toml" }, { file = "hatch_build.py" }, { file = "src/hands/packaged.py" }, { file = "fritter/go.mod" }, { file = "fritter/go.sum" }, { file = "fritter/**/*.go" }, { git = { commit = true, tags = true } }]

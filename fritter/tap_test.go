@@ -217,6 +217,35 @@ func TestTheChildIsAnsweredByTheUpstreamAndTheExchangeIsCopiedInOrder(t *testing
 	}
 }
 
+func TestTheUpstreamIsSentTheRequestTheChildSentWhichIsTheOneCopied(t *testing.T) {
+	sent := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		sent <- request.RequestURI + " " + request.Header.Get("X-Forwarded-For")
+	}))
+	t.Cleanup(upstream.Close)
+	to := filepath.Join(shortTempDir(t), "wire.sock")
+	copies := listening(t, to)
+	tap := tapped(t, upstream.URL, to)
+	// A query Go's proxy cannot parse, which it would rewrite, and a forwarding header, which
+	// it would drop.
+	request, err := http.NewRequest(http.MethodPost, tap.upstream.String()+"/v1/messages?beta=true&a=1;b=2", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Forwarded-For", "203.0.113.9")
+	response, err := child(t, tap).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if asked, want := <-sent, "/v1/messages?beta=true&a=1;b=2 203.0.113.9"; asked != want {
+		t.Errorf("the upstream was sent %q, want %q, as the child sent it", asked, want)
+	}
+	if copied := (<-copies)[0]; copied.Path != "/v1/messages?beta=true&a=1;b=2" {
+		t.Errorf("the copy holds %q, want the request the upstream was sent", copied.Path)
+	}
+}
+
 func TestNoListenerCostsTheChildNothingAndIsToldWithTheNextCopy(t *testing.T) {
 	to := filepath.Join(shortTempDir(t), "wire.sock")
 	tap := tapped(t, streaming(t).URL, to)
@@ -484,6 +513,56 @@ func TestAConnectionAnywhereElseGoesThroughUnopenedAndUncopied(t *testing.T) {
 	case lines := <-copies:
 		t.Errorf("an exchange with another server was copied: %+v", lines)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestAPlainRequestAnywhereElseGoesOnAsSentAndOneThatCannotBeIsA502NamingFritter(t *testing.T) {
+	sent := make(chan string, 1)
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		sent <- request.RequestURI + " " + request.Header.Get("X-Forwarded-For")
+	}))
+	t.Cleanup(elsewhere.Close)
+	tap := tapped(t, "https://api.example.com", filepath.Join(shortTempDir(t), "wire.sock"))
+	// A query Go's proxy cannot parse, which it would rewrite, and a forwarding header, which
+	// it would drop.
+	request, err := http.NewRequest(http.MethodGet, elsewhere.URL+"/page?a=1;b=2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Forwarded-For", "203.0.113.9")
+	response, err := child(t, tap).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if asked, want := <-sent, "/page?a=1;b=2 203.0.113.9"; asked != want {
+		t.Errorf("elsewhere was sent %q, want %q, as the child sent it", asked, want)
+	}
+	// A server that takes each connection and hangs up on it, held, so no other comes to
+	// answer on its port.
+	down, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { down.Close() })
+	go func() {
+		for {
+			connection, err := down.Accept()
+			if err != nil {
+				return
+			}
+			connection.Close()
+		}
+	}()
+	unreached := "http://" + down.Addr().String() + "/page"
+	response, err = child(t, tap).Get(unreached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadGateway || !strings.HasPrefix(string(body), "fritter could not reach "+unreached+": ") {
+		t.Errorf("the child was answered %d %q, want a 502 naming fritter and where it could not reach", response.StatusCode, body)
 	}
 }
 

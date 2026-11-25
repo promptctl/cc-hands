@@ -26,6 +26,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"reflect"
@@ -232,6 +233,21 @@ func sameFile(a, b string) bool {
 	}
 	second, err := os.Stat(b)
 	return err == nil && os.SameFile(first, second)
+}
+
+// AsSent puts back, on the request a ReverseProxy in Rewrite mode sends on, what it took off
+// the one the client sent before Rewrite is called: the client's forwarding headers, which
+// it deletes, and a query it cannot parse, which it rewrites. A Rewrite calls it once it has
+// routed the request. [LAW:single-enforcer] the one answer to Go's ReverseProxy, for fritter's
+// tap and brioche alike: a request passes through each as it was sent, and a change to how
+// Go's proxy sends one is a change both need at once.
+func AsSent(out *httputil.ProxyRequest) {
+	out.Out.URL.RawQuery = out.In.URL.RawQuery
+	for _, name := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+		if values, sent := out.In.Header[name]; sent {
+			out.Out.Header[name] = values
+		}
+	}
 }
 
 // The variables HTTP clients read their proxy from, each spelling.

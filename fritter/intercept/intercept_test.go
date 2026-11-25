@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -272,6 +273,31 @@ func TestAVariableNamingTheFileWrittenInItsPlaceByAnotherNameIsRefusedAndLeftAsI
 	}
 	if held, err := os.ReadFile(path); err != nil || !bytes.Equal(held, before) {
 		t.Errorf("the file holds %q (%v), want it left as it was", held, err)
+	}
+}
+
+func TestARequestSentOnAsSentKeepsTheQueryAndForwardingHeadersItWasSentWith(t *testing.T) {
+	got := make(chan string, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		got <- request.RequestURI + " " + request.Header.Get("X-Forwarded-For") + " " + request.Header.Get("Forwarded")
+	}))
+	t.Cleanup(origin.Close)
+	to, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &httputil.ReverseProxy{Rewrite: func(out *httputil.ProxyRequest) {
+		out.SetURL(to)
+		AsSent(out)
+	}}
+	// A query Go's proxy cannot parse, which it would rewrite, and forwarding headers, which
+	// it would drop.
+	request := httptest.NewRequest(http.MethodGet, "http://api.example.com/v1/models?beta=true&a=1;b=2", nil)
+	request.Header.Set("X-Forwarded-For", "203.0.113.9")
+	request.Header.Set("Forwarded", "for=203.0.113.9")
+	proxy.ServeHTTP(httptest.NewRecorder(), request)
+	if asked, want := <-got, "/v1/models?beta=true&a=1;b=2 203.0.113.9 for=203.0.113.9"; asked != want {
+		t.Errorf("the origin was asked %q, want %q", asked, want)
 	}
 }
 

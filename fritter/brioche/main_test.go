@@ -568,6 +568,14 @@ func TestABriocheWhoseDoorStopsServingEndsAsFailedSayingWhy(t *testing.T) {
 	}
 }
 
+func TestToIsTakenForAnyNameOfLoopback(t *testing.T) {
+	for _, named := range []string{"http://LocalHost:1", "http://127.0.0.2:1", "http://[::1]:1", "https://localhost"} {
+		if _, err := loopback(named); err != nil {
+			t.Errorf("--to %s was refused: %v", named, err)
+		}
+	}
+}
+
 func TestArgumentsBriocheCannotTakeAreRefusedSayingWhich(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "trusted.pem")
 	for _, refused := range []struct {
