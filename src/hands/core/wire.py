@@ -92,6 +92,8 @@ BILLING_OPENING = "x-anthropic-billing-header:"
 # The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
 # for every Claude Code it starts: derived from the request's querySource in its services/api/client.ts.
 CLASS_HEADER = "x-claude-code-request-class"
+# The header Claude Code carries its login in, as the OAuth token it renews before each request it builds.
+AUTHORIZATION_HEADER = "authorization"
 
 
 _ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
@@ -493,6 +495,16 @@ def session_of(headers: Mapping[str, str]) -> SessionId | None:
 def named_class(headers: Mapping[str, str]) -> str | None:
     """The class Claude Code names a request in its headers; None from a Claude Code that names none."""
     return _header(headers, CLASS_HEADER)
+
+
+def authorization_of(headers: Mapping[str, str]) -> str | None:
+    """The login a request carries; None from one that carries none, as a client on an API key does."""
+    return _header(headers, AUTHORIZATION_HEADER)
+
+
+def with_header(headers: tuple[tuple[str, str], ...], name: str, value: str) -> tuple[tuple[str, str], ...]:
+    """`headers` with the value of `name`, a lowercase name, replaced, whatever casing the client named it in."""
+    return tuple((given, value if given.lower() == name else current) for given, current in headers)
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
@@ -1216,6 +1228,9 @@ class Received:
     path: str
     headers: tuple[tuple[str, str], ...]
     body: bytes
+    # Whether hands wrote the whole request (a side question): its headers carry the credential hands gave it, never one
+    # the client sent.
+    built: bool = False
 
 
 @dataclass(frozen=True)

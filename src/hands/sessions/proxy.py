@@ -179,7 +179,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
                     return response
                 case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
-            tell(Received(exchange, request.path_qs, tuple(headers.items()), onward))
+            tell(Received(exchange, request.path_qs, tuple(headers.items()), onward, built))
             try:
                 reached = await client.request(request.method, upstream + request.path_qs, headers=headers, data=onward)
             except (aiohttp.ClientError, OSError) as error:

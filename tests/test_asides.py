@@ -12,7 +12,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
-from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, Unmarked, fork
+from hands.brain.fork import REMINDER, RUNNING, Credential, Newest, Turn, Unmarked, fork
 from hands.brain.session import BrainSession
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
@@ -22,7 +22,6 @@ from hands.core.wire import (
     CONTINUATION_OPENING,
     Block,
     Ending,
-    Elsewhere,
     Exchanged,
     Fork,
     MainTurn,
@@ -72,8 +71,13 @@ def reply(*content: Block, stop: str = "end_turn") -> Message:
     return Message("msg_1", "claude-opus-5-5", content, stop, {})
 
 
-def forked(turn: Turn, question: str) -> tuple[dict[str, str], dict[str, object]]:
-    question_asked = fork(turn, question)
+def logged_in(authorization: str, named: str = "authorization") -> tuple[tuple[str, str], ...]:
+    """HEADERS with the brain's login as `authorization`, its header named as `named`."""
+    return tuple((named, authorization) if name == "authorization" else (name, value) for name, value in HEADERS)
+
+
+def forked(turn: Turn, question: str, credential: Credential | None = None) -> tuple[dict[str, str], dict[str, object]]:
+    question_asked = fork(turn, question, credential)
     return dict(question_asked.headers), question_asked.body
 
 
@@ -144,7 +148,7 @@ def test_a_question_merged_into_the_refusal_continuation_is_no_carrier_and_the_m
 
 def test_a_question_forked_from_a_turn_that_carried_no_marker_carries_none() -> None:
     history = body(user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?")))
-    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q")
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."))), "q", None)
     assert marks(question.body) == [] and question.marked == Unmarked.TURN_UNMARKED
 
 
@@ -163,7 +167,7 @@ REPLY_KINDS = {
 
 @pytest.mark.parametrize(("replied", "at"), REPLY_KINDS.values(), ids=REPLY_KINDS.keys())
 def test_a_reply_carries_the_marker_by_its_last_block(replied: Message, at: int) -> None:
-    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), replied), "q")
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), replied), "q", None)
     assert marks(question.body) == [(at, FORKED)] and question.marked == at
 
 
@@ -215,7 +219,7 @@ async def test_a_turn_hands_cannot_read_fails_the_question_unforkable(sent: byte
             return unreadable
 
     with pytest.raises(UnreadableRequest, match=why):
-        fork(unreadable, "q")
+        fork(unreadable, "q", None)
     # Failed as a question fails, never past the asker that waits on its answer.
     asides = Asides(VirtualClock(), "http://127.0.0.1:9", Unforkable(BrainSession(BRAIN)), lambda _entry: None)
     try:
@@ -257,26 +261,36 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     assert (await newest.turn()).reply == message
 
 
-async def test_a_question_is_sent_with_the_newest_credential_the_brain_sent_on_any_request_and_none_of_its_own() -> None:
+async def test_a_question_is_sent_with_the_newest_login_the_brain_sent_on_any_request_and_none_of_its_own() -> None:
     newest = Newest(BrainSession(BRAIN))
     main_turn(newest, "x1", OPENED, answered(reply(Text("Done."))))
-
-    def credentialed(authorization: str, named: str = "authorization") -> tuple[tuple[str, str], ...]:
-        return ((named, authorization), *HEADERS[1:])
-
+    assert newest.credential() == Credential("x1", "Bearer the-brains-own")
     # The idle brain's own request renews it, whatever the request is, the casing of its header included.
-    newest.hear(Sent("i1", None, Elsewhere("/api/oauth/organizations/o/skills/list-skills"), None, None))
-    newest.hear(Received("i1", "/api/oauth/organizations/o/skills/list-skills", credentialed("Bearer renewed", "Authorization"), b""))
+    newest.hear(Received("i1", "/api/oauth/organizations/o/skills/list-skills", logged_in("Bearer renewed", "Authorization"), b""))
+    credential = newest.credential()
+    assert credential == Credential("i1", "Bearer renewed")
+    # The turn stays as the proxy received it: the login is the fork's own.
     turn = await newest.turn()
-    assert turn.headers == credentialed("Bearer renewed") and turn.exchange == "x1"
-    assert forked(turn, "what now?")[0]["authorization"] == "Bearer renewed"
-    # A question's own request carries the credential it was given: it renews nothing, or one refusal would outlive its cause.
-    newest.hear(Sent("f1", BRAIN, Fork(), "auxiliary", {}))
-    newest.hear(Received("f1", "/v1/messages", credentialed("Bearer stale"), b"{}"))
-    assert (await newest.turn()).headers == credentialed("Bearer renewed")
+    assert turn.headers == HEADERS and turn.exchange == "x1"
+    assert forked(turn, "what now?", credential)[0]["authorization"] == "Bearer renewed"
+    # A side question the brain's own Claude Code sends is the brain's request, and renews it.
+    newest.hear(Sent("b1", BRAIN, Fork(), "auxiliary", {"messages": []}))
+    newest.hear(Received("b1", "/v1/messages", logged_in("Bearer renewed again"), b"{}"))
+    assert newest.credential() == Credential("b1", "Bearer renewed again")
+    # A request hands built carries the login it was given: it renews nothing, or one refusal would outlive its cause.
+    newest.hear(Received("f1", "/v1/messages", logged_in("Bearer stale"), b"{}", built=True))
+    assert newest.credential() == Credential("b1", "Bearer renewed again")
     # A request that carries none leaves it.
     newest.hear(Received("i2", "/api/hello", (("x-api-key", "k"),), b""))
-    assert (await newest.turn()).headers == credentialed("Bearer renewed")
+    assert newest.credential() == Credential("b1", "Bearer renewed again")
+
+
+async def test_a_question_to_a_brain_that_has_sent_no_login_keeps_the_login_of_the_turn_it_forks() -> None:
+    newest = Newest(BrainSession(BRAIN))
+    newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
+    newest.hear(Received("x1", "/v1/messages", (("x-api-key", "k"), *HEADERS[1:]), as_sent(OPENED)))
+    assert newest.credential() is None
+    assert forked(await newest.turn(), "what now?", newest.credential())[0]["x-api-key"] == "k"
 
 
 # The brain's held turn: its stay_silent call answered, and the proxy answering the request that carries the answer.
@@ -412,11 +426,10 @@ class Brain:
             assert response.status == 200
             await response.read()
 
-
     async def idle_request(self, authorization: str) -> None:
         """What the idle brain's Claude Code sends on its own, renewing its token before it builds the request."""
-        headers = [("authorization", authorization), *HEADERS[1:]]
-        async with self.asides._client.get(self.url + "/api/oauth/organizations/o/skills/list-skills", headers=headers) as response:  # pyright: ignore[reportPrivateUsage]
+        async with self.asides._client.get(self.url + "/api/oauth/organizations/o/skills/list-skills", headers=list(logged_in(authorization))) as response:  # pyright: ignore[reportPrivateUsage]
+            assert response.status == 200
             await response.read()
 
 
@@ -430,6 +443,9 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         routed: list[Span] = []
 
         async def api(request: web.Request) -> web.StreamResponse:
+            # What the brain's Claude Code asks of the account while idle carries no body, and no answer of the model's.
+            if not request.can_read_body:
+                return web.json_response({})
             asked.append((dict(request.headers), await request.json()))
             answer = answers.pop(0) if answers else stream("Hello.")
             match answer:
@@ -518,6 +534,8 @@ async def test_a_side_question_is_answered_on_the_brains_renewed_login_after_the
     assert await rig.asides.ask(AsideKind.NAME, "who?", Deadline(10)) == "Still here."
     [event] = events(recorded)
     assert event.facts["status"] == 200
+    # The event says the login came from a request after the turn it forks, not the turn's own.
+    assert event.facts["credential_from"] != event.facts["forked"]
 
 
 @pytest.mark.outside
@@ -627,7 +645,7 @@ MARKED: dict[str, dict[str, int | Unmarked]] = {
 @pytest.mark.parametrize("replied", REPLIES.keys())
 @pytest.mark.parametrize("shape", SHAPES.keys())
 def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: str, replied: str) -> None:
-    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*SHAPES[shape])), REPLIES[replied]), "what now?")
+    question = fork(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*SHAPES[shape])), REPLIES[replied]), "what now?", None)
     sent, at = question.body, MARKED[shape][replied]
     assert marks(sent) == ([] if isinstance(at, Unmarked) else [(at, FORKED)]) and question.marked == at
     messages = cast(list[dict[str, object]], sent["messages"])

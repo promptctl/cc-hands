@@ -392,7 +392,7 @@ def test_a_side_questions_markers_take_the_ttl_the_brains_command_line_pins(tmp_
     expected = {"type": "ephemeral", **({} if ttl == "5m" else {"ttl": ttl})}
     marked = {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
     turn = {"model": "m", "system": [{**marked, "text": "You are hands."}], "messages": [{"role": "user", "content": [marked]}]}
-    body = fork(Turn("x1", "/v1/messages", (), json.dumps(turn).encode(), Message("msg_1", "m", (Said("So."),), "end_turn", {})), "q").body
+    body = fork(Turn("x1", "/v1/messages", (), json.dumps(turn).encode(), Message("msg_1", "m", (Said("So."),), "end_turn", {})), "q", None).body
     [system] = cast(list[dict[str, object]], body["system"])
     replied = cast(list[dict[str, list[dict[str, object]]]], body["messages"])[1]
     assert system["cache_control"] == expected and replied["content"][-1]["cache_control"] == expected

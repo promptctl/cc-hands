@@ -18,7 +18,9 @@ from hands.brain.pinned import CACHE_TTL, STELLAR_DRIFT
 from hands.brain.session import SessionView
 from hands.core.session import SessionId
 from hands.core.wire import (
+    AUTHORIZATION_HEADER,
     CLASS_HEADER,
+    authorization_of,
     cache_marked,
     content_blocks,
     Content,
@@ -26,7 +28,6 @@ from hands.core.wire import (
     read_request,
     block_param,
     Exchanged,
-    Fork,
     MainTurn,
     Message,
     MessageParam,
@@ -39,6 +40,7 @@ from hands.core.wire import (
     ToolUse,
     UnreadableRequest,
     Written,
+    with_header,
 )
 
 # Verbatim from DTt: the text block Claude Code opens every side question's prompt with, the question in a block after it.
@@ -65,7 +67,6 @@ Simply answer the question with the information you have.</system-reminder>
 RUNNING = "[No result yet — this call is still in progress in the main conversation (running, awaiting approval, or queued)]"
 # The class Claude Code names a side question in (es() of querySource "side_question").
 SIDE_QUESTION_CLASS = "auxiliary"
-AUTHORIZATION = "authorization"
 
 
 class Unmarked(StrEnum):
@@ -89,6 +90,14 @@ class Turn:
 
 
 @dataclass(frozen=True)
+class Credential:
+    """The login the brain's Claude Code sent on `exchange`."""
+
+    exchange: str
+    authorization: str
+
+
+@dataclass(frozen=True)
 class Forked:
     """A side question's request: its headers, its body, and which of the body's messages carries its cache marker, or
     why none does."""
@@ -98,9 +107,10 @@ class Forked:
     marked: int | Unmarked
 
 
-def fork(turn: Turn, question: str) -> Forked:
-    """The side question asked of `turn`, as Claude Code's /btw builds it; UnreadableRequest when the turn's request is no
-    messages request hands can read."""
+def fork(turn: Turn, question: str, credential: Credential | None) -> Forked:
+    """The side question asked of `turn`, as Claude Code's /btw builds it and sent with `credential` in place of the turn's
+    own login, which may have expired since; UnreadableRequest when the turn's request is no messages request hands can
+    read."""
     sent = _read(turn.body)
     # An empty reply is no message the API takes: Claude Code's history has none for it.
     replied = () if turn.reply is None or not turn.reply.content else (MessageParam("assistant", tuple(block_param(block) for block in turn.reply.content)),)
@@ -125,7 +135,9 @@ def fork(turn: Turn, question: str) -> Forked:
     point = fork_point(history, STELLAR_DRIFT) if turn_marked else None
     messages = [_as_sent(_marked(message) if index == point else message) for index, message in enumerate(history)]
     marked = point if point is not None else Unmarked.NO_FORK_POINT if turn_marked else Unmarked.TURN_UNMARKED
-    headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
+    headers = with_header(turn.headers, CLASS_HEADER, SIDE_QUESTION_CLASS)
+    if credential is not None:
+        headers = with_header(headers, AUTHORIZATION_HEADER, credential.authorization)
     marker = {} if sent.marker is None else {"cache_control": _retimed(sent.marker)}
     body = {"model": sent.model, **sent.rest, **marker, **_prompt(sent.system), "messages": messages}
     return Forked(headers, body, marked)
@@ -142,41 +154,40 @@ class Newest:
         self._main: dict[str, SessionId | None] = {}
         # [LAW:one-source-of-truth] the newest turn held of each conversation, so a /resume back forks from where it was left.
         self._turns: dict[SessionId | None, Turn] = {}
-        # [LAW:one-source-of-truth] the credential a question is sent with: the newest Authorization the brain sent on any
-        # request through the proxy. Its Claude Code renews its token before each request it builds, so an idle brain's
-        # request holds a live one when the turn a question forks carries one long expired. None while the brain has sent
-        # none, as one on an API key does.
-        self._authorization: str | None = None
-        # Exchanges hands built itself: a question's request carries the credential it was given, not one the brain sent.
-        self._own: set[str] = set()
+        # [LAW:one-source-of-truth] the login a question is sent with: the newest the brain's Claude Code sent on any request
+        # through the proxy, a question's own excepted. It renews its token before each request it builds, and an idle one
+        # sends a request every ten minutes (docs/claude-code-behavior.md), so this one is live when the turn a question
+        # forks carries one long expired. None while the brain has sent none, as one on an API key does.
+        self._credential: Credential | None = None
         # [LAW:no-ambient-temporal-coupling] set, and replaced, as each turn is held and as the brain moves: a question
         # waits on it for a turn of the conversation the brain is in, which after a /clear is none until it sends its first.
         self._changed = asyncio.Event()
         session.watch(self._change)
 
     async def turn(self) -> Turn:
-        """The brain's newest main turn in the conversation it is in, once that conversation has sent one, its Authorization
-        the newest the brain has sent on any request."""
+        """The brain's newest main turn in the conversation it is in, once that conversation has sent one."""
         while (turn := self._turns.get(self._session.id())) is None:
             await self._changed.wait()
-        return replace(turn, headers=_credentialed(turn.headers, self._authorization))
+        return turn
+
+    def credential(self) -> Credential | None:
+        """The newest login the brain has sent."""
+        return self._credential
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(exchange=exchange, kind=Fork()):
-                self._own.add(exchange)
             case Sent(exchange=exchange, session=session, kind=MainTurn()):
                 self._main[exchange] = session
-            case Received(exchange=exchange, path=path, headers=headers, body=body):
-                if exchange not in self._own:
-                    self._authorization = _authorization(headers) or self._authorization
+            case Received(exchange=exchange, path=path, headers=headers, body=body, built=built):
+                # A question's request carries the login it was given, which is not one the brain has sent.
+                if not built and (authorization := authorization_of(dict(headers))) is not None:
+                    self._credential = Credential(exchange, authorization)
                 if exchange in self._main:
                     self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
                     self._change()
             case Exchanged(exchange=exchange, reply=reply):
                 # A main turn that ended before the proxy received it is never waited on again.
                 self._main.pop(exchange, None)
-                self._own.discard(exchange)
                 match reply:
                     # The model's answer, or the one hands gave in its place: either is the reply Claude Code holds.
                     case Reached(body=Written(message=message)) | Synthetic(written=Written(message=message)):
@@ -189,15 +200,6 @@ class Newest:
     def _change(self) -> None:
         changed, self._changed = self._changed, asyncio.Event()
         changed.set()
-
-
-def _authorization(headers: tuple[tuple[str, str], ...]) -> str | None:
-    return next((value for name, value in headers if name.lower() == AUTHORIZATION), None)
-
-
-def _credentialed(headers: tuple[tuple[str, str], ...], authorization: str | None) -> tuple[tuple[str, str], ...]:
-    """`headers` with the Authorization the brain sent last, if it has sent one."""
-    return headers if authorization is None else tuple((name, authorization if name.lower() == AUTHORIZATION else value) for name, value in headers)
 
 
 def _read(body: bytes) -> Request:

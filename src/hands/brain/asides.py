@@ -143,8 +143,12 @@ class Asides:
                         case Deadline():
                             pass
                     turn = await self._newest.turn()
+                    credential = self._newest.credential()
+                    # [LAW:nothing-unseen] where the login this question goes out with came from: none named is the turn's own.
+                    if credential is not None:
+                        annotate(credential_from=credential.exchange)
                     try:
-                        forked = fork(turn, question)
+                        forked = fork(turn, question, credential)
                     except UnreadableRequest as unread:
                         raise AsideFailed(Unanswered.UNFORKABLE, f"the brain's newest main turn cannot be read: {unread}") from unread
                     return await self._answered(turn, forked)
