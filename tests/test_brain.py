@@ -330,10 +330,12 @@ async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
 THROUGH = ThroughProxy("http://127.0.0.1:1", Path("/tmp/hands-proxy/trusted.pem"))
 
 
-def test_a_claude_code_reached_directly_has_no_proxy_of_hands_and_no_base_url(tmp_path: Path) -> None:
-    # `hands login` and the `claude auth status` the start asks run while no proxy of hands' may be running.
-    inherited = {"PATH": "/bin", "HTTPS_PROXY": "http://corp:3128", "NODE_EXTRA_CA_CERTS": "/etc/corp.pem", "ANTHROPIC_BASE_URL": "http://elsewhere"}
-    assert environment(tmp_path / "brain", Direct(), inherited) == {"PATH": "/bin", **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain")}
+def test_a_claude_code_reached_directly_reaches_the_api_as_hands_environment_does_with_no_base_url(tmp_path: Path) -> None:
+    # `hands login` and the `claude auth status` the start asks run while no proxy of hands' may be running: behind a
+    # corporate proxy, they reach the API through it, trusting what hands' environment trusts.
+    corporate = {"HTTPS_PROXY": "http://corp:3128", "NODE_EXTRA_CA_CERTS": "/etc/corp.pem"}
+    inherited = {"PATH": "/bin", **corporate, "ANTHROPIC_BASE_URL": "http://elsewhere"}
+    assert environment(tmp_path / "brain", Direct(), inherited) == {"PATH": "/bin", **corporate, **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain")}
 
 
 def station(tmp: Path) -> Station:

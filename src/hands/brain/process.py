@@ -73,7 +73,7 @@ from hands.sessions.typing import Typist
 from hands.tasks import cancel_and_wait
 from hands.sessions.proxy import ApiRoute, Direct, ThroughProxy
 from hands.sessions.startsession import as_from_a_terminal
-from hands.sessions.untap import ROUTING, tap, untapped
+from hands.sessions.untap import REPLACED, ROUTING, tap, untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
 from hands.voice.backends import Account
@@ -348,13 +348,14 @@ def environment(config_dir: Path, route: ApiRoute, inherited: Mapping[str, str])
 
 def _routed(route: ApiRoute, world: Mapping[str, str]) -> dict[str, str]:
     """What reaches the API by `route` from `world`: hands' proxy as its proxy, in the tap's mark, so what the brain
-    runs, a shell command or a claude of its own, is given `world`'s values back (`untapped`); or nothing, directly."""
+    runs, a shell command or a claude of its own, is given `world`'s values back (`untapped`); or, directly, `world`'s
+    own proxy and the certificates it trusts, as any Claude Code started there reaches the API, and no base URL."""
     match route:
         case ThroughProxy(url=url, trust=trust):
             # hands' own servers, its MCP server and its hooks' listener, are on loopback, reached directly.
             return tap(world, url, str(trust), LOOPBACK)
         case Direct():
-            return {}
+            return {name: world[name] for name in REPLACED if name in world}
 
 
 def entrypoint(account: Account) -> dict[str, str]:
