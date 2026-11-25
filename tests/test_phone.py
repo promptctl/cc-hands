@@ -45,7 +45,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.core.bearer import bearer
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, not_after, own_certificate, phone_key, server_context
-from hands.voice.phonepage import phone_pages
+from hands.voice.phonepage import APP_PATHS, APP_SCRIPTS, phone_pages
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
@@ -359,20 +359,20 @@ def test_a_press_is_answered_with_the_clip_its_turn_opened_or_with_why_it_opened
 
 def test_the_page_knows_every_milestone_hands_tells_it() -> None:
     """The page says what each milestone means by name, and names one it does not know as an error on its face."""
-    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    page = resources.files("hands.voice").joinpath("call.js").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
     assert [milestone for milestone in ("released", "discarded", *get_args(Milestone)) if f'"{milestone}": ' not in table] == []
 
 
 def test_the_page_knows_every_reason_hands_opens_no_turn_for() -> None:
-    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    page = resources.files("hands.voice").joinpath("call.js").read_text()
     table = page[page.index("const UNOPENED = {") : page.index("};", page.index("const UNOPENED = {"))]
     reasons = [reason for member in get_args(UnopenedReason) for reason in get_args(member)]
     assert reasons != [] and [reason for reason in reasons if f'"{reason}": ' not in table] == []
 
 
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
-    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    page = resources.files("hands.voice").joinpath("call.js").read_text()
     table = page[page.index("const LINES = {") : page.index("\n};", page.index("const LINES = {"))]
     assert [kind(line) for line in get_args(Line) if f'"{kind(line)}": ' not in table] == []
 
@@ -696,10 +696,21 @@ async def page_server(tmp_path: Path) -> AsyncGenerator[Served, None]:
 
 
 @pytest.mark.outside
-async def test_the_page_is_served_to_anyone(page_server: Served) -> None:
+async def test_the_app_is_served_to_anyone_at_every_path_of_its_views_and_never_kept(page_server: Served) -> None:
     client, _, _, _ = page_server
-    shown = await client.get("/")
-    assert shown.status == 200 and "Hold to talk" in await shown.text()
+    app = resources.files("hands.voice").joinpath("app.html").read_text()
+    for path in APP_PATHS:
+        shown = await client.get(path)
+        assert (shown.status, shown.content_type, shown.headers["Cache-Control"], await shown.text()) == (200, "text/html", "no-store", app)
+
+
+@pytest.mark.outside
+async def test_every_script_the_app_is_made_of_is_served_to_anyone_and_never_kept(page_server: Served) -> None:
+    client, _, _, _ = page_server
+    for name in APP_SCRIPTS:
+        served = await client.get(f"/{name}")
+        assert (served.status, served.content_type, served.headers["Cache-Control"]) == (200, "text/javascript", "no-store")
+        assert await served.text() == resources.files("hands.voice").joinpath(name).read_text()
 
 
 @pytest.mark.outside

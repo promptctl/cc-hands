@@ -1,6 +1,9 @@
-"""The phone's page: served over HTTPS to the LAN and the tailnet, where a phone's browser opens it and calls hands, and
+"""The phone's app: served over HTTPS to the LAN and the tailnet, where a phone's browser opens it and calls hands, and
 sees what the brain is doing and stops it (`hands.voice.brainpage`); and the conversation page and the backlog page beside it
-(`hands.voice.conversationpage`, `hands.voice.backlogpage`).
+(`hands.voice.conversationpage`, `hands.voice.backlogpage`), which are not yet views of it.
+
+The app is one document, `app.html`, that holds the call and mounts the app's views under it, so no move between views is a
+move of the call (design-docs/phone-sessions/design.md, "The one app").
 
 Where it is reached, and the certificate and key it is reached with, are `hands.voice.phoneaddress`'s.
 
@@ -38,6 +41,12 @@ from hands.voice.phonewake import wake_routes
 from hands.voice.summaries import SummaryStore
 from hands.voice.wakemodels import WakeModels
 
+# The paths of the app's views, each answered with the app's one document, which mounts the view the path names (app.js).
+# A page not yet moved into the app is served at its own path, by its own module, until it is.
+APP_PATHS = ("/", "/sessions")
+# The scripts the app is made of: the router, the call, and the views it mounts.
+APP_SCRIPTS = ("app.js", "call.js", "views/call.js", "views/sessions.js")
+
 # How often the page asks Tailscale for the tailnet's certificate again: Tailscale renews one a month before its 90
 # days are out, so a day is far inside the time a renewed one has before the old one ends.
 RENEW_SECONDS = 24 * 60 * 60.0
@@ -56,8 +65,9 @@ def parse_offer(body: object) -> Offer:
 
 
 def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[web.RouteDef]:
-    """The page, the script every phone page asks hands through, and the one route that takes its calls."""
-    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    """The app at every path of its views, the scripts it is made of and the one every phone page asks hands through, and the
+    one route that takes its calls."""
+    page = resources.files("hands.voice").joinpath("app.html").read_text()
 
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
@@ -83,7 +93,7 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
             case answer:
                 return web.json_response({"sdp": answer.sdp, "type": answer.type})
 
-    return [web.get("/", shown), script_route("hands.js"), web.post("/offer", offered)]
+    return [*(web.get(path, shown) for path in APP_PATHS), script_route("hands.js"), *(script_route(name) for name in APP_SCRIPTS), web.post("/offer", offered)]
 
 
 def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: WakeModels, runtime: Release) -> web.Application:

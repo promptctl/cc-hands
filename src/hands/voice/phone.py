@@ -316,7 +316,7 @@ class Quiet:
 
 
 def quiet_message(samples: int) -> str:
-    """A `quiet` as the Python players of the page write it, the smoke and the tests. The page writes its own in phone.html;
+    """A `quiet` as the Python players of the page write it, the smoke and the tests. The page writes its own in call.js;
     `parse_said` decides whether either is read, and the Chrome test in tests/test_pages.py holds the page's to it."""
     return json.dumps({"kind": "quiet", "samples": samples})
 
