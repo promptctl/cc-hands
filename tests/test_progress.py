@@ -110,6 +110,10 @@ def test_a_call_that_asks_the_user_has_a_line_though_the_voice_leaves_it_to_its_
     assert intent(tool, input).line(CWD) == line
 
 
+def test_an_explanation_of_nothing_is_a_line_the_page_can_show() -> None:
+    assert explained(".").line(CWD) == "explain something"
+
+
 def test_a_tool_the_page_has_no_row_for_is_cut_to_a_line() -> None:
     assert len(intent("mcp__s__t", {"text": "x" * 500}).line(CWD)) == LINE
 
@@ -154,6 +158,7 @@ def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(
         pytest.param(burst(("WebSearch", {"query": "example.com"}), ("WebFetch", {"url": "https://example.com"})), "search the web for example.com, then read a page on example.com", id="a search and a fetch of one text are two things"),
         pytest.param(burst(("mcp__s__firecrawl_search", {"query": "a"}), ("mcp__s__firecrawl_search", {"query": "a"})), "use firecrawl search", id="one call twice is one call"),
         pytest.param(burst(("mcp__s__firecrawl_search", {"query": "a"}), ("mcp__s__firecrawl_search", {"query": "b"})), "use two tools", id="one tool with two inputs is two calls"),
+        pytest.param(burst(("mcp__a__search", {"query": "a"}), ("mcp__b__search", {"query": "a"})), "use two tools", id="one name on two servers is two tools"),
         pytest.param(burst(("Bash", {"command": "set -e\nmake check"}), ("Bash", {"command": "set -e\nmake lint"})), "run two commands", id="commands that share a first line are two commands"),
         pytest.param(burst(("TaskUpdate", {"taskId": "3", "status": "in_progress"}), ("TaskUpdate", {"taskId": "3", "status": "completed"})), "update task 3: completed", id="one task set twice is one task"),
         pytest.param(burst(("WebFetch", {"url": "https://docs.python.org/3/a"}), ("WebFetch", {"url": "https://docs.python.org/3/b"})), "read two pages", id="two pages of one site are two pages"),

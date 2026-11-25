@@ -142,7 +142,8 @@ class Message:
 
 @dataclass(frozen=True)
 class ToolInput:
-    """A tool no row knows, and its input as JSON: the voice says only the tool, and the page shows the input."""
+    """A tool no row knows, by the name Claude Code calls it, and its input as JSON: the voice says only the tool's own
+    name, and the page shows the input."""
 
     tool: str
     json: str
@@ -286,8 +287,7 @@ def _approval(_tool: str, _input: Mapping[str, object]) -> Doing:
 
 
 def _used(tool: str, input: Mapping[str, object]) -> Doing:
-    # An MCP tool is named mcp__<server>__<tool>: the tool's own name is the part a listener can follow.
-    return Doing(USING, ToolInput(tool.rsplit("__", 1)[-1].replace("_", " "), json.dumps(dict(input), ensure_ascii=False)))
+    return Doing(USING, ToolInput(tool, json.dumps(dict(input), ensure_ascii=False)))
 
 
 # [LAW:one-type-per-behavior] one table keyed by tool name, as the step recognisers are; a tool not in it is used.
@@ -344,7 +344,7 @@ def _voiced(part: Part) -> str | None:
         case Message():
             return ""
         case ToolInput(tool=tool):
-            return tool
+            return _named(tool)
 
 
 def _shown(part: Part, cwd: PurePath) -> str:
@@ -372,7 +372,12 @@ def _shown(part: Part, cwd: PurePath) -> str:
         case Message(to=to):
             return f"to {_called(to)}"
         case ToolInput(tool=tool, json=json_text):
-            return f"{tool} {json_text}"
+            return f"{_named(tool)} {json_text}"
+
+
+def _named(tool: str) -> str:
+    # An MCP tool is named mcp__<server>__<tool>: the tool's own name is the part a listener can follow.
+    return tool.rsplit("__", 1)[-1].replace("_", " ")
 
 
 def _status(task: Task) -> str:
@@ -428,7 +433,8 @@ def _text(input: Mapping[str, object], key: str) -> str | None:
 
 def explained(summary: str) -> Doing:
     """Text Claude wrote, said as its summary: a phrase in the imperative, as the middle of a sentence."""
-    return Doing(EXPLAINING, Words(lowered(summary.strip().rstrip(".!"))))
+    said_of = lowered(summary.strip().rstrip(".!"))
+    return Doing(EXPLAINING, Words(said_of) if said_of else None)
 
 
 def lowered(phrase: str) -> str:
