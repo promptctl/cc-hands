@@ -1,4 +1,4 @@
-"""The terminals contract (terminalscontract.py) held to the fake terminals: in `make check`."""
+"""The terminals contract (terminalscontract.py) held to the fake terminals and fritters: in `make check`."""
 
 from collections.abc import Mapping, Sequence
 from itertools import count
@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from faketerminals import FakePane, FakeServer, FakeTerminals
+from faketerminals import FakeFritters, FakePane, FakeServer, FakeTerminals, Refusing, Wedged
 from hands.core.effects import Fritter, Writer
 from hands.core.tmux import Pane
 from hands.sessions.terminals import Opened
-from terminalscontract import DRAWN, TerminalsContract
+from terminalscontract import DRAWN, Ending, TerminalsContract
 
 SOCKET = Path("/private/tmp/hands-contract/tmux-501/default")
 
@@ -19,7 +19,8 @@ class Fake:
     """The fake terminals, in which a window's program draws DRAWN as it opens, and a fritter is an address put there."""
 
     def __init__(self) -> None:
-        self.fake = FakeTerminals(opens_at=SOCKET, opened=self._drawn)
+        self.terminals = FakeTerminals(opened=self._drawn)
+        self.fritters = FakeFritters()
         self._fritters = count(1)
 
     @staticmethod
@@ -27,15 +28,11 @@ class Fake:
         pane.screen = DRAWN
 
     @property
-    def terminals(self) -> FakeTerminals:
-        return self.fake
-
-    @property
     def socket(self) -> Path:
         return SOCKET
 
     async def window(self, session: str) -> Opened:
-        opened = await self.fake.open(session, Path("/code"), ("program",), {})
+        opened = await self.terminals.open(SOCKET, session, Path("/code"), ("program",), {})
         assert isinstance(opened, Opened)
         return opened
 
@@ -45,11 +42,12 @@ class Fake:
     def device(self, window: Opened) -> int:
         return self._pane(window).terminal
 
-    async def end(self, window: Opened, kept: bool) -> None:
-        if kept:
-            self._pane(window).dead = True
-        else:
-            self._server.panes.remove(self._pane(window))
+    async def end(self, window: Opened, ending: Ending) -> None:
+        match ending:
+            case "dead":
+                self._pane(window).end()
+            case "closed":
+                self._server.close(self._pane(window))
 
     async def attach(self, window: Opened) -> int:
         client = 0x20000000 + len(self._server.clients)
@@ -57,12 +55,18 @@ class Fake:
         return client
 
     async def stop(self) -> None:
-        del self.fake.servers[SOCKET]
-        self.fake.left.append(SOCKET)
+        del self.terminals.servers[SOCKET]
+        self.terminals.left.append(SOCKET)
+
+    async def refuse(self) -> None:
+        self._server.answering = Refusing(f"error connecting to {SOCKET} (Permission denied)")
+
+    async def wedge(self) -> None:
+        self._server.answering = Wedged("did not exit in 2.0 s, so it was killed")
 
     async def wrapped(self) -> Fritter:
         fritter = Fritter(Path(f"/private/tmp/fritter-{next(self._fritters)}/fritter.sock"), 8000)
-        self.fake.fritters[fritter.socket] = fritter.pid
+        self.fritters.listening[fritter.socket] = fritter.pid
         return fritter
 
     def unheard(self) -> Fritter:
@@ -71,15 +75,18 @@ class Fake:
     async def reads(self, writer: Writer, expected: str) -> str:
         match writer:
             case Fritter(socket=socket):
-                return self.fake.read.get(socket, "")
+                read = self.fritters.read.get(socket, "")
             case Pane(id=id):
                 pane = self._server.pane(id)
                 assert pane is not None
-                return pane.read
+                read = pane.read
+        if read != expected:
+            raise TimeoutError(f"the program read {read!r}, not {expected!r}")
+        return read
 
     @property
     def _server(self) -> FakeServer:
-        return self.fake.servers[SOCKET]
+        return self.terminals.servers[SOCKET]
 
     def _pane(self, window: Opened) -> FakePane:
         pane = self._server.pane(window.pane)
@@ -94,4 +101,3 @@ def world() -> Fake:
 
 class TestFakeTerminals(TerminalsContract):
     pass
-

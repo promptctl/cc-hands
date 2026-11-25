@@ -1,18 +1,21 @@
 """What is in front on the Mac's screen: the app, and the session it shows, read off the screen, the processes, and tmux."""
 
+import errno
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import NoReturn
 
 import pytest
+from loguru import logger
 
-from hands.core.front import Candidate, FrontUnread, NoSessionInFront, Shown, SessionInFront, in_front, told
+from hands.core.front import Candidate, FrontUnread, NoSessionInFront, OnScreen, SessionInFront, in_front, told
 from hands.core.session import SessionId
 from hands.sessions.front import _under, read_front  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.panes import socket_directory
 from hands.sessions.processes import ControllingTerminal, ancestor_terminals
-from hands.sessions.screen import FrontApp
-from fakeprocesses import USER, Running, processes
-from faketerminals import FakePane, FakeScreen, FakeServer, FakeTerminals
+from hands.sessions.screen import FrontApp, FrontTab
+from fakeprocesses import USER, FakeProcesses, Running, processes
+from faketerminals import FakePane, FakeScreen, FakeServer, FakeTerminals, Refusing
 
 # Terminals by device number: two tabs, a tmux client in a third, and the panes behind it.
 TAB, OTHER_TAB, CLIENT, PANE, OTHER_PANE, FRITTER = 1, 2, 3, 10, 11, 20
@@ -22,21 +25,21 @@ LAWS = Candidate(SessionId("s3"), "laws", frozenset({22, OTHER_PANE}))
 
 
 def test_the_session_whose_terminal_the_front_tab_shows_is_in_front() -> None:
-    assert in_front(Shown("iTerm2", frozenset({TAB})), {}, [DOCS, TESTS]) == SessionInFront("iTerm2", SessionId("s1"), "hands, docs")
+    assert in_front(OnScreen("iTerm2", frozenset({TAB})), {}, [DOCS, TESTS]) == SessionInFront("iTerm2", SessionId("s1"), "hands, docs")
 
 
 def test_a_tab_running_tmux_shows_the_pane_its_client_is_on_not_the_others_of_the_server() -> None:
     panes = {CLIENT: PANE, 4: OTHER_PANE}
-    assert in_front(Shown("iTerm2", frozenset({CLIENT})), panes, [DOCS, TESTS, LAWS]) == SessionInFront("iTerm2", SessionId("s2"), "hands, tests")
+    assert in_front(OnScreen("iTerm2", frozenset({CLIENT})), panes, [DOCS, TESTS, LAWS]) == SessionInFront("iTerm2", SessionId("s2"), "hands, tests")
 
 
 def test_an_app_showing_no_session_terminal_is_no_session_in_front_and_says_which_app() -> None:
-    assert in_front(Shown("iTerm2", frozenset({OTHER_TAB})), {}, [DOCS]) == NoSessionInFront("iTerm2")
-    assert in_front(Shown("Safari", frozenset()), {CLIENT: PANE}, [DOCS, TESTS]) == NoSessionInFront("Safari")
+    assert in_front(OnScreen("iTerm2", frozenset({OTHER_TAB})), {}, [DOCS]) == NoSessionInFront("iTerm2")
+    assert in_front(OnScreen("Safari", frozenset()), {CLIENT: PANE}, [DOCS, TESTS]) == NoSessionInFront("Safari")
 
 
 def test_an_app_that_cannot_say_its_front_tab_and_holds_several_sessions_is_left_unread() -> None:
-    match in_front(Shown("Ghostty", frozenset({TAB, CLIENT})), {CLIENT: PANE}, [DOCS, TESTS, LAWS]):
+    match in_front(OnScreen("Ghostty", frozenset({TAB, CLIENT})), {CLIENT: PANE}, [DOCS, TESTS, LAWS]):
         case FrontUnread(reason=reason):
             assert reason == "2 sessions run under the terminals Ghostty shows"
         case other:
@@ -84,33 +87,35 @@ def tmux_holding(tmp_path: Path, clients: dict[int, str]) -> FakeTerminals:
     return FakeTerminals({socket_directory({"TMUX_TMPDIR": str(tmp_path)}, USER) / "default": FakeServer([FakePane("%3", PANE, "tests")], clients)})
 
 
-async def front(tmp_path: Path, app: FrontApp | FrontUnread, terminals: FakeTerminals | None = None) -> object:
+async def front(tmp_path: Path, app: FrontTab | FrontApp | FrontUnread, terminals: FakeTerminals | None = None) -> object:
     return await read_front(FakeScreen(app), terminals or FakeTerminals(), RUNNING, SESSIONS, {"TMUX_TMPDIR": str(tmp_path)})
 
 
 async def test_an_app_that_says_its_front_tab_shows_the_session_on_that_tab_and_none_on_another(tmp_path: Path) -> None:
-    assert await front(tmp_path, FrontApp(APP, "iTerm2", tab=TAB)) == SessionInFront("iTerm2", SessionId("s1"), "hands, docs")
-    assert await front(tmp_path, FrontApp(APP, "iTerm2", tab=OTHER_TAB)) == NoSessionInFront("iTerm2")
+    assert await front(tmp_path, FrontTab("iTerm2", TAB)) == SessionInFront("iTerm2", SessionId("s1"), "hands, docs")
+    assert await front(tmp_path, FrontTab("iTerm2", OTHER_TAB)) == NoSessionInFront("iTerm2")
+    # A tab closed since the app named it shows nothing.
+    assert await front(tmp_path, FrontTab("iTerm2", None)) == NoSessionInFront("iTerm2")
 
 
 async def test_an_app_that_cannot_be_asked_shows_every_terminal_under_it_and_one_with_none_shows_no_session(tmp_path: Path) -> None:
-    assert await front(tmp_path, FrontApp(APP, "Ghostty", tab=None)) == SessionInFront("Ghostty", SessionId("s1"), "hands, docs")
-    assert await front(tmp_path, FrontApp(4, "Safari", tab=None)) == NoSessionInFront("Safari")
+    assert await front(tmp_path, FrontApp(APP, "Ghostty")) == SessionInFront("Ghostty", SessionId("s1"), "hands, docs")
+    assert await front(tmp_path, FrontApp(4, "Safari")) == NoSessionInFront("Safari")
 
 
 async def test_a_tab_a_tmux_client_runs_in_shows_the_session_in_the_pane_that_client_shows(tmp_path: Path) -> None:
     terminals = tmux_holding(tmp_path, {CLIENT: "%3"})
-    assert await front(tmp_path, FrontApp(APP, "iTerm2", tab=CLIENT), terminals) == SessionInFront("iTerm2", SessionId("s2"), "hands, tests")
+    assert await front(tmp_path, FrontTab("iTerm2", CLIENT), terminals) == SessionInFront("iTerm2", SessionId("s2"), "hands, tests")
 
 
 async def test_a_screen_unread_is_said_as_it_said_it_and_so_is_a_tmux_server_that_would_not_list_its_clients(tmp_path: Path) -> None:
     assert await front(tmp_path, FrontUnread("no app is in front: lsappinfo said ''")) == FrontUnread("no app is in front: lsappinfo said ''")
     terminals = tmux_holding(tmp_path, {CLIENT: "%3"})
     [server] = terminals.servers.values()
-    server.wedged = "did not answer in 2 seconds"
-    match await front(tmp_path, FrontApp(APP, "iTerm2", tab=CLIENT), terminals):
+    server.answering = Refusing("error connecting to the socket (Permission denied)")
+    match await front(tmp_path, FrontTab("iTerm2", CLIENT), terminals):
         case FrontUnread(reason=reason):
-            assert reason.endswith("did not answer: tmux did not answer in 2 seconds")
+            assert reason.endswith("error connecting to the socket (Permission denied)")
         case other:
             pytest.fail(f"read as {other}")
 
@@ -122,5 +127,30 @@ class Broken(FakeTerminals):
         raise ValueError("not enough values to unpack")
 
 
-async def test_a_read_that_breaks_leaves_the_screen_unread_saying_why(tmp_path: Path) -> None:
-    assert await front(tmp_path, FrontApp(APP, "iTerm2", tab=TAB), Broken()) == FrontUnread("ValueError: not enough values to unpack")
+class Refused(FakeProcesses):
+    """Processes whose table the kernel refuses, as the Processes interface declares it may."""
+
+    def table(self) -> NoReturn:
+        raise OSError(errno.EPERM, "kern.proc.all could not be read: Operation not permitted")
+
+
+async def faults[T](read: Awaitable[T]) -> tuple[T, list[str]]:
+    """What `read` comes to, and every error the log says while it runs."""
+    said: list[str] = []
+    sink = logger.add(lambda message: said.append(str(message)), level="ERROR")
+    try:
+        return await read, said
+    finally:
+        logger.remove(sink)
+
+
+async def test_a_read_that_breaks_leaves_the_screen_unread_saying_why_and_logs_where(tmp_path: Path) -> None:
+    read, said = await faults(front(tmp_path, FrontTab("iTerm2", TAB), Broken()))
+    assert read == FrontUnread("ValueError: not enough values to unpack")
+    assert ["reading what is in front broke" in line for line in said] == [True]
+
+
+async def test_processes_the_kernel_refuses_leave_the_screen_unread_saying_why_and_log_no_fault(tmp_path: Path) -> None:
+    read, said = await faults(read_front(FakeScreen(FrontTab("iTerm2", TAB)), FakeTerminals(), Refused(dict(RUNNING.running)), SESSIONS, {"TMUX_TMPDIR": str(tmp_path)}))
+    assert read == FrontUnread("the processes could not be read: [Errno 1] kern.proc.all could not be read: Operation not permitted")
+    assert said == []

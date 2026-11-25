@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from fakeprocesses import USER, Running, processes
-from faketerminals import FakePane, FakeServer, FakeTerminals
+from faketerminals import FakePane, FakeServer, FakeTerminals, Refusing
 from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import panes, tmux
 from hands.sessions.processes import ControllingTerminal, ancestor_terminals, foreground_terminal
@@ -94,13 +94,27 @@ async def test_a_session_is_read_in_the_pane_of_a_server_only_its_tmux_names_and
     environment = {"TMUX_TMPDIR": str(tmp_path)}
     terminals = FakeTerminals({elsewhere: FakeServer([FakePane("%3", PANE, "cc-hands", 2)])})
     assert await panes.panes(terminals, table, [101, 300], environment) == [Pane(elsewhere, "%3", "cc-hands", 2), NotInTmux()]
-    terminals.servers[elsewhere].wedged = "did not answer in 2 seconds"
-    assert await panes.keyboards(terminals, table, [101, 300], environment) == [PaneUnread(f"tmux at {elsewhere} did not answer: tmux did not answer in 2 seconds")] * 2
+    terminals.servers[elsewhere].answering = Refusing(f"error connecting to {elsewhere} (Permission denied)")
+    assert await panes.keyboards(terminals, table, [101, 300], environment) == [PaneUnread(f"tmux at {elsewhere} did not answer list-panes: error connecting to {elsewhere} (Permission denied)")] * 2
 
 
 def test_sockets_are_looked_for_where_tmux_puts_them_with_an_empty_tmux_tmpdir_read_as_unset() -> None:
     assert panes.socket_directory({"TMUX_TMPDIR": "/var/run/mine"}, USER) == Path(f"/var/run/mine/tmux-{USER}")
     assert panes.socket_directory({"TMUX_TMPDIR": ""}, USER) == panes.socket_directory({}, USER) == Path(f"/tmp/tmux-{USER}")
+
+
+def test_the_server_a_tmux_reaches_is_the_one_its_tmux_names_inside_tmux_and_the_default_outside() -> None:
+    assert panes.reached({"TMUX": "/srv/tmux/work,100,0", "TMUX_TMPDIR": "/var/run/mine"}, USER) == Path("/srv/tmux/work")
+    # tmux reads an empty $TMUX, or one with no socket before its first comma, as none.
+    for outside in ({}, {"TMUX": ""}, {"TMUX": ",100,0"}):
+        assert panes.reached({**outside, "TMUX_TMPDIR": "/var/run/mine"}, USER) == Path(f"/var/run/mine/tmux-{USER}/default")
+
+
+def test_a_tmux_that_names_no_server_is_said_and_an_empty_one_is_outside_tmux(tmp_path: Path) -> None:
+    table = processes(Running(101, terminal=ControllingTerminal(PANE, foreground=True), environment={"TMUX": "no-commas"}), Running(102, terminal=ControllingTerminal(TAB, foreground=True), environment={"TMUX": ""}))
+    environment = {"TMUX_TMPDIR": str(tmp_path)}
+    assert panes.sockets(FakeTerminals(), table, environment, [101], table.table()) == [Unanswered("process 101 was started with a $TMUX that names no tmux server: 'no-commas'")]
+    assert panes.sockets(FakeTerminals(), table, environment, [102], table.table()) == []
 
 
 def test_a_pane_closed_between_its_listing_and_the_look_at_its_terminal_leaves_the_rest_of_its_server_read() -> None:

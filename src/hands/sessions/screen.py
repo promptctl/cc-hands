@@ -9,16 +9,24 @@ from hands.core.front import FrontUnread
 
 
 @dataclass(frozen=True)
+class FrontTab:
+    """An app in front that said which of its tabs is in front: its name, and the device of the terminal that tab shows;
+    none for a terminal closed since the app named it, which shows nothing."""
+
+    name: str
+    terminal: int | None
+
+
+@dataclass(frozen=True)
 class FrontApp:
-    """The app in front: the one the user is using, whether or not a window of its is on screen. `tab` is the device of
-    the terminal its front tab shows, where the app says which; None for an app that cannot be asked."""
+    """An app in front that cannot be asked which of its tabs is: its pid, under which every terminal it shows runs, and
+    its name. The one the user is using, whether or not a window of its is on screen."""
 
     pid: int
     name: str
-    tab: int | None
 
 
 class Screen(Protocol):
-    async def front(self) -> FrontApp | FrontUnread:
+    async def front(self) -> FrontTab | FrontApp | FrontUnread:
         """The app in front now, or why it could not be read."""
         ...

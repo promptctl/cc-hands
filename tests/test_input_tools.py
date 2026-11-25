@@ -19,7 +19,7 @@ from hands.core.session import CommandName, Membership, PromptId, PromptText, Re
 from hands.core.turn import AgentId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
-from hands.sessions.typing import Untyped
+from hands.sessions.terminals import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
 from hands.sessions.wide import begun, unit
 from hands.sessions.registry import Sessions

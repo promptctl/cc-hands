@@ -48,7 +48,7 @@ from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.processes import Processes
 from hands.sessions.screen import Screen
-from hands.sessions.terminals import Terminals
+from hands.sessions.terminals import Fritters, Terminals, type_into
 from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
@@ -275,7 +275,7 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, terminals: Terminals, screen: Screen, home: Home,
+    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, terminals: Terminals, fritters: Fritters, screen: Screen, home: Home,
     heart: heartbeat.Heart, record: Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     pin: pinned.Pin,
@@ -302,7 +302,7 @@ async def run(
         names = Names()
         sessions = Sessions(
             clock=clock, record=record, changes=deltas, names=names,
-            typist=terminals.type, keyboards=partial(panes.keyboards, terminals, processes, environment=environment),
+            typist=partial(type_into, terminals, fritters), keyboards=partial(panes.keyboards, terminals, processes, environment=environment),
         )
         # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
         # before each turn's hook is applied.

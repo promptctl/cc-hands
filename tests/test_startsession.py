@@ -13,15 +13,15 @@ from typing import Any
 import pytest
 from conftest import children_on
 from fakeprocesses import FakeProcesses, Running, processes
-from faketerminals import SOCKET, FakePane, FakeTerminals
+from faketerminals import DEAD, FakePane, FakeServer, FakeTerminals, Wedged
 
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
-from hands.sessions.startsession import JOIN_SECONDS, LOOK_SECONDS, SESSION_GIVEN, as_from_a_terminal, descends
+from hands.sessions.startsession import JOIN_SECONDS, LOOK_SECONDS, SESSION_GIVEN, SETTINGS, as_from_a_terminal, descends
 from hands.sessions.terminals import Terminals
-from hands.sessions.tmux import TmuxTerminals
+from hands.sessions.tmux import NoTmux, TmuxTerminals
 from hands.virtualclock import VirtualClock
 from hands.voice.tool import Result
 from hands.voice.tools import start_session_tool
@@ -38,14 +38,14 @@ class Starts:
     """What a start reaches, as a test sets it up: the terminals a window opens in, the processes, the sessions that have
     joined hands, and the clock the start waits for one on."""
 
-    def __init__(self, home: Home, opened: Callable[["Starts", FakePane, Sequence[str], Mapping[str, str]], None] | None = None, tmux: bool = True) -> None:
+    def __init__(self, home: Home, opened: Callable[["Starts", FakePane, Sequence[str], Mapping[str, str]], None] | None = None) -> None:
         self.home = home
         self.clock = VirtualClock()
         self.processes: FakeProcesses = processes()
         self.members: list[Membership] = []
         # What each window opened ran, and the environment it was opened with.
         self.ran: list[tuple[Sequence[str], Mapping[str, str]]] = []
-        self.fake = FakeTerminals(opened=self._opened, tmux=tmux)
+        self.fake = FakeTerminals(opened=self._opened)
         self.terminals: Terminals = self.fake
         self._then = opened
         self._joining = count(9000)
@@ -124,12 +124,14 @@ async def test_a_session_is_started_in_a_window_of_the_tmux_session_named_for_it
     assert list(command[:3]) == ["-e", f"HANDS_HOME={starts.home.root}", "--"]
     assert list(command[-4:]) == ["claude", "--settings", '{"enableAllProjectMcpServers": true}', "--model=opus"]
     assert environment == {"PATH": "/usr/bin"}
-    assert [(event["facts"]["made_tmux_session"], event["facts"]["session"]) for event in started(starts.home)] == [(True, "s0"), (False, "s1")]
+    # The start's event says which settings its session was launched with.
+    assert [(event["facts"]["made_tmux_session"], event["facts"]["session"], event["facts"]["settings"]) for event in started(starts.home)] == [(True, "s0", SETTINGS), (False, "s1", SETTINGS)]
 
 
 async def test_a_session_started_where_no_tmux_is_on_path_answers_that_it_was_not_started(tmp_path: Path) -> None:
-    starts = Starts(home_in(tmp_path), tmux=False)
-    reason = "hands starts a session in a tmux window, and none was opened: no tmux is on the PATH to open a window of tmux session billing"
+    starts = Starts(home_in(tmp_path))
+    starts.terminals = NoTmux("no tmux is on the PATH /nowhere")
+    reason = "hands starts a session in a tmux window, and none was opened: no tmux is on the PATH /nowhere"
     assert await starts.start(folder_in(tmp_path)) == {"error": reason}
     [event] = started(starts.home)
     assert (event["outcome"], event["error"]) == ("failed", f"NotStarted: {reason}")
@@ -137,13 +139,16 @@ async def test_a_session_started_where_no_tmux_is_on_path_answers_that_it_was_no
 
 async def test_a_claude_that_ends_before_it_joins_is_said_with_what_its_pane_showed_or_that_its_window_closed(tmp_path: Path) -> None:
     def dies(starts: Starts, pane: FakePane, _command: Sequence[str], _environment: Mapping[str, str]) -> None:
-        pane.dead, pane.screen = True, "error: unknown option '--settings'"
+        pane.screen = "error: unknown option '--settings'"
+        pane.end()
 
     def closes(starts: Starts, pane: FakePane, _command: Sequence[str], _environment: Mapping[str, str]) -> None:
-        starts.fake.servers[SOCKET].panes.remove(pane)
+        [server] = starts.fake.servers.values()
+        server.close(pane)
 
     folder = folder_in(tmp_path)
-    assert (await Starts(home_in(tmp_path / "dies"), dies).start(folder))["error"] == f"`claude` in {folder} ended before it joined hands; tmux pane %0 showed:\nerror: unknown option '--settings'"
+    # What it said as it ended is told, though tmux's notice that it is dead took its screen.
+    assert (await Starts(home_in(tmp_path / "dies"), dies).start(folder))["error"] == f"`claude` in {folder} ended before it joined hands; the last of what tmux pane %0 drew:\nerror: unknown option '--settings'\n{DEAD} (signal kill)"
     assert (await Starts(home_in(tmp_path / "closes"), closes).start(folder))["error"] == f"`claude` in {folder} ended before it joined hands, and its window closed with it"
 
 
@@ -178,6 +183,29 @@ async def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not
     tmux.parent.mkdir()
     tmux.write_text("#!/nonexistent/hands-no-such-shell\n")
     tmux.chmod(0o755)
-    starts.terminals = TmuxTerminals(children_on(SYSTEM), f"{tmux.parent}:{os.environ['PATH']}")
-    answer = await starts.start(folder_in(tmp_path))
-    assert answer.keys() == {"error"} and answer["error"].startswith("hands starts a session in a tmux window, and none was opened: tmux new-session could not be started: ")
+    starts.terminals = TmuxTerminals(children_on(SYSTEM), tmux)
+    answer = await starts.start(folder_in(tmp_path), environment={"PATH": "/usr/bin", "TMUX_TMPDIR": str(tmp_path)})
+    assert answer.keys() == {"error"}
+    assert answer["error"].startswith("hands starts a session in a tmux window, and tmux did not say whether it opened one, so `claude` may be starting in tmux session billing now: ")
+    assert "could not be started" in answer["error"]
+
+
+async def test_a_tmux_that_gives_no_answer_to_the_opening_is_said_to_maybe_have_opened_the_window(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path))
+    environment = {"PATH": "/usr/bin", "TMUX_TMPDIR": str(tmp_path)}
+    starts.fake.servers[tmp_path / f"tmux-{starts.processes.user}" / "default"] = FakeServer(answering=Wedged("did not exit in 5.0 s, so it was killed"))
+    reason = "hands starts a session in a tmux window, and tmux did not say whether it opened one, so `claude` may be starting in tmux session billing now"
+    assert (await starts.start(folder_in(tmp_path), environment=environment))["error"].startswith(reason)
+    assert starts.ran == []
+
+
+async def test_a_session_is_started_in_the_server_the_tmux_it_was_started_inside_names(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path), lambda starts, pane, _command, _environment: starts.joins(pane))
+    await starts.start(folder_in(tmp_path), environment={"PATH": "/usr/bin", "TMUX": "/srv/tmux/work,100,0"})
+    assert list(starts.fake.servers) == [Path("/srv/tmux/work")]
+
+
+async def test_a_folder_with_no_name_to_give_its_tmux_session_is_said(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path))
+    assert (await starts.start(Path("/")))["error"] == "/ has no name to give the tmux session a session there is started in: give a folder inside it"
+    assert starts.ran == []

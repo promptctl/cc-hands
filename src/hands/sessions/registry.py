@@ -28,7 +28,7 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import Titles
-from hands.sessions.typing import Untyped
+from hands.sessions.terminals import Untyped
 
 
 # How a Stop's hook ended: decided inside the hold, let go at it with Claude Code going on undecided, or released
@@ -74,9 +74,10 @@ class Sessions:
         self,
         clock: Clock,
         record: Record,
+        *,
+        typist: Callable[[Type[Input]], Awaitable[None]],
+        keyboards: Callable[[Sequence[int]], Awaitable[list[Keyboard]]],
         changes: Changes | None = None,
-        typist: Callable[[Type[Input]], Awaitable[None]] = untyped,
-        keyboards: Callable[[Sequence[int]], Awaitable[list[Keyboard]]] = unread,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
         story_sink: Callable[[Story], None] | None = None,
@@ -94,10 +95,10 @@ class Sessions:
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
-        # What types a Type into its session, or raises Untyped. A daemon given none types into none.
+        # What types a Type into its session, or raises Untyped: `untyped`, for a registry that types into none.
         self._typist = typist
-        # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by. A daemon
-        # given none reads none, so nothing it is not told to type into is typed into.
+        # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by: `unread`, for
+        # a registry that reads none, so nothing it is not told to type into is typed into.
         self._keyboards = keyboards
         # The names hands decided and has not yet given, which every listing names its session by. A daemon given none
         # has decided none.

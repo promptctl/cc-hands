@@ -17,7 +17,7 @@ import pytest
 
 from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
 from fakeprocesses import processes
-from faketerminals import FakeScreen, FakeTerminals
+from faketerminals import FakeFritters, FakeScreen, FakeTerminals
 from hands.core.front import FrontUnread
 from fixtures.pins import LAID_OUT
 from hands.brain import pinned, process
@@ -486,7 +486,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     levels = Levels("off")
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, processes(), FakeTerminals(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, {}, _NO_FILE), SYSTEM, levels, levels)
+            await run.run(refused, lambda _: None, processes(), FakeTerminals(), FakeFritters(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, {}, _NO_FILE), SYSTEM, levels, levels)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.

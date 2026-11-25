@@ -41,8 +41,8 @@ from hands.core.wire import MainTurn, Sent
 from hands.sessions.wide import WideEvent, begun, here, unit
 from hands.core.trace import Span
 from claudescreen import ClaudeScreen
-from hands.sessions.tmux import KEYS
-from hands.sessions.typing import Untyped
+from hands.sessions.tmux import tmux_key
+from hands.sessions.terminals import Untyped
 from terminalcontract import CHORD
 
 # [LAW:no-silent-failure] an error hands logs that a test does not take fails it (`errors`).
@@ -791,7 +791,7 @@ class _Keys:
         self.pressed.append(key)
         if key in self.before:
             self.before[key]()
-        self.claude_code.key(KEYS[key])
+        self.claude_code.key(tmux_key(key))
 
     async def stop(self) -> None:
         self.exit.set_result(0)

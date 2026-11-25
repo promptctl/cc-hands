@@ -1,5 +1,5 @@
-"""Typing into a session through the fritter that wrapped it; one no fritter wrapped is typed into through tmux, into the
-pane it runs in (`hands.sessions.tmux`).
+"""Typing into a session through the fritter that wrapped it: the one real adapter of
+`hands.sessions.terminals.Fritters`.
 
 fritter runs a session's `claude` on a pseudo-terminal and listens on a unix socket
 beside it; text asked for there is typed into that session's input and sent with Return,
@@ -12,20 +12,18 @@ be sent to, and whether a leading slash is escaped are all settled in the core b
 reaches here `[LAW:single-enforcer]`.
 """
 
+import asyncio
 import json
 import socket
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.core.effects import Command
+from hands.core.effects import Command, Fritter, Input, Key, Text
 from hands.core.session import Keystroke, PromptText, Submit
+from hands.sessions.terminals import Untyped
 
 # How long the exchange may take. fritter answers as soon as its one write is done.
 ANSWER_TIMEOUT = 5.0
-
-
-class Untyped(Exception):
-    """fritter or tmux could not be reached, or refused, or could not write. The message says which."""
 
 
 @dataclass(frozen=True)
@@ -73,3 +71,21 @@ class Typist:
                 raise Untyped(f"the fritter wrapping {self.pid} did not type: {reason}")
             case other:
                 raise Untyped(f"the fritter wrapping {self.pid} answered {other!r}")
+
+
+class FritterSockets:
+    """The fritters that wrapped sessions, each asked at its control socket."""
+
+    async def type(self, fritter: Fritter, input: Input) -> None:
+        await asyncio.to_thread(_by_fritter, Typist(fritter.socket, fritter.pid), input)
+
+
+def _by_fritter(typist: Typist, input: Input) -> None:
+    match input:
+        case Text() as typed:
+            # A wrapped session runs on Claude Code's own keybindings, where Return sends the prompt.
+            typist.type(typed.typed, "enter")
+        case Command() as command:
+            typist.command(command)
+        case Key(key=key):
+            typist.press(key)

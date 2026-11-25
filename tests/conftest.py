@@ -52,7 +52,8 @@ from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions.home import Home
-from hands.sessions.registry import Sessions
+from hands.sessions.registry import Sessions, untyped
+from hands.sessions.registry import unread as reads_no_panes
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
@@ -227,7 +228,7 @@ def taken(errors: list[str]) -> list[str]:
 # A test passes, by the constructor's own names, what its behavior rests on: the clock it runs on, the audit it reads,
 # its typist or sinks. The clock has no default: a test on the machine's clock names SYSTEM, where the clock boundary
 # sees it. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
-new_sessions = partial(Sessions, record=lambda _: None)
+new_sessions = partial(Sessions, record=lambda _: None, typist=untyped, keyboards=reads_no_panes)
 
 
 def children_on(clock: Clock) -> Children:

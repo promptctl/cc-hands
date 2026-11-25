@@ -37,7 +37,7 @@ from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.sessions.processes import Processes
 from hands.sessions.terminals import Terminals
-from hands.sessions.tmux import TmuxTerminals
+from hands.sessions import tmux
 from hands.threads import off_loop
 from hands.visible import VISIBLE
 from hands.voice import summarising
@@ -656,6 +656,7 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, envi
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
     from hands.sessions.launchservices import LaunchServices
+    from hands.sessions.typing import FritterSockets
     from hands.voice import memory
 
     # Before any model loads, so no buffer any of them frees is kept past the limit.
@@ -663,8 +664,9 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, envi
 
     path = environment.get("PATH", "")
     children = Children(clock, record)
-    # [LAW:effects-at-boundaries] the run's one adapter of the user's terminals, and the one of the Mac's screen.
-    terminals = TmuxTerminals(children, environment.get("PATH"))
+    # [LAW:effects-at-boundaries] the run's one adapter of the user's tmux servers, found on the run's PATH once; its
+    # fritters' and the Mac's screen's are built with the run.
+    terminals = tmux.on_path(children, path)
     # This run is hands running, and the backend it reaches is the one it was configured on.
     running = readiness.Ready("hands running", f"hands is running here: pid {os.getpid()}")
 
@@ -678,7 +680,7 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, envi
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, processes, home, path, True, reached, running, partial(keyboards, terminals, processes)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, terminals, LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, run_start, OwnModel(home, pin, environment, settings), clock, listening, driving)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, terminals, FritterSockets(), LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, run_start, OwnModel(home, pin, environment, settings), clock, listening, driving)
 
 
 def start_indicator(home: Home) -> int:
@@ -793,7 +795,8 @@ def check(children: Children, processes: Processes, home: Home, pin: pinned.Pin,
     # [LAW:one-source-of-truth] one look at the heartbeat, for whether hands runs and what its brain said of its login.
     running = heartbeat.look(processes, home.status, now)
     reached = readiness.configured(children, home, pin, os.environ, running)
-    findings = readiness.check(children, processes, home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(running, now), partial(keyboards, TmuxTerminals(children, os.environ.get("PATH")), processes))
+    path = os.environ.get("PATH", "")
+    findings = readiness.check(children, processes, home, path, granted, reached, readiness.daemon(running, now), partial(keyboards, tmux.on_path(children, path), processes))
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
     missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]

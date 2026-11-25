@@ -18,8 +18,9 @@ from hands.core.session import Membership, SessionId
 from hands.core.tmux import Unanswered
 from hands.sessions import audit, wide
 from hands.sessions.home import HOME_VARIABLE, Home
+from hands.sessions.panes import reached
 from hands.sessions.processes import Process, Processes, ancestors
-from hands.sessions.terminals import Opened, Terminals
+from hands.sessions.terminals import Opened, Terminals, Unopened
 from hands.sessions.untap import untap_script, untapped
 
 # What a session gives each process it runs, naming itself as their parent: Claude Code's, and fritter's
@@ -46,6 +47,9 @@ SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 JOIN_SECONDS = 30.0
 # How often the sessions and the session's pane are looked at while it joins.
 LOOK_SECONDS = 0.25
+# How many of the last lines a `claude` that ended before it joined drew the brain is told: about a screenful, all a
+# usage line or the end of a stack trace needs, bounded whatever the pane's history holds.
+TOLD_LINES = 50
 
 
 class NotStarted(Exception):
@@ -99,19 +103,28 @@ async def start(home: Home, clock: Clock, terminals: Terminals, processes: Proce
         # their own. hands' own `claude`, its shim, whatever comes first on the window's PATH: the session runs under
         # fritter, so hands can type into it.
         claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", "--settings", SETTINGS, *(() if model is None else (f"--model={model}",))]
+        # The server a `tmux` typed where hands was started reaches.
+        socket = reached(environment, processes.user)
         # The terminal's environment: a tmux server this starts takes it as every window's, so it holds nothing of
         # hands'. The home the session reports to is given its window by name.
-        match await terminals.open(name, where, ("-e", f"{HOME_VARIABLE}={home.root}", "--", *claude), terminal):
-            case Unanswered(reason=reason):
+        match await terminals.open(socket, name, where, ("-e", f"{HOME_VARIABLE}={home.root}", "--", *claude), terminal):
+            case Unopened(reason=reason):
                 raise NotStarted(f"hands starts a session in a tmux window, and none was opened: {reason}")
+            case Unanswered(reason=reason):
+                # [LAW:no-silent-failure] a tmux that gave no answer may have opened the window all the same.
+                raise NotStarted(f"hands starts a session in a tmux window, and tmux did not say whether it opened one, so `claude` may be starting in tmux session {name} now: {reason}")
             case Opened() as window:
-                pass
-        wide.annotate(tmux_session=name, made_tmux_session=window.made, pane=window.pane, tmux_socket=window.socket)
-        member = await _joined(clock, terminals, processes, members, where, window)
-        wide.annotate(session=member.id, under_fritter=member.fritter is not None)
-        if member.fritter is None:
-            raise NotStarted(f"session {member.id} joined hands in tmux pane {window.pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
-        return Started(member.id, name, window.pane)
+                return await _started(home, clock, terminals, processes, members, where, name, socket, window)
+
+
+async def _started(home: Home, clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], where: Path, name: str, socket: Path, window: Opened) -> Started:
+    """The session `claude` in `window` joins hands as, once it has."""
+    wide.annotate(tmux_session=name, made_tmux_session=window.made, pane=window.pane, tmux_socket=socket)
+    member = await _joined(clock, terminals, processes, members, where, socket, window)
+    wide.annotate(session=member.id, under_fritter=member.fritter is not None)
+    if member.fritter is None:
+        raise NotStarted(f"session {member.id} joined hands in tmux pane {window.pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
+    return Started(member.id, name, window.pane)
 
 
 def _folder(folder: Path) -> Path:
@@ -125,6 +138,8 @@ def _folder(folder: Path) -> Path:
         raise NotStarted(f"there is no folder {folder}: {error}") from error
     if not resolved.is_dir():
         raise NotStarted(f"{folder} is not a folder")
+    if not resolved.name:
+        raise NotStarted(f"{folder} has no name to give the tmux session a session there is started in: give a folder inside it")
     return resolved
 
 
@@ -134,23 +149,24 @@ def tmux_name(folder: Path) -> str:
     return folder.name.replace(".", "_").replace(":", "_")
 
 
-async def _joined(clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], folder: Path, window: Opened) -> Membership:
+async def _joined(clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], folder: Path, socket: Path, window: Opened) -> Membership:
     pane = window.pane
     deadline = clock.now() + JOIN_SECONDS
     while (member := joined(members(), window.pid, _table(processes))) is None:
         # Asked of the server that opened the pane, the one its id names a pane of.
-        match await terminals.state(window.socket, pane):
+        match await terminals.state(socket, pane):
             case Unanswered(reason=reason):
                 raise NotStarted(f"whether `claude` in {folder} still runs in tmux pane {pane} could not be read: {reason}")
             case "closed":
                 raise NotStarted(f"`claude` in {folder} ended before it joined hands, and its window closed with it")
             case "dead":
-                raise NotStarted(f"`claude` in {folder} ended before it joined hands; tmux pane {pane} showed:\n{_read(await terminals.drawn(window.socket, pane))}")
+                # Its last lines, where what it said as it ended is: tmux's notice that it is dead takes the screen.
+                raise NotStarted(f"`claude` in {folder} ended before it joined hands; the last of what tmux pane {pane} drew:\n{_read(await terminals.tail(socket, pane, TOLD_LINES))}")
             case "running":
                 pass
         if clock.now() > deadline:
             # [LAW:one-source-of-truth] the one capture read_screen reads a session's screen by.
-            raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{_read(await terminals.shown(window.socket, pane))}")
+            raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{_read(await terminals.shown(socket, pane))}")
         await clock.sleep(LOOK_SECONDS)
     return member
 

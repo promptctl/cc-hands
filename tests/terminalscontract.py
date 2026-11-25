@@ -1,33 +1,30 @@
-"""What hands relies on of the user's terminals, as one contract held to two parties: the fake terminals
+"""What hands relies on of the user's terminals, as one contract held to two parties: the fake terminals and fritters
 (tests/faketerminals.py), in `make check` (test_terminals_contract.py), and tmux and fritter themselves through
-`hands.sessions.tmux.TmuxTerminals`, on a tmux server of the test's own and the fritter this checkout carries
-(test_terminals_contract_tmux.py, outside). The cases are written once, here, and each of those modules runs all of them
-against its own `world`, so each asserts the same of both: that is what holds the fake to tmux and fritter. A claim they no
-longer keep fails the outside run, and the fake is changed to match."""
+`hands.sessions.tmux.TmuxTerminals` and `hands.sessions.typing.FritterSockets`, on a tmux server of the test's own and the
+fritter this checkout carries (test_terminals_contract_tmux.py, outside). The cases are written once, here, and each of those
+modules runs all of them against its own `world`, so each asserts the same of both: that is what holds the fake to tmux and
+fritter. A claim they no longer keep fails the outside run, and the fake is changed to match."""
 
+import asyncio
 import re
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, get_args
 
 import pytest
 
-from faketerminals import keyed
-from hands.core.effects import Command, Fritter, Input, Key, Text, Type, Writer
-from hands.core.session import CommandName, PromptText, SessionId
+from faketerminals import DEAD, keyed
+from hands.core.effects import Command, Fritter, Input, Key, Text, Writer
+from hands.core.session import CommandName, Keystroke, PromptText
 from hands.core.tmux import Listed, Pane, Unanswered
-from hands.sessions.terminals import Opened, Terminals
-from hands.sessions.typing import Untyped
+from hands.sessions.terminals import Fritters, Opened, Terminals, Unopened, Untyped
 
-SESSION = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000002")
 # What each window's program draws once it is up.
 DRAWN = "hello from the pane"
-# Each kind of input a session is typed: a prompt, its newline kept in it; a command, with arguments and without; a chord.
-INPUTS = [
-    Text(PromptText("first\nsecond")),
-    Command(CommandName("model"), PromptText("opus")),
-    Command(CommandName("clear"), None),
-    Key("escape"),
-]
+# Each kind of input a session is typed: a prompt, its newline kept in it; a command, with arguments and without; every chord.
+INPUTS = [Text(PromptText("first\nsecond")), Command(CommandName("model"), PromptText("opus")), Command(CommandName("clear"), None), *(Key(key) for key in get_args(Keystroke))]
+TYPED = ["text", "command", "bare command", *get_args(Keystroke)]
+# How a pane's program ends: its pane kept by remain-on-exit, or its window closed with it.
+Ending = Literal["dead", "closed"]
 
 
 class World(Protocol):
@@ -38,12 +35,15 @@ class World(Protocol):
     def terminals(self) -> Terminals: ...
 
     @property
+    def fritters(self) -> Fritters: ...
+
+    @property
     def socket(self) -> Path:
-        """The socket of the server `window` opens windows at, by its real path."""
+        """The socket of the world's server, by its real path."""
         ...
 
     async def window(self, session: str) -> Opened:
-        """A window opened in tmux session `session` through `terminals`, once its program is up."""
+        """A window opened in tmux session `session` of the world's server through `terminals`, once its program is up."""
         ...
 
     def pid(self, window: Opened) -> int:
@@ -54,8 +54,8 @@ class World(Protocol):
         """The device of the terminal `window`'s program runs on."""
         ...
 
-    async def end(self, window: Opened, kept: bool) -> None:
-        """End `window`'s program, its pane kept by remain-on-exit where `kept`; returns once its server has seen it end."""
+    async def end(self, window: Opened, ending: Ending) -> None:
+        """End `window`'s program as `ending` says; returns once its server has seen it end."""
         ...
 
     async def attach(self, window: Opened) -> int:
@@ -64,6 +64,14 @@ class World(Protocol):
 
     async def stop(self) -> None:
         """The server exits as one killed does, leaving its socket behind."""
+        ...
+
+    async def refuse(self) -> None:
+        """The server's socket refuses every connection, as one the user may not write to does."""
+        ...
+
+    async def wedge(self) -> None:
+        """The server answers nothing, as one stopped does."""
         ...
 
     async def wrapped(self) -> Fritter:
@@ -75,7 +83,8 @@ class World(Protocol):
         ...
 
     async def reads(self, writer: Writer, expected: str) -> str:
-        """What the program `writer` types into read, once it has read `expected` or has read for long enough."""
+        """What the program `writer` types into read, once it has read `expected`; raises TimeoutError, saying what it
+        read, where it has read for long enough without."""
         ...
 
 
@@ -83,7 +92,6 @@ class TerminalsContract:
     async def test_a_window_opened_makes_its_session_once_and_runs_its_program_in_a_pane_its_server_lists(self, world: World) -> None:
         first, second = await world.window("work"), await world.window("work")
         assert (first.made, second.made) == (True, False)
-        assert first.socket == second.socket == world.socket
         assert [first.pid, second.pid] == [world.pid(first), world.pid(second)]
         assert world.socket in world.terminals.sockets(world.socket.parent)
         assert await world.terminals.panes(world.socket) == Listed({world.device(first): Pane(world.socket, first.pane, "work", 0), world.device(second): Pane(world.socket, second.pane, "work", 1)})
@@ -91,26 +99,33 @@ class TerminalsContract:
     async def test_a_pane_shows_what_its_program_drew(self, world: World) -> None:
         window = await world.window("work")
         assert await world.terminals.shown(world.socket, window.pane) == DRAWN
+        assert await world.terminals.tail(world.socket, window.pane, 5) == DRAWN
 
     async def test_a_pane_runs_until_its_program_ends_then_is_dead_where_kept_and_closed_where_not(self, world: World) -> None:
         # A third window, so its server outlives the two that end.
         kept, closed, running = await world.window("work"), await world.window("work"), await world.window("work")
         assert [await world.terminals.state(world.socket, window.pane) for window in (kept, closed)] == ["running", "running"]
-        await world.end(kept, kept=True)
-        await world.end(closed, kept=False)
+        await world.end(kept, "dead")
+        await world.end(closed, "closed")
         assert [await world.terminals.state(world.socket, window.pane) for window in (kept, closed)] == ["dead", "closed"]
-        # A dead pane runs nothing and is listed as none, and keeps what its program drew before it ended.
+        # A dead pane runs nothing and is listed as none.
         match await world.terminals.panes(world.socket):
             case Listed(panes=panes):
                 assert {pane.id for pane in panes.values()} == {running.pane}
             case other:
                 pytest.fail(f"listed as {other}")
-        match await world.terminals.drawn(world.socket, kept.pane):
-            case str(drawn):
-                assert drawn.startswith(DRAWN)
-            case Unanswered() as unanswered:
-                pytest.fail(f"drawn unread: {unanswered}")
         assert isinstance(await world.terminals.shown(world.socket, closed.pane), Unanswered)
+
+    async def test_a_dead_pane_shows_tmuxs_notice_in_place_of_what_its_program_drew_which_its_tail_keeps(self, world: World) -> None:
+        window, _ = await world.window("work"), await world.window("work")
+        await world.end(window, "dead")
+        match await world.terminals.shown(world.socket, window.pane), await world.terminals.tail(world.socket, window.pane, 5):
+            case str(shown), str(tail):
+                assert shown.split("\n")[-1].startswith(DEAD) and DRAWN not in shown
+                assert tail.split("\n")[0] == DRAWN and tail.split("\n")[-1].startswith(DEAD)
+                assert await world.terminals.tail(world.socket, window.pane, 1) == tail.split("\n")[-1]
+            case other:
+                pytest.fail(f"read as {other}")
 
     async def test_a_server_killed_leaves_its_socket_behind_holding_no_panes_and_no_clients(self, world: World) -> None:
         window = await world.window("work")
@@ -120,32 +135,49 @@ class TerminalsContract:
         assert (await world.terminals.panes(world.socket), await world.terminals.clients(world.socket)) == (Listed({}), {})
         assert await world.terminals.state(world.socket, window.pane) == "closed"
 
+    async def test_a_server_whose_socket_refuses_answers_nothing_says_why_and_opens_no_window(self, world: World) -> None:
+        window = await world.window("work")
+        await world.refuse()
+        asked = await asyncio.gather(world.terminals.panes(world.socket), world.terminals.clients(world.socket), world.terminals.shown(world.socket, window.pane), world.terminals.tail(world.socket, window.pane, 5), world.terminals.state(world.socket, window.pane))
+        assert [type(answer) for answer in asked] == [Unanswered] * 5
+        assert all(str(world.socket) in answer.reason for answer in asked if isinstance(answer, Unanswered))
+        assert isinstance(await world.terminals.open(world.socket, "work", world.socket.parent, ("true",), {}), Unopened)
+        with pytest.raises(Untyped, match=re.escape(f"did not type into pane {window.pane}")):
+            await world.terminals.type(Pane(world.socket, window.pane, "work", 0), Text(PromptText("hello")))
+
+    async def test_a_wedged_server_answers_nothing_and_says_it_gave_no_answer(self, world: World) -> None:
+        window = await world.window("work")
+        await world.wedge()
+        pane = Pane(world.socket, window.pane, "work", 0)
+        asked = await asyncio.gather(world.terminals.panes(world.socket), world.terminals.clients(world.socket), world.terminals.shown(world.socket, window.pane), world.terminals.state(world.socket, window.pane), world.terminals.type(pane, Text(PromptText("hello"))), return_exceptions=True)
+        assert [type(answer) for answer in asked] == [Unanswered] * 4 + [Untyped]
+        assert all(str(world.socket) in str(answer) for answer in asked)
+
     async def test_a_client_is_listed_by_its_terminal_with_the_pane_it_shows(self, world: World) -> None:
         _, shown = await world.window("work"), await world.window("work")
         client = await world.attach(shown)
         assert await world.terminals.clients(world.socket) == {client: world.device(shown)}
 
-    @pytest.mark.parametrize("input", INPUTS, ids=["text", "command", "bare command", "key"])
+    @pytest.mark.parametrize("input", INPUTS, ids=TYPED)
     async def test_each_input_typed_into_a_pane_reaches_its_program_as_its_keys(self, world: World, input: Input) -> None:
         window = await world.window("work")
         pane = Pane(world.socket, window.pane, "work", 0)
-        await world.terminals.type(Type(SESSION, pane, input))
+        await world.terminals.type(pane, input)
         assert await world.reads(pane, keyed(input)) == keyed(input)
 
     async def test_typing_into_a_pane_that_closed_raises_untyped_naming_the_pane(self, world: World) -> None:
         window, _ = await world.window("work"), await world.window("work")
-        await world.end(window, kept=False)
+        await world.end(window, "closed")
         with pytest.raises(Untyped, match=re.escape(f"did not type into pane {window.pane}")):
-            await world.terminals.type(Type(SESSION, Pane(world.socket, window.pane, "work", 0), Text(PromptText("hello"))))
+            await world.terminals.type(Pane(world.socket, window.pane, "work", 0), Text(PromptText("hello")))
 
-    @pytest.mark.parametrize("input", INPUTS, ids=["text", "command", "bare command", "key"])
+    @pytest.mark.parametrize("input", INPUTS, ids=TYPED)
     async def test_each_input_typed_into_a_fritter_reaches_the_program_it_wrapped_as_its_keys(self, world: World, input: Input) -> None:
         fritter = await world.wrapped()
-        await world.terminals.type(Type(SESSION, fritter, input))
+        await world.fritters.type(fritter, input)
         assert await world.reads(fritter, keyed(input)) == keyed(input)
 
     async def test_typing_into_a_fritter_nobody_listens_for_raises_untyped_naming_its_address(self, world: World) -> None:
         fritter = world.unheard()
         with pytest.raises(Untyped, match=re.escape(str(fritter.socket))):
-            await world.terminals.type(Type(SESSION, fritter, Text(PromptText("hello"))))
-
+            await world.fritters.type(fritter, Text(PromptText("hello")))

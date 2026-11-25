@@ -33,7 +33,11 @@ async def _read[P](
     terminals: Terminals, processes: Processes, pids: Sequence[int], environment: Mapping[str, str], of: Callable[[int, Mapping[int, Process], list[Server]], P]
 ) -> list[P | PaneUnread]:
     try:
-        table = await asyncio.to_thread(processes.table)
+        try:
+            table = await asyncio.to_thread(processes.table)
+        except OSError as refused:
+            # A refusal the kernel answers with, as Processes declares: no fault of hands'.
+            return [PaneUnread(f"the processes could not be read: {refused}")] * len(pids)
         read = await across(terminals, processes, environment, pids, table, terminals.panes)
     except Exception as error:
         # [LAW:no-silent-failure] the pane is a fact its readers can go without: a read that broke is logged with
@@ -79,10 +83,13 @@ def _named(processes: Processes, process: Process, mine: Mapping[int, Process]) 
     match processes.started_as(process):
         case StartedAs(environment={"TMUX": str(named)}) if tmux := _TMUX.fullmatch(named):
             return _socket(processes, process, Path(tmux["socket"]), mine.get(int(tmux["server"])))
+        # [LAW:no-silent-failure] a server its environment would name may hold a pane: never read as no pane.
+        case StartedAs(environment={"TMUX": str(named)}) if named:
+            return [Unanswered(f"process {process.pid} was started with a $TMUX that names no tmux server: {named!r}")]
         case Undescribed() as refused:
-            # [LAW:no-silent-failure] a server its environment would name may hold a pane: never read as no pane.
             return [_unread(f"which tmux server process {process.pid} runs under", refused)]
-        case _:
+        # Outside tmux, an empty $TMUX among the ways a program says so; or gone since it was listed.
+        case StartedAs() | None:
             return []
 
 
@@ -103,20 +110,36 @@ def _socket(processes: Processes, process: Process, path: Path, server: Process 
     # pid of a server that exited, and is no server of the pane's. A `process` gone since it was listed holds no pane.
     match starts.get(process.pid):
         case float(start) if still_running(server.pid, start, starts):
-            pass
+            return _relative(processes, server, path)
         case _:
             return []
+
+
+def _relative(processes: Processes, server: Process, path: Path) -> list[Path | Unanswered]:
+    """The socket at `path` relative to the directory the running tmux `server` was started in."""
     match processes.directory_of(server):
         case Path() as directory:
             return [directory / path]
         case Undescribed() as refused:
             return [_unread(f"where the tmux server at {path} runs", refused)]
+        # A server that exited since it was listed holds no pane.
         case None:
             return []
 
 
 def _unread(what: str, refused: Undescribed) -> Unanswered:
     return Unanswered(f"{what} could not be read: {refused.call} refused with errno {refused.errno}")
+
+
+def reached(environment: Mapping[str, str], uid: int) -> Path:
+    """The socket of the server a `tmux` run in `environment` by the user of real uid `uid` reaches with no -S or -L: the
+    one $TMUX names, as tmux reads it (all of it before the first comma, where it neither is empty nor begins with one),
+    or else the default one in `socket_directory`."""
+    match environment.get("TMUX", ""):
+        case str(named) if named and not named.startswith(","):
+            return Path(named.partition(",")[0])
+        case _:
+            return socket_directory(environment, uid) / "default"
 
 
 def socket_directory(environment: Mapping[str, str], uid: int) -> Path:

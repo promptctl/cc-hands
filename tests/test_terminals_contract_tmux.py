@@ -23,9 +23,10 @@ from hands.core.effects import Fritter, Writer
 from hands.core.tmux import Pane
 from hands.sessions.child import Children
 from hands.sessions.terminals import Opened
+from hands.sessions.terminals import Untyped
 from hands.sessions.tmux import TmuxTerminals
-from hands.sessions.typing import Typist, Untyped
-from terminalscontract import DRAWN, TerminalsContract
+from hands.sessions.typing import FritterSockets, Typist
+from terminalscontract import DRAWN, Ending, TerminalsContract
 
 pytestmark = pytest.mark.outside
 
@@ -60,7 +61,8 @@ class Tmux:
         self._tmux = tmux
         # A server started with no config of the user's: none under this home, nor under its XDG one.
         self._environment = {"PATH": os.environ["PATH"], "TMUX_TMPDIR": str(root), "HOME": str(root), "XDG_CONFIG_HOME": str(root), "TERM": "xterm-256color"}
-        self.terminals = TmuxTerminals(Children(SYSTEM, lambda _: None), os.environ.get("PATH"))
+        self.terminals = TmuxTerminals(Children(SYSTEM, lambda _: None), Path(tmux))
+        self.fritters = FritterSockets()
         self._names = count()
         # Where each window's program records, by its pane, and each fritter's, by its address.
         self._recorders: dict[str, Path] = {}
@@ -68,6 +70,9 @@ class Tmux:
         self._clients: list[subprocess.Popen[bytes]] = []
         # The other end of each client's terminal, held open while it is attached.
         self._primaries: list[int] = []
+        # The server stopped, to go on once the world closes, and whether its socket was made to refuse.
+        self._stopped: int | None = None
+        self._refused = False
 
     @property
     def socket(self) -> Path:
@@ -82,14 +87,15 @@ class Tmux:
     def device(self, window: Opened) -> int:
         return int((self._recorders[window.pane] / "tty").read_text())
 
-    async def end(self, window: Opened, kept: bool) -> None:
-        if kept:
-            self._ask("set-option", "-p", "-t", window.pane, "remain-on-exit", "on")
-        os.kill(self.pid(window), signal.SIGKILL)
-        if kept:
-            await self._until(lambda: self._ask("display-message", "-p", "-t", window.pane, "#{pane_dead}").strip() == "1")
-        else:
-            await self._until(lambda: window.pane not in self._ask("list-panes", "-a", "-F", "#{pane_id}").split())
+    async def end(self, window: Opened, ending: Ending) -> None:
+        match ending:
+            case "dead":
+                self._ask("set-option", "-p", "-t", window.pane, "remain-on-exit", "on")
+                os.kill(self.pid(window), signal.SIGKILL)
+                await self._until(lambda: self._ask("display-message", "-p", "-t", window.pane, "#{pane_dead}").strip() == "1")
+            case "closed":
+                os.kill(self.pid(window), signal.SIGKILL)
+                await self._until(lambda: window.pane not in self._ask("list-panes", "-a", "-F", "#{pane_id}").split())
 
     async def attach(self, window: Opened) -> int:
         self._ask("select-window", "-t", window.pane)
@@ -106,6 +112,15 @@ class Tmux:
         server = int(self._ask("display-message", "-p", "#{pid}").strip())
         os.kill(server, signal.SIGKILL)
         await self._until(lambda: not _runs(server))
+
+    async def refuse(self) -> None:
+        self.socket.chmod(0)
+        self._refused = True
+
+    async def wedge(self) -> None:
+        server = int(self._ask("display-message", "-p", "#{pid}").strip())
+        os.kill(server, signal.SIGSTOP)
+        self._stopped = server
 
     async def wrapped(self) -> Fritter:
         at = self._root / f"f{next(self._names)}"
@@ -130,10 +145,15 @@ class Tmux:
         try:
             await self._until(lambda: read.exists() and read.read_bytes().decode(errors="replace") == expected)
         except TimeoutError:
-            pass
-        return read.read_bytes().decode(errors="replace") if read.exists() else ""
+            raise TimeoutError(f"the program read {read.read_bytes() if read.exists() else b''!r}, not {expected!r}") from None
+        return read.read_bytes().decode(errors="replace")
 
     def close(self) -> None:
+        # The server answers again before it is killed through its socket.
+        if self._stopped is not None:
+            os.kill(self._stopped, signal.SIGCONT)
+        if self._refused:
+            self.socket.chmod(0o700)
         for client in self._clients:
             client.kill()
             client.wait()
@@ -143,7 +163,7 @@ class Tmux:
 
     async def _opened(self, session: str, wrapper: list[str]) -> tuple[Opened, Path]:
         where = self._root / f"w{next(self._names)}"
-        opened = await self.terminals.open(session, self._root, [*wrapper, sys.executable, "-c", RECORDER, str(where), DRAWN], self._environment)
+        opened = await self.terminals.open(self.socket, session, self._root, [*wrapper, sys.executable, "-c", RECORDER, str(where), DRAWN], self._environment)
         assert isinstance(opened, Opened), opened
         self._recorders[opened.pane] = where
         await self._until(lambda: (where / "pid").exists() and (where / "tty").exists())
