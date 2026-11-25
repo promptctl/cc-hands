@@ -1,13 +1,18 @@
-// The Call view: what the phone shows under the call's strip, the transcript with its toggle and the brain's panel. The call
-// itself is call.js's: it writes the transcript whether this view is shown or not, so the transcript and its toggle are the
-// document's from the start and the view shows them, hiding them as it is left. The brain's panel is the view's own: drawn
-// into `root` from its template as the view mounts, read while the view is shown, and gone with it.
+// The Call view: what the phone shows under the call's hero, the transcript with its toggle and the brain's panel, and the scroll
+// of the document that melts the hero's round button into a bar. The call itself is call.js's: it writes the transcript whether
+// this view is shown or not, so the transcript and its toggle are the document's from the start and the view shows them, hiding
+// them as it is left. The brain's panel is the view's own: drawn into `root` from its template as the view mounts, read while the
+// view is shown, and gone with it.
 import {PAGE_OPEN, asked, handsNow, reading, unanswered} from "/hands.js";
 
 const content = document.getElementById("call-view");
 const toggle = document.getElementById("shown");
 const transcript = document.getElementById("transcript");
 const panel = document.getElementById("brain-panel");
+const hero = document.getElementById("hero");
+// How far the document scrolls while the button melts from the circle into the bar: a starting value, to be tuned on the phone.
+const MELT = 160;
+const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 // hands answers a Stop at once: one unanswered for this long went to an address the phone can no longer reach. What a Stop
 // said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the brain stands
 // from then on.
@@ -26,6 +31,16 @@ toggle.addEventListener("click", () => {
   try { localStorage.setItem("transcript", transcript.hidden ? "hidden" : "shown"); } catch { /* kept for this page only */ }
 });
 
+// [LAW:one-source-of-truth] the button's shape is `--melt` alone, drawn from the scroll position and by nothing else: 0 is the
+// circle and 1 the bar, and app.html's stylesheet draws every length of the button, and the two lines beside it, from it. Under
+// reduced motion it is 0 or 1 only, switching at half of MELT, where the layout changes anyway.
+function drawMelt() {
+  const reach = Math.min(1, scrollY / MELT);
+  const melt = reduced.matches ? Math.round(reach) : reach;
+  hero.style.setProperty("--melt", String(melt));
+  hero.classList.toggle("bar", melt >= 0.5);
+}
+
 const IDLE = {doing: "idle", calls: []};
 
 // What the last Stop said, of that tap alone, until SAID_MS have passed. It is a deed's word, said whichever view is shown
@@ -40,6 +55,15 @@ function inputOf(call) {
 
 export function mount(root, _route, signal) {
   content.hidden = false;
+  // The circle is the first thing on the view, whatever scroll the browser or the last visit left.
+  scrollTo(0, 0);
+  drawMelt();
+  // The scroll event comes as often as the scroll moves; the shape is drawn once a frame, as far as the scroll has gone by then.
+  let frame = 0;
+  document.addEventListener("scroll", () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(drawMelt);
+  }, {passive: true, signal});
   // Lines were written while the view was away, and a transcript is read from its end.
   transcript.scrollTop = transcript.scrollHeight;
   root.append(panel.content.cloneNode(true));
@@ -108,7 +132,14 @@ export function mount(root, _route, signal) {
 
   // Taken first, so a mount that fails partway still ends cleanly when the view is left.
   const redrawing = setInterval(() => { drawDoing(); drawSaid(); }, 1000);
-  signal.addEventListener("abort", () => { clearInterval(redrawing); content.hidden = true; }, { once: true });
+  signal.addEventListener("abort", () => {
+    clearInterval(redrawing);
+    cancelAnimationFrame(frame);
+    content.hidden = true;
+    // Every other view shows the bar, with nothing driving it.
+    hero.style.removeProperty("--melt");
+    hero.classList.add("bar");
+  }, { once: true });
   drawBrain();
   // The brain is read for as long as the view is shown: its signal ends the read, the one in flight at hands included.
   reading(signal, "/brain", shown => {

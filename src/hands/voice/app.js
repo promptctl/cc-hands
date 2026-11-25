@@ -1,4 +1,4 @@
-// The phone's one app (design-docs/phone-sessions/design.md, "The one app"): the document holds the call and the strip it
+// The phone's one app (design-docs/phone-sessions/design.md, "The one app"): the document holds the call and the hero it
 // is drawn in, and this module mounts the views under them. A tap on a view, or the back gesture, changes the view and
 // never the document, so the call is never made again by either; only a load of the document, a reload, ends it.
 //
@@ -6,7 +6,11 @@
 // and everything it starts, the reads of hands among them, ends when `signal` aborts, as the view is left.
 import "/call.js";
 
+// The Call view mounts at the top of its scroll, every time, so the browser does not put a reload or a back part-way down it.
+history.scrollRestoration = "manual";
+
 const row = document.getElementById("views");
+const hero = document.getElementById("hero");
 const root = document.getElementById("view");
 
 // [LAW:one-source-of-truth] hands draws the row (hands.voice.phonepage), and this reads it: a link with a `data-view` is a
@@ -68,3 +72,5 @@ for (const link of links) {
 addEventListener("popstate", show);
 show();
 row.dataset.ready = "";
+// The call is drawn as the view shown draws it, never as the document's markup has it for a frame.
+hero.dataset.ready = "";
