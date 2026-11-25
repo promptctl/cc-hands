@@ -93,12 +93,10 @@ jobs:
         run: |
           failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key) is \(.value.result), not success"' <<< "$NEEDS")
           test -z "$failed" || { echo "$failed" >&2; exit 1; }
-      # [LAW:single-enforcer] a test is in exactly one shard when every shard collected the same ids: one digest among them all.
+      # [LAW:single-enforcer] a test is in exactly one shard when every shard collected the same ids (tests/agreement.py).
       - uses: actions/download-artifact@v4
         with:
           pattern: collected-*
           path: collected
       - name: Every shard collected the same tests
-        run: |
-          digests=$(grep -H . collected/*/collected)
-          test "$(cut -d: -f2- <<< "$digests" | sort -u | wc -l)" -eq 1 || { echo "the unit shards collected different tests, so one may run in none:" >&2; echo "$digests" >&2; exit 1; }
+        run: python3 -I tests/agreement.py collected/*/collected

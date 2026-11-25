@@ -4,8 +4,8 @@ A shard is a job, and a job's time is its tests' seconds plus a fixed cost the t
 the cut is made to give every job the same seconds. The partition is longest-processing-time packing over what each test
 cost on CI (tests/shard-costs.json), and it is a pure function of the collected test ids and that file: every job of a commit
 computes it alone, and each test runs in exactly one job when the N of them collected the same ids, which each job records a
-digest of (`DIGEST`) for test.yml's verdict to hold them to. A stale file loses no test: it unbalances the shards, which each
-prints the packed seconds of beside what it cost.
+digest of (`DIGEST`) for test.yml's verdict to hold them to (tests/agreement.py). A stale file loses no test: it unbalances the
+shards, which each prints the packed seconds of beside what it cost.
 
 The cost model: a test costs its call and teardown; a module's fixtures cost their setup once to each shard that holds any of
 its tests; and a module is cut across shards only when it is more than a share, since a cut pays its setup again.
@@ -17,8 +17,8 @@ of it is refused by name; a test costs the most any log gives it, so the shards 
 """
 
 import argparse
-import hashlib
 import json
+import math
 import sys
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -28,6 +28,7 @@ from typing import Self
 
 import pytest
 
+from agreement import digest
 from costs import module, rows
 
 COSTS = Path(__file__).with_name("shard-costs.json")
@@ -75,11 +76,14 @@ class Costs:
 
     @classmethod
     def load(cls, path: Path) -> Self:
-        data = json.loads(path.read_text())
-        seconds = [data["fallback"], *data["tests"].values(), *data["setups"].values()]
-        if not all(isinstance(each, (int, float)) and not isinstance(each, bool) for each in seconds):
-            raise ValueError(f"{path}: fallback, and each test's and each module's setup, are seconds, numbers, and nothing else")
-        return cls(**data)
+        try:
+            data = json.loads(path.read_text())
+            seconds = [data["fallback"], *data["tests"].values(), *data["setups"].values()]
+            if not all(isinstance(each, (int, float)) and not isinstance(each, bool) and math.isfinite(each) and each >= 0 for each in seconds):
+                raise ValueError("fallback, and each test's and each module's setup, are seconds: numbers from 0, and nothing else")
+            return cls(**data)
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise ValueError(f"{path}: {type(error).__name__}: {error}") from error
 
     def of(self, test: str) -> float:
         return self.tests.get(test, self.fallback)
@@ -133,10 +137,10 @@ class Sharding:
     @pytest.hookimpl(trylast=True)
     def pytest_collection_modifyitems(self, config: pytest.Config, items: list[pytest.Item]) -> None:
         ids = [item.nodeid for item in items]
-        self.digest = hashlib.sha256("\n".join(sorted(set(ids))).encode()).hexdigest()
+        self.digest = digest(ids)
         # [LAW:single-enforcer] "each test is in exactly one shard" holds when every job collected these same ids: the jobs
-        # record the digest, and test.yml's verdict holds them to one.
-        config.cache.set(DIGEST, self.digest)
+        # record the digest, and test.yml's verdict holds them to one (tests/agreement.py).
+        config.cache.set(DIGEST, {"shard": self.shard.index, "total": self.shard.total, "digest": self.digest})
         self.packed = packed = partition(ids, self.costs, self.shard.total)[self.shard.index - 1]
         kept = [item for item in items if item.nodeid in packed.tests]
         # [LAW:no-silent-failure] a shard with no test is a job that passes having run nothing.
@@ -145,9 +149,14 @@ class Sharding:
         config.hook.pytest_deselected(items=[item for item in items if item.nodeid not in packed.tests])
         items[:] = kept
 
+    @property
+    def uncut(self) -> str:
+        return f"shard {self.shard}: not cut, the collection stopped before its tests were chosen"
+
     def pytest_report_collectionfinish(self, items: Sequence[pytest.Item]) -> str:
-        seconds = self.packed.seconds if self.packed else 0.0
-        return f"shard {self.shard}: {len(items)} tests, packed at {seconds:.1f} s, of the ids digest {self.digest[:12]}"
+        if self.packed is None:
+            return self.uncut
+        return f"shard {self.shard}: {len(items)} tests, packed at {self.packed.seconds:.1f} s, of the ids digest {self.digest[:12]}"
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         if report.when == "setup":
@@ -158,9 +167,10 @@ class Sharding:
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
         """[LAW:nothing-unseen] what the shard cost against what it was packed at, setups and all, and the tests and modules
         that are slow and are not in the file: it is stale, and `uv run python tests/shards.py` writes it from these jobs' logs."""
-        if self.packed is None:
-            return
         terminalreporter.section(f"shard {self.shard}")
+        if self.packed is None:
+            terminalreporter.line(self.uncut)
+            return
         terminalreporter.line(f"setup, call and teardown: {sum(self.setups.values()) + sum(self.spent.values()):.1f} s, packed at {self.packed.seconds:.1f} s")
         for test in sorted(test for test, seconds in self.spent.items() if seconds >= UNPRICED and test not in self.costs.tests):
             terminalreporter.line(f"cost {self.spent[test]:.1f} s and not in tests/shard-costs.json: {test}")
@@ -172,6 +182,8 @@ def costs_from(logs: Mapping[str, str]) -> Costs:
     """The most any log gives each test, and the most any gives each module's setup. `logs` is each log's text by its name."""
     tests: dict[str, float] = defaultdict(float)
     setups: dict[str, float] = defaultdict(float)
+    if not logs:
+        raise ValueError("no log was given")
     for name, log in logs.items():
         found = rows(log)
         # [LAW:no-silent-failure] a log with no row is an expired log, a wrong job or a format the reader does not know: from it

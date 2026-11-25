@@ -25,6 +25,8 @@ jobs:
     # are: the limit is a hung test's bound, set from the slowest runner seen (pytest's time swings nearly 2x), not a budget.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
+      # A red `pair` leaves `rest` to run: the day's run says what each tier found, since nobody is waiting on it.
+      fail-fast: false
       matrix:
         include:
           - { tier: pair, target: check-pair, timeout: 40 }
@@ -125,7 +127,7 @@ jobs:
     steps:
       - name: Say so
         run: |
-          open=$(gh issue list --repo "$REPO" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          open=$(gh issue list --repo "$REPO" --state open --search "\"$TITLE\" in:title" --json number,title --jq 'map(select(.title == env.TITLE))[0].number // empty')
           if [ -n "$open" ]; then
             gh issue comment "$open" --repo "$REPO" --body "Red again: $RUN"
           else

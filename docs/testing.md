@@ -98,9 +98,9 @@ A job's 5 minutes hold about 100 s of tests: a macOS job spends 95 s before its 
 locked environment and pytest's collection, and a job that loads the speech models 50 to 100 s more restoring their cache. A
 Free plan runs 5 macOS jobs at once, shared by every PR, the merge queue and master. So the suite is on two paths.
 
-`.github/workflows/test.yml`, every PR and the merge queue, ends inside 5 minutes: `make check-unit` as four shards, `unit 1/4`
-to `unit 4/4`, and `make check-types`, five jobs, one wave. Each shard is `pytest --shard=K/N` (tests/shards.py): the tests the
-Kth of N holds, packed to equal seconds from what each test cost on CI (tests/shard-costs.json), the same cut in every job. The
+`.github/workflows/test.yml`, every PR and the merge queue, ends inside 5 minutes: `make check-unit` as the shards of its
+`unit` matrix, and `make check-types`, which tests/test_workflows.py holds to the macOS runners one wave of a Free plan has.
+Each shard is `pytest --shard=K/N` (tests/shards.py): the tests the Kth of N holds, packed to equal seconds from what each test cost on CI (tests/shard-costs.json), the same cut in every job. The
 cost file is made from the jobs' logs, which print each test's cost (tests/costs.py); tests/shards.py says how. A stale file
 loses no test: it unbalances the shards, and each prints what it was packed at beside what it cost, and the slow tests and
 setups the file does not name. Each also records a digest of the test ids it collected, and the check `test` passes when all

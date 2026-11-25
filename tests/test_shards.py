@@ -85,10 +85,28 @@ def test_a_log_with_no_row_of_the_report_is_refused_by_name_and_not_made_a_cost_
         costs_from({"expired.log": ""})
 
 
-@pytest.mark.parametrize("data", [{"fallback": None, "setups": {}, "tests": {}}, {"fallback": 0, "setups": {}, "tests": {"tests/a.py::t": "1.5"}}, {"fallback": 0, "setups": {"tests/a.py": True}, "tests": {}}])
-def test_a_cost_file_of_anything_but_seconds_is_refused_naming_the_file(data: dict[str, object], tmp_path: Path) -> None:
+def test_no_log_at_all_is_refused_and_not_made_a_cost_file() -> None:
+    with pytest.raises(ValueError, match="no log was given"):
+        costs_from({})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"fallback": null, "setups": {}, "tests": {}}',
+        '{"fallback": 0, "setups": {}, "tests": {"tests/a.py::t": "1.5"}}',
+        '{"fallback": 0, "setups": {"tests/a.py": true}, "tests": {}}',
+        '{"fallback": 0, "setups": {}, "tests": {"tests/a.py::t": -1}}',
+        '{"fallback": NaN, "setups": {}, "tests": {}}',
+        '{"fallback": 0, "setups": {}}',
+        '{"fallback": 0, "setups": {}, "tests": {}, "extra": 1}',
+        '{"fallback": 0, "setups": [], "tests": []}',
+        "<<<<<<< HEAD",
+    ],
+)
+def test_a_cost_file_that_is_not_the_costs_in_seconds_is_refused_naming_the_file(text: str, tmp_path: Path) -> None:
     path = tmp_path / "costs.json"
-    path.write_text(json.dumps(data))
+    path.write_text(text)
     with pytest.raises(ValueError, match="costs.json"):
         Costs.load(path)
 
@@ -167,7 +185,14 @@ def test_every_shard_of_one_suite_records_the_same_digest_and_another_suite_anot
     for index in (1, 2, 3):
         result = shard_run(pytester, Shard(index, 3), Costs({}, {}, 1.0))
         assert result.ret == pytest.ExitCode.OK
-        digests.append((pytester.path / ".pytest_cache" / "v" / DIGEST).read_text())
+        record = json.loads((pytester.path / ".pytest_cache" / "v" / DIGEST).read_text())
+        assert (record["shard"], record["total"]) == (index, 3)
+        digests.append(record["digest"])
     assert len(set(digests)) == 1
     shard_run(pytester, Shard(1, 3), Costs({}, {}, 1.0), "-k", "test_0")
-    assert (pytester.path / ".pytest_cache" / "v" / DIGEST).read_text() not in digests
+    assert json.loads((pytester.path / ".pytest_cache" / "v" / DIGEST).read_text())["digest"] not in digests
+
+
+def test_a_shard_never_cut_says_so_and_not_that_it_packed_nothing() -> None:
+    sharding = Sharding(Shard(1, 4), Costs({}, {}, 0.0))
+    assert sharding.pytest_report_collectionfinish([]) == "shard 1/4: not cut, the collection stopped before its tests were chosen"
