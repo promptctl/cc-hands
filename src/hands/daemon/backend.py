@@ -8,7 +8,6 @@ login is the one refusal the preflight leaves out: only a Claude Code can say it
 from collections.abc import Mapping
 
 from hands.core.session import Runnable
-from hands.core.wire import UPSTREAM
 from hands.daemon.config import Claude
 from hands.sessions.child import Children
 from hands.sessions.home import Home
@@ -24,9 +23,11 @@ def backend(children: Children, llm: Claude, home: Home, environment: Mapping[st
     # loads, rather than once every turn has failed.
     # Imported here, so that only a check loads the brain's process, its MCP server, and Pipecat's tools.
     from hands.brain.process import NotLoggedIn, logged_in
+    from hands.sessions.proxy import Direct
 
     try:
-        account = logged_in(children, brain.claude.path, home.brain, UPSTREAM, environment)
+        # Direct: asked before the run's proxy serves, and by `hands check`, which runs none.
+        account = logged_in(children, brain.claude.path, home.brain, Direct(), environment)
     except NotLoggedIn as error:
         raise Rejected(str(error)) from error
     return ClaudeCodeBackend(model=llm.model, config_dir=home.brain, account=account, brain=brain)

@@ -13,6 +13,7 @@ from hands.brain import pinned
 from hands.core.session import PERMISSION_MODES, PermissionMode, PinnedClaude, Runnable, UnknownMode
 from hands.sessions.files import Unread
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.untap import ROUTING
 
 
 class Unstartable(Exception):
@@ -30,14 +31,23 @@ STATE = ".claude.json"
 
 
 @dataclass(frozen=True)
+class Env:
+    """What settings.json's env puts in the brain's environment that hands weighs: the API key, by the last 20
+    characters Claude Code records its answer on, None for none; and each variable of ROUTING it sets, which Claude Code
+    puts over the environment it is started in, so over hands' way to the API."""
+
+    key: str | None
+    routing: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Settings:
-    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, and the API key
-    it puts in the brain's environment, by the last 20 characters Claude Code records its answer on. None is a mode or
-    a key it names none of."""
+    """The brain's settings.json: the switches of KEPT_OUT it leaves on, the permission mode it names, and its env. None
+    is a mode it names none of."""
 
     synced: tuple[str, ...]
     mode: PermissionMode | UnknownMode | Unread | None
-    key: str | Unread | None
+    env: Env | Unread
 
 
 @dataclass(frozen=True)
@@ -88,11 +98,11 @@ def _settings(path: Path) -> Settings | Unread:
     try:
         said = Payload.parse(path.read_bytes())
     except FileNotFoundError:
-        # Left out, each switch is on, and the brain names no mode and no key.
-        return Settings(KEPT_OUT, None, None)
+        # Left out, each switch is on, and the brain names no mode and sets no env.
+        return Settings(KEPT_OUT, None, Env(None, ()))
     except (OSError, Rejected) as error:
         return Unread(str(error))
-    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said))
+    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _env(said))
 
 
 def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
@@ -105,16 +115,17 @@ def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
     return SETTINGS_MODES.get(named) or UnknownMode(named)
 
 
-def _key(said: Payload) -> str | Unread | None:
-    """The API key settings.json puts in the brain's environment, where the brain's own is set: hands' never reaches it
-    (hands.brain.process.FOREIGN_LOGINS)."""
+def _env(said: Payload) -> Env | Unread:
+    """What settings.json's env sets that hands weighs. Its API key reaches the brain where the brain's own is set:
+    hands' never does (hands.brain.process.FOREIGN_LOGINS)."""
     try:
-        key = Payload.of(said.fields.get("env", {}), "its env").optional_text("ANTHROPIC_API_KEY")
+        env = Payload.of(said.fields.get("env", {}), "its env")
+        key = env.optional_text("ANTHROPIC_API_KEY")
     except Rejected as error:
         return Unread(str(error))
     # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its last 20
     # characters once it is trimmed.
-    return key.strip()[-20:] if key else None
+    return Env(key.strip()[-20:] if key else None, tuple(name for name in ROUTING if name in env.fields))
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -172,19 +183,32 @@ def _pinned(claude: PinnedClaude | pinned.Unpinned) -> tuple[str, ...]:
 
 def _kept_out(config: ConfigDir) -> tuple[str, ...]:
     """What settings.json would have the brain start on that it must not: a sync not kept out, a mode Claude Code does
-    not take, which would put the settings beside it in doubt, or an env hands cannot read."""
+    not take, which would put the settings beside it in doubt, or an env hands cannot read or that routes the brain
+    around hands' proxy."""
     path = config.path / SETTINGS
     match config.settings:
         case Unread(reason=reason):
             return (f"the brain's settings could not be read ({reason}): correct {path}",)
-        case Settings(synced=synced, mode=mode, key=key):
+        case Settings(synced=synced, mode=mode, env=env):
             pass
     kept = " and ".join(f'"{switch}": false' for switch in KEPT_OUT)
     return (
         *((f"the brain would load its account's {' and '.join(synced)}: set {kept} in {path}",) if synced else ()),
         *_moded(mode, path),
-        *((f"the brain's settings set an env hands cannot read ({key.reason}): correct {path}",) if isinstance(key, Unread) else ()),
+        *_routed(env, path),
     )
+
+
+def _routed(env: Env | Unread, path: Path) -> tuple[str, ...]:
+    match env:
+        case Unread(reason=reason):
+            return (f"the brain's settings set an env hands cannot read ({reason}): correct {path}",)
+        case Env(routing=()):
+            return ()
+        case Env(routing=routing):
+            # [LAW:single-enforcer] hands' proxy is how the brain reaches the API and how hands hears it: Claude Code puts
+            # settings.json's env over the environment hands starts it in.
+            return (f"the brain's settings set {', '.join(routing)} in their env, which would send the brain's requests around hands' proxy: remove them from {path}",)
 
 
 def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:
@@ -210,7 +234,8 @@ def unanswered(config: ConfigDir) -> tuple[str, ...]:
             return (_unreadable(state, unread),)
         case State(onboarded=onboarded, trusted=trusted, answered=answered):
             pass
-    key = config.settings.key if isinstance(config.settings, Settings) else config.settings
+    env = config.settings.env if isinstance(config.settings, Settings) else config.settings
+    key = env.key if isinstance(env, Env) else env
     return (
         *_screen(onboarded, state, "its onboarding unfinished"),
         *_screen(trusted, state, f"{config.cwd} untrusted"),

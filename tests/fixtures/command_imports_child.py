@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from hands.brain import pinned, process
     from hands.sessions.child import Children
+    from hands.sessions.proxy import ApiRoute
     from hands.voice import phoneaddress
 
 
@@ -38,7 +39,7 @@ def lan_addresses() -> list[str]:
     return ["192.0.2.1"]
 
 
-def logged_in(children: Children, config_dir: Path, pin: pinned.Pin, base_url: str, inherited: Mapping[str, str], method: process.Method) -> process.Login:
+def logged_in(children: Children, config_dir: Path, pin: pinned.Pin, route: ApiRoute, inherited: Mapping[str, str], method: process.Method) -> process.Login:
     from hands.brain.process import Login
     from hands.voice.backends import Account
 

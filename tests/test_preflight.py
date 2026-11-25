@@ -92,6 +92,8 @@ FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     # Left out, each switch is on.
     ("no settings.json", lambda home, _: (home.brain / "settings.json").unlink(), 'its account\'s syncClaudeAiSkills and syncClaudeAiPlugins: set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in'),
     ("a bad defaultMode", lambda home, _: (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "permissions": {"defaultMode": "acceptedits"}})), 'a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in'),
+    # Claude Code puts settings.json's env over the environment hands starts the brain in, hands' proxy's variables too.
+    ("an env that routes the brain around hands' proxy", lambda home, _: (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "env": {"HTTPS_PROXY": "http://corp:3128", "ANTHROPIC_BASE_URL": "https://gateway.example", "PATH": "/bin"}})), "the brain's settings set HTTPS_PROXY, ANTHROPIC_BASE_URL in their env, which would send the brain's requests around hands' proxy: remove them from "),
     ("a kept voice hands has no voice for", lambda home, _: home.voice.write_text("zed\n"), "says 'zed', which names no voice hands has"),
 ]
 

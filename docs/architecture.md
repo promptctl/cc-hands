@@ -54,9 +54,20 @@ mocks.
 
 **`sessions`** is every edge on the Claude Code side: the unix socket the hook shims
 POST to, the session files the shims write, Claude Code's own status files, the JSONL tail, the git delta reader, the
-process-liveness check, the audit log, and the wire proxy a Claude Code process reaches
-the API through (`ANTHROPIC_BASE_URL`), which passes every byte unchanged and reads a
-copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The
+process-liveness check, the audit log, and the wire proxy the brain reaches
+the API through, which passes every byte unchanged and reads a
+copy into `core.wire`'s typed events, one `Exchanged` audit line per request. The brain is
+given the proxy as its HTTPS proxy (`HTTPS_PROXY`, set in fritter's tap's mark so what the
+brain runs gets hands' own values back) and the proxy's trust file as `NODE_EXTRA_CA_CERTS`,
+and no `ANTHROPIC_BASE_URL`: it reaches `https://api.anthropic.com` as Claude Code reaches
+Anthropic's own API, so it behaves first-party (its main turns carry `cc_prompt_id`). The proxy ends that TLS itself, inside hands' process, with a certificate
+for the API's host signed by an authority it mints as it starts (`sessions/authority.py`),
+and serves the requests inside it with the same handler as a request to its own origin
+(`sessions/connect.py`); a CONNECT to any other host is tunnelled, through the outer proxy
+hands' environment names when it names one. hands' side questions post to the proxy's
+plain origin. The brain's MCP server and hooks' listener are on loopback, which its
+`NO_PROXY` names, so they are reached directly. `hands login` and the `claude auth status`
+the start asks run while no proxy may, and reach Anthropic directly. The
 working sessions' exchanges reach the same observer by another path, the tap
 (`sessions/tap.py`): each session's fritter is its proxy, forwards its requests to the API it
 still names, and copies each exchange to `<hands home>/wire.sock`, read into the same values, so a session

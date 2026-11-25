@@ -15,8 +15,9 @@ from typing import Literal, cast, get_args
 from hands.core.session import PromptId, SessionId
 from hands.core.trace import Span
 
-# Where Claude Code reaches the API when nothing says otherwise.
-UPSTREAM = "https://api.anthropic.com"
+# The host Claude Code reaches the API at when nothing says otherwise, and where.
+API_HOST = "api.anthropic.com"
+UPSTREAM = f"https://{API_HOST}"
 
 # ── What a request is ────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -25,9 +26,10 @@ UPSTREAM = "https://api.anthropic.com"
 class MainTurn:
     """The session's own loop asking the model for its next step: the one kind of request whose reply is the session speaking.
 
-    `prompt` is the turn it asks for, the id its hooks carry as prompt_id; None when the request names none. Claude Code
-    names it only when its ANTHROPIC_BASE_URL is Anthropic's API: a session given a gateway, and the brain
-    through hands' proxy, name none.
+    `prompt` is the turn it asks for, the id its hooks carry as prompt_id, sent as `cc_prompt_id`; None when the request
+    names none. Claude Code names it only when it takes itself to be reaching Anthropic's own API: a session given a
+    gateway in ANTHROPIC_BASE_URL names none. The brain names it: it reaches https://api.anthropic.com with hands' proxy
+    as its HTTPS proxy, which ends its TLS (`hands.sessions.connect`).
     """
 
     prompt: PromptId | None

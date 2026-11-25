@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 import aiohttp
@@ -22,6 +23,7 @@ from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
+    API_HOST,
     Answered,
     Answering,
     Auxiliary,
@@ -54,6 +56,7 @@ from hands.core.wire import (
 from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
 from hands.sessions import proxy
+from hands.sessions.authority import mint
 from hands.sessions.proxy import Proxy, serve_proxy
 from hands.sessions.replies import sent_of, spent
 from hands.sessions.wide import root
@@ -117,7 +120,7 @@ class Ticking(VirtualClock):
 
 
 @pytest.fixture
-async def serve() -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]]:
+async def serve(tmp_path: Path) -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]]:
     cleanups: list[Callable[[], Awaitable[None]]] = []
     ticks = Ticking()
 
@@ -144,7 +147,7 @@ async def serve() -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream,
         def route(sent: Sent) -> Route:
             return made.route(sent)
 
-        proxy = await serve_proxy(upstream.url, observe, route, clock=ticks)
+        proxy = await serve_proxy(upstream.url, observe, route, ticks, {}, mint(API_HOST, SYSTEM), tmp_path / "trusted.pem")
         cleanups.extend([proxy.close, runner.cleanup])
         made = Wire(proxy, seen, exchanged)
         return upstream, made
@@ -369,7 +372,7 @@ async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_reaches_the_clie
 
 
 @pytest.mark.outside
-async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange() -> None:
+async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(tmp_path: Path) -> None:
     seen: list[Observed] = []
     # A port just released, so nothing listens on it.
     probe = web.AppRunner(web.Application())
@@ -377,7 +380,7 @@ async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, forward, clock=VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)))
+    proxy = await serve_proxy(dead, seen.append, forward, VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, mint(API_HOST, SYSTEM), tmp_path / "trusted.pem")
     try:
         status, _, body = await post(proxy.url)
     finally:
@@ -474,14 +477,14 @@ async def test_a_spent_usage_limit_routed_final_reaches_the_client_as_nothing_it
 
 @pytest.mark.outside
 @pytest.mark.parametrize(("refusal", "final"), [("final", True), ("retried", False)])
-async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Literal["retried", "final"], final: bool) -> None:
+async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Literal["retried", "final"], final: bool, tmp_path: Path) -> None:
     seen: list[Observed] = []
     probe = web.AppRunner(web.Application())
     await probe.setup()
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root(SYSTEM)), clock=VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)))
+    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root(SYSTEM)), VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, mint(API_HOST, SYSTEM), tmp_path / "trusted.pem")
     try:
         status, headers, _ = await post(proxy.url)
     finally:
