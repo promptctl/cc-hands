@@ -1,5 +1,6 @@
 """A turn as the summariser reads it: what opened it, and each thing Claude said or did, in order."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import NewType
@@ -13,6 +14,9 @@ Ref = NewType("Ref", str)
 
 # The id Claude Code gives a subagent, which names its own transcript, `<session>/subagents/agent-<id>.jsonl`.
 AgentId = NewType("AgentId", str)
+# The shape of one as Claude Code mints it: `a` and sixteen hex digits, which is how a call that names an agent is told from
+# one that names a teammate.
+AGENT_ID = re.compile(r"a[0-9a-f]{16}")
 
 
 @dataclass(frozen=True)

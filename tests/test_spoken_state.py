@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.progress import RUNNING, Doing
+from hands.core.progress import RUNNING, Doing, Words
 from hands.core.session import AskedQuestion, Held, Idle as Parked, Membership, Opened, Option, Permission, Plan, PromptId, Question, RequestId, Running, Session, SessionId, Told, Turn, Unreported
 from hands.core.status import Busy, Idle, Shell, Stamp, Unknown, UnknownReason, Waiting
 from hands.core.turn import AgentId
@@ -14,7 +14,7 @@ from hands.voice.tools import describe_listing
 
 MEMBER = Membership(SessionId("s"), pid=4242, cwd=Path("/code/cc-hands"), transcript=Path("/code/cc-hands/t.jsonl"))
 TURN = PromptId("p1")
-RUN_TESTS = Doing(RUNNING, "run the test suite")
+RUN_TESTS = Doing(RUNNING, Words("run the test suite"))
 
 
 def held(on: Permission | Question | Plan) -> tuple[Held, ...]:
