@@ -13,6 +13,7 @@ import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,11 @@ STOPPED = "  (the run stopped inside it)"
 ROW = re.compile(rf"^\s*\d+\.\d{{3}}\s+(?P<setup>\d+\.\d{{3}})\s+(?P<call>\d+\.\d{{3}})\s+(?P<teardown>\d+\.\d{{3}})\s+(?P<test>tests/.+?)(?P<stopped>{re.escape(STOPPED)})?\s*$")
 # What CI puts in front of each line of a job's log.
 STAMP = re.compile(r"^\S+Z ")
+
+
+# The two lines of a CI job's log that bound a run: pytest's count of what it collected, and the report's own first line.
+COLLECTED = re.compile(r"^(?P<at>\S+Z) collected \d+ items")
+REPORTED = re.compile(r"^(?P<at>\S+Z) \d+ tests, \d+\.\d{3} s: ")
 
 
 def module(test: str) -> str:
@@ -64,6 +70,17 @@ def costs_in(text: str) -> list[Cost]:
     """The tests of a report's rows in `text`, which may be a CI job's log: the one reader of what `row` prints."""
     rows = (ROW.match(STAMP.sub("", line)) for line in text.splitlines())
     return [Cost(found["test"], float(found["setup"]), float(found["call"]), float(found["teardown"]), found["stopped"] is not None) for found in rows if found]
+
+
+def ran_for(text: str) -> float | None:
+    """Seconds from a CI job's pytest collecting to its cost report starting, or None when the log lacks either line. A run
+    cancelled at its limit ends at about the report, so this is how long its tests had to run, the one it stopped inside included."""
+    lines = text.splitlines()
+    began = next((found for line in lines if (found := COLLECTED.match(line))), None)
+    ended = next((found for line in lines if (found := REPORTED.match(line))), None)
+    if began is None or ended is None:
+        return None
+    return (datetime.fromisoformat(ended["at"]) - datetime.fromisoformat(began["at"])).total_seconds()
 
 
 def report(log: str) -> str:

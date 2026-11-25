@@ -26,18 +26,33 @@ runs:
     # unauthenticated, which answers a runner's shared address with a 403 once the hour's quota is spent.
     # [LAW:no-silent-failure] the installer runs from a file: piped into bash, a failed download is an empty script
     # that exits 0, and the suite then skips every lit test without a word.
-    - name: Install lit
+    # The release's binary is kept per tag: the install is 30 s of a job that has 5 minutes, and a tag never changes what it holds.
+    - name: The lit release
+      id: lit
       env:
-        GOBIN: ${{ runner.temp }}/lit
         GH_TOKEN: ${{ github.token }}
       shell: bash
+      run: echo "tag=$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      id: kept
+      with:
+        path: ${{ runner.temp }}/lit
+        key: lit-${{ steps.lit.outputs.tag }}
+    - name: Install lit
+      if: steps.kept.outputs.cache-hit != 'true'
+      env:
+        GOBIN: ${{ runner.temp }}/lit
+      shell: bash
       run: |
-        tag="$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)"
+        tag="${{ steps.lit.outputs.tag }}"
         curl -fsSL -o "$RUNNER_TEMP/lit-install.sh" https://raw.githubusercontent.com/promptctl/links-issue-tracker/$tag/scripts/install.sh
         bash "$RUNNER_TEMP/lit-install.sh" --from-release "$tag"
-        # The lit tests skip without a lit on PATH: a lit put anywhere but where the next step looks fails here.
-        "$GOBIN/lit" version
-        echo "$GOBIN" >> "$GITHUB_PATH"
+    # The lit tests skip without a lit on PATH: a lit put anywhere but where this looks fails here, kept or installed.
+    - name: lit on the PATH
+      shell: bash
+      run: |
+        "$RUNNER_TEMP/lit/lit" version
+        echo "$RUNNER_TEMP/lit" >> "$GITHUB_PATH"
     # A Claude Code policy in its folder and its plists, as a developer's Mac or a managed one has: the run's sandbox must
     # keep it from every Claude Code the run starts (tests/offline.sb), and the run stops before any test if it finds it.
     # The policy allows the command the terminal contract's pinned case needs a permission dialog for

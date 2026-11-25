@@ -186,6 +186,31 @@ def test_a_test_the_run_stopped_inside_has_no_cost_and_does_not_weigh_on_the_qui
     assert costs.fallback == 0.2
 
 
+def cancelled_in(test: str, seconds: float) -> str:
+    """A cancelled job's log: 100 s from pytest's collection to the report, the quick test costing 10 s of them, then `test` begun."""
+    finished = Cost("tests/test_page.py::test_quick", 5.0, 5.0, 0.0)
+    return "\n".join(
+        [
+            "2026-11-25T01:00:00.0000000Z collected 40 items / 30 deselected / 10 selected",
+            "2026-11-25T01:01:40.0000000Z 2 tests, 10.000 s: the log stops before the run ended",
+            f"2026-11-25T01:01:40.1000000Z {row(finished)}",
+            f"2026-11-25T01:01:40.1000000Z {row(Cost(test, seconds, 0.0, 0.0, stopped=True))}",
+        ]
+    )
+
+
+def test_a_test_the_run_stopped_inside_costs_what_the_run_spent_in_it_when_no_run_finished_it() -> None:
+    costs = costs_from({"one": cancelled_in("tests/test_page.py::test_waits", 1.0)})
+    # 100 s of the run, less the quick test's 10 s and the stopped test's own 1 s of setup.
+    assert costs.tests == {"tests/test_page.py::test_quick": 5.0, "tests/test_page.py::test_waits": 89.0}
+
+
+def test_a_test_a_run_finished_costs_what_that_run_says_not_what_one_stopped_inside_it_spent() -> None:
+    finished = table(Cost("tests/test_page.py::test_waits", 1.0, 61.0, 0.0))
+    costs = costs_from({"one": cancelled_in("tests/test_page.py::test_waits", 1.0), "two": finished})
+    assert costs.tests["tests/test_page.py::test_waits"] == 61.0
+
+
 def test_a_log_with_no_cost_rows_is_refused_by_name() -> None:
     with pytest.raises(ValueError, match="check-pair-log-3.txt holds no cost report rows"):
         costs_from({"one": SHARD_ONE, "check-pair-log-3.txt": "no report log at .pytest_cache/check-pair-log.jsonl: the run wrote none\n"})
