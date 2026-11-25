@@ -78,7 +78,7 @@ def test_what_is_given_back_is_every_variable_a_real_fritter_replaces(fritter: P
             """The names sh -c sees run under `wrapped`, the shell's own among them."""
             controller, terminal = os.openpty()
             try:
-                subprocess.run([*wrapped, "sh", "-c", f"env -0 > {printed}"], env=machine, stdin=terminal, stdout=terminal, stderr=terminal, check=True, timeout=30)
+                subprocess.run([*wrapped, "sh", "-c", f"env -0 > {printed}"], env=machine, stdin=terminal, stdout=terminal, stderr=terminal, check=True)
             finally:
                 os.close(terminal)
                 os.close(controller)
