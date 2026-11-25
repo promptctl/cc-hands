@@ -163,7 +163,7 @@ class Newest:
         # through the proxy, a question's own excepted. It renews its token when it expires within five minutes of a request
         # it builds, and an idle one sends a request every ten minutes (docs/claude-code-behavior.md): so this one is live
         # when the turn a question forks carries one long expired, bar the minutes between a token's expiry and that
-        # request. None while the brain has sent none, as one on an API key does.
+        # request. None until the brain has sent a request that carries one.
         self._credential: Credential | None = None
         # [LAW:no-ambient-temporal-coupling] set, and replaced, as each turn is held and as the brain moves: a question
         # waits on it for a turn of the conversation the brain is in, which after a /clear is none until it sends its first.
