@@ -67,20 +67,20 @@ func serve(args []string) int {
 	// default disposition that kills it with its trust file half written.
 	killed := make(chan os.Signal, 1)
 	signal.Notify(killed, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	ended := make(chan stop, 1)
+	ended := stops()
 	go func() {
 		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
-			ending(ended, stop{"its input failed", err})
+			ended.send(stop{"its input failed", err})
 			return
 		}
-		ending(ended, stop{"its input ended", nil})
+		ended.send(stop{"its input ended", nil})
 	}()
 	go func() {
 		told := <-killed
 		// A second signal takes its default course: a stop that stalls is never one that
 		// nothing short of SIGKILL ends.
 		signal.Stop(killed)
-		ending(ended, stop{"told to by " + told.String(), nil})
+		ended.send(stop{"told to by " + told.String(), nil})
 	}()
 	listen := func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
 	return run(args, os.Getenv, http.ProxyFromEnvironment, listen, os.Stdout, os.Stderr, ended)
@@ -93,16 +93,25 @@ type stop struct {
 	err error
 }
 
-// ending sends `why` brioche is to stop on `ended`, which holds one: the first is why it
-// stops, and whether `why` was taken as that is returned. Any after it come once brioche is
-// stopping already.
-func ending(ended chan<- stop, why stop) bool {
-	select {
-	case ended <- why:
-		return true
-	default:
-		return false
-	}
+// stopping is why brioche stops: the first stop sent it, and only that one. [LAW:types-are-the-program]
+// one stop is taken however many come, and when: one that comes once brioche is stopping
+// already is never taken, so whoever sent it says it.
+type stopping struct {
+	first sync.Once
+	why   chan stop // holds the first
+}
+
+func stops() *stopping {
+	return &stopping{why: make(chan stop, 1)}
+}
+
+// send is whether `why` is the stop brioche stops for.
+func (s *stopping) send(why stop) (taken bool) {
+	s.first.Do(func() {
+		s.why <- why
+		taken = true
+	})
+	return taken
 }
 
 // flag is one of brioche's flags, every one of them needed: what its value is called, and
@@ -206,7 +215,7 @@ func loopback(raw string) (intercept.Origin, error) {
 // the client's trust from; how it reaches the world, `outer`; where it listens; where it
 // prints the client's environment, which it closes however it returns; where it says what it
 // must; and `ended`, which says when it is to stop and why, and which its door says on too.
-func run(args []string, client func(string) string, outer intercept.Proxy, listen func() (net.Listener, error), printed io.WriteCloser, said io.Writer, ended chan stop) int {
+func run(args []string, client func(string) string, outer intercept.Proxy, listen func() (net.Listener, error), printed io.WriteCloser, said io.Writer, ended *stopping) int {
 	closePrinted := sync.OnceValue(printed.Close)
 	defer closePrinted()
 	// A logger, so lines said from the door's goroutines at once are never interleaved.
@@ -232,7 +241,7 @@ func run(args []string, client func(string) string, outer intercept.Proxy, liste
 		sayer.Printf("cannot end the environment that points a client at brioche: %v", err)
 		return failed
 	}
-	why := <-ended
+	why := <-ended.why
 	if why.err != nil {
 		// [LAW:no-silent-failure] a stop for a failure, a door that stopped serving among them,
 		// ends brioche as failed: its starter sees it gone, never a brioche alive and deaf.
@@ -245,7 +254,7 @@ func run(args []string, client func(string) string, outer intercept.Proxy, liste
 
 // open is brioche's door, for a client whose trust variable names `named`. A server of its
 // that stops serving is a stop, sent on `ended`.
-func open(asked options, named string, outer intercept.Proxy, listen func() (net.Listener, error), sayer *log.Logger, ended chan<- stop) (*intercept.Door, error) {
+func open(asked options, named string, outer intercept.Proxy, listen func() (net.Listener, error), sayer *log.Logger, ended *stopping) (*intercept.Door, error) {
 	interception, err := intercept.Intercept("brioche", asked.intercepted, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("cannot make the certificate the client is answered with for %s: %w", asked.intercepted, err)
@@ -267,7 +276,7 @@ func open(asked options, named string, outer intercept.Proxy, listen func() (net
 	passing := asSent(func(*httputil.ProxyRequest) {}, transport(outer), sayer)
 	told := func(event intercept.Event) {
 		if stopped, ok := event.(intercept.Stopped); ok {
-			if ending(ended, stop{"it stopped taking the client's requests", stopped.Err}) {
+			if ended.send(stop{"it stopped taking the client's requests", stopped.Err}) {
 				return // run says it, as why brioche stops
 			}
 		}

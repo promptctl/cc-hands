@@ -140,7 +140,7 @@ func started(t *testing.T, to string, client map[string]string, outer func(*http
 	}
 	defer read.Close()
 	says := saying()
-	ended := make(chan stop, 1)
+	ended := stops()
 	exited := make(chan int, 1)
 	args := arguments(to, filepath.Join(t.TempDir(), "trusted.pem"), nil)
 	go func() {
@@ -159,7 +159,7 @@ func started(t *testing.T, to string, client map[string]string, outer func(*http
 		t.Fatalf("brioche printed no environment, ending %d and saying %q", <-exited, says)
 	}
 	t.Cleanup(func() {
-		ended <- stop{"the test ended", nil}
+		ended.send(stop{"the test ended", nil})
 		if code := <-exited; code != 0 {
 			t.Errorf("brioche ended %d once told to stop, saying %q", code, says)
 		}
@@ -465,8 +465,8 @@ func TestARelativeTrustFileIsGivenTheClientAsTheFileBriocheWrote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ended := make(chan stop, 1)
-	ended <- stop{"the test ended", nil}
+	ended := stops()
+	ended.send(stop{"the test ended", nil})
 	says := saying()
 	if code := run(arguments(refusing(t), "trusted.pem", nil), func(string) string { return "" }, unproxied, listening, printed, says, ended); code != 0 {
 		t.Fatalf("brioche ended %d, saying %q", code, says)
@@ -486,8 +486,8 @@ func refused(t *testing.T, file, named string) (int, string) {
 		t.Fatal(err)
 	}
 	says := saying()
-	ended := make(chan stop, 1)
-	ended <- stop{"the test ended", nil}
+	ended := stops()
+	ended.send(stop{"the test ended", nil})
 	code := run(arguments(refusing(t), file, nil), func(string) string { return named }, unproxied, listening, printed, says, ended)
 	return code, says.String()
 }
@@ -557,7 +557,7 @@ func TestABriocheWhoseDoorStopsServingEndsAsFailedSayingWhy(t *testing.T) {
 	exited := make(chan int, 1)
 	args := arguments(refusing(t), filepath.Join(t.TempDir(), "trusted.pem"), nil)
 	go func() {
-		exited <- run(args, func(string) string { return "" }, unproxied, func() (net.Listener, error) { return listener, nil }, printed, says, make(chan stop, 1))
+		exited <- run(args, func(string) string { return "" }, unproxied, func() (net.Listener, error) { return listener, nil }, printed, says, stops())
 	}()
 	if environment, err := io.ReadAll(read); err != nil || len(environment) == 0 {
 		t.Fatalf("brioche printed %q (%v), saying %q", environment, err, says)
@@ -599,7 +599,7 @@ func TestArgumentsBriocheCannotTakeAreRefusedSayingWhich(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		code := run(refused.args, func(string) string { return "" }, unproxied, listening, printed, says, nil)
+		code := run(refused.args, func(string) string { return "" }, unproxied, listening, printed, says, stops())
 		// run closes what it prints to however it ends: a read of it ends.
 		if environment, err := io.ReadAll(read); err != nil || len(environment) != 0 {
 			t.Errorf("brioche %q printed %q (%v), want nothing", refused.args, environment, err)
@@ -680,6 +680,37 @@ func TestABriocheWhoseInputFailsEndsAsFailedSayingWhy(t *testing.T) {
 	}
 	if !strings.Contains(brioche.said.String(), "brioche: stopping: its input failed: ") {
 		t.Errorf("brioche said %q, want why it stopped", brioche.said)
+	}
+}
+
+func TestOnlyTheFirstStopIsTakenAndOneAfterItIsLeftToBeSaid(t *testing.T) {
+	ended := stops()
+	if !ended.send(stop{"its input ended", nil}) {
+		t.Fatal("the first stop was not taken")
+	}
+	// Taken while brioche is stopping, it would be lost unsaid: it is not taken.
+	if ended.send(stop{"it stopped taking the client's requests", errors.New("closed")}) {
+		t.Error("a stop after the first was taken")
+	}
+	if why := <-ended.why; why.why != "its input ended" {
+		t.Errorf("brioche stopped for %q, want the first stop", why.why)
+	}
+	if ended.send(stop{"told to by terminated", nil}) {
+		t.Error("a stop after the first was taken once the first was read")
+	}
+}
+
+func TestABriocheReadsTheClientsTrustVariableFromItsOwnEnvironment(t *testing.T) {
+	child := exec.Command(os.Args[0], arguments(refusing(t), filepath.Join(t.TempDir(), "trusted.pem"), nil)...)
+	child.Env = append(os.Environ(), program+"=brioche", "NODE_EXTRA_CA_CERTS=corp.pem")
+	says := saying()
+	child.Stderr = says
+	var exit *exec.ExitError
+	if err := child.Run(); !errors.As(err, &exit) || exit.ExitCode() != failed {
+		t.Fatalf("brioche ended %v, want %d, saying %q", err, failed, says)
+	}
+	if !strings.Contains(says.String(), `NODE_EXTRA_CA_CERTS names "corp.pem"`) {
+		t.Errorf("brioche said %q, want the variable its environment gave it", says)
 	}
 }
 
