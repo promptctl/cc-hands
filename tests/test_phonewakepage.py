@@ -371,7 +371,8 @@ async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_th
     await browser.context.route("**/wake/settings", lose_the_first)
     await browser.context.route("**/wake/models/melspectrogram", partial(held_open, models_come_in))
     page = await connected(browser, hands)
-    await expect(page.locator("#wake-note")).to_contain_text("The wake word is waiting on hands")
+    # Lost, as a request past the page's bound is too (tests/test_handsjs.py): waited on, saying why.
+    await expect(page.locator("#wake-note")).to_contain_text("The wake word is waiting on hands: hands is out of reach")
     # hands answered: the models still coming in is no wait on hands, and the page does not go on saying it is.
     await expect(page.locator("#wake-note")).to_have_text("")
     await expect(page.locator("#state")).to_have_text(LOADING)
@@ -503,20 +504,3 @@ async def test_a_browser_with_no_screen_wake_lock_says_the_screen_may_sleep_and_
     [unkept] = events(hands.recorded, "phone.screen")
     assert unkept.outcome == "failed" and unkept.facts["state"] == "unkept" and unkept.error == "this browser has no screen wake lock"
 
-
-async def test_a_hands_that_answers_after_the_pages_sixty_seconds_is_waited_on_not_given_up_on(browser: Opened, hands: Hands) -> None:
-    # The page's bound on an answer is its own 60 s on the browser's clock, which nothing here can advance, so this one is held that long.
-    held = list[str]()
-
-    async def hold_the_first(route: Route) -> None:
-        if held:
-            await route.continue_()
-        else:
-            held.append(route.request.url)
-            await asyncio.Event().wait()
-
-    await browser.context.route("**/wake/settings", hold_the_first)
-    page = await connected(browser, hands)
-    await expect(page.locator("#wake-note")).to_contain_text("hands did not answer within 60 s", timeout=90_000)
-    await expect(page.locator("#state")).to_have_text(LISTENING, timeout=30_000)
-    assert len(held) == 1
