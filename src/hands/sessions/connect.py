@@ -82,9 +82,10 @@ def _proxies(world: Mapping[str, str]) -> dict[str, str]:
 
 def _outer(scheme: str, named: str) -> URL:
     """The outer proxy hands' environment names for `scheme`, parsed; raises Uninterceptable for one aiohttp cannot
-    reach a host through: one that is no URL, any but http://, and one without a host or with port 0."""
+    reach a host through: one that is no URL, any but http://, and one without a host or with port 0. One named without
+    a scheme is http://, as urllib, curl and Claude Code read it."""
     try:
-        proxy = URL(named)
+        proxy = URL(named if "://" in named else f"http://{named}")
         port = proxy.port
     except ValueError as error:
         # The URL itself is left out of what is said: it may carry the outer proxy's credentials.
@@ -124,8 +125,9 @@ def admission(told: str | None, credential: str) -> Admitted | Unadmitted:
     # What a request presents is never said: it may be another of the user's credentials, sent to the wrong place.
     if scheme.lower() != "basic":
         return Unadmitted("its Proxy-Authorization is not Basic credentials")
-    # Compared in a time that says nothing of how much of it matched.
-    same = hmac.compare_digest(presented.strip().encode(), credential.partition(" ")[2].encode())
+    # Compared in a time that says nothing of how much of it matched. A header aiohttp read as other than UTF-8 holds its
+    # bytes as surrogates, which are encoded back as they came: never this run's credential, and refused as any other.
+    same = hmac.compare_digest(presented.strip().encode(errors="surrogateescape"), credential.partition(" ")[2].encode())
     return Admitted() if same else Unadmitted("its Proxy-Authorization is not this run's credential")
 
 
@@ -192,7 +194,8 @@ class Connects:
                 logger.error(said)
                 return established
             annotate(tls="made")
-            await tls.ended
+            # Shielded: a handler cancelled as the proxy shuts down leaves `ended` for its connection to set.
+            await asyncio.shield(tls.ended)
         return established
 
     async def _tunnelled(self, request: web.BaseRequest, host: str, port: int) -> web.StreamResponse:
@@ -276,9 +279,9 @@ class _Side[T]:
 
 
 class _Reset(Exception):
-    """The connection of one side of a tunnel was reset."""
+    """The connection of one side of a tunnel was reset, or failed as a socket fails."""
 
-    def __init__(self, side: str, error: ConnectionError) -> None:
+    def __init__(self, side: str, error: OSError) -> None:
         super().__init__(f"{type(error).__name__}: {error}")
         self.side = side
 
@@ -301,8 +304,8 @@ async def _piped(source: _Side[asyncio.StreamReader], sink: _Side[asyncio.Stream
 
 
 async def _of[T](side: str, awaited: Awaitable[T]) -> T:
-    """What `awaited` gives, its connection's reset told as `side`'s."""
+    """What `awaited` gives, its connection's reset or failure told as `side`'s."""
     try:
         return await awaited
-    except ConnectionError as error:
+    except OSError as error:
         raise _Reset(side, error) from error

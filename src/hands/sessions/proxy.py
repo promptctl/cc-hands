@@ -367,8 +367,14 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
     inside = _server(forward)
     connects = Connects(authority, reach, inside, clock, record)
     runner = web.ServerRunner(_server(served), shutdown_timeout=SHUTDOWN_SECONDS)
-    await runner.setup()
-    await web.TCPSite(runner, loopback.HOST, 0).start()
+    try:
+        await runner.setup()
+        await web.TCPSite(runner, loopback.HOST, 0).start()
+    except BaseException:
+        # A proxy that never listened closes what it opened for its requests before it says why.
+        await runner.cleanup()
+        await client.close()
+        raise
     host, port = runner.addresses[0][:2]
     through = ThroughProxy(host_port(host, port), password, written)
     return Proxy(through=through, runner=runner, inside=inside, connects=connects, client=client)

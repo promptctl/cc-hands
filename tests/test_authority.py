@@ -11,9 +11,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from yarl import URL
 
-from hands.core.wire import API_HOST
+from hands.core.wire import API_HOST, proxy_authorization
 from hands.sessions.authority import Uninterceptable, also_trusted, mint, onward_trust, trusted
-from hands.sessions.connect import outward
+from hands.sessions.connect import Admitted, Unadmitted, admission, outward
 from hands.sessions.proxy import serve_proxy
 from hands.sessions.untap import TRUST
 from hands.virtualclock import VirtualClock
@@ -133,8 +133,24 @@ def test_the_world_is_reached_as_hands_environment_says_read_as_urllib_reads_it(
     assert reached.onward("https", "db.internal", 443) is None
     assert reached.onward("http", "localhost", 9000) is None
     assert outward({}).onward("https", "api.example.com", 443) is None
+    assert outward({"https_proxy": "corp:3128"}).onward("https", "api.example.com", 443) == URL("http://corp:3128")
 
 
 def test_a_lower_case_proxy_variable_outranks_its_upper_case_and_set_empty_names_none() -> None:
     assert outward({"HTTPS_PROXY": "http://upper:1", "https_proxy": "http://lower:2"}).onward("https", "example.com", 443) == URL("http://lower:2")
     assert outward({"HTTPS_PROXY": "http://upper:1", "https_proxy": ""}).onward("https", "example.com", 443) is None
+
+
+@pytest.mark.parametrize(("told", "why"), [
+    (None, "it sent no Proxy-Authorization"),
+    ("Bearer x", "its Proxy-Authorization is not Basic credentials"),
+    ("Basic aGFuZHM6b3RoZXI=", "its Proxy-Authorization is not this run's credential"),
+    # Bytes that are no UTF-8, as aiohttp hands them on: surrogates.
+    ("Basic \udcff\udcfe", "its Proxy-Authorization is not this run's credential"),
+])
+def test_a_request_not_on_the_runs_credential_is_refused_saying_why_and_never_what_it_presented(told: str | None, why: str) -> None:
+    assert admission(told, proxy_authorization("secret")) == Unadmitted(why)
+
+
+def test_a_request_on_the_runs_credential_is_admitted() -> None:
+    assert admission(proxy_authorization("secret"), proxy_authorization("secret")) == Admitted()
