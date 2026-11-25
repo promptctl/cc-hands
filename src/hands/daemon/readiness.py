@@ -78,7 +78,7 @@ class Unknown:
 
 Finding = Ready | Missing | Unknown
 
-# The tmux pane whose keys reach each of a list of processes, as `hands.sessions.tmux.keyboards` reads it.
+# The tmux pane whose keys reach each of a list of processes, as `hands.sessions.panes.keyboards` reads it.
 Keyboards = Callable[[Sequence[int]], list[Keyboard]]
 
 # `claude plugin list` answers in a quarter of a second; one that has not answered in this long is not going to.

@@ -51,7 +51,7 @@ from hands.core.trace import Span
 from hands.core.stopfailure import LoginExpired, StopFailed, expired
 from hands.darwin import child_pids
 from hands.sessions.audit import LoginReported, Record
-from hands.sessions.registry import Sessions, StopHeld
+from hands.sessions.registry import Sessions, StopHeld, unread, untyped
 from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_hook
@@ -61,8 +61,15 @@ from hands.sessions.processes import parse_pid
 from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
-from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
-from hands.sessions.typing import Typist, Untyped
+from hands.core.tmux import Unanswered
+from hands.sessions.panes import socket_directory
+from hands.sessions.terminals import Unconfirmed, Untyped
+# [LAW:effects-at-boundaries] exception: the brain runs tmux on its own pane past Terminals, a minimum kept knowingly;
+# promptctl-testing-c3u.fhu hands it Terminals and deletes this import.
+from hands.sessions.tmux import TmuxExit, TmuxUnstarted, ran_at, styled
+# [LAW:effects-at-boundaries] exception: the brain types into its own Claude Code past Fritters, with a chord of its own
+# to send; promptctl-testing-c3u.fhu hands it Fritters and deletes this import.
+from hands.sessions.typing import Typist
 from hands.tasks import cancel_and_wait
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
@@ -400,7 +407,7 @@ class InTmux:
             if not pane.startswith("%"):
                 raise BrainGone("the brain's screen cannot be read: its pane has not said which it is")
             self._pane = pane
-        match await styled(self._children, self._tmux, self._socket, self._pane):
+        match await styled(self._children, Path(self._tmux), self._socket, self._pane):
             case Unanswered(reason=reason):
                 raise BrainGone(f"the brain's screen cannot be read: {reason}")
             case str() as shown:
@@ -450,9 +457,9 @@ class InTmux:
             await asyncio.shield(self.exit)
 
     async def end_session(self) -> None:
-        match await ran_at(self._children, self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
-            case Unanswered() as unanswered:
-                logger.warning(f"the brain's tmux server did not end its session: {unanswered.reason}")
+        match await ran_at(self._children, Path(self._tmux), self._socket, ("kill-session", "-t", f"={self._session}")):
+            case TmuxUnstarted(reason=reason) | Unanswered(reason=reason):
+                logger.warning(f"the brain's tmux server did not end its session: {reason}")
             case TmuxExit(code=code, err=err) if code != 0 and not _UNHELD.search(err):
                 logger.warning(f"the brain's tmux server did not end its session: {err.decode(errors='replace').strip()}")
             case TmuxExit():
@@ -469,16 +476,18 @@ async def in_tmux(children: Children, station: Station, argv: Sequence[str], wor
     tmux = shutil.which("tmux", path=inherited.get("PATH"))
     if tmux is None:
         raise Unstartable("no tmux is on the PATH to run the brain in")
-    # [LAW:effects-at-boundaries] exception: the brain's terminal reads the user from the machine until it is reached
-    # through Terminals (promptctl-testing-c3u.fhu).
+    # [LAW:effects-at-boundaries] exception: the brain's terminal reads the user from the machine, a minimum kept
+    # knowingly; promptctl-testing-c3u.fhu reads it from Processes.
     socket = socket_directory(inherited, os.getuid()) / "default"
     socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     session = brain_session(station.config_dir)
     # Two brains on one config directory would share one conversation: one left by a hands that ended while a person
     # was attached is ended first.
-    match await ran_at(children, tmux, socket, ("kill-session", "-t", f"={session}")):
+    match await ran_at(children, Path(tmux), socket, ("kill-session", "-t", f"={session}")):
         case TmuxExit(code=0):
             logger.info(f"ended tmux session {session}, a brain left by an earlier hands")
+        case TmuxUnstarted(reason=reason):
+            raise Unstartable(f"the brain's tmux server could not be asked: {reason}")
         case Unanswered() as unanswered:
             raise Unstartable(f"the brain's tmux server did not answer: {unanswered.reason}")
         case TmuxExit(err=err) if not _UNHELD.search(err):
@@ -994,7 +1003,8 @@ def model(clock: Clock, record: Record, told: Callable[[Story], None], took: Cal
     its turns say is the brain's stage's to say, from the wire, never what the model makes of its session.
     """
     # [LAW:one-source-of-truth] the brain's Stop held as long as its hook declares it is waited on (hookconfig).
-    return Sessions(clock, record, story_sink=told, heard_sink=_unsaid, submitted_sink=took, stop_hold=TAKE_SECONDS)
+    # It types into no session and reads no pane: the brain types into its own Claude Code through its BrainTypist.
+    return Sessions(clock, record, typist=untyped, keyboards=unread, story_sink=told, heard_sink=_unsaid, submitted_sink=took, stop_hold=TAKE_SECONDS)
 
 
 def _unsaid(_heard: Heard) -> None:
@@ -1631,7 +1641,7 @@ class Brain:
                 annotate(waited_after_exit=await self.drained())
 
     async def _type(self, typing: Callable[[BrainTypist], None]) -> None:
-        # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, which no turn's end catches: `_broke` says it.
+        # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, or Unconfirmed where it never answers, which no turn's end catches: `_broke` says it.
         await asyncio.to_thread(typing, self._typist)
 
     async def _run_out(self, up: Begun) -> int:
@@ -2153,7 +2163,7 @@ async def _input_up(typist: Typist) -> None:
     which Claude Code takes as one more line."""
     try:
         await asyncio.to_thread(typist.pasting)
-    except Untyped as error:
+    except (Untyped, Unconfirmed) as error:
         raise _NotYet(f"the brain had not turned its input on ({error})") from error
 
 

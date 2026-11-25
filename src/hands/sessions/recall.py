@@ -2,7 +2,8 @@
 brain, and for the conversation page to show (`hands.voice.conversationpage`).
 
 The log is the long memory [LAW:one-source-of-truth]: the user's words are its Transcribed lines, hands' words its
-Replied lines, what was typed into a session its Typing lines (and a TypingFailed after one that never arrived), how
+Replied lines, what was typed into a session its Typing lines (and a TypingFailed after one that never arrived, or a
+TypingUnconfirmed after one that may have), how
 a permission was answered the Reply an applied event performed for a PermissionRequested, and each tool hands called its
 `tool.run` event. Nothing here keeps a record of its own; it folds the log's lines into moments, oldest first.
 """
@@ -124,7 +125,7 @@ class Moments:
         # How many moments have been taken, so the oldest still kept is moment `taken - len(said)`.
         self._taken = 0
         # The moment each send still kept and not yet seen to fail is, by the Typing line's effect, which a TypingFailed
-        # repeats; oldest first, as they were taken.
+        # or a TypingUnconfirmed repeats; oldest first, as they were taken.
         self._sending: dict[str, int] = {}
         self.changes = 0
 
@@ -162,6 +163,8 @@ class Moments:
             # A turn hands ended without a word said nothing.
             case {"type": "Replied", "at": str(at), "text": str(text)} if text.strip():
                 self._add(_Said(datetime.fromisoformat(at), "said", "you", None, text))
+            # Sent until a later line says otherwise, so a TypingConfirmed adds nothing: a log written before there was
+            # one holds every send that way.
             case {"type": "Typing", "at": str(at), "effect": {"session": str(session), "input": object() as typed} as effect}:
                 sending = json.dumps(effect, sort_keys=True)
                 # Taken out first, so a send made again goes to the back, where the newest are.
@@ -169,12 +172,18 @@ class Moments:
                 self._sending[sending] = self._taken
                 self._add(_Said(datetime.fromisoformat(at), "sent", "sent to", session, _typed(typed)))
             case {"type": "TypingFailed", "effect": object() as effect, "reason": str(reason)}:
-                if (taken := self._sending.pop(json.dumps(effect, sort_keys=True), None)) is not None:
-                    index = taken - (self._taken - len(self._said))
-                    self._said[index] = replace(self._said[index], verb="not sent to", text=f"{self._said[index].text}, because: {reason}")
-                    self.changes += 1
+                self._settled(effect, "not sent to", f", because: {reason}")
+            case {"type": "TypingUnconfirmed", "effect": object() as effect, "reason": str(reason)}:
+                self._settled(effect, "maybe sent to", f", which was never confirmed: {reason}")
             case _:
                 pass
+
+    def _settled(self, effect: object, verb: str, why: str) -> None:
+        """The send the Typing line of `effect` took, while it is kept, said again as `verb`, with `why` behind it."""
+        if (taken := self._sending.pop(json.dumps(effect, sort_keys=True), None)) is not None:
+            index = taken - (self._taken - len(self._said))
+            self._said[index] = replace(self._said[index], verb=verb, text=f"{self._said[index].text}{why}")
+            self.changes += 1
 
     def moments(self) -> list[Moment]:
         """The moments kept, oldest first."""

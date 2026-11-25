@@ -33,9 +33,8 @@ from pipecat.workers.runner import WorkerRunner
 from hands.clock import Clock, dashed
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
 from hands.sessions.backlog import Lit
-from hands.sessions import heartbeat, tmux
+from hands.sessions import heartbeat, panes
 from hands.sessions.child import Children
-from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.front import InFront
@@ -48,6 +47,8 @@ from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.processes import Processes
+from hands.sessions.screen import Screen
+from hands.sessions.terminals import Fritters, Terminals, type_into
 from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
@@ -208,10 +209,10 @@ class Mind:
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]]
 
 
-async def front_now(sessions: Sessions, processes: Processes, environment: Mapping[str, str]) -> InFront:
+async def front_now(screen: Screen, terminals: Terminals, processes: Processes, sessions: Sessions, environment: Mapping[str, str]) -> InFront:
     """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await read_front(sessions.children, processes, running, environment)
+    return await read_front(screen, terminals, processes, running, environment)
 
 
 @asynccontextmanager
@@ -274,8 +275,8 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, heart: heartbeat.Heart, record: Record,
-    degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
+    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, terminals: Terminals, fritters: Fritters, screen: Screen, home: Home,
+    heart: heartbeat.Heart, record: Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     pin: pinned.Pin,
     run_start: Start,
@@ -299,10 +300,9 @@ async def run(
         deltas = Deltas(record, environment, clock)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
-        children = Children(clock, record)
         sessions = Sessions(
             clock=clock, record=record, changes=deltas, names=names,
-            typist=partial(type_into, children, environment), keyboards=partial(tmux.keyboards, children, processes, environment=environment),
+            typist=partial(type_into, terminals, fritters), keyboards=partial(panes.keyboards, terminals, processes, environment=environment),
         )
         # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
         # before each turn's hook is applied.
@@ -345,13 +345,13 @@ async def run(
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
-            tools = acts(sessions, processes, store, home, recounts, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, record)
+            tools = acts(sessions, terminals, processes, store, home, recounts, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, record)
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             # [LAW:single-enforcer] one owner of a switch under way, whether the user asks by voice or on the page.
             switches = Switches(player)
             gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, switches=switches, wake=config.wake, models=CLAUDE_MODELS)
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(sessions, processes, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(screen, terminals, processes, sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)

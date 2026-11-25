@@ -56,6 +56,19 @@ What hands relies on of the kernel is a contract, tests/processescontract.py, ru
 (test_processes_contract.py) and against the kernel, on children the test starts, `outside`
 (test_processes_contract_kernel.py). A claim the kernel stops keeping fails the second, and the fake is changed to match.
 
+## The user's terminals and the Mac's screen
+
+The daemon reads and types into the user's tmux panes through `Terminals`, types into fritters through `Fritters` (both
+hands.sessions.terminals), and reads which app is in front through `Screen` (hands.sessions.screen). Their real
+adapters, hands.sessions.tmux's `TmuxTerminals`, hands.sessions.typing's `FritterSockets` and
+hands.sessions.launchservices' `LaunchServices`, only a composition root imports (tests/test_terminals_boundary.py); the
+brain's tmux and fritter on its own pane are the exception left, until promptctl-testing-c3u.fhu.
+Which servers may hold a session's pane, and which pane it is, is hands' own logic over Terminals and Processes
+(hands.sessions.panes), tested on tests/faketerminals.py: tmux servers, their panes and clients as values, and what a
+session's program read of what was typed into it. What hands relies on of tmux and fritter is a contract,
+tests/terminalscontract.py, run against the fake in `make check` (test_terminals_contract.py) and against a tmux server of
+the test's own and the fritter this checkout carries, `outside` (test_terminals_contract_tmux.py).
+
 ## The phone's pages
 
 tests/test_pages.py runs each phone page's own code in the installed Google Chrome, driven by Playwright, against

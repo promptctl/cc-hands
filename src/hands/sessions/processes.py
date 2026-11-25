@@ -144,6 +144,25 @@ class Processes(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class TableRefused:
+    """The kernel refused the process table, and what it said."""
+
+    reason: str
+
+
+async def table_of(processes: Processes) -> dict[int, Process] | TableRefused:
+    """[LAW:single-enforcer] the process table, read off the event loop, or the refusal the kernel answered with, which
+    Processes declares and which is no fault of hands'."""
+    # Imported here rather than with the module, which the hook shim imports: as hands.clock has it.
+    import asyncio
+
+    try:
+        return await asyncio.to_thread(processes.table)
+    except OSError as refused:
+        return TableRefused(f"the processes could not be read: {refused}")
+
+
 def parse_pid(number: int) -> int:
     """A number read from a file, as a pid some process could have."""
     # [LAW:parse-dont-validate] refused here, so no pid a file names, the only pids hands signals, is 0 or negative: a

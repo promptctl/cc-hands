@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from typing import NoReturn
 
-import pytest
-
 
 from hands.virtualclock import VirtualClock
 from hands.core.events import Ended, Joined, Launched, PermissionRequested, Prompted, StatusReported, Stopped, Taken
@@ -14,15 +12,17 @@ from hands.core.session import Membership, Permission, PromptId, RequestId, Sess
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Waiting
 from hands.core.turn import AgentId
 from hands.sessions.focus import set_focus
-from hands.sessions import tmux
 from hands.sessions.home import Home
 from hands.sessions.names import Names
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import Titles, session_name
-from hands.voice.tools import list_sessions_tool
+from hands.sessions.panes import socket_directory
+from hands.sessions.processes import ControllingTerminal
+from hands.voice.tools import list_sessions_tool, read_screen_tool
 from conftest import new_sessions
-from fakeprocesses import processes
+from fakeprocesses import USER, Running, processes
+from faketerminals import FakePane, FakeServer, FakeTerminals
 
 
 def membership(tmp_path: Path, name: str) -> Membership:
@@ -42,9 +42,9 @@ def named(path: Path, *names: str) -> None:
     path.write_text("".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records))
 
 
-async def call(sessions: Sessions, tmp_path: Path) -> object:
+async def call(sessions: Sessions, tmp_path: Path, terminals: FakeTerminals | None = None) -> object:
     # No tmux server runs: every session is in none.
-    return await list_sessions_tool(sessions, processes(), Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), {"TMUX_TMPDIR": str(tmp_path)}).body()
+    return await list_sessions_tool(sessions, terminals or FakeTerminals(), processes(), Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), {"TMUX_TMPDIR": str(tmp_path)}).body()
 
 
 async def test_live_sessions_are_named_by_their_project_then_their_newest_name(tmp_path: Path) -> None:
@@ -182,18 +182,41 @@ async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_p
     assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}], "focus": None}
 
 
-async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why_its_pane_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def broken(_children: object, _processes: object, _environment: object, _pids: object, _table: object) -> NoReturn:
+class Broken(FakeTerminals):
+    """Terminals whose read of a server's panes breaks on a fault of hands' own."""
+
+    def sockets(self, directory: Path) -> NoReturn:
         raise ValueError("not enough values to unpack")
 
-    monkeypatch.setattr(tmux, "servers", broken)
+
+async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why_its_pane_is_missing(tmp_path: Path) -> None:
     sessions = new_sessions(clock=VirtualClock())
     await sessions.apply(Joined(membership(tmp_path, "plain"), "startup"))
     listed = {"id": "plain", "name": "plain", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": {"cannot_read": "ValueError: not enough values to unpack"}}
-    assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
+    assert await call(sessions, tmp_path, Broken()) == {"sessions": [listed], "focus": None}
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    tool = list_sessions_tool(new_sessions(clock=VirtualClock()), processes(), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
+    tool = list_sessions_tool(new_sessions(clock=VirtualClock()), FakeTerminals(), processes(), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description
+
+
+async def test_a_session_in_a_tmux_pane_is_listed_with_its_pane_and_its_screen_is_read_off_that_pane(tmp_path: Path) -> None:
+    paned, plain = membership(tmp_path, "paned"), membership(tmp_path, "plain")
+    table = processes(Running(paned.pid, terminal=ControllingTerminal(10, foreground=True)), Running(plain.pid, terminal=ControllingTerminal(1, foreground=True)))
+    environment = {"TMUX_TMPDIR": str(tmp_path)}
+    socket = socket_directory(environment, USER) / "default"
+    terminals = FakeTerminals({socket: FakeServer([FakePane("%3", 10, "cc-hands", 2, screen="Do you want to proceed?")])})
+    sessions = new_sessions(clock=VirtualClock())
+    for member in (paned, plain):
+        await sessions.apply(Joined(member, "startup"))
+    pane = {"socket": str(socket), "pane": "%3", "session": "cc-hands", "window": 2}
+    unreported = {"state": "not reported yet", "mode": "not reported yet", "overlay": "normal"}
+    assert await list_sessions_tool(sessions, terminals, table, Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), environment).body() == {
+        "sessions": [{"id": "paned", "name": "paned", **unreported, "tmux": pane}, {"id": "plain", "name": "plain", **unreported, "tmux": "not in tmux"}],
+        "focus": None,
+    }
+    read_screen = read_screen_tool(sessions, terminals, table, environment)
+    assert await read_screen.body(session="paned") == {"screen": "Do you want to proceed?", "tmux": pane}
+    assert await read_screen.body(session="plain") == {"error": "plain runs in no tmux pane, and hands reads a screen only off one"}

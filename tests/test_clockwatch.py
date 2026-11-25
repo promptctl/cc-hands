@@ -150,6 +150,16 @@ def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pyte
 
 
 @pytest.mark.outside
+def test_a_semaphore_polled_is_no_reach_whatever_clock_it_reads_and_one_waited_on_is_one(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A thread pool polls one so to ask whether a worker is idle, as `asyncio.to_thread` has it do.
+    polls = "import threading\n\ndef test_polls():\n    threading.Semaphore(0).acquire(timeout=0)\n"
+    waits = "import threading\n\ndef test_waits():\n    threading.Semaphore(0).acquire(True, 0.001)\n"
+    lines = reached(pytester, monkeypatch, test_polls=polls, test_waits=waits)
+    assert "test_waits.py: ['.acquire(seconds)', 'threading.Semaphore.acquire']" in lines
+    assert not any(line.startswith("test_polls.py") for line in lines)
+
+
+@pytest.mark.outside
 def test_a_shared_fixture_torn_down_after_a_test_is_charged_to_the_harness_and_not_the_test(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     # This repo's timeouts.py, run from the run's own tests/ and registered as its conftest does.
     hooks = "\nimport timeouts\n\ndef pytest_configure(config):\n    config.pluginmanager.register(timeouts, 'timeouts')\n    clockwatch.register(config, frozenset({'timeouts.py'}))\n"

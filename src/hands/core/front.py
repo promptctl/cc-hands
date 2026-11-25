@@ -11,12 +11,12 @@ from hands.core.session import SessionId
 
 
 @dataclass(frozen=True)
-class Screen:
+class OnScreen:
     """The app in front, and the terminals its front window shows, by device number: the front tab's, or every terminal
     under the app where it cannot be asked which tab is in front."""
 
     app: str
-    shown: frozenset[int]
+    terminals: frozenset[int]
 
 
 @dataclass(frozen=True)
@@ -51,10 +51,10 @@ class FrontUnread:
 InFront = SessionInFront | NoSessionInFront | FrontUnread
 
 
-def in_front(screen: Screen, panes: Mapping[int, int], candidates: Collection[Candidate]) -> InFront:
-    """The session the screen shows. `panes` is each tmux client's terminal to the terminal of the pane it shows: a tab
+def in_front(screen: OnScreen, panes: Mapping[int, int], candidates: Collection[Candidate]) -> InFront:
+    """The session among `candidates` that the app in front shows. `panes` is each tmux client's terminal to the terminal of the pane it shows: a tab
     running tmux shows that pane, not the client."""
-    visible = {panes.get(terminal, terminal) for terminal in screen.shown}
+    visible = {panes.get(terminal, terminal) for terminal in screen.terminals}
     match [candidate for candidate in candidates if candidate.terminals & visible]:
         case []:
             return NoSessionInFront(screen.app)

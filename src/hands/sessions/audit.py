@@ -47,15 +47,32 @@ from hands.sessions.wide import WideEvent, chain
 @dataclass(frozen=True)
 class Typing:
     """What is about to be typed into a session: written before the typing, so the log holds every send, and the span of
-    the unit of work that typed it, whose event says why."""
+    the unit of work that typed it, whose event says why. The line its typing ends with follows it: a TypingConfirmed,
+    a TypingFailed, or a TypingUnconfirmed, unless hands itself ended while it typed."""
 
     effect: Type[Input]
     span: Span
 
 
 @dataclass(frozen=True)
+class TypingConfirmed:
+    """What a Typing line said was about to be typed, which its writer said it typed: the send reached its session."""
+
+    effect: Type[Input]
+
+
+@dataclass(frozen=True)
 class TypingFailed:
     """What a Typing line said was about to be typed, and why it was not: the send never reached its session."""
+
+    effect: Type[Input]
+    reason: str
+
+
+@dataclass(frozen=True)
+class TypingUnconfirmed:
+    """What a Typing line said was about to be typed, and why its writer never said whether it was: it may have reached
+    its session."""
 
     effect: Type[Input]
     reason: str
@@ -265,7 +282,9 @@ class Logged:
 
 Entry = (
     Typing
+    | TypingConfirmed
     | TypingFailed
+    | TypingUnconfirmed
     | SettingsEdited
     | LoginReported
     | CopiesLost
@@ -300,7 +319,7 @@ def level(entry: Entry) -> Level:
             return logged
         case TypingFailed() | Exported(error=str()):
             return "error"
-        case Exported(warning=str()):
+        case Exported(warning=str()) | TypingUnconfirmed():
             return "warning"
         case Exchanged(reply=reply):
             return _reply_level(reply)
@@ -313,7 +332,7 @@ def level(entry: Entry) -> Level:
         case LoginReported(expired=expired):
             return "info" if expired is None else "warning"
         case (
-            Typing() | Exported() | CopiesLost()
+            Typing() | TypingConfirmed() | Exported() | CopiesLost()
             | Transcribed() | ClipHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"

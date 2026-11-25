@@ -4,14 +4,13 @@ import asyncio
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from functools import partial
 from typing import Literal, get_args
 
 from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unbaselined, Unclosed, Unfiled, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, MaybeTyped, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unbaselined, Unclosed, Unfiled, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Dequeued, Event, PermissionRequested, Removed, Stopped, Tick, ToolFinished, Unqueuing
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -20,7 +19,7 @@ from hands.core.session import Gone, Instant, Known, Membership, PromptId, Regis
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.child import Children
-from hands.sessions.audit import Record, Typing, TypingFailed
+from hands.sessions.audit import Record, Typing, TypingConfirmed, TypingFailed, TypingUnconfirmed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
 from hands.clock import Clock, stamp
@@ -29,7 +28,7 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import Titles
-from hands.sessions.typing import Untyped, type_into
+from hands.sessions.terminals import Unconfirmed, Untyped
 
 
 # How a Stop's hook ended: decided inside the hold, let go at it with Claude Code going on undecided, or released
@@ -57,6 +56,11 @@ async def unread(pids: Sequence[int]) -> list[Keyboard]:
     return [PaneUnread("this daemon reads no tmux panes")] * len(pids)
 
 
+async def untyped(typed: Type[Input]) -> None:
+    """Nothing typed into `typed`'s session: what a Sessions told of no terminals answers."""
+    raise Untyped(f"this daemon types into no session, so nothing was typed into {typed.session}")
+
+
 @dataclass(frozen=True)
 class Listing[S: Known]:
     session: S
@@ -70,9 +74,10 @@ class Sessions:
         self,
         clock: Clock,
         record: Record,
+        *,
+        typist: Callable[[Type[Input]], Awaitable[None]],
+        keyboards: Callable[[Sequence[int]], Awaitable[list[Keyboard]]],
         changes: Changes | None = None,
-        typist: Callable[[Type[Input]], Awaitable[None]] | None = None,
-        keyboards: Callable[[Sequence[int]], Awaitable[list[Keyboard]]] = unread,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
         story_sink: Callable[[Story], None] | None = None,
@@ -90,10 +95,10 @@ class Sessions:
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
-        # What types a Type into its session, or raises Untyped. A daemon given none finds no tmux to type into.
-        self._typist = typist or partial(type_into, self.children, {})
-        # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by. A daemon
-        # given none reads none, so nothing it is not told to type into is typed into.
+        # What types a Type into its session, or raises Untyped: `untyped`, for a registry that types into none.
+        self._typist = typist
+        # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by: `unread`, for
+        # a registry that reads none, so nothing it is not told to type into is typed into.
         self._keyboards = keyboards
         # The names hands decided and has not yet given, which every listing names its session by. A daemon given none
         # has decided none.
@@ -359,7 +364,7 @@ class Sessions:
                 [pane] = await self._keyboards([known.membership.pid])
                 return pane
 
-    async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I]:
+    async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I] | MaybeTyped[I]:
         # [LAW:single-enforcer] everything typed into a session passes here, so every one is in the log before it is typed,
         # joined to the event of the tool call that typed it by its span.
         self._record(Typing(effect, here()))
@@ -369,6 +374,15 @@ class Sessions:
             # [LAW:no-silent-failure] said, with what was to be typed, on the line that pairs with the Typing before it.
             self._record(TypingFailed(effect, str(error)))
             return NotTyped(effect.session, effect.input, str(error))
+        except Unconfirmed as error:
+            self._record(TypingUnconfirmed(effect, str(error)))
+            return MaybeTyped(effect.session, effect.input, str(error))
+        except BaseException as error:
+            # Stopped while typing, by a cancel or a fault: what reached the session is unknown, and its Typing line is
+            # ended so before the stop goes on.
+            self._record(TypingUnconfirmed(effect, f"the typing was stopped before its writer said whether it typed: {error!r}"))
+            raise
+        self._record(TypingConfirmed(effect))
         return Typed(effect.session, effect.input)
 
     async def keep_time(self, period: float) -> None:

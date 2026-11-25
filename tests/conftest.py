@@ -52,7 +52,8 @@ from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions.home import Home
-from hands.sessions.registry import Sessions
+from hands.sessions.registry import Sessions, untyped
+from hands.sessions.registry import unread as reads_no_panes
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
@@ -227,7 +228,7 @@ def taken(errors: list[str]) -> list[str]:
 # A test passes, by the constructor's own names, what its behavior rests on: the clock it runs on, the audit it reads,
 # its typist or sinks. The clock has no default: a test on the machine's clock names SYSTEM, where the clock boundary
 # sees it. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
-new_sessions = partial(Sessions, record=lambda _: None)
+new_sessions = partial(Sessions, record=lambda _: None, typist=untyped, keyboards=reads_no_panes)
 
 
 def children_on(clock: Clock) -> Children:
@@ -247,7 +248,7 @@ class Unstarting(Children):
     """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real
     process through a fake that forgot one."""
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
         raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
 
     def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
@@ -264,7 +265,7 @@ class Answering(Unstarting):
     outcome: child.Outcome
     asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
         # Every run ends the same, whatever it is handed: the environment is no part of the answer.
         return self.run_blocking(*argv, limit=limit, cwd=cwd)
 
@@ -279,7 +280,7 @@ class Faked(Unstarting):
 
     answer: Callable[..., Awaitable[child.Outcome]]
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
         # The program a test stands in for is handed the environment a real start hands it.
         return await self.answer(*argv, limit=limit, cwd=cwd, env=env.handed if isinstance(env, child.Traced) else env)
 

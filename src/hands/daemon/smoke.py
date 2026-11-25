@@ -120,22 +120,21 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
     """What in the audit lines of one turn shows `stage` reached, or None while nothing does; raises NotReached where a
     line shows it never will be."""
     # [LAW:dataflow-not-control-flow] one reading per stage, of the records the daemon writes as it reaches it, in order.
-    # A send's Typing line is written before it is typed: it was typed once the unit of work that typed it has ended
-    # with no TypingFailed line for it. A finished turn's utterance event is written once its fate is settled: held until
-    # asked, or told to its end or cut off, as read off the output transport.
-    sending: tuple[str, str] | None = None
+    # A send was typed once a line says it was, never on no line saying it was not, so an end of a send read nowhere here
+    # proves nothing. A finished turn's utterance event is written once its fate is settled: held until asked, or told
+    # to its end or cut off, as read off the output transport.
     for line in lines:
         match stage, line:
             case "heard", {"type": "ClipHeard", "said": str(said)}:
                 return f"heard {said!r}"
             case "heard", {"type": "ClipHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
                 raise NotReached("heard", f"Whisper took no words from the clip; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
-            case "typed", {"type": "Typing", "effect": {"session": str(typed), "input": {"prompt": str(prompt)}}, "span": {"span_id": str(span)}} if typed == session:
-                sending = (span, prompt)
+            case "typed", {"type": "TypingConfirmed", "effect": {"session": str(typed), "input": {"prompt": str(prompt)}}} if typed == session:
+                return f"typed {prompt!r} into session {session}"
             case "typed", {"type": "TypingFailed", "effect": {"session": str(typed)}, "reason": str(reason)} if typed == session:
                 raise NotReached("typed", f"hands could not type into session {session}: {reason}")
-            case "typed", {"type": "WideEvent", "span_id": str(span)} if sending is not None and span == sending[0]:
-                return f"typed {sending[1]!r} into session {session}"
+            case "typed", {"type": "TypingUnconfirmed", "effect": {"session": str(typed)}, "reason": str(reason)} if typed == session:
+                raise NotReached("typed", f"hands was never told whether what it typed into session {session} arrived: {reason}")
             case "finished", {"type": "WideEvent", "event": "hook", "facts": {"hook": "Stop", "session": str(stopped)}} if stopped == session:
                 return f"session {session} finished its turn"
             case "finished", {"type": "WideEvent", "event": "hook", "facts": {"hook": "PermissionRequest", "session": str(asking)}} if asking == session:

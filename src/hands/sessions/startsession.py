@@ -9,19 +9,17 @@ inside gave it is left out. The start returns once the session joined hands, nam
 
 import json
 import shlex
-import shutil
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from hands.clock import Clock
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Unanswered
 from hands.sessions import audit, wide
-from hands.sessions import child
-from hands.sessions.child import Children
 from hands.sessions.home import HOME_VARIABLE, Home
-from hands.sessions.processes import Process, Processes, ancestors
-from hands.sessions.tmux import TmuxExit, ran_at, shown
+from hands.sessions.processes import Process, Processes, TableRefused, ancestors, table_of
+from hands.sessions.terminals import Opened, Terminals, Unopened
 from hands.sessions.untap import untap_script, untapped
 
 # What a session gives each process it runs, naming itself as their parent: Claude Code's, and fritter's
@@ -48,10 +46,9 @@ SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 JOIN_SECONDS = 30.0
 # How often the sessions and the session's pane are looked at while it joins.
 LOOK_SECONDS = 0.25
-# What tmux says when the session a new one would be named for is there already (tmux 3.6).
-DUPLICATE = "duplicate session"
-# How long tmux has to answer: a server that does not is wedged, and the start says so.
-ANSWER_SECONDS = 5.0
+# How many of the last lines a `claude` that ended before it joined drew the brain is told: about a screenful, all a
+# usage line or the end of a stack trace needs, bounded whatever the pane's history holds.
+TOLD_LINES = 50
 
 
 class NotStarted(Exception):
@@ -64,15 +61,6 @@ class Started:
     # The tmux session the window is in, and the pane `claude` runs in, as tmux names them (`%12`).
     tmux_session: str
     pane: str
-
-
-@dataclass(frozen=True)
-class _Window:
-    """A window opened for a session: its pane, the pid of the process the pane runs, and its tmux server's socket."""
-
-    pane: str
-    pid: int
-    socket: Path
 
 
 def as_from_a_terminal(environment: Mapping[str, str]) -> dict[str, str]:
@@ -98,18 +86,15 @@ def descends(pid: int, root: int, table: Mapping[int, Process]) -> bool:
     return any(process.pid == root for process in ancestors(pid, table))
 
 
-async def start(home: Home, children: Children, processes: Processes, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:
+async def start(home: Home, clock: Clock, terminals: Terminals, processes: Processes, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:
     """Start hands' `claude` in `folder` on `model`, or on its own default with none, and wait until it is among the
     `members` of hands."""
     # [LAW:nothing-unseen] a start is one unit of work: where, on what, in which tmux session and pane, which session
     # joined, and whether tmux's session was made for it.
-    with wide.unit("session.start", record, wide.begun(children.clock)):
+    with wide.unit("session.start", record, wide.begun(clock)):
         wide.annotate(folder=folder, model=model, settings=SETTINGS)
         where = _folder(folder)
         terminal = as_from_a_terminal(environment)
-        tmux = shutil.which("tmux", path=terminal.get("PATH"))
-        if tmux is None:
-            raise NotStarted("there is no tmux on PATH, and hands starts a session in a tmux window")
         name = tmux_name(where)
         # [LAW:single-enforcer] the window runs `claude` as from a terminal outside any session whatever the tmux server
         # it opens in holds: one already running gives a window its own environment, which a server started inside a
@@ -117,13 +102,27 @@ async def start(home: Home, children: Children, processes: Processes, record: au
         # their own. hands' own `claude`, its shim, whatever comes first on the window's PATH: the session runs under
         # fritter, so hands can type into it.
         claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", "--settings", SETTINGS, *(() if model is None else (f"--model={model}",))]
-        made, window = await _opened(children, tmux, terminal, name, where, ("-e", f"{HOME_VARIABLE}={home.root}", "--", *claude))
-        wide.annotate(tmux_session=name, made_tmux_session=made, pane=window.pane, tmux_socket=window.socket)
-        member = await _joined(children, processes, members, where, tmux, terminal, window)
-        wide.annotate(session=member.id, under_fritter=member.fritter is not None)
-        if member.fritter is None:
-            raise NotStarted(f"session {member.id} joined hands in tmux pane {window.pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
-        return Started(member.id, name, window.pane)
+        # In the server a `tmux` typed at that terminal reaches, as tmux picks it. The terminal's environment: a tmux
+        # server this starts takes it as every window's, so it holds nothing of hands'. The home the session reports to
+        # is given its window alone.
+        match await terminals.open(name, where, claude, {HOME_VARIABLE: str(home.root)}, terminal):
+            case Unopened(reason=reason):
+                raise NotStarted(f"hands starts a session in a tmux window, and none was opened: {reason}")
+            case Unanswered(reason=reason):
+                # [LAW:no-silent-failure] a tmux that gave no answer may have opened the window all the same.
+                raise NotStarted(f"hands starts a session in a tmux window, and tmux did not say whether it opened one, so `claude` may be starting in tmux session {name} now: {reason}")
+            case Opened() as window:
+                return await _started(home, clock, terminals, processes, members, where, name, window)
+
+
+async def _started(home: Home, clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], where: Path, name: str, window: Opened) -> Started:
+    """The session `claude` in `window` joins hands as, once it has."""
+    wide.annotate(tmux_session=name, made_tmux_session=window.made, pane=window.pane, tmux_socket=window.socket)
+    member = await _joined(clock, terminals, processes, members, where, window)
+    wide.annotate(session=member.id, under_fritter=member.fritter is not None)
+    if member.fritter is None:
+        raise NotStarted(f"session {member.id} joined hands in tmux pane {window.pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
+    return Started(member.id, name, window.pane)
 
 
 def _folder(folder: Path) -> Path:
@@ -137,6 +136,8 @@ def _folder(folder: Path) -> Path:
         raise NotStarted(f"there is no folder {folder}: {error}") from error
     if not resolved.is_dir():
         raise NotStarted(f"{folder} is not a folder")
+    if not resolved.name:
+        raise NotStarted(f"{folder} has no name to give the tmux session a session there is started in: give a folder inside it")
     return resolved
 
 
@@ -146,78 +147,39 @@ def tmux_name(folder: Path) -> str:
     return folder.name.replace(".", "_").replace(":", "_")
 
 
-async def _opened(children: Children, tmux: str, terminal: Mapping[str, str], name: str, folder: Path, command: Sequence[str]) -> tuple[bool, _Window]:
-    """Open a new window, detached, of tmux session `name`, made when it is not there, running what `command` ends with:
-    whether it was made, and the window."""
-    printed = ("-d", "-P", "-F", "#{pane_id} #{pane_pid} #{socket_path}")
-    # [LAW:no-ambient-temporal-coupling] made or not is what tmux answers the making with, never a look beforehand that a
-    # second start could make stale.
-    made = await _tmux(children, tmux, terminal, "new-session", *printed, "-s", name, "-c", str(folder), *command)
-    if made.code == 0:
-        return True, _window(made)
-    if not _said(made).startswith(DUPLICATE):
-        raise NotStarted(f"tmux could not make session {name}: {_said(made)}")
-    window = await _tmux(children, tmux, terminal, "new-window", *printed, "-t", f"={name}:", "-c", str(folder), *command)
-    if window.code != 0:
-        raise NotStarted(f"tmux could not open a window in session {name}: {_said(window)}")
-    return False, _window(window)
-
-
-def _window(opened: TmuxExit) -> _Window:
-    # The socket last: the one field that may hold a space. Every tmux hands runs on names it: #{socket_path} is 2.2's,
-    # and the -f filters hands lists panes by are 3.2's.
-    pane, pid, socket = opened.out.decode().rstrip("\n").split(" ", 2)
-    return _Window(pane, int(pid), Path(socket))
-
-
-async def _joined(children: Children, processes: Processes, members: Callable[[], Iterable[Membership]], folder: Path, tmux: str, terminal: Mapping[str, str], window: _Window) -> Membership:
-    pane = window.pane
-    clock = children.clock
+async def _joined(clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], folder: Path, window: Opened) -> Membership:
+    socket, pane = window.socket, window.pane
     deadline = clock.now() + JOIN_SECONDS
-    while (member := joined(members(), window.pid, _table(processes))) is None:
-        # list-panes, since display-message answers for a pane that is gone as though it were there (tmux 3.6); asked of
-        # the server that opened the pane, the one its id names a pane of.
-        match await ran_at(children, tmux, window.socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")):
+    while (member := joined(members(), window.pid, await _table(processes))) is None:
+        # Asked of the server that opened the pane, the one its id names a pane of.
+        match await terminals.state(socket, pane):
             case Unanswered(reason=reason):
                 raise NotStarted(f"whether `claude` in {folder} still runs in tmux pane {pane} could not be read: {reason}")
-            case TmuxExit(code=code) if code != 0:
+            case "closed":
                 raise NotStarted(f"`claude` in {folder} ended before it joined hands, and its window closed with it")
-            case TmuxExit(out=out) if out.strip() == b"1":
-                raise NotStarted(f"`claude` in {folder} ended before it joined hands; tmux pane {pane} showed:\n{await _shown(children, terminal, window)}")
-            case TmuxExit():
+            case "dead":
+                # Its last lines, where what it said as it ended is: tmux's notice that it is dead takes the screen.
+                raise NotStarted(f"`claude` in {folder} ended before it joined hands; the last of what tmux pane {pane} drew:\n{_read(await terminals.tail(socket, pane, TOLD_LINES))}")
+            case "running":
                 pass
         if clock.now() > deadline:
-            raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{await _shown(children, terminal, window)}")
+            # [LAW:one-source-of-truth] the one capture read_screen reads a session's screen by.
+            raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{_read(await terminals.shown(socket, pane))}")
         await clock.sleep(LOOK_SECONDS)
     return member
 
 
-async def _shown(children: Children, terminal: Mapping[str, str], window: _Window) -> str:
-    # [LAW:one-source-of-truth] the one capture read_screen reads a session's screen by.
-    match await shown(children, terminal, window.socket, window.pane):
-        case str(screen):
+def _read(screen: str | Unanswered) -> str:
+    match screen:
+        case str():
             return screen
         case Unanswered(reason=reason):
             return f"(tmux could not show it: {reason})"
 
 
-def _said(ran: TmuxExit) -> str:
-    return ran.err.decode(errors="replace").strip()
-
-
-async def _tmux(children: Children, tmux: str, terminal: Mapping[str, str], *arguments: str) -> TmuxExit:
-    # The terminal's environment: a tmux server this starts takes it as every window's, so it holds nothing of hands'.
-    # The home the session reports to is given its window by name.
-    ran = await children.run(tmux, *arguments, limit=ANSWER_SECONDS, env=terminal)
-    match ran:
-        case child.Ran(ending=child.Exited(code=code), out=out, err=err):
-            return TmuxExit(code, out.data, err.data)
-        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
-            raise NotStarted(f"tmux {arguments[0]} {child.said(ran)}")
-
-
-def _table(processes: Processes) -> dict[int, Process]:
-    try:
-        return processes.table()
-    except OSError as error:
-        raise NotStarted(f"the processes could not be read to tell which session is the one started: {error}") from error
+async def _table(processes: Processes) -> dict[int, Process]:
+    match await table_of(processes):
+        case TableRefused(reason=reason):
+            raise NotStarted(f"which session is the one started could not be told: {reason}")
+        case table:
+            return table

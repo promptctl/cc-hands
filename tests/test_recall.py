@@ -14,7 +14,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Command, Deny, Fritter
 from hands.core.events import Attached, Event, PermissionRequested, Tick
 from hands.core.session import AskedQuestion, Blocker, CommandName, DenyAndInterrupt, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
 from hands.daemon import cli
-from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, Typing, TypingFailed, forwards, segment
+from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, Typing, TypingFailed, TypingUnconfirmed, forwards, segment
 from hands.sessions.home import Home
 from hands.sessions.names import Finished, NameGiven, Names, NameWithheld
 from hands.sessions.recall import Moment, Moments, recall
@@ -264,6 +264,13 @@ def test_a_send_seen_to_fail_is_a_change_to_the_moment_it_was(tmp_path: Path) ->
     taken = folded(home, Moments())
     assert taken.changes == 2
     assert [moment.heading for moment in taken.moments()] == [f"not sent to {BILLING}"]
+
+
+def test_a_send_never_confirmed_is_recalled_as_maybe_sent_saying_why(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    times = written(home, [typed("first"), TypingUnconfirmed(typed("first").effect, "fritter never answered")])
+    taken = folded(home, Moments())
+    assert [(moment.at, moment.heading, moment.text) for moment in taken.moments()] == [(times[0], f"maybe sent to {BILLING}", "first, which was never confirmed: fritter never answered")]
 
 
 def test_only_the_newest_kept_are_held_and_a_send_no_longer_kept_fails_unseen(tmp_path: Path) -> None:

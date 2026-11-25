@@ -1,77 +1,63 @@
-"""Which tmux pane a session runs in: read over a process table and every tmux server's panes, never kept."""
+"""The tmux hands asks the user's servers through: the one found on the PATH as the run starts, or none."""
 
-import os
-from collections.abc import Sequence
 from pathlib import Path
 
-from fakeprocesses import USER, Running, processes
-from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
-from hands.sessions import tmux
-from hands.sessions.tmux import Answered
-from hands.sessions.processes import ControllingTerminal, ancestor_terminals, foreground_terminal
+import pytest
 
-# Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
-PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
-WORK, PLAY = Path("/tmp/tmux-501/default"), Path("/tmp/tmux-501/play")
-HANDS = Pane(WORK, "%3", "cc-hands", 2)
-LAWS = Pane(PLAY, "%0", "laws", 0)
-# A session under fritter in a pane of the first server: claude on fritter's pseudoterminal, fritter on the pane's in
-# front of its shell. Another, in a pane of the second server, and one stopped there, behind it; and one in a plain tab.
-TABLE = processes(
-    Running(100, terminal=ControllingTerminal(PANE, foreground=False)),
-    Running(101, parent=100, terminal=ControllingTerminal(PANE, foreground=True)),
-    Running(102, parent=101, terminal=ControllingTerminal(FRITTER, foreground=True)),
-    Running(200, terminal=ControllingTerminal(OTHER_PANE, foreground=True)),
-    Running(201, terminal=ControllingTerminal(OTHER_PANE, foreground=False)),
-    Running(300, terminal=ControllingTerminal(TAB, foreground=True)),
-).table()
-SERVERS = [Listed({PANE: HANDS}), Listed({OTHER_PANE: LAWS})]
+from conftest import Answering, children_on, exited
+from hands.clock import SYSTEM
+from hands.core.effects import Command, Text
+from hands.core.session import CommandName, PromptText
+from hands.core.tmux import Pane, Unanswered
+from hands.sessions.terminals import Unconfirmed, Unopened, Untyped
+from hands.sessions.tmux import TYPING, NoTmux, TmuxTerminals, on_path
+from hands.virtualclock import VirtualClock
+
+SOCKET = Path("/tmp/tmux-501/default")
 
 
-def test_a_session_under_fritter_in_a_pane_is_in_that_pane_and_one_in_another_server_names_that_servers_socket() -> None:
-    assert pane_of(ancestor_terminals(102, TABLE), SERVERS) == HANDS
-    assert pane_of(ancestor_terminals(200, TABLE), SERVERS) == LAWS
+def test_the_tmux_asked_is_the_first_runnable_one_on_the_path(tmp_path: Path) -> None:
+    unrunnable, runnable = tmp_path / "unrunnable", tmp_path / "runnable"
+    for folder, mode in ((unrunnable, 0o644), (runnable, 0o755)):
+        folder.mkdir()
+        (folder / "tmux").touch(mode)
+    assert isinstance(on_path(children_on(SYSTEM), f"{unrunnable}:{runnable}"), TmuxTerminals)
+    assert isinstance(on_path(children_on(SYSTEM), str(unrunnable)), NoTmux)
 
 
-def test_a_session_in_a_plain_tab_is_not_in_tmux_and_with_no_server_running_none_is() -> None:
-    assert pane_of(ancestor_terminals(300, TABLE), SERVERS) == NotInTmux()
-    assert pane_of(ancestor_terminals(102, TABLE), []) == NotInTmux()
+async def test_with_no_tmux_on_the_path_every_ask_says_so_and_nothing_is_opened_or_typed(tmp_path: Path) -> None:
+    terminals = on_path(children_on(SYSTEM), str(tmp_path))
+    reason = f"no tmux is on the PATH {tmp_path}"
+    assert [await terminals.panes(SOCKET), await terminals.clients(SOCKET), await terminals.shown(SOCKET, "%0"), await terminals.state(SOCKET, "%0")] == [Unanswered(reason)] * 4
+    assert await terminals.open("billing", tmp_path, ["claude"], {}, {}) == Unopened(reason)
+    with pytest.raises(Untyped, match=reason):
+        await terminals.type(Pane(SOCKET, "%0", "billing", 0), Text(PromptText("hello")))
 
 
-def test_a_server_that_did_not_answer_leaves_unread_only_the_sessions_no_other_server_holds() -> None:
-    servers = [Listed({PANE: HANDS}), Unanswered("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")]
-    assert pane_of(ancestor_terminals(102, TABLE), servers) == HANDS
-    assert pane_of(ancestor_terminals(300, TABLE), servers) == PaneUnread("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")
+async def test_a_tmux_that_cannot_be_run_opens_and_types_nothing_and_answers_nothing(tmp_path: Path) -> None:
+    # [LAW:no-ambient-temporal-coupling] a tmux never started is never waited on: no real time passes.
+    terminals = TmuxTerminals(children_on(VirtualClock()), tmp_path / "tmux")
+    match await terminals.open("billing", tmp_path, ["claude"], {}, {}):
+        case Unopened(reason=reason):
+            assert reason.startswith("tmux could not be started: ")
+        case other:
+            pytest.fail(f"opened as {other}")
+    with pytest.raises(Untyped, match="could not be started"):
+        await terminals.type(Pane(SOCKET, "%0", "billing", 0), Text(PromptText("hello")))
+    match await terminals.panes(SOCKET):
+        case Unanswered(reason=reason):
+            assert reason.startswith("tmux could not be started: ")
+        case other:
+            pytest.fail(f"listed as {other}")
 
 
-def keyboard(pid: int, servers: Sequence[Server] = SERVERS) -> object:
-    return keyboard_of(foreground_terminal(pid, TABLE), ancestor_terminals(pid, TABLE), servers)
-
-
-def test_keys_reach_a_session_through_its_pane_only_while_it_is_in_front_of_that_pane_itself() -> None:
-    assert keyboard(200) == LAWS
-    # Stopped, or a background job: its shell has the pane's keys.
-    assert keyboard(201) == Behind(LAWS)
-    # On a terminal of its own inside the pane - fritter's here, an editor's or ssh's elsewhere - which has the pane's keys.
-    assert keyboard(102) == Behind(HANDS)
-    # Gone since its pane was read: nothing of it is in front of anything.
-    assert keyboard(999) == NotInTmux()
-    assert keyboard(300) == NotInTmux()
-    assert keyboard(300, [Listed({PANE: HANDS}), Unanswered("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")]) == PaneUnread("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")
-
-
-def test_a_relative_socket_whose_server_pid_is_now_another_users_names_no_server(tmp_path: Path) -> None:
-    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it.
-    held = 4242
-    table = processes(Running(held, terminal=ControllingTerminal(1, foreground=False), environment={"TMUX": "mine,1,0"}))
-    assert tmux.sockets(table, {"TMUX_TMPDIR": str(tmp_path)}, [held], table.table()) == []
-
-
-def test_sockets_are_looked_for_where_tmux_puts_them_with_an_empty_tmux_tmpdir_read_as_unset() -> None:
-    assert tmux.socket_directory({"TMUX_TMPDIR": "/var/run/mine"}, USER) == Path(f"/var/run/mine/tmux-{USER}")
-    assert tmux.socket_directory({"TMUX_TMPDIR": ""}, USER) == tmux.socket_directory({}, USER) == Path(f"/tmp/tmux-{USER}")
-
-
-def test_a_pane_closed_between_its_listing_and_the_look_at_its_terminal_leaves_the_rest_of_its_server_read() -> None:
-    lines = ["/dev/null\t%1\t0\twork", "/dev/hands-no-such-terminal\t%2\t1\twork"]
-    assert tmux.listed(Answered(WORK, lines)) == Listed({os.stat("/dev/null").st_rdev: Pane(WORK, "%1", "work", 0)})
+async def test_a_typing_tmux_stopped_after_its_first_key_may_have_typed_and_one_stopped_before_typed_nothing(tmp_path: Path) -> None:
+    # tmux keeps what a list ran before the command it stopped at (test_terminals_contract_tmux.py), so the name of a
+    # command can be in the input when its arguments' paste fails.
+    pane, command = Pane(SOCKET, "%3", "billing", 0), Command(CommandName("model"), PromptText("opus"))
+    partway = Answering(VirtualClock(), lambda _: None, exited(1, out=f"{TYPING}\n".encode(), err=b"no buffer hands-1\n"))
+    with pytest.raises(Unconfirmed, match=f"tmux at {SOCKET} began typing into pane %3 and stopped partway: no buffer hands-1"):
+        await TmuxTerminals(partway, tmp_path / "tmux").type(pane, command)
+    before = Answering(VirtualClock(), lambda _: None, exited(1, err=b"can't find pane: %3\n"))
+    with pytest.raises(Untyped, match=f"tmux at {SOCKET} did not type into pane %3: can't find pane: %3"):
+        await TmuxTerminals(before, tmp_path / "tmux").type(pane, command)
