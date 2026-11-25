@@ -19,13 +19,13 @@ concurrency:
 
 jobs:
   # A group's weights (src/hands/voice/pins.py) into the hub's cache, saved for the jobs that restore them. [LAW:no-ambient-temporal-coupling]
-  # the cache is filled here, by a job whose limit is a download's and not 5 minutes, and never by a test job: a test job cancelled
-  # at its limit saves nothing, so a cold cache it had to fill would stay cold, and cancel the next day's job the same way. A warm
-  # group costs this job a restore and a look. The limit is not measured: no group has been downloaded cold here yet.
+  # the cache is filled here, never by a test job: a test job cancelled at its limit saves nothing, so a cold cache it had to fill
+  # would stay cold, and cancel the next day's job the same way. Cold, the largest group took 145 s of this job's 5 minutes
+  # (docs/testing.md); a warm one costs a restore and a look.
   weights:
     name: weights ${{ matrix.group }}
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -56,48 +56,63 @@ jobs:
     name: ${{ matrix.weights || 'no weights' }} ${{ matrix.shard }}
     needs: weights
     runs-on: macos-15
-    timeout-minutes: 5
+    timeout-minutes: ${{ matrix.limit }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { weights: "", shard: 1/16, budget: 3 }
-          - { weights: "", shard: 2/16, budget: 3 }
-          - { weights: "", shard: 3/16, budget: 3 }
-          - { weights: "", shard: 4/16, budget: 3 }
-          - { weights: "", shard: 5/16, budget: 3 }
-          - { weights: "", shard: 6/16, budget: 3 }
-          - { weights: "", shard: 7/16, budget: 3 }
-          - { weights: "", shard: 8/16, budget: 3 }
-          - { weights: "", shard: 9/16, budget: 3 }
-          - { weights: "", shard: 10/16, budget: 3 }
-          - { weights: "", shard: 11/16, budget: 3 }
-          - { weights: "", shard: 12/16, budget: 3 }
-          - { weights: "", shard: 13/16, budget: 3 }
-          - { weights: "", shard: 14/16, budget: 3 }
-          - { weights: "", shard: 15/16, budget: 3 }
-          - { weights: "", shard: 16/16, budget: 3 }
-          - { weights: "streaming", shard: 1/14, budget: 2 }
-          - { weights: "streaming", shard: 2/14, budget: 2 }
-          - { weights: "streaming", shard: 3/14, budget: 2 }
-          - { weights: "streaming", shard: 4/14, budget: 2 }
-          - { weights: "streaming", shard: 5/14, budget: 2 }
-          - { weights: "streaming", shard: 6/14, budget: 2 }
-          - { weights: "streaming", shard: 7/14, budget: 2 }
-          - { weights: "streaming", shard: 8/14, budget: 2 }
-          - { weights: "streaming", shard: 9/14, budget: 2 }
-          - { weights: "streaming", shard: 10/14, budget: 2 }
-          - { weights: "streaming", shard: 11/14, budget: 2 }
-          - { weights: "streaming", shard: 12/14, budget: 2 }
-          - { weights: "streaming", shard: 13/14, budget: 2 }
-          - { weights: "streaming", shard: 14/14, budget: 2 }
-          - { weights: "whisper", shard: 1/4, budget: 2 }
-          - { weights: "whisper", shard: 2/4, budget: 2 }
-          - { weights: "whisper", shard: 3/4, budget: 2 }
-          - { weights: "whisper", shard: 4/4, budget: 2 }
-          - { weights: "smart_turn,streaming", shard: 1/1, budget: 2 }
-          - { weights: "smart_turn", shard: 1/1, budget: 2 }
-          - { weights: "voiceprint", shard: 1/1, budget: 2 }
+          - { weights: "", shard: 1/24, budget: 3.0, limit: 6 }
+          - { weights: "", shard: 2/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 3/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 4/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 5/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 6/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 7/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 8/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 9/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 10/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 11/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 12/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 13/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 14/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 15/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 16/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 17/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 18/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 19/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 20/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 21/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 22/24, budget: 2.5, limit: 5 }
+          - { weights: "", shard: 23/24, budget: 2.0, limit: 5 }
+          - { weights: "", shard: 24/24, budget: 2.0, limit: 5 }
+          - { weights: "smart_turn", shard: 1/1, budget: 1.5, limit: 4 }
+          - { weights: "smart_turn,streaming", shard: 1/1, budget: 1.5, limit: 5 }
+          - { weights: "streaming", shard: 1/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 2/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 3/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 4/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 5/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 6/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 7/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 8/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 9/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 10/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 11/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 12/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 13/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 14/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 15/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 16/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 17/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 18/19, budget: 2.5, limit: 6 }
+          - { weights: "streaming", shard: 19/19, budget: 2.5, limit: 6 }
+          - { weights: "voiceprint", shard: 1/1, budget: 1.0, limit: 4 }
+          - { weights: "whisper", shard: 1/6, budget: 2.0, limit: 5 }
+          - { weights: "whisper", shard: 2/6, budget: 2.0, limit: 5 }
+          - { weights: "whisper", shard: 3/6, budget: 2.0, limit: 5 }
+          - { weights: "whisper", shard: 4/6, budget: 2.0, limit: 5 }
+          - { weights: "whisper", shard: 5/6, budget: 2.0, limit: 5 }
+          - { weights: "whisper", shard: 6/6, budget: 2.0, limit: 5 }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -201,6 +216,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup
+        with:
+          uv-cache: false
       - name: make check-fritter
         run: make check-fritter
 

@@ -211,6 +211,7 @@ async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
 
 
 @pytest.mark.outside
+@pytest.mark.weights("smart_turn")
 @pytest.mark.parametrize(
     "asked",
     [

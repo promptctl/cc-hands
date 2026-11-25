@@ -18,7 +18,8 @@ from hands.sessions.kernel import KERNEL, KernelProcesses
 from hands.sessions.processes import Process, StartedAs
 from processescontract import Child, ProcessesContract, Start
 
-pytestmark = pytest.mark.outside
+# promptctl-testing-px1f.icp: on a runner's framework Python a child re-execs into Python.app, so the kernel names another file than the test waits for.
+pytestmark = [pytest.mark.outside, pytest.mark.quarantined("promptctl-testing-px1f.icp", until="2026-12-02")]
 
 # How long a child has to exec its program once started.
 EXEC_SECONDS = 10.0

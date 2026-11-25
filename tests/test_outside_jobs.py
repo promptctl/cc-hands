@@ -1,6 +1,6 @@
-"""What outside.yml says of its jobs, held by the tests it runs and what they cost: every job ends inside 5 minutes, which is a
-budget its shard's seconds are held to here, on every PR, since a job that outgrows its limit shows on CI as a cancellation and
-not as the test that grew.
+"""What outside.yml says of its jobs, held by the tests it runs and what they cost (tests/outside_jobs.py says what a job spends):
+every job ends inside 5 minutes but one that holds a test needing more alone, and its step ends inside the job's limit. Held here,
+on every PR, since a job that outgrows its limit shows on CI as a cancellation and not as the test that grew.
 
 The tests are the outside ones the unit run collects before its layer drops them (conftest's OUTSIDE_TESTS), and what each costs
 is tests/shard-costs-outside.json, which names every one of them."""
@@ -14,18 +14,11 @@ import yaml
 
 from conftest import OUTSIDE_TESTS
 from hands.voice import pins
+from outside_jobs import ENDING, AFTER, BEFORE, LIMIT, RESTORING, SLOWDOWN, allowed, budget_of, limit_of
 from shards import OUTSIDE_COSTS, Costs, Shard, partition
 
 ROOT = Path(__file__).parents[1]
 WORKFLOW = yaml.safe_load((ROOT / ".github" / "workflows" / "outside.yml").read_text())
-# The job's limit, in seconds, and what a job's tests are held to fit of it under SLOWDOWN: a job pays FIXED before its first test.
-LIMIT = 5 * 60
-# pytest's time on CI has swung 1.8 times between runs of one commit (docs/testing.md).
-SLOWDOWN = 1.5
-# What every job pays before its first test, and what restoring one group of weights adds: measured off the steps of outside.yml's
-# dispatched run (docs/testing.md says which), collection of the whole suite included.
-FIXED = 100.0
-RESTORING = {"streaming": 30.0, "smart_turn": 5.0, "whisper": 20.0, "voiceprint": 5.0}
 
 
 def entries() -> list[dict[str, Any]]:
@@ -46,9 +39,10 @@ def test_every_pinned_group_is_a_weights_job_and_a_restore_step_of_the_tests_job
     assert restores == [f"The {group} weights" for group in pins.GROUPS]
 
 
-def test_every_job_but_the_one_that_downloads_ends_inside_5_minutes() -> None:
-    limits = {name: job["timeout-minutes"] for name, job in WORKFLOW["jobs"].items() if name != "weights"}
-    assert limits == {name: 5 for name in limits}
+def test_every_job_but_the_tests_ends_inside_5_minutes() -> None:
+    limits = {name: job["timeout-minutes"] for name, job in WORKFLOW["jobs"].items() if name != "tests"}
+    assert limits == {name: LIMIT for name in limits}
+    assert WORKFLOW["jobs"]["tests"]["timeout-minutes"] == "${{ matrix.limit }}"
 
 
 @pytest.mark.parametrize("entry", entries(), ids=lambda entry: f"{entry['weights'] or 'none'} {entry['shard']}")
@@ -74,20 +68,24 @@ def test_every_outside_test_the_run_collected_is_priced_and_runs_in_a_job(pytest
     assert not unrun, f"the outside tests that load {[sorted(groups) for groups in unrun]} are in no job of outside.yml"
 
 
-def test_every_shard_fits_its_budget_and_its_budget_fits_the_job(pytestconfig: pytest.Config) -> None:
+def test_every_shard_fits_its_step_and_its_step_fits_its_job_which_is_5_minutes_unless_a_test_it_holds_needs_more(pytestconfig: pytest.Config) -> None:
     collected = pytestconfig.stash[OUTSIDE_TESTS]
     costs = Costs.load(OUTSIDE_COSTS)
     over: list[str] = []
     for entry in entries():
         held = groups_of(entry)
         ids = [test for test, groups in collected.items() if groups == held]
+        if not ids:
+            continue  # a run of some of the files collects none of this set's
         shard = Shard.parse(entry["shard"])
-        packed = partition(ids, costs, shard.total)[shard.index - 1].seconds if ids else 0.0
-        if packed * SLOWDOWN > entry["budget"] * 60:
-            over.append(f"{entry['weights'] or 'none'} {entry['shard']}: {packed:.0f} s packed, {packed * SLOWDOWN:.0f} s at {SLOWDOWN}x, over its {entry['budget']} minutes")
-        fixed = FIXED + sum(RESTORING[group] for group in held)
-        if fixed + entry["budget"] * 60 > LIMIT:
-            over.append(f"{entry['weights'] or 'none'} {entry['shard']}: {fixed:.0f} s before the first test and {entry['budget']} minutes of tests are over the job's {LIMIT // 60}")
+        packed = partition(ids, costs, shard.total)[shard.index - 1]
+        name = f"{entry['weights'] or 'none'} {entry['shard']}"
+        if entry["budget"] < budget_of(packed.seconds):
+            over.append(f"{name}: {packed.seconds:.0f} s packed need {budget_of(packed.seconds)} minutes of step at {SLOWDOWN}x, with its collection; the entry gives {entry['budget']}")
+        if entry["limit"] < limit_of(held, entry["budget"]):
+            over.append(f"{name}: {BEFORE:.0f} s before its step, {sum(RESTORING[group] for group in held):.0f} restoring, {entry['budget']} minutes of step, {ENDING + AFTER:.0f} s ending and after it, are over its {entry['limit']} minutes")
+        if entry["limit"] > allowed(held, packed.tests, costs):
+            over.append(f"{name}: {entry['limit']} minutes, where no test it holds needs more than {allowed(held, packed.tests, costs)} alone: cut the set into more shards")
     assert not over, "\n".join(over)
 
 

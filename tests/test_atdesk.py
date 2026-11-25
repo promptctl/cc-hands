@@ -31,7 +31,7 @@ from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 
 
-pytestmark = pytest.mark.outside
+pytestmark = [pytest.mark.outside, pytest.mark.weights("smart_turn")]
 
 # Twenty milliseconds of the desk's microphone, as it hands audio over.
 BUFFER = 640

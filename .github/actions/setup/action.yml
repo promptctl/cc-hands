@@ -4,6 +4,10 @@
 # GOTOOLCHAIN=auto fetches that one for its build.
 name: setup
 description: Go, uv on Python 3.12, and PortAudio, for a checkout that has its history and tags
+inputs:
+  uv-cache:
+    description: Whether uv's cache is saved after the job; a job that runs no uv has none, and the save then fails the job
+    default: "true"
 runs:
   using: composite
   steps:
@@ -16,6 +20,7 @@ runs:
     - uses: astral-sh/setup-uv@v6
       with:
         python-version: "3.12"
+        enable-cache: ${{ inputs.uv-cache }}
     # PyAudio ships wheels only for Windows, so on a Mac it builds against Homebrew's PortAudio.
     - name: PortAudio
       shell: bash
