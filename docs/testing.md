@@ -58,6 +58,14 @@ Registered sessions are identified by the session ID reported by their hooks. In
 process host supplies the executable for a relative invocation, and a process can exit between listing and inspection.
 Session readiness, pane routing, liveness and close-session tests cover how those callers use process information.
 
+The programs hands runs, it runs through `Children` (hands.sessions.child), whose real adapter is the `Runner`. A test of
+what hands makes of a run gives its code tests/fakechildren.py, the programs it stands in for as values, each the outcome
+every run of it ends in or a coroutine that answers each run, kept in `asked`. What hands relies on of a run is a
+contract, tests/childrencontract.py, run against the fake in `make check` (test_children_contract.py) and against the
+Runner, on scripts the test writes, `outside` (test_children_contract_runner.py). The menu-bar indicator each run shows
+is started and ended through `Indicators` (hands.daemon.indicatorprocess), apart from Children since it outlives the
+restart's exec; tests hand `cli.main` tests/fakeindicators.py, and test_restart.py holds the real one to real processes.
+
 ## The user's terminals and the Mac's screen
 
 The daemon reads and types into the user's tmux panes through `Terminals`, types into fritters through `Fritters` (both

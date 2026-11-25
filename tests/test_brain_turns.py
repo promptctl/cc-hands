@@ -27,7 +27,8 @@ from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
 from hands.sessions.audit import Entry, LoginReported, Record
-from conftest import Unstarting, events, laid_out, patiently, settled, taken
+from conftest import events, laid_out, patiently, settled, taken
+from fakechildren import FakeChildren
 from fixtures.pins import LAID_OUT
 from hands.core.session import Runnable
 from hands.daemon import readiness, run
@@ -1019,7 +1020,10 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
     def checked() -> readiness.Finding:
         heart.beat("running", None, 0, listening=False, degraded=run._login(brain.login))  # pyright: ignore[reportPrivateUsage]
         # Judged as `look` judges the hands it finds running, on the brain's own clock.
-        return readiness.configured(Unstarting(clock, lambda _: None), home, LAID_OUT, UNMANAGED, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
+        children = FakeChildren(clock)
+        found = readiness.configured(children, home, LAID_OUT, UNMANAGED, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
+        assert children.asked == []
+        return found
 
     _took(brain, "n1", NOTICE)
     _told(brain, "n1", ("n1",), ending=ToldByStop("Done.", REFRESH_REFUSED))

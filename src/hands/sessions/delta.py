@@ -29,7 +29,7 @@ from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pu
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, said
 from hands.sessions import child
-from hands.sessions.child import Children
+from hands.sessions.child import Runner
 from hands.tasks import settled
 from hands.clock import Clock, wait_all
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
@@ -264,7 +264,7 @@ class Deltas:
         self._patience = patience
         # [LAW:effects-at-boundaries] the one clock every budget here is read off and waited out on, git's and gh's too.
         self._clock = clock
-        self._children = Children(clock, record)
+        self._children = Runner(clock, record)
         # The baseline each session's last snapshot took, None where it took none, until a reading spends it. The registry
         # performs a session's Snapshot before any Compare decided after it, so a compare finds the baseline already in
         # [LAW:no-ambient-temporal-coupling]. Bounded by the sessions the registry itself keeps, which holds every session it has heard of.

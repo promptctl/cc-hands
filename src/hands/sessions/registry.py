@@ -18,7 +18,7 @@ from hands.core.reducer import reduce
 from hands.core.session import Gone, Instant, Known, Membership, PromptId, Registry, RequestId, Session, SessionId, followed, status_stamp
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
-from hands.sessions.child import Children
+from hands.sessions.child import Children, Runner
 from hands.sessions.audit import Record, Typing, TypingConfirmed, TypingFailed, TypingUnconfirmed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
@@ -135,7 +135,7 @@ class Sessions:
     @property
     def children(self) -> Children:
         """What starts the children the sessions are read and typed through: on the one clock, its events recorded here."""
-        return Children(self._clock, self._record)
+        return Runner(self._clock, self._record)
 
     def now(self) -> Instant:
         return self._clock.now()

@@ -10,11 +10,10 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
-from conftest import children_on
+from fakechildren import FakeChildren
 from fakeprocesses import FakeProcesses, Running, processes
 from faketerminals import DEAD, FakePane, FakeServer, FakeTerminals, Wedged
 
-from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
@@ -175,12 +174,8 @@ async def test_a_session_that_joins_outside_fritter_is_said_to_be_one_hands_cann
 
 async def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not_started(tmp_path: Path) -> None:
     starts = Starts(home_in(tmp_path))
-    # Found on PATH, and no program the OS will run: its interpreter is not there.
-    tmux = tmp_path / "bin" / "tmux"
-    tmux.parent.mkdir()
-    tmux.write_text("#!/nonexistent/hands-no-such-shell\n")
-    tmux.chmod(0o755)
-    starts.terminals = TmuxTerminals(children_on(SYSTEM), tmux)
+    # A tmux the OS never starts.
+    starts.terminals = TmuxTerminals(FakeChildren(VirtualClock()), tmp_path / "bin" / "tmux")
     answer = await starts.start(folder_in(tmp_path), environment={"PATH": "/usr/bin", "TMUX_TMPDIR": str(tmp_path)})
     assert answer.keys() == {"error"}
     assert answer["error"].startswith("hands starts a session in a tmux window, and none was opened: tmux could not be started: ")

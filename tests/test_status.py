@@ -16,6 +16,7 @@ import pytest
 from conftest import unedited
 from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import FakeProcesses, Running, processes
+from fakeindicators import FakeIndicators
 from hands.clock import SYSTEM
 from hands.daemon import indicator
 from hands.sessions import audit, heartbeat
@@ -285,21 +286,21 @@ def test_hands_status_exits_zero_only_when_the_daemon_is_up_and_its_event_fails_
     def errors() -> list[str | None]:
         return [line.get("error") for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
 
-    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up()) == 1
+    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 1
     said = capsys.readouterr().out
     assert "has not run" in said
     assert errors() == [f"exited 1: {said.rstrip()}"]
     heartbeat.write(home.status, beat(pid=RUNNING, started_at=datetime.now(UTC), written_at=datetime.now(UTC)))
-    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up()) == 0
+    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 0
     assert capsys.readouterr().out.startswith(f"hands is up: pid {RUNNING}")
     assert errors()[1:] == [None]
     home.status.write_text("{")
-    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up()) == 2
+    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 2
     said = capsys.readouterr().err
     assert "cannot be read" in said
     assert errors()[2:] == [f"exited 2: {said.rstrip()}"]
     heartbeat.write(home.status, beat(pid=2**63))
-    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up()) == 2
+    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 2
     assert "not a process id" in capsys.readouterr().err
 
 
@@ -307,9 +308,9 @@ def test_a_relative_hands_home_is_refused_but_never_stands_in_the_way_of_an_expl
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("HANDS_HOME", "relhome")
-    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up()) == 1
+    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 1
     assert "has not run" in capsys.readouterr().out
-    assert main(["status"], machine=UNMANAGED, processes=up()) == 2
+    assert main(["status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 2
     assert "HANDS_HOME must be an absolute path, got 'relhome'" in capsys.readouterr().err
 
 
@@ -423,10 +424,10 @@ def test_the_tmux_segment_shows_a_turn_and_a_degradation_as_the_menu_bar_does_an
 
 def test_hands_tmux_status_prints_the_segment_and_exits_zero_whatever_the_verdict(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
-    assert main(["--home", str(tmp_path), "tmux-status"], machine=UNMANAGED, processes=up()) == 0
+    assert main(["--home", str(tmp_path), "tmux-status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 0
     assert capsys.readouterr().out == "#[fg=colour244]✋ off#[default]\n"
     home.status.write_text("{")
-    assert main(["--home", str(tmp_path), "tmux-status"], machine=UNMANAGED, processes=up()) == 0
+    assert main(["--home", str(tmp_path), "tmux-status"], machine=UNMANAGED, processes=up(), indicators=FakeIndicators()) == 0
     assert capsys.readouterr().out == "#[fg=red,bold]⚠︎ hands unreadable#[default]\n"
 
 
@@ -500,7 +501,7 @@ def test_a_deaf_daemon_is_read_from_the_heartbeat_by_hands_status(tmp_path: Path
     # A daemon running since before its heartbeat began.
     daemon = 4000
     heartbeat.write(home.status, beat(pid=daemon, started_at=datetime.now(UTC), written_at=datetime.now(UTC), degraded=(heartbeat.NO_MICROPHONE, SLOW)))
-    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=processes(Running(daemon))) == 0
+    assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=processes(Running(daemon)), indicators=FakeIndicators()) == 0
     assert capsys.readouterr().out.startswith(f"hands is up but cannot hear, as there is no microphone, and is slow, as something made it so: pid {daemon}")
 
 

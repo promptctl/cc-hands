@@ -18,7 +18,7 @@ from hands.core.events import Joined
 from hands.core.summaries import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
-from hands.sessions.child import Children, Outcome as Ended
+from hands.sessions.child import Outcome as Ended, Runner
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent
 from hands.sessions.backlog import BACKLOG, Lit, LitFailed, Reasoned, Unexplained, Unlaunched, Untracked, events_file, parse_export, read_backlog, rotated
@@ -28,7 +28,8 @@ from hands.voice.summarising import BACKLOG_PASS, summarise_backlog, told
 from hands.voice.summary import SummaryFailed
 from hands.voice.summaries import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
-from conftest import Faked, children_on, events, exited, new_sessions, VirtualClock
+from conftest import children_on, events, new_sessions, VirtualClock
+from fakechildren import Asked, FakeChildren, exited
 from fixtures.litevents import refused
 from litcontract import refusing
 
@@ -444,11 +445,11 @@ def lit_that(records: Callable[[Mapping[str, str], Path], int], environment: Map
     """lit run in `environment`, which writes what `records` writes of its run to its events file, and exits on the code
     it gives."""
 
-    async def lit(*argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Ended:
-        assert env is not None and cwd is not None
-        return exited(records(env, cwd), err=b"lit stopped\n")
+    async def lit(asked: Asked) -> Ended:
+        assert asked.env is not None and asked.cwd is not None
+        return exited(records(asked.env, asked.cwd), err=b"lit stopped\n")
 
-    return Lit(Faked(VirtualClock(), lambda _: None, lit), environment)
+    return Lit(FakeChildren(VirtualClock(), {"lit": lit}), environment)
 
 
 def written(env: Mapping[str, str], cwd: Path, line: str) -> None:
@@ -541,7 +542,7 @@ async def test_lit_runs_as_the_span_of_its_own_child_run_event_inside_the_work_i
     records: list[Entry] = []
     began = wide.begun(SYSTEM)
     with wide.unit("backlog.read", records.append, began):
-        assert await read_backlog(Lit(Children(SYSTEM, records.append), os.environ), project) == Untracked(project)
+        assert await read_backlog(Lit(Runner(SYSTEM, records.append), os.environ), project) == Untracked(project)
     [ran] = events(records, "child.run")
     [line] = (tmp_path / "state" / "links-issue-tracker" / "events.jsonl").read_text().splitlines()
     assert (ran.trace_id, ran.span_id, ran.parent_id) == (began.span.trace_id, json.loads(line)["parent_span_id"], began.span.span_id)

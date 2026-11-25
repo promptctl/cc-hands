@@ -34,7 +34,7 @@ from hands.clock import Clock, dashed
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
 from hands.sessions.backlog import Lit
 from hands.sessions import heartbeat, panes
-from hands.sessions.child import Children
+from hands.sessions.child import Children, Runner
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.front import InFront
@@ -438,7 +438,7 @@ async def converse(
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
-    channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, children=Children(clock, record)), record, clock)
+    channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, children=Runner(clock, record)), record, clock)
     listen(voice, channel, after_crash, minded.running_on)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
@@ -479,7 +479,7 @@ async def converse(
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
-        asyncio.create_task(keep_summarising(clock, store, summarise, record, Lit(Children(clock, record), environment)), name="the summary store"),
+        asyncio.create_task(keep_summarising(clock, store, summarise, record, Lit(Runner(clock, record), environment)), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
         asyncio.create_task(memory.Sampler(clock, record).keep_sampling(), name="the memory sampler"),
@@ -525,7 +525,7 @@ async def converse(
             # Any of them failing ends the others, and the phone task with them.
             async with loaded(clock, voice.phone.heard_rate, record, "phone.loaded") as ears, asyncio.TaskGroup() as phone_tasks:
                 phone_tasks.create_task(follow_the_phone(clock, voice.key, voice.phone, ears, record), name="the phone's turns")
-                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery, wake_models, runtime), home, partial(tailnet, Children(clock, record), home), record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(clock, phone_pages(clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home.audit, key, record, environment, gallery, wake_models, runtime), home, partial(tailnet, Runner(clock, record), home), record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

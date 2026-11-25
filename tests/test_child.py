@@ -28,7 +28,7 @@ from hands.sessions.child import (
     KILL_GRACE_SECONDS,
     Cancelled,
     Captured,
-    Children,
+    Runner,
     Command,
     Exited,
     Kill,
@@ -174,9 +174,9 @@ def test_a_limit_that_is_no_finite_time_cannot_be_made(seconds: float) -> None:
 async def test_a_limit_that_is_no_time_is_refused_before_anything_starts() -> None:
     recorded: list[WideEvent] = []
     with pytest.raises(ValueError, match="finite time"):
-        await Children(VirtualClock(), recorded.append).run("true", limit=math.nan)
+        await Runner(VirtualClock(), recorded.append).run("true", limit=math.nan)
     with pytest.raises(ValueError, match="finite time"):
-        Children(VirtualClock(), recorded.append).run_blocking("true", limit=-1)
+        Runner(VirtualClock(), recorded.append).run_blocking("true", limit=-1)
     assert recorded == []
 
 
@@ -201,7 +201,7 @@ def test_a_command_no_os_can_be_handed_cannot_be_made(argv: tuple[str, ...], cwd
 async def test_a_directory_with_a_nul_is_refused_in_the_caller_before_anything_starts() -> None:
     recorded: list[WideEvent] = []
     with pytest.raises(ValueError, match="NUL"):
-        await Children(VirtualClock(), recorded.append).run("true", limit=5, cwd=Path("/tmp/a\0b"))
+        await Runner(VirtualClock(), recorded.append).run("true", limit=5, cwd=Path("/tmp/a\0b"))
     assert recorded == []
 
 
@@ -470,7 +470,7 @@ def test_a_child_s_event_is_written_and_its_caller_told_where_it_exited(kernel: 
 
 
 def test_a_child_s_terminal_read_to_its_end_or_not_is_on_its_event() -> None:
-    children = Children(VirtualClock(), lambda _: None)
+    children = Runner(VirtualClock(), lambda _: None)
     closed: child.queue.SimpleQueue[None] = child.queue.SimpleQueue()
     assert children._after(Terminal(0, closed)) == {"drained": False}  # pyright: ignore[reportPrivateUsage]
     closed.put(None)
@@ -488,7 +488,7 @@ async def test_no_thread_to_follow_a_child_starts_no_child_and_hands_failure_goe
     monkeypatch.setattr(child.threading.Thread, "start", refused)
     monkeypatch.setattr(child.subprocess, "Popen", started)
     with pytest.raises(RuntimeError, match="can't start new thread"):
-        await Children(VirtualClock(), lambda _: None).run("true", limit=5)
+        await Runner(VirtualClock(), lambda _: None).run("true", limit=5)
 
 
 async def test_a_watch_that_cannot_be_made_is_a_child_never_started_and_said_failed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -497,7 +497,7 @@ async def test_a_watch_that_cannot_be_made_is_a_child_never_started_and_said_fai
 
     monkeypatch.setattr(child.select, "kqueue", refused)
     recorded: list[WideEvent] = []
-    outcome = await Children(VirtualClock(), recorded.append).run("true", limit=5)
+    outcome = await Runner(VirtualClock(), recorded.append).run("true", limit=5)
     assert isinstance(outcome, NeverStarted) and outcome.error.errno == errno.EMFILE
     [event] = events(recorded, "child.run")
     assert (event.outcome, event.error, event.facts["ending"]) == ("failed", "could not be started: Too many open files", "never_started")
@@ -524,7 +524,7 @@ async def test_output_files_that_cannot_be_made_are_a_child_that_never_started_a
 
     monkeypatch.setattr(child.tempfile, "TemporaryFile", second_refused)
     recorded: list[WideEvent] = []
-    outcome = await Children(VirtualClock(), recorded.append).run("true", limit=5)
+    outcome = await Runner(VirtualClock(), recorded.append).run("true", limit=5)
     assert isinstance(outcome, NeverStarted) and outcome.error.errno == errno.EMFILE
     [first] = made
     assert first.closed
@@ -552,7 +552,7 @@ async def until_gone(pid: int) -> None:
 @pytest.mark.outside
 async def test_a_child_s_output_and_exit_are_what_it_ran_to_and_its_event_is_in_its_caller_s_span() -> None:
     recorded: list[WideEvent] = []
-    children = Children(SYSTEM, recorded.append)
+    children = Runner(SYSTEM, recorded.append)
     with wide.unit("test.caller", recorded.append, wide.begun(SYSTEM)):
         ran = await children.run("sh", "-c", "echo out; echo err >&2; exit 3", limit=5)
     assert ran == Ran(Exited(3), Captured(b"out\n"), Captured(b"err\n"))
@@ -566,7 +566,7 @@ async def test_a_child_s_output_and_exit_are_what_it_ran_to_and_its_event_is_in_
 async def test_a_child_that_wrote_more_than_hands_reads_of_its_output_is_lost(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(child, "CAPTURE_BYTES", 4)
     recorded: list[WideEvent] = []
-    outcome = await Children(SYSTEM, recorded.append).run("sh", "-c", "echo 12345", limit=5)
+    outcome = await Runner(SYSTEM, recorded.append).run("sh", "-c", "echo 12345", limit=5)
     assert outcome == Lost("it wrote more than the 4 bytes hands reads of its output")
     [event] = events(recorded, "child.run")
     assert (event.outcome, event.facts["exit_code"], event.facts["out_cut"]) == ("failed", 0, True)
@@ -577,7 +577,7 @@ async def test_a_child_past_its_limit_is_killed_with_what_it_started(tmp_path: P
     pid = tmp_path / "pid"
     recorded: list[WideEvent] = []
     started = time.monotonic()
-    ran = await Children(SYSTEM, recorded.append).run("sh", "-c", f"sleep 30 & echo $! > {pid}; wait", limit=0.3)
+    ran = await Runner(SYSTEM, recorded.append).run("sh", "-c", f"sleep 30 & echo $! > {pid}; wait", limit=0.3)
     assert time.monotonic() - started < 0.3 + KILL_GRACE_SECONDS
     assert isinstance(ran, Ran) and ran.ending == Killed(Kill(Limit(0.3)))
     await until_gone(int(pid.read_text()))
@@ -589,7 +589,7 @@ async def test_a_child_past_its_limit_is_killed_with_what_it_started(tmp_path: P
 async def test_what_a_child_leaves_in_its_group_as_it_exits_is_killed(tmp_path: Path) -> None:
     pid = tmp_path / "pid"
     recorded: list[WideEvent] = []
-    ran = await Children(SYSTEM, recorded.append).run("sh", "-c", f"sleep 600 & echo $! > {pid}", limit=5)
+    ran = await Runner(SYSTEM, recorded.append).run("sh", "-c", f"sleep 600 & echo $! > {pid}", limit=5)
     assert isinstance(ran, Ran) and ran.ending == Exited(0)
     await until_gone(int(pid.read_text()))
     [event] = events(recorded, "child.run")
@@ -601,7 +601,7 @@ async def test_a_process_that_moved_to_a_session_of_its_own_is_left_alone() -> N
     # Under /tmp: a socket's path holds 104 bytes on macOS, which pytest's tmp_path leaves no room in.
     sockets = tempfile.TemporaryDirectory(dir="/tmp")
     socket = Path(sockets.name) / "tmux"
-    children = Children(SYSTEM, lambda _: None)
+    children = Runner(SYSTEM, lambda _: None)
     try:
         assert (await children.run("tmux", "-S", str(socket), "new-session", "-d", "-s", "kept", "sleep 600", limit=10)) == Ran(Exited(0), Captured(b""), Captured(b""))
         listed = await children.run("tmux", "-S", str(socket), "list-sessions", "-F", "#{session_name}", limit=10)
@@ -616,7 +616,7 @@ async def test_a_process_that_moved_to_a_session_of_its_own_is_left_alone() -> N
 async def test_a_child_whose_caller_stops_waiting_is_killed_and_its_event_says_cancelled(tmp_path: Path) -> None:
     pid = tmp_path / "pid"
     recorded: list[WideEvent] = []
-    running = asyncio.ensure_future(Children(SYSTEM, recorded.append).run("sh", "-c", f"echo $$ > {pid}; exec sleep 30", limit=30))
+    running = asyncio.ensure_future(Runner(SYSTEM, recorded.append).run("sh", "-c", f"echo $$ > {pid}; exec sleep 30", limit=30))
     while not pid.exists() or not pid.read_text().strip():
         await asyncio.sleep(0.01)
     running.cancel()
@@ -630,7 +630,7 @@ async def test_a_child_whose_caller_stops_waiting_is_killed_and_its_event_says_c
 @pytest.mark.outside
 async def test_a_program_that_is_not_there_never_started_and_the_os_says_why() -> None:
     recorded: list[WideEvent] = []
-    outcome = await Children(SYSTEM, recorded.append).run("/nonexistent/hands-no-such-program", limit=5)
+    outcome = await Runner(SYSTEM, recorded.append).run("/nonexistent/hands-no-such-program", limit=5)
     assert isinstance(outcome, NeverStarted)
     assert (outcome.error.errno, outcome.error.filename) == (errno.ENOENT, "/nonexistent/hands-no-such-program")
     [event] = events(recorded, "child.run")
@@ -640,7 +640,7 @@ async def test_a_program_that_is_not_there_never_started_and_the_os_says_why() -
 @pytest.mark.outside
 async def test_a_directory_that_is_gone_is_a_child_that_never_started_there(tmp_path: Path) -> None:
     gone_dir = tmp_path / "gone"
-    outcome = await Children(SYSTEM, lambda _: None).run("true", limit=5, cwd=gone_dir)
+    outcome = await Runner(SYSTEM, lambda _: None).run("true", limit=5, cwd=gone_dir)
     assert isinstance(outcome, NeverStarted)
     assert (outcome.error.errno, str(outcome.error.filename)) == (errno.ENOENT, str(gone_dir))
 
@@ -648,7 +648,7 @@ async def test_a_directory_that_is_gone_is_a_child_that_never_started_there(tmp_
 @pytest.mark.outside
 def test_a_child_run_from_a_thread_is_held_to_its_limit_there(tmp_path: Path) -> None:
     pid = tmp_path / "pid"
-    children = Children(SYSTEM, lambda _: None)
+    children = Runner(SYSTEM, lambda _: None)
     outcomes: list[child.Outcome] = []
     thread = threading.Thread(target=lambda: outcomes.append(children.run_blocking("sh", "-c", f"sleep 30 & echo $! > {pid}; wait", limit=0.3)))
     thread.start()
@@ -662,7 +662,7 @@ def test_a_child_run_from_a_thread_is_held_to_its_limit_there(tmp_path: Path) ->
 async def test_a_started_child_that_ignores_its_stop_is_killed_once_the_grace_is_up(tmp_path: Path) -> None:
     ready = tmp_path / "ready"
     recorded: list[WideEvent] = []
-    started = Children(SYSTEM, recorded.append).start(["sh", "-c", f"trap '' TERM; touch {ready}; while :; do sleep 0.05; done"], tmp_path, dict(os.environ), Null())
+    started = Runner(SYSTEM, recorded.append).start(["sh", "-c", f"trap '' TERM; touch {ready}; while :; do sleep 0.05; done"], tmp_path, dict(os.environ), Null())
     assert isinstance(started, child.Running)
     while not ready.exists():
         await asyncio.sleep(0.01)
@@ -675,7 +675,7 @@ async def test_a_started_child_that_ignores_its_stop_is_killed_once_the_grace_is
 @pytest.mark.outside
 async def test_a_started_child_that_ends_as_its_stop_asks_ended_by_the_stop(tmp_path: Path) -> None:
     ready = tmp_path / "ready"
-    started = Children(SYSTEM, lambda _: None).start(["sh", "-c", f"touch {ready}; exec sleep 30"], tmp_path, dict(os.environ), Null())
+    started = Runner(SYSTEM, lambda _: None).start(["sh", "-c", f"touch {ready}; exec sleep 30"], tmp_path, dict(os.environ), Null())
     assert isinstance(started, child.Running)
     while not ready.exists():
         await asyncio.sleep(0.01)

@@ -107,14 +107,14 @@ SHUT_DOWN = """
 import asyncio, os, sys, time
 from pathlib import Path
 from hands.clock import SYSTEM
-from hands.sessions.child import Children
+from hands.sessions.child import Children, Runner
 from hands.sessions.home import Home
 from hands.voice.phoneaddress import tailnet
 
 home = Home(Path(sys.argv[1]))
 
 async def ends(after: float) -> None:
-    asking = asyncio.ensure_future(tailnet(Children(SYSTEM, lambda _: None), home))
+    asking = asyncio.ensure_future(tailnet(Runner(SYSTEM, lambda _: None), home))
     await asyncio.sleep(after)
     raise RuntimeError(time.monotonic())
 

@@ -147,6 +147,7 @@ REAL_WHISPER = "numba compiles the real Whisper's word timing as the model loads
 # collects a test of one not marked outside fails: the unit layer would run it, off the watch.
 PERMANENT = {
     "test_engaged_models.py": "Smart Turn's own code reads the machine's time as it takes audio",
+    "test_children_contract_runner.py": "its programs the OS runs, and the Runner kills at their limit, on the machine's time",
     "test_launchservices_lsappinfo.py": "it reads the app in front from the real lsappinfo, a child that runs in real time, so only the machine's time ends its limit on one that hangs",
     "test_pages.py": REAL_CHROME,
     "test_phonewakepage.py": REAL_CHROME,

@@ -14,7 +14,7 @@ import tempfile
 import threading
 import traceback
 import weakref
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -49,8 +49,7 @@ from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
-from hands.sessions import child
-from hands.sessions.child import Children
+from hands.sessions.child import Children, Runner
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions, untyped
 from hands.sessions.registry import unread as reads_no_panes
@@ -242,65 +241,13 @@ new_sessions = partial(Sessions, record=lambda _: None, typist=untyped, keyboard
 def children_on(clock: Clock) -> Children:
     """[LAW:locality-or-seam] what starts a test's children, on the clock the test names, its events let go: a test about
     a child's event builds its own `Children` with the emit it reads."""
-    return Children(clock, lambda _: None)
+    return Runner(clock, lambda _: None)
 
 
 def shell_without_hands_settings() -> dict[str, str]:
     """The environment the tests run in, less any `HANDS_*` the developer's shell exports: the start's preflight refuses
     one, so a test of what a start passes does not take it from the shell."""
     return {name: value for name, value in os.environ.items() if not name.startswith("HANDS_")}
-
-
-@dataclass(frozen=True)
-class Unstarting(Children):
-    """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real
-    process through a fake that forgot one."""
-
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
-        raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
-
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
-        raise AssertionError(f"{type(self).__name__} does not answer a blocking run of {argv[0]}")
-
-    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: child.Stdio) -> child.Running | child.NeverStarted:
-        raise AssertionError(f"{type(self).__name__} does not answer a start of {argv[0]}")
-
-
-@dataclass(frozen=True)
-class Answering(Unstarting):
-    """Every run ends in `outcome`, as a test of what its caller makes of one names, and its argv is kept in `asked`."""
-
-    outcome: child.Outcome
-    asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
-
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
-        # Every run ends the same, whatever it is handed: the environment is no part of the answer.
-        return self.run_blocking(*argv, limit=limit, cwd=cwd)
-
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
-        self.asked.append(argv)
-        return self.outcome
-
-
-@dataclass(frozen=True)
-class Faked(Unstarting):
-    """Each run is answered by `answer`, the fake of the program a test stands in for."""
-
-    answer: Callable[..., Awaitable[child.Outcome]]
-
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
-        # The program a test stands in for is handed the environment a real start hands it.
-        return await self.answer(*argv, limit=limit, cwd=cwd, env=env.handed if isinstance(env, child.Traced) else env)
-
-
-def exited(code: int, out: bytes = b"", err: bytes = b"") -> child.Ran:
-    """A child that ran and exited `code`, having written `out` and `err`."""
-    return child.Ran(child.Exited(code), child.Captured(out), child.Captured(err))
-
-
-def answering(outcome: child.Outcome) -> Answering:
-    """Children every run of which ends in `outcome`."""
-    return Answering(SYSTEM, lambda _: None, outcome)
 
 
 def model_facts(load: WideEvent) -> dict[str, Fact]:

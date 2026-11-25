@@ -14,6 +14,7 @@ import pytest
 from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
+from fakeindicators import FakeIndicators
 from hands.brain.stage import HandsAsked, UserAsked
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
@@ -429,7 +430,7 @@ def test_hands_log_says_how_many_lines_it_had_to_print_first_and_where_following
     home.audit.mkdir()
     segment(home.audit, 0).write_text('{"n":1}\n{"n":2}\n{"n":3}\n')
 
-    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     [command] = [line for line in lines(home.audit) if line.get("event") == "hands.command"]
     assert (command["facts"]["tailed"], command["facts"]["followed_from"]) == (2, 24)
 
@@ -440,7 +441,7 @@ def test_hands_log_prints_a_line_holding_a_line_separator_as_one_line(
     home = Home(tmp_path)
     AuditLog(home.audit, clock=lambda: AT).record(Transcribed("a\u2028b\u2029c\x85d"))
 
-    assert cli.main(["--home", str(tmp_path), "log", "-n", "1"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "1"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     [printed] = capsys.readouterr().out.splitlines()
     assert json.loads(printed)["text"] == "a\u2028b\u2029c\x85d"
 
@@ -500,7 +501,7 @@ def test_following_stops_at_ctrl_c_after_printing_the_newest_lines(tmp_path: Pat
     home.audit.mkdir()
     segment(home.audit, 0).write_text("a\nb\nc\n")
 
-    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert capsys.readouterr().out == "b\nc\n"
 
 
@@ -887,7 +888,7 @@ def test_hands_log_piped_into_a_reader_that_stops_ends_quietly(tmp_path: Path, m
 
     monkeypatch.setattr("builtins.print", closed)
     monkeypatch.setattr(cli.os, "dup2", discarded)
-    assert cli.main(["--home", str(tmp_path), "log"], machine=UNMANAGED, processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path), "log"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
 
 
 def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_still_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -896,7 +897,7 @@ def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_
     segment(home.audit, 0).write_text(json.dumps({"t": "a\x9b2J\x7f\u202eb\x1b"}, ensure_ascii=False) + "\n")
 
     monkeypatch.setattr(cli, "LOG_POLL_SECONDS", 0)
-    assert cli.main(["--home", str(tmp_path), "log"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path), "log"], Interrupting(VirtualClock()), machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     printed = capsys.readouterr().out
     assert printed == '{"t": "a\\u009b2J\\u007f\\u202eb\\u001b"}\n'
     assert json.loads(printed) == {"t": "a\x9b2J\x7f\u202eb\x1b"}

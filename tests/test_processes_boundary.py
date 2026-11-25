@@ -15,9 +15,9 @@ KERNEL = "hands.sessions.kernel"
 # call is a word on some process.
 REACHES = frozenset({"os.kill", "os.killpg", "os.getuid", "os.geteuid", "hands.darwin.child_pids"})
 BINDINGS = ("hands.darwin.libc", "hands.darwin.libproc")
-# Where those calls belong: the bindings themselves, the kernel's adapter, for any process, and hands.sessions.child,
-# for the children hands starts and waits on.
-ADAPTERS = frozenset({"darwin.py", "sessions/kernel.py", "sessions/child.py"})
+# Where those calls belong: the bindings themselves, the kernel's adapter, for any process, hands.sessions.child, for
+# the children hands starts and waits on, and hands.daemon.indicatorprocess, for the indicator each run shows.
+ADAPTERS = frozenset({"darwin.py", "sessions/kernel.py", "sessions/child.py", "daemon/indicatorprocess.py"})
 EXCEPTION = "[LAW:effects-at-boundaries] exception"
 
 
@@ -73,6 +73,10 @@ def _comment_above(line: int, lines: list[str]) -> str:
 
 def test_only_a_composition_root_reaches_the_kernels_processes() -> None:
     assert importers(Path(hands.__file__).parent) == sorted(ROOTS)
+
+
+def test_only_the_root_that_builds_the_run_reaches_the_indicators_process() -> None:
+    assert importers(Path(hands.__file__).parent, "hands.daemon.indicatorprocess") == ["daemon/cli.py"]
 
 
 def test_every_other_reach_of_another_process_is_in_an_adapter_or_marked_as_an_exception() -> None:

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import SYSTEM_PATH, executable
+from fakeindicators import FakeIndicators
 from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.files import Unread
@@ -205,14 +206,14 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
 
     monkeypatch.setenv("PATH", tools)
     # Installed, on a PATH that finds another claude first: the PATH's fix, and its own exit.
-    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes()) == wrapper.Installing.UNFOUND
+    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == wrapper.Installing.UNFOUND
     said = capsys.readouterr().err
     assert f"`claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim" in said
     assert f'export PATH="{home.bin}:$PATH"' in said and "install-fritter" not in said
     first = (home.bin / "claude").read_bytes()
 
     monkeypatch.setenv("PATH", f"{home.bin}:{tools}")
-    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert f"copied {wrapper.PACKAGED} to {home.fritter}" in (out := capsys.readouterr().out)
     assert f"`claude` on this PATH is hands' shim, {home.shim}" in out
     assert (home.bin / "claude").read_bytes() == first
@@ -236,7 +237,7 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
 def test_install_without_a_packaged_fritter_fails_naming_where_it_looked(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     monkeypatch.setattr(wrapper, "PACKAGED", root / "package" / "bin" / "fritter")
-    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes()) == wrapper.Installing.BROKEN
+    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == wrapper.Installing.BROKEN
     assert f"hands install-fritter: hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again" in capsys.readouterr().err
     # Refused before anything is written: not even the home's bin.
     assert not home.bin.exists()
@@ -257,7 +258,7 @@ def test_an_install_whose_claude_does_not_work_even_first_on_path_fails_saying_w
 
     monkeypatch.setattr(wrapper, "install", install)
 
-    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes()) == wrapper.Installing.BROKEN
+    assert main(["--home", str(home.root), "install-fritter"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == wrapper.Installing.BROKEN
 
     # Said as the install's failure, with no PATH to add: hands' bin was first already.
     said = capsys.readouterr().err
@@ -277,7 +278,7 @@ def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.Mon
         raise wrapper.Uninstallable("enough")
 
     monkeypatch.setattr(wrapper, "install", install)
-    assert main(["--home", "h", "install-fritter"], machine=UNMANAGED, processes=processes()) == wrapper.Installing.BROKEN
+    assert main(["--home", "h", "install-fritter"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == wrapper.Installing.BROKEN
     assert homes == [Home(root / "h")]
 
 

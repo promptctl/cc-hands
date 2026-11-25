@@ -60,7 +60,7 @@ from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import parse_pid
-from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
+from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Runner, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.core.tmux import Unanswered
@@ -2149,7 +2149,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
         by = clock.now() + START_SECONDS
         try:
-            running = await in_tmux(Children(clock, record), station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
+            running = await in_tmux(Runner(clock, record), station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper, shell = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)

@@ -20,6 +20,7 @@ from typing import cast
 
 import aiohttp
 import pytest
+from fakeindicators import FakeIndicators
 from hands.clock import SYSTEM, Clock, SystemClock
 from hands.sessions.child import Children
 from hands.sessions.startsession import SESSION_GIVEN
@@ -1634,7 +1635,7 @@ def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_code
     monkeypatch.setenv("PATH", f"{shim.parent}:{os.environ['PATH']}")
     home = tmp_path / "home"
     brain_pin = pin(home / "brain", fake_claude)
-    assert main(["--home", str(home), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(home), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     brain = home / "brain"
     assert json.loads((brain / "settings.json").read_text()) == {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False, "permissions": {"defaultMode": "default"}}
     assert isinstance(configdir.runnable(configdir.read(brain, brain_pin, UNMANAGED)), Runnable)
@@ -1652,7 +1653,7 @@ def test_hands_login_on_a_brain_home_logs_it_in_again_leaving_its_settings_as_th
     brain = tmp_path / "brain"
     said = b'{"permissions": {"allow": ["Bash(lit:*)"], "defaultMode": "acceptEdits"},\n "syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}'
     onboard(brain, said)
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert (brain / "settings.json").read_bytes() == said
     assert json.loads((brain / "login.json").read_text())["argv"] == ["auth", "login", "--claudeai"]
     assert capsys.readouterr().out.splitlines() == [f"the brain at {brain} is logged in as brain@example.com (claude.ai)", "a hands already running started its brain on the login before: restart it to start the brain on this one"]
@@ -1665,7 +1666,7 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     # What `claude auth status` leaves, asked by a `hands run` before any `hands login`: its state, and no onboarding.
     brain = tmp_path / "brain"
     (brain / ".claude.json").write_text("{}")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert isinstance(configdir.runnable(configdir.read(brain, brain_pin, UNMANAGED)), Runnable)
     assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": f"its onboarding unfinished; {brain.resolve() / 'cwd'} untrusted", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
@@ -1676,7 +1677,7 @@ def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_
     monkeypatch.setenv("LOGGED_IN", "0")
     # Onboarded, then quit at the trust screen: the brain would start on that screen.
     onboard(tmp_path / "brain", trusted=False)
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert logins(tmp_path)[0][1]["first_run"] == f"{(tmp_path / 'brain' / 'cwd').resolve()} untrusted"
 
@@ -1686,7 +1687,7 @@ def test_hands_login_on_a_brain_home_whose_state_claude_code_cannot_have_written
     monkeypatch.setenv("LOGGED_IN", "0")
     onboard(tmp_path / "brain")
     (tmp_path / "brain" / ".claude.json").write_text("[]")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert str(logins(tmp_path)[0][1]["first_run"]).startswith(f"{tmp_path / 'brain' / '.claude.json'} unreadable: ")
 
@@ -1695,13 +1696,13 @@ def test_hands_login_on_a_brain_home_whose_state_claude_code_cannot_have_written
 def test_hands_login_whose_first_run_was_quit_before_its_last_screen_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], brain_pin: pinned.Pin) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("LOGIN_UNANSWERED", "1")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 1
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
     assert capsys.readouterr().err == f"hands login: the brain has not been through Claude Code's first screens (no {tmp_path / 'brain' / '.claude.json'}): `hands login` answers them\n"
 
 
 def test_hands_login_on_a_brain_whose_settings_would_sync_its_accounts_skills_runs_no_claude_code(tmp_path: Path, fake_claude: Path, capsys: pytest.CaptureFixture[str], brain_pin: pinned.Pin) -> None:
     onboard(tmp_path / "brain", b'{"permissions": {"defaultMode": "default"}}')
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 1
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
     assert not (tmp_path / "brain" / "login.json").exists()
     assert "its account's syncClaudeAiSkills and syncClaudeAiPlugins" in capsys.readouterr().err
 
@@ -1710,16 +1711,16 @@ def test_hands_login_on_a_brain_whose_settings_would_sync_its_accounts_skills_ru
 def test_hands_login_after_a_first_run_that_failed_runs_it_again(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, brain_pin: pinned.Pin) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("LOGIN_EXIT", "130")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 1
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
     monkeypatch.delenv("LOGIN_EXIT")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert [outcome for outcome, _ in logins(tmp_path)] == ["failed", "ok"]
 
 
 def test_hands_login_on_a_brain_path_that_is_no_directory_exits_1_saying_so(tmp_path: Path, fake_claude: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (tmp_path / "brain").write_text("")
-    assert main(["--home", str(tmp_path), "login"], machine=UNMANAGED, processes=processes()) == 1
+    assert main(["--home", str(tmp_path), "login"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
     assert capsys.readouterr().err.startswith(f"hands login: [Errno 17] File exists: '{tmp_path / 'brain'}'")
 
 
@@ -1727,7 +1728,7 @@ def test_hands_login_on_a_brain_path_that_is_no_directory_exits_1_saying_so(tmp_
 def test_hands_login_console_logs_a_brain_in_with_an_anthropic_console_key(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], brain_pin: pinned.Pin) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     onboard(tmp_path / "brain")
-    assert main(["--home", str(tmp_path), "login", "--console"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(tmp_path), "login", "--console"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["auth", "login", "--console"]
     assert capsys.readouterr().out.splitlines()[0] == f"the brain at {tmp_path / 'brain'} is logged in as brain@example.com (api_key)"
     assert logins(tmp_path) == [("ok", {"asked": "console", "settings_written": False, "first_run": None, "account": {"type": "Account", "method": "api_key", "holder": "brain@example.com"}})]
@@ -1746,7 +1747,7 @@ def test_hands_login_that_leaves_the_brain_on_another_login_than_asked_exits_1_n
     # A token its settings.json sets ahead of the plan `claude auth login` made.
     monkeypatch.setenv("AUTH_METHOD", "oauth_token")
     onboard(tmp_path / "brain")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 1
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
     assert capsys.readouterr().err == "hands login: the brain holds a token (oauth_token), not the claude.ai login asked for\n"
     assert [(outcome, facts["asked"]) for outcome, facts in logins(tmp_path)] == [("failed", "claudeai")]
 
@@ -1759,7 +1760,7 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
     onboard(brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-0123456789abcdefghijklmn"}}')
     # The brain would start on Claude Code's screen asking whether to use the key, with nobody at its keyboard.
     assert configdir.unanswered(configdir.read(brain, brain_pin, UNMANAGED)) == (f"the API key {brain / 'settings.json'} sets unanswered",)
-    assert main(["--home", str(tmp_path), "login", "--console"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 0
+    assert main(["--home", str(tmp_path), "login", "--console"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert configdir.unanswered(configdir.read(brain, brain_pin, UNMANAGED)) == ()
 
@@ -1777,7 +1778,7 @@ def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fa
     monkeypatch.setenv("LOGIN_EXIT", "3")
     if onboarded:
         onboard(tmp_path / "brain")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes()) == 1
+    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
     assert capsys.readouterr().err == f"hands login: {said}\n"
     assert logins(tmp_path) == [("failed", {"asked": "claudeai", "settings_written": not onboarded})]
     # The command fails saying why, in the words it said it.

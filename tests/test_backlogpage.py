@@ -22,8 +22,8 @@ from aiohttp.streams import StreamReader
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from hands.clock import SYSTEM, Clock
-from hands.sessions.audit import Entry, Record
-from hands.sessions.child import Children, NeverStarted, Outcome as Ended, Ran
+from hands.sessions.audit import Entry
+from hands.sessions.child import Children, NeverStarted, Outcome as Ended, Ran, Runner
 from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Lit, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
@@ -31,7 +31,8 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
-from conftest import SYSTEM_PATH, Faked, children_on, events, executable, exited
+from conftest import SYSTEM_PATH, children_on, events, executable
+from fakechildren import Asked, FakeChildren, exited
 from litcontract import LitContract, Refusal, answered, refusing
 
 KEY = "the-phones-key"
@@ -326,12 +327,13 @@ class FakeLit:
         self.comments.append({"id": id, "issue_id": ticket, "body": body, "created_at": f"2026-11-21T10:00:{len(self.comments):02d}Z", "created_by": by})
         return id
 
-    def children(self, clock: Clock, record: Record = lambda _: None) -> Faked:
+    def children(self, clock: Clock) -> FakeChildren:
         """What runs lit for hands, on `clock`, answered by this lit."""
-        return Faked(clock, record, self.run)
+        return FakeChildren(clock, {"lit": self.run})
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Ended:
-        _, command, *rest = argv
+    async def run(self, asked: Asked) -> Ended:
+        _, command, *rest = asked.argv
+        env, cwd = asked.env, asked.cwd
         self.calls.append(command)
         outcome = self.outcomes.get(command, Outcome())
         self.gone |= outcome.gone
@@ -699,7 +701,7 @@ async def page(tmp_path: Path, started_in: Mapping[str, str]) -> AsyncGenerator[
     # The page's lit is the one in the test's own bin, lit itself until a test stubs it (`stub_lit`), and none once a
     # stub removes itself: no other lit is on the page's PATH.
     unstub_lit(tmp_path)
-    app.add_routes(backlog_routes(Lit(Children(clock, recorded.append), {**started_in, "PATH": f"{tmp_path / 'bin'}:{SYSTEM_PATH}"}), store, KEY, recorded.append))
+    app.add_routes(backlog_routes(Lit(Runner(clock, recorded.append), {**started_in, "PATH": f"{tmp_path / 'bin'}:{SYSTEM_PATH}"}), store, KEY, recorded.append))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded, clock)

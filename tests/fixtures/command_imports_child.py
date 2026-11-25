@@ -63,7 +63,7 @@ def main() -> None:
             pass
     # [LAW:dataflow-not-control-flow] every command on the one clock, so `log`, which follows until Ctrl-C, ends where any
     # command that waits would.
-    code = cli.main(["--home", home, command], Interrupting(VirtualClock()), machine=UNMANAGED, processes=cli.KERNEL)
+    code = cli.main(["--home", home, command], Interrupting(VirtualClock()), machine=UNMANAGED, processes=cli.KERNEL, indicators=cli.SpawnedIndicators())
     with open(out, "w") as file:
         json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch", "cryptography"})}, file)
 

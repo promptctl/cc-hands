@@ -13,8 +13,10 @@ from unittest.mock import Mock
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 
-from conftest import KEYCHAIN_READER, PATIENCE_SECS, answering, exited, taken
+from conftest import KEYCHAIN_READER, PATIENCE_SECS, taken
+from fakechildren import FakeChildren, exited
 from datetime import UTC, datetime
+from fakeindicators import FakeIndicators
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.daemon import run
@@ -248,24 +250,29 @@ def keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(library, "_keychain_token", KEYCHAIN_READER)
 
 
+def keychain_answering(outcome: child.Outcome) -> FakeChildren:
+    """Children whose `security` ends every run in `outcome`."""
+    return FakeChildren(VirtualClock(), {"security": outcome})
+
+
 @pytest.mark.usefixtures("keychain")
 def test_the_environments_token_is_used_and_the_keychain_is_not_read() -> None:
-    asking = answering(exited(0, b"from-the-keychain\n"))
+    asking = keychain_answering(exited(0, b"from-the-keychain\n"))
     assert library.hub_token(asking, {"HF_TOKEN": "from-the-environment"}) == "from-the-environment"
     assert asking.asked == []
 
 
 @pytest.mark.usefixtures("keychain")
 def test_with_no_environment_token_the_keychain_is_asked_for_the_item_on_stdout() -> None:
-    asking = answering(exited(0, b"from-the-keychain\n"))
+    asking = keychain_answering(exited(0, b"from-the-keychain\n"))
     assert library.hub_token(asking, {}) == "from-the-keychain"
-    assert asking.asked == [("security", "find-generic-password", "-s", "HF_TOKEN", "-w")]
+    assert [asked.argv for asked in asking.asked] == [("security", "find-generic-password", "-s", "HF_TOKEN", "-w")]
 
 
 @pytest.mark.usefixtures("keychain")
 def test_with_neither_token_there_is_none_and_the_environment_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    assert library.hub_token(answering(exited(library.NOT_IN_KEYCHAIN, err=b"The specified item could not be found in the keychain.\n")), {}) is None
+    assert library.hub_token(keychain_answering(exited(library.NOT_IN_KEYCHAIN, err=b"The specified item could not be found in the keychain.\n")), {}) is None
     assert "HF_TOKEN" not in os.environ
 
 
@@ -279,7 +286,7 @@ def test_with_neither_token_there_is_none_and_the_environment_is_left_alone(monk
     ],
 )
 def test_a_keychain_that_cannot_be_read_is_said_and_gives_no_token(asked: child.Outcome, why: str, errors: list[str]) -> None:
-    assert library.hub_token(answering(asked), {}) is None
+    assert library.hub_token(keychain_answering(asked), {}) is None
     [said] = taken(errors)
     assert said.startswith(f"the Hugging Face token could not be read from the keychain: {why}"), said
 
@@ -301,7 +308,7 @@ def test_the_daemons_run_starts_with_the_keychains_token_in_the_environment_the_
 
     monkeypatch.setattr(library, "_keychain_token", held)
     monkeypatch.setattr(cli, "run_daemon", run_daemon)
-    assert cli.main(["--home", str(tmp_path / "home"), "run"], machine=UNMANAGED, processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path / "home"), "run"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
     assert ran == ["from-the-keychain"]
 
 
@@ -312,7 +319,7 @@ def test_a_command_but_the_run_reads_no_keychain(tmp_path: Path, monkeypatch: py
         raise AssertionError("a command that fetches no voice read the keychain")
 
     monkeypatch.setattr(library, "_keychain_token", unread)
-    assert cli.main(["--home", str(tmp_path / "home"), "status"], machine=UNMANAGED, processes=processes()) == 1
+    assert cli.main(["--home", str(tmp_path / "home"), "status"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
 
 
 def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,5 +333,5 @@ def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(library, "_keychain_token", record)
     with pytest.raises(SystemExit):
-        cli.main(["--help"], machine=UNMANAGED, processes=processes())
+        cli.main(["--help"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators())
     assert reads == []

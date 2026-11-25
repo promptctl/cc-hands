@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from fakeindicators import FakeIndicators
 from hands.clock import SYSTEM, Clock
 from hands.daemon import cli
 from hands.sessions import audit
@@ -174,7 +175,7 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     asked: list[None] = []
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
-    assert cli.main(["--home", str(tmp_path), "run"], machine=UNMANAGED, processes=processes()) == 1
+    assert cli.main(["--home", str(tmp_path), "run"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
     assert "has no Input Monitoring grant" in capsys.readouterr().err
     assert asked == [None]
     # Refused before its first heartbeat: the one there is left to whatever wrote it, a running hands or a crash, and
@@ -232,7 +233,7 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
         asked: list[None] = []
         monkeypatch.setattr(talkkey, "granted", lambda: False)
         monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
-        assert cli.main(["--home", str(root), *run], machine=UNMANAGED, processes=processes()) == 1
+        assert cli.main(["--home", str(root), *run], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
         assert f"hands is already running on {root}, as pid {holder.pid}" in capsys.readouterr().err
         assert asked == []
         assert home.status.read_bytes() == live

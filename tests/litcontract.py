@@ -18,7 +18,7 @@ import pytest
 
 from hands.sessions.backlog import Backlog, Failure, Inherited, Lit, LitFailed, Move, NewEpic, Person, Place, Reasoned, Unexplained, adopt, comment, file_ticket, make_epic, rank, read_backlog
 from hands.sessions.child import Children, Outcome as Ended
-from conftest import exited
+from fakechildren import exited
 from fixtures import litevents
 from fixtures.litevents import CODES, refused
 

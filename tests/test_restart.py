@@ -19,7 +19,8 @@ from conftest import PLUGIN_PATH, skill_command, standin, unedited
 from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership, SessionId
 from hands.daemon import cli
-from hands.daemon.cli import launch, retire
+from hands.daemon.cli import launch
+from hands.daemon.indicatorprocess import Retired, SpawnedIndicators
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import Ended, QuitKey, Start, Stop
 from hands.voice.listening import Levels
@@ -270,7 +271,7 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
 
 def spawned(*argv: str) -> int:
     """A child of this process, as the indicator is of the run that starts it and of every run exec'd after."""
-    # A session of its own, so it leads a process group, as `start_indicator` makes the indicator.
+    # A session of its own, so it leads a process group, as SpawnedIndicators shows the indicator.
     return os.posix_spawnp(argv[0], list(argv), os.environ, setsid=True)
 
 
@@ -299,7 +300,7 @@ def zombie(pid: int) -> bool:
 @pytest.mark.outside
 def test_a_restart_ends_the_indicator_the_run_before_showed() -> None:
     shown = spawned("sleep", "60")
-    assert retire(shown, SYSTEM) == "ended"
+    assert SpawnedIndicators().retire(shown, SYSTEM) == "ended"
     # Reaped as it was ended: no zombie is left under the run.
     with pytest.raises(ChildProcessError):
         os.waitpid(shown, os.WNOHANG)
@@ -314,7 +315,7 @@ def test_an_indicator_that_does_not_end_when_asked_is_killed_with_its_group() ->
     with os.fdopen(ready) as lines:
         # Its line comes once SIGTERM is ignored, so the ask below cannot land before it is.
         lines.readline()
-        assert retire(stubborn, SYSTEM, grace=0.2) == "killed"
+        assert SpawnedIndicators(grace=0.2).retire(stubborn, SYSTEM) == "killed"
         with pytest.raises(ChildProcessError):
             os.waitpid(stubborn, os.WNOHANG)
         # The sleep it started holds the pipe too, so the pipe ends only once it went with the group.
@@ -331,12 +332,12 @@ def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> Non
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
     try:
-        assert retire(exited, SYSTEM) == "exited"
+        assert SpawnedIndicators().retire(exited, SYSTEM) == "exited"
     finally:
         logger.remove(sink)
     assert logged == ["the menu-bar indicator exited (1) while hands runs; hands is not shown in the menu bar"]
     # Reaped by the run before, as its reap thread does with an indicator that exits, and said there.
-    assert retire(exited, SYSTEM) == "reaped"
+    assert SpawnedIndicators().retire(exited, SYSTEM) == "reaped"
 
 
 @pytest.mark.outside
@@ -349,17 +350,17 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
     # [LAW:behavior-not-structure] the order is the contract: the one before is gone before this run's is shown.
     steps: list[str] = []
 
-    def retired(indicator: int, clock: Clock) -> cli.Retired:
-        steps.append("retired")
-        return retire(indicator, clock)
+    class Watched:
+        """The real retire, and a show that starts nothing, each kept in `steps` as it is asked."""
 
-    def start_indicator(started: Home) -> int:
-        assert started == home
-        steps.append("started")
-        return 0
+        def show(self, home: Home) -> int:
+            assert home == Home(tmp_path)
+            steps.append("started")
+            return 0
 
-    def kept(*_: object) -> None:
-        pass
+        def retire(self, indicator: int, clock: Clock) -> Retired:
+            steps.append("retired")
+            return SpawnedIndicators().retire(indicator, clock)
 
     def loaded(*_: object) -> cli.Run:
         async def quits(stop: Stop) -> Ended:
@@ -369,11 +370,8 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
         return quits
 
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    monkeypatch.setattr(cli, "retire", retired)
-    monkeypatch.setattr(cli, "start_indicator", start_indicator)
-    monkeypatch.setattr(cli, "reap", kept)
     monkeypatch.setattr(cli, "loaded", loaded)
-    assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)], machine=UNMANAGED, processes=processes()) == 0
+    assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)], machine=UNMANAGED, processes=processes(), indicators=Watched()) == 0
     assert steps == ["retired", "started"]
     with pytest.raises(ChildProcessError):
         os.waitpid(previous, os.WNOHANG)
