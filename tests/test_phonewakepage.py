@@ -357,6 +357,7 @@ async def test_a_detector_that_cannot_load_is_said_with_why_and_told_to_hands_an
     await holds_and_opens(page, hands)
 
 
+@pytest.mark.quarantined("promptctl-testing-c3u.sm9", until="2026-11-29")
 async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_the_wake_word_listens_once_it_does(browser: Opened, hands: Hands) -> None:
     refused = list[str]()
 
