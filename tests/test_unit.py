@@ -3,13 +3,14 @@ test cannot start a process, bind a socket, or read the weights the run fetched,
 unit tests, so they run in the layer's own hold and prove it from inside it, since a held process cannot start another
 held one; and they pass in the full run, where the same calls are allowed."""
 
+import argparse
 import shutil
 import socket
 import subprocess
 
 import pytest
 
-from conftest import REFUSED, RUN, held, layered, refused
+from conftest import OUTSIDE_TESTS, REFUSED, RUN, groups, held, layered, refused, weighed, weights_of
 
 
 def test_a_process_start_is_refused_in_a_layer_run_and_made_in_any_other(pytestconfig: pytest.Config) -> None:
@@ -77,6 +78,72 @@ def test_a_layer_run_takes_the_tests_no_mark_sends_outside_or_the_ones_that_it_d
     assert [item.name for item in audit] == ["test_out"]
     (strict,) = audit[0].iter_markers("xfail")
     assert strict.kwargs["strict"] is True
+
+
+def test_the_outside_layer_takes_the_tests_marked_outside_and_holds_them_to_nothing(pytester: pytest.Pytester) -> None:
+    items = pytester.getitems("import pytest\n\ndef test_in():\n    pass\n\n@pytest.mark.outside\ndef test_out():\n    pass\n")
+    outside = list(items)
+    layered(items[0].config, outside, "outside")
+    assert [item.name for item in outside] == ["test_out"]
+    assert not list(outside[0].iter_markers("xfail"))
+    assert not held(items[0].config)
+
+
+WEIGHED = """
+import pytest
+
+@pytest.mark.outside
+def test_none():
+    pass
+
+@pytest.mark.outside
+@pytest.mark.weights("whisper")
+def test_whisper():
+    pass
+
+@pytest.mark.outside
+@pytest.mark.weights("whisper", "smart_turn")
+def test_both():
+    pass
+
+@pytest.mark.outside
+@pytest.mark.weights("smart_turn")
+@pytest.mark.weights("whisper")
+def test_both_by_two_marks():
+    pass
+"""
+
+
+@pytest.mark.parametrize(
+    "asked, taken",
+    [
+        ((), ["test_none"]),
+        (("whisper",), ["test_whisper"]),
+        (("smart_turn", "whisper"), ["test_both", "test_both_by_two_marks"]),
+    ],
+)
+def test_a_run_told_its_weights_takes_the_tests_that_load_exactly_those(asked: tuple[str, ...], taken: list[str], pytester: pytest.Pytester) -> None:
+    items = pytester.getitems(WEIGHED)
+    chosen = list(items)
+    weighed(items[0].config, chosen, frozenset(asked))
+    assert [item.name for item in chosen] == taken
+
+
+def test_a_test_loads_what_its_weights_marks_name_together(pytester: pytest.Pytester) -> None:
+    both = {item.name: weights_of(item) for item in pytester.getitems(WEIGHED)}
+    assert both["test_none"] == frozenset()
+    assert both["test_both_by_two_marks"] == frozenset({"smart_turn", "whisper"})
+
+
+def test_the_outside_tests_a_run_collected_are_known_whatever_layer_takes_them(pytestconfig: pytest.Config) -> None:
+    assert isinstance(pytestconfig.stash[OUTSIDE_TESTS], dict)
+
+
+def test_weights_are_group_names_of_the_pins_and_nothing_else() -> None:
+    assert groups("") == ()
+    assert groups("whisper,smart_turn") == ("whisper", "smart_turn")
+    with pytest.raises(argparse.ArgumentTypeError, match=r"\['wispr'\]"):
+        groups("whisper,wispr")
 
 
 def test_an_audit_reads_its_strict_expected_failure_before_a_quarantines(pytester: pytest.Pytester) -> None:

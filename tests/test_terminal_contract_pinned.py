@@ -1,5 +1,5 @@
 """The terminal contract (terminalcontract.py) held to the pinned Claude Code itself, in a terminal of hands' own against the
-mock of Anthropic's API: in `make check-rest`."""
+mock of Anthropic's API: in `make check-outside`."""
 
 import json
 from collections.abc import AsyncGenerator, Sequence

@@ -11,12 +11,13 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 
+from hands.voice import pins
 from hands.voice.clips import RATE, Samples
 
 # The model, fetched from the Hugging Face hub into its cache, at the revision measured for it.
-MODEL = "csukuangfj/speaker-embedding-models"
-REVISION = "0743f301363dec56491a490f6d6cbc9d67f9a3bf"
-FILE = "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx"
+MODEL = pins.VOICEPRINT.repo
+REVISION = pins.VOICEPRINT.revision
+FILE = pins.VOICEPRINT_FILE
 
 # A speaker's embedding, of unit length.
 type Print = npt.NDArray[np.float32]

@@ -7,10 +7,14 @@ computes it alone, and each test runs in exactly one job when the N of them coll
 digest of (`DIGEST`) for test.yml's verdict to hold them to (tests/agreement.py). A stale file loses no test: it unbalances the
 shards, which each prints the packed seconds of beside what it cost.
 
-The cost model: a test costs its call and teardown; a module's fixtures cost their setup once to each shard that holds any of
-its tests; and a module is cut across shards only when it is more than a share, since a cut pays its setup again.
+The cost model: a test costs its call and teardown, and a module's fixtures cost their setup once to each shard that holds any
+of its tests, which is what keeps a module's tests together while the balance allows.
 
     uv run python tests/shards.py JOBLOG... > tests/shard-costs.json
+    uv run python tests/shards.py --listed 0 JOBLOG... > tests/shard-costs-outside.json
+
+The outside layer's file (OUTSIDE_COSTS) names every test, since a job that outgrows its 5 minutes is cancelled with nothing to say
+which test grew: tests/test_outside_jobs.py refuses an outside test the file does not name.
 
 JOBLOG is the text of a CI job whose log holds tests/costs.py's report (`gh run view --job <id> --log`), and a log with no row
 of it is refused by name; a test costs the most any log gives it, so the shards hold on a slow runner too.
@@ -19,7 +23,6 @@ of it is refused by name; a test costs the most any log gives it, so the shards 
 import argparse
 import json
 import math
-import sys
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -32,6 +35,8 @@ from agreement import digest
 from costs import module, rows
 
 COSTS = Path(__file__).with_name("shard-costs.json")
+# What the outside layer's tests cost, every one of them listed: a test the file does not name is refused by tests/test_outside_jobs.py.
+OUTSIDE_COSTS = Path(__file__).with_name("shard-costs-outside.json")
 # A test is named in the file from this many seconds; the ones under it cost what the rest of them did on average.
 LISTED = 0.05
 # A test of this many seconds the file does not name makes the shard's summary say the file is stale.
@@ -99,25 +104,19 @@ class Packed:
 
 
 def partition(tests: Sequence[str], costs: Costs, total: int) -> list[Packed]:
-    by_module: dict[str, list[str]] = defaultdict(list)
-    for test in sorted(set(tests)):
-        by_module[module(test)].append(test)
-    share = (sum(costs.of(test) for held in by_module.values() for test in held) + sum(costs.setup(name) for name in by_module)) / total
-    units: list[tuple[float, list[str]]] = []
-    for name, held in by_module.items():
-        whole = costs.setup(name) + sum(costs.of(test) for test in held)
-        units += [(whole, held)] if whole <= share else [(costs.of(test), [test]) for test in held]
+    """Each test, costliest first, goes where its shard's load after it is least: the load a module's setup adds counts for a
+    shard that holds none of the module yet, so a module is cut across shards only as far as the balance asks."""
     loads = [0.0] * total
     kept: list[set[str]] = [set() for _ in loads]
-    holding: list[set[str]] = [set() for _ in loads]
-    for _, held in sorted(units, key=lambda unit: (-unit[0], unit[1][0])):
-        shard = min(range(total), key=lambda each: (loads[each], each))
-        for test in held:
-            if module(test) not in holding[shard]:
-                holding[shard].add(module(test))
-                loads[shard] += costs.setup(module(test))
-            loads[shard] += costs.of(test)
-            kept[shard].add(test)
+    modules: list[set[str]] = [set() for _ in loads]
+    for test in sorted(set(tests), key=lambda each: (-costs.of(each), each)):
+        def after(shard: int) -> float:
+            return loads[shard] + costs.of(test) + (0.0 if module(test) in modules[shard] else costs.setup(module(test)))
+
+        shard = min(range(total), key=lambda each: (after(each), each))
+        loads[shard] = after(shard)
+        modules[shard].add(module(test))
+        kept[shard].add(test)
     return [Packed(frozenset(held), seconds) for held, seconds in zip(kept, loads)]
 
 
@@ -128,6 +127,8 @@ class Sharding:
 
     shard: Shard
     costs: Costs
+    # The file `costs` was read from, which the summary names where it says the file is stale.
+    file: Path = COSTS
     # None until the collection is cut: a run that stops in collection has packed nothing, and says so by printing no panel.
     packed: Packed | None = None
     digest: str = ""
@@ -140,7 +141,7 @@ class Sharding:
         self.digest = digest(ids)
         # [LAW:single-enforcer] "each test is in exactly one shard" holds when every job collected these same ids: the jobs
         # record the digest, and test.yml's verdict holds them to one (tests/agreement.py).
-        config.cache.set(DIGEST, {"shard": self.shard.index, "total": self.shard.total, "digest": self.digest})
+        config.cache.set(DIGEST, {"shard": self.shard.index, "total": self.shard.total, "digest": self.digest, "weights": config.getoption("weights", None)})
         self.packed = packed = partition(ids, self.costs, self.shard.total)[self.shard.index - 1]
         kept = [item for item in items if item.nodeid in packed.tests]
         # [LAW:no-silent-failure] a shard with no test is a job that passes having run nothing.
@@ -173,13 +174,14 @@ class Sharding:
             return
         terminalreporter.line(f"setup, call and teardown: {sum(self.setups.values()) + sum(self.spent.values()):.1f} s, packed at {self.packed.seconds:.1f} s")
         for test in sorted(test for test, seconds in self.spent.items() if seconds >= UNPRICED and test not in self.costs.tests):
-            terminalreporter.line(f"cost {self.spent[test]:.1f} s and not in tests/shard-costs.json: {test}")
+            terminalreporter.line(f"cost {self.spent[test]:.1f} s and not in tests/{self.file.name}: {test}")
         for name in sorted(name for name, seconds in self.setups.items() if seconds >= UNPRICED and name not in self.costs.setups):
-            terminalreporter.line(f"setup cost {self.setups[name]:.1f} s and not in tests/shard-costs.json: {name}")
+            terminalreporter.line(f"setup cost {self.setups[name]:.1f} s and not in tests/{self.file.name}: {name}")
 
 
-def costs_from(logs: Mapping[str, str]) -> Costs:
-    """The most any log gives each test, and the most any gives each module's setup. `logs` is each log's text by its name."""
+def costs_from(logs: Mapping[str, str], listed: float = LISTED) -> Costs:
+    """The most any log gives each test, and the most any gives each module's setup. `logs` is each log's text by its name. A
+    test is named in the result from `listed` seconds."""
     tests: dict[str, float] = defaultdict(float)
     setups: dict[str, float] = defaultdict(float)
     if not logs:
@@ -197,14 +199,18 @@ def costs_from(logs: Mapping[str, str]) -> Costs:
             by_module[cost.module] += cost.setup
         for each, seconds in by_module.items():
             setups[each] = max(setups[each], seconds)
-    quick = [seconds for seconds in tests.values() if seconds < LISTED]
+    quick = [seconds for seconds in tests.values() if seconds < listed]
     return Costs(
-        {test: round(seconds, 2) for test, seconds in sorted(tests.items()) if seconds >= LISTED},
-        {name: round(seconds, 2) for name, seconds in sorted(setups.items()) if seconds >= LISTED},
+        {test: round(seconds, 2) for test, seconds in sorted(tests.items()) if seconds >= listed},
+        {name: round(seconds, 2) for name, seconds in sorted(setups.items()) if seconds >= listed},
         round(sum(quick) / len(quick), 4) if quick else 0.0,
     )
 
 
 if __name__ == "__main__":
-    costs = costs_from({each: Path(each).read_text(encoding="utf-8-sig") for each in sys.argv[1:]})
+    arguments = argparse.ArgumentParser(description="The cost file of CI job logs, on stdout.")
+    arguments.add_argument("--listed", type=float, default=LISTED, metavar="SECONDS", help="name each test from this many seconds")
+    arguments.add_argument("logs", nargs="+", metavar="JOBLOG")
+    chosen = arguments.parse_args()
+    costs = costs_from({each: Path(each).read_text(encoding="utf-8-sig") for each in chosen.logs}, chosen.listed)
     print(json.dumps(asdict(costs), indent=1, sort_keys=True))

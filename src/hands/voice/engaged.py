@@ -34,7 +34,7 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
-from hands.voice import loads, voiceturn
+from hands.voice import loads, pins, voiceturn
 from hands.threads import settles_off_loop
 from hands.voice.clips import Trigger
 from hands.voice.desk import AnswerWindowClosed, AnswerWindowOpened, Anew, Chosen, Closer, Desk, Event, Keyed, Leveled, Made, ModelsLoaded, NoAnswerWindow, Served, Unopened, Woken, anew, hears, step, turn_of
@@ -54,8 +54,8 @@ STOP_SECS = 0.8
 
 # Smart Turn v3.2 ported to MLX, fetched from the Hugging Face hub into its cache on the first load, at the revision
 # measured for it.
-SMART_TURN = "mlx-community/smart-turn-v3"
-SMART_TURN_REVISION = "74af1538ebace37b0fcc667a6a8a3d902d73eee0"
+SMART_TURN = pins.SMART_TURN.repo
+SMART_TURN_REVISION = pins.SMART_TURN.revision
 # The port's weights, under the name its repository gives them: in the hub's cache once the port is fetched.
 SMART_TURN_WEIGHTS = "model.safetensors"
 

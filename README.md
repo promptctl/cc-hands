@@ -476,8 +476,9 @@ uv run hands phone                      # the addresses a phone opens the talk p
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
 make check                              # the unit layer (tests that need nothing outside the process) and pyright; docs/testing.md
-make check-pair                         # the real streaming pair's cases, which load the speech models: outside.yml's `pair` job, run by name
-make check-rest                         # every other test that needs the outside, fritter's Go tests and wake-training's suite: outside.yml's `rest` job
+make check-outside                      # every test that needs the outside, with no hold; outside.yml's jobs each run a shard of it, and WEIGHTS= and SHARD=K/N name one (docs/testing.md)
+make check-fritter                      # fritter's Go tests: outside.yml's `fritter` job
+make check-wake-training                # wake-training's suite: outside.yml's `wake-training` job
                                         # each test run holds itself offline in macOS's sandbox (tests/offline.py), hands' once its fetches are done, so it needs macOS 15 or later
 ```
 

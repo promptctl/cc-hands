@@ -16,7 +16,7 @@ from hands.voice.whisper import Whisper
 from echoes import CANCELLED, CANCELLED_ALONE, NO_ECHO, OPENING, OVER_CANCELLED, cut_in, played, replayed, take
 from speech import RATE, quiet, spoken
 
-pytestmark = pytest.mark.outside
+pytestmark = [pytest.mark.outside, pytest.mark.weights("whisper")]
 
 
 @pytest.fixture(autouse=True)

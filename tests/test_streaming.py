@@ -411,7 +411,7 @@ def real(request: pytest.FixtureRequest, pair: Any) -> Iterator[Callable[[str], 
             recordings.write(name, recorder.recording())
 
 
-@pytest.fixture(params=["recorded", pytest.param("real", marks=pytest.mark.outside)])
+@pytest.fixture(params=["recorded", pytest.param("real", marks=[pytest.mark.outside, pytest.mark.weights("streaming")])])
 def session(request: pytest.FixtureRequest) -> Callable[[str], Session]:
     """The session each run, by name, is heard through, in the unit layer or outside it. `recorded` serves what the real pair
     decoded for the run; `real` is the pair. The test asserts the same of both, which is what holds the recording to the
@@ -588,6 +588,7 @@ TWO_PEOPLE = pytest.mark.parametrize(
 
 
 @pytest.mark.outside
+@pytest.mark.weights("streaming")
 @TWO_PEOPLE
 def test_two_people_in_one_clip_come_out_as_each_persons_words_on_the_real_pair(real: Callable[[str], Session], pair: Any, monkeypatch: pytest.MonkeyPatch, name: str, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
     # Decided on when each word starts, not on its text, which is about 20% wrong on AMI. The tap goes on the pair's own
@@ -674,6 +675,7 @@ def test_a_turn_that_ends_in_silence_ends_on_its_last_words_and_only_its_speaker
 
 
 @pytest.mark.outside
+@pytest.mark.weights("streaming")
 def test_the_diarizer_commits_on_exactly_the_feeds_steps_names(paired: Any) -> None:
     # [LAW:one-source-of-truth] the diarizer's own count of the frames it committed, against `steps`, fed 20 ms at a time.
     # The session's own diarizer, as `streaming.diarizer` set it to its preset.
@@ -742,6 +744,7 @@ def desk_heard(fixture: Path) -> tuple[echoscore.Take, Samples]:
 
 
 @pytest.mark.outside
+@pytest.mark.weights("streaming")
 @pytest.mark.parametrize("fixture", echoscore.TAKES, ids=lambda fixture: fixture.name)
 def test_hands_alone_cuts_nothing_on_any_recorded_take_heard_whole_as_one_clip(overheard: Overheard, fixture: Path) -> None:
     recorded, heard = desk_heard(fixture)
@@ -751,6 +754,7 @@ def test_hands_alone_cuts_nothing_on_any_recorded_take_heard_whole_as_one_clip(o
 
 
 @pytest.mark.outside
+@pytest.mark.weights("streaming")
 @pytest.mark.parametrize("fixture", [fixture for fixture in echoscore.TAKES if echoscore.recorded(fixture).person], ids=lambda fixture: fixture.name)
 def test_a_person_over_hands_cuts_it_off_within_two_seconds_of_each_line_they_say_or_has_it_heard_whole_as_their_clip_closes(overheard: Overheard, fixture: Path) -> None:
     recorded, heard = desk_heard(fixture)
@@ -771,6 +775,7 @@ def test_a_person_over_hands_cuts_it_off_within_two_seconds_of_each_line_they_sa
 
 # The harness that scores a chain (tests/echoscore.py), held to the real pair it hears through.
 @pytest.mark.outside
+@pytest.mark.weights("streaming")
 @pytest.mark.parametrize("fixture", echoscore.TAKES, ids=lambda fixture: fixture.name)
 def test_the_real_pair_hears_a_take_with_each_word_dated_by_its_own_token_inside_it(pair: Any, fixture: Path) -> None:
     take = echoscore.recorded(fixture)
@@ -782,6 +787,7 @@ def test_the_real_pair_hears_a_take_with_each_word_dated_by_its_own_token_inside
 
 
 @pytest.mark.outside
+@pytest.mark.weights("streaming")
 def test_the_microphone_as_captured_is_the_control_that_leaks_hands_at_the_desk(pair: Any) -> None:
     take = echoscore.recorded(echoes.CANCELLED)
     assert echoscore.judged(take, echoscore.heard_words(pair, echoscore.raw(take)))[1]

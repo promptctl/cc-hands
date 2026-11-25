@@ -17,7 +17,7 @@ from hands.voice import vocabulary
 from hands.voice.clips import RATE, SLOT, Clip, Sound
 from hands.voice.whisper import Whisper
 
-pytestmark = pytest.mark.outside
+pytestmark = [pytest.mark.outside, pytest.mark.weights("whisper")]
 
 
 @pytest.fixture(autouse=True)

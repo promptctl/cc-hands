@@ -162,6 +162,7 @@ def pair() -> streaming.Session:
 
 
 @pytest.mark.outside
+@pytest.mark.weights("streaming")
 @pytest.mark.parametrize("fixture", TAKES, ids=lambda fixture: fixture.name)
 def test_the_desks_canceller_lets_none_of_hands_words_through_and_keeps_a_persons_words_on_every_take(fixture: Path, pair: streaming.Session) -> None:
     """The epic's numbers, held: over the twelve takes, 0 of hands' words leaked and 1 of 101 of a person's lost. That

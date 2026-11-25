@@ -82,6 +82,11 @@ def test_costs_come_from_the_most_any_log_gives_each_test_and_each_modules_setup
     assert costs.fallback == pytest.approx(0.015)
 
 
+def test_a_file_made_to_name_every_test_names_the_quick_ones_too() -> None:
+    log = report(STARTED + spent("tests/a.py::test_slow", 1, 5, 1) + spent("tests/a.py::test_quick", 1, 0.01, 0) + FINISHED)
+    assert costs_from({"log": log}, listed=0.0).tests == {"tests/a.py::test_slow": 6.0, "tests/a.py::test_quick": 0.01}
+
+
 def test_a_log_with_no_row_of_the_report_is_refused_by_name_and_not_made_a_cost_file() -> None:
     with pytest.raises(ValueError, match="expired.log holds no row"):
         costs_from({"expired.log": ""})
@@ -144,9 +149,9 @@ def test_a_shards_run_keeps_its_tests_and_says_what_it_was_packed_at(pytester: p
 
 def test_the_shard_comes_after_the_tests_a_selection_drops(pytester: pytest.Pytester) -> None:
     result = shard_run(pytester, Shard(1, 2), Costs({}, {}, 1.0), "-k", "test_0 or test_1")
-    # Six tests are selected, as three modules of two: the shard's two modules, not the eight of a cut of all twelve.
-    result.stdout.fnmatch_lines(["shard 1/2: 4 tests, packed at 4.0 s, of the ids digest *"])
-    result.assert_outcomes(passed=4, deselected=8)
+    # Six tests are selected, as three modules of two: the shard is half of those six, not half of all twelve.
+    result.stdout.fnmatch_lines(["shard 1/2: 3 tests, packed at 3.0 s, of the ids digest *"])
+    result.assert_outcomes(passed=3, deselected=9)
 
 
 def test_a_shard_that_would_run_no_test_stops_the_run_naming_it(pytester: pytest.Pytester) -> None:
@@ -204,4 +209,4 @@ def test_a_shard_never_cut_says_so_and_not_that_it_packed_nothing() -> None:
 def test_a_shard_of_a_run_that_is_not_of_the_unit_layer_is_refused_naming_the_layer() -> None:
     ran = subprocess.run([sys.executable, "-m", "pytest", "--shard=2/4", "--collect-only", "-q", "tests/test_agreement.py"], cwd=Path(__file__).parents[1], capture_output=True, text=True)
     assert ran.returncode == pytest.ExitCode.USAGE_ERROR
-    assert "run it with --layer=unit" in ran.stderr
+    assert "run it with --layer=unit or --layer=outside" in ran.stderr

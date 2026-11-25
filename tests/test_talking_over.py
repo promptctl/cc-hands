@@ -44,7 +44,7 @@ from hands.voice.turnstop import SpeechHeard
 from hands.voice.streaming import load as nemotron
 
 
-pytestmark = pytest.mark.outside
+pytestmark = [pytest.mark.outside, pytest.mark.weights("streaming", "smart_turn")]
 
 FRAME = 320
 

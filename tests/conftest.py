@@ -1,5 +1,6 @@
 """Fixtures more than one test module needs."""
 
+import argparse
 import asyncio
 import gc
 import json
@@ -57,6 +58,7 @@ from hands.sessions.registry import unread as reads_no_panes
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
+from hands.voice import pins as weight_pins
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 from fixtures import pins
@@ -78,9 +80,11 @@ def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
     return report
 
 
-# The layers a run can be held to (tests/offline.py): `unit` runs the tests that do not say they need the outside, and
-# `audit` the ones that do, each under the unit layer's hold.
-LAYERS = ("unit", "audit")
+# The layers a run can take: `unit` runs the tests that do not say they need the outside, and `audit` the ones that do, each
+# under the unit layer's hold (tests/offline.py); `outside` runs the ones that do, held to nothing, as CI's outside jobs do.
+LAYERS = ("unit", "audit", "outside")
+# The layer's tests, priced by the file that holds what each cost on CI: `audit` runs no shard.
+PRICED = {"unit": shards.COSTS, "outside": shards.OUTSIDE_COSTS}
 # What a test is given in an audit run: a refusal does not wake a test waiting on what it asked for, so a timeout there is
 # the refusal's outcome, not the 120 s of a test that is let run.
 AUDIT_TIMEOUT = 10.0
@@ -89,14 +93,30 @@ REFUSED = "the unit layer holds a test to nothing outside the process (tests/uni
 
 def held(config: pytest.Config) -> bool:
     """Whether the run is in a layer's hold (tests/offline.py)."""
-    return config.getoption("layer", None) is not None
+    return config.getoption("layer", None) in ("unit", "audit")
+
+
+def weights_of(item: pytest.Item) -> frozenset[str]:
+    """The groups of weights (hands/voice/pins.py) a test loads, by its `weights` marks: none for a test with no mark."""
+    return frozenset(group for marker in item.iter_markers("weights") for group in marker.args)
+
+
+def groups(text: str) -> tuple[str, ...]:
+    """A `--weights` value: group names of hands/voice/pins.py, comma-separated; empty names none."""
+    named = tuple(name for name in text.split(",") if name)
+    if unknown := [name for name in named if name not in weight_pins.GROUPS]:
+        raise argparse.ArgumentTypeError(f"--weights names {unknown}, and the groups are {sorted(weight_pins.GROUPS)}")
+    return named
 
 
 CALLED = pytest.StashKey[pytest.TestReport]()
+# Each outside test collected, by id, and the groups of weights it loads.
+OUTSIDE_TESTS = pytest.StashKey[dict[str, frozenset[str]]]()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption("--layer", choices=LAYERS, help="hold the run to the unit layer (tests/offline.py): `unit` runs the tests not marked outside, `audit` those that are, each expected to be refused")
+    parser.addoption("--layer", choices=LAYERS, help="the tests a run takes: `unit` those not marked outside, `audit` those that are, each expected to be refused by the unit layer's hold (tests/offline.py), and `outside` those that are, held to nothing")
+    parser.addoption("--weights", type=groups, default=None, metavar="GROUPS", help="the groups of weights (hands/voice/pins.py) the run fetches, and the only ones its tests load: the tests marked with exactly these run (`--weights=` those that load none); without it the run fetches every group and takes the tests it is given")
     parser.addoption("--shard", type=shards.Shard.parse, default=shards.WHOLE, metavar="K/N", help="run the Kth of N shards of the tests this run would run (tests/shards.py): CI's jobs each run one, and the N of them are the whole")
     parser.addoption("--record-decodes", action="store_true", help="a test that passes on the real pair writes the recording of the run it made (tests/recordings.py)")
 
@@ -167,14 +187,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 raise pytest.UsageError(f"{item.nodeid} is quarantined by {ticket} until {until}, more than {QUARANTINE_DAYS} days from {today}")
         if held:
             item.add_marker(pytest.mark.xfail(reason=f"quarantined by {held[0][0]} until {held[0][1]}", strict=False))
+    # [LAW:one-source-of-truth] the outside tests collected, whichever layer takes them: tests/test_outside_jobs.py holds each one
+    # to a job and a price from here, in the run that cannot take them.
+    config.stash[OUTSIDE_TESTS] = {item.nodeid: weights_of(item) for item in items if item.get_closest_marker("outside") is not None}
     if (layer := config.getoption("layer", None)) is not None:
         layered(config, items, layer)
+    if (weights := config.getoption("weights", None)) is not None:
+        weighed(config, items, frozenset(weights))
+
+
+def weighed(config: pytest.Config, items: list[pytest.Item], weights: frozenset[str]) -> None:
+    """[LAW:single-enforcer] the one owner of which tests a `--weights` run takes: the ones that load exactly these groups,
+    which the run fetches and nothing else."""
+    config.hook.pytest_deselected(items=[item for item in items if weights_of(item) != weights])
+    items[:] = [item for item in items if weights_of(item) == weights]
 
 
 def layered(config: pytest.Config, items: list[pytest.Item], layer: str) -> None:
     """[LAW:single-enforcer] the one owner of which tests a layer run takes: the unit layer's, the tests no mark says need
-    the outside; an audit's, the ones that do, each an expected failure that must fail, since a marked test the hold
-    refuses nothing for does not need its mark."""
+    the outside; the outside layer's, the ones that do; an audit's, the same, each an expected failure that must fail, since
+    a marked test the hold refuses nothing for does not need its mark."""
     outside = [item for item in items if item.get_closest_marker("outside") is not None]
     inside = [item for item in items if item.get_closest_marker("outside") is None]
     kept, dropped = (inside, outside) if layer == "unit" else (outside, inside)
@@ -594,11 +626,11 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("layer", None) == "audit":
         config.option.timeout = AUDIT_TIMEOUT
     config.pluginmanager.register(timeouts, "timeouts")
-    # The cost file prices the unit layer's tests and no others', so the unit layer is what the plugin cuts, and `make check` is a cut of 1 of 1 through it: a cost file it never read would be one only CI's jobs find broken.
-    if config.getoption("layer", None) == "unit":
-        config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard", shards.WHOLE)), shards.Costs.load(shards.COSTS)), "shards")
+    # A cost file prices one layer's tests and no others', so a layer it prices is what the plugin cuts, and `make check` is a cut of 1 of 1 through the unit layer: a cost file it never read would be one only CI's jobs find broken.
+    if (priced := PRICED.get(cast(str, config.getoption("layer", None)))) is not None:
+        config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard", shards.WHOLE)), shards.Costs.load(priced), priced), "shards")
     elif config.getoption("shard", shards.WHOLE) != shards.WHOLE:
-        raise pytest.UsageError("--shard cuts the unit layer, which the cost file prices: run it with --layer=unit")
+        raise pytest.UsageError(f"--shard cuts a layer whose tests a cost file prices: run it with --layer={' or --layer='.join(PRICED)}")
     clockwatch.register(config, clockwatch.UNMOVED)
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")
@@ -728,7 +760,10 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     dtln_models = config.cache.mkdir("dtln-aec")
     monkeypatch.setattr(dtln, "CACHE", dtln_models)
     runtime = config.cache.mkdir("onnxruntime-web")
-    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), dtln_models, runtime, machine, unit=held(config))
+    # A run not told which groups its tests load fetches them all, as a developer's does; a held run reads none.
+    asked = config.getoption("weights", None)
+    weights = () if held(config) else tuple(weight_pins.GROUPS) if asked is None else asked
+    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), dtln_models, runtime, machine, unit=held(config), weights=weights)
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)

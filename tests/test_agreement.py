@@ -1,16 +1,26 @@
-"""tests/agreement.py holds the shards of a run to one collection: every shard of the run, each once, and one digest among them."""
+"""tests/agreement.py holds the shards of a run to one collection: every shard of each set of groups of weights the run cuts, each
+once, and one digest among a set's."""
 
 import pytest
 
 from agreement import digest, held_to_one
 
 
-def recorded(shard: int, total: int, collected: str) -> dict[str, object]:
-    return {"shard": shard, "total": total, "digest": collected}
+def recorded(shard: int, total: int, collected: str, weights: list[str] | None = None) -> dict[str, object]:
+    return {"shard": shard, "total": total, "digest": collected, "weights": weights}
 
 
 def test_the_shards_of_a_run_that_collected_the_same_tests_agree() -> None:
     held_to_one({f"collected-{k}": recorded(k, 3, "abc") for k in (1, 2, 3)})
+
+
+def test_each_set_of_groups_is_held_to_its_own_shards_and_digest() -> None:
+    held_to_one({"a-1": recorded(1, 2, "abc", ["whisper"]), "a-2": recorded(2, 2, "abc", ["whisper"]), "b-1": recorded(1, 1, "xyz", [])})
+
+
+def test_a_set_with_a_shard_missing_is_refused_whatever_the_others_hold() -> None:
+    with pytest.raises(ValueError, match=r"\[1\] of \[2\]"):
+        held_to_one({"a-1": recorded(1, 2, "abc", ["whisper"]), "b-1": recorded(1, 1, "xyz", [])})
 
 
 def test_a_digest_is_of_the_ids_collected_and_not_of_the_order_or_the_repeats() -> None:

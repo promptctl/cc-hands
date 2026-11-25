@@ -86,9 +86,10 @@ holds a fetch, or fails one, does it with Playwright's `route`, not a fake in th
 ## The commands
 
 - `make check`: the unit layer (`make check-unit`) and the type checks, `pyright` and wake-training's (`make check-types`). Run it on every turn.
-- `make check-pair`: the real pair's cases, the `outside` tests in tests/test_streaming.py, with no hold. They load the speech
-  models.
-- `make check-rest`: every other `outside` test with no hold, then fritter's Go tests and wake-training's suite.
+- `make check-outside`: every `outside` test, with no hold. `WEIGHTS=` and `SHARD=K/N` run a part of it, as outside.yml's jobs do:
+  `WEIGHTS=whisper,smart_turn` the tests that load exactly those groups of weights (the `weights` marks; hands/voice/pins.py names
+  the groups), none of them for `WEIGHTS=`. Given neither, it fetches every group and runs every test.
+- `make check-fritter` and `make check-wake-training`: fritter's Go tests and wake-training's suite.
 - `make audit`: the `outside` tests under the same hold, each expected to be refused. One that is not does not need its
   mark; run it when a test moves down.
 

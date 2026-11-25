@@ -7,14 +7,13 @@ Warm, each fetch is a look at what is already there. The process reads its Fetch
 fetch, and fails naming what it could not fetch and why."""
 
 import asyncio
-import hashlib
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from functools import partial
 from http.client import HTTPException
@@ -29,7 +28,7 @@ from mlx_audio.utils import get_model_path
 
 from hands.brain import pinned
 from hands.clock import SYSTEM
-from hands.voice import dtln, engaged, streaming, transcription, voiceprints
+from hands.voice import dtln, pins, transcription, voiceprints
 from hands.voice import ortweb
 from hands.voice.pinnedfile import Mismatch, Release, Unserved
 from hands.voice.wakemodels import WakeModels
@@ -43,35 +42,19 @@ MOCK_MODULE = "github.com/promptctl/mock-anthropic"
 MOCK_RELEASE = "v0.1.0"
 
 
-@dataclass(frozen=True)
-class Weights:
-    """A model's weights on the Hugging Face hub, at the revision hands pins it to: `what` of them is fetched, and
-    `fetch` is the call its load makes to fetch them, so the run fetches what a load would."""
-
-    what: str
-    fetch: Callable[[], object]
+def loaded_by_mlx_audio(pin: pins.Pin) -> Callable[[], object]:
+    return partial(get_model_path, pin.repo, revision=pin.revision)
 
 
-def loaded_by_mlx_audio(repo: str, revision: str) -> Weights:
-    return Weights(f"{repo} at {revision}", partial(get_model_path, repo, revision=revision))
-
-
-# [LAW:one-source-of-truth] every speech weight a test loads, the one list the run fetches and CI keys its cache of the
-# hub on (hub_key): each weight's `what` names the pins its fetch reads.
-WEIGHTS = (
-    loaded_by_mlx_audio(streaming.MODEL, streaming.REVISION),
-    loaded_by_mlx_audio(streaming.DIARIZATION, streaming.DIARIZATION_REVISION),
-    loaded_by_mlx_audio(engaged.SMART_TURN, engaged.SMART_TURN_REVISION),
-    Weights(f"{transcription.MODEL} at {transcription.REVISION}", transcription.weights),
-    # The voiceprint model is one file of a repository of many, so only it is fetched.
-    Weights(f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION}", voiceprints.weights),
-)
-
-
-def hub_key() -> str:
-    """What CI keys its cache of the hub on: a digest of what of each weight WEIGHTS fetches, so a weight added, or moved
-    to another repository, revision or file, is a new key."""
-    return hashlib.sha256("\n".join(weights.what for weights in WEIGHTS).encode()).hexdigest()[:16]
+# [LAW:one-source-of-truth] how each pin is fetched, the call its load makes, so the run fetches what a load would: the
+# pins themselves, and the groups a run fetches them in, are src/hands/voice/pins.py's.
+LOADS: Mapping[pins.Pin, Callable[[], object]] = {
+    pins.STREAMING: loaded_by_mlx_audio(pins.STREAMING),
+    pins.DIARIZATION: loaded_by_mlx_audio(pins.DIARIZATION),
+    pins.SMART_TURN: loaded_by_mlx_audio(pins.SMART_TURN),
+    pins.WHISPER: transcription.weights,
+    pins.VOICEPRINT: voiceprints.weights,
+}
 
 
 # The wake words whose models a switch to the wake word loads.
@@ -93,6 +76,12 @@ class Fetches:
     # The run is the unit layer's, held to nothing outside the process (tests/offline.py): of all this, its tests read only
     # the sentence tokenizer and the echo canceller's model, so that is all it fetches. The rest is a weight it cannot read or a process it cannot start.
     unit: bool = False
+    # The groups of weights (pins.GROUPS) the run fetches: a held run reads none of them.
+    weights: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.unit and self.weights:
+            raise ValueError(f"a unit run fetches no weights, not {self.weights}")
 
     def mock_binary(self) -> Path:
         """The mock at MOCK_RELEASE, in its release's own directory."""
@@ -104,7 +93,7 @@ class Fetches:
     @staticmethod
     def read(text: str) -> "Fetches":
         read = json.loads(text)
-        return Fetches(Path(read["nltk_data"]), Path(read["wake_word"]), Path(read["claude_code"]), Path(read["mock"]), Path(read["dtln"]), Path(read["runtime"]), read["machine"], read["unit"])
+        return Fetches(Path(read["nltk_data"]), Path(read["wake_word"]), Path(read["claude_code"]), Path(read["mock"]), Path(read["dtln"]), Path(read["runtime"]), read["machine"], read["unit"], tuple(read["weights"]))
 
 
 def fetching[T](write: Callable[[str], object], what: str, failures: tuple[type[Exception], ...], fetch: Callable[[], T]) -> T:
@@ -133,6 +122,15 @@ def installed_mock(binary: Path, machine: Mapping[str, str]) -> Path:
     return binary
 
 
+def fetch_weights(groups: Iterable[str], write: Callable[[str], object]) -> None:
+    """The weights of `groups` (hands/voice/pins.py) into the hub's cache, each named by `write` as it goes: what a run
+    fetches of them, and what outside.yml's `weights` jobs fetch to fill the cache of a group."""
+    disable_progress_bars()
+    for pin in (pin for group in groups for pin in pins.GROUPS[group]):
+        # The hub's failures are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
+        fetching(write, f"{pin.what} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), LOADS[pin])
+
+
 def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     """Every fetch the run makes, as `fetches` says, each named by `write` as it goes."""
     # The line each fetch writes says what the run is fetching; the hub's bars would break it.
@@ -142,9 +140,7 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     fetching(write, f"DTLN-aec's models at {dtln.REVISION[:12]}", (OSError, HTTPException, Mismatch), partial(dtln.fetched, fetches.dtln))
     if fetches.unit:
         return
-    for weights in WEIGHTS:
-        # The hub's failures are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
-        fetching(write, f"{weights.what} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), weights.fetch)
+    fetch_weights(fetches.weights, write)
     for word in WAKE_WORDS:
         fetching(write, f"the {word.phrase} wake word's models", (Unserved,), partial(asyncio.run, WakeModels(fetches.wake_word, SYSTEM).ensured(word)))
     # The runtime the phone's page runs the wake word on, which its page test has the page fetch from hands.
@@ -185,7 +181,11 @@ def failed(returncode: int) -> str:
 
 if __name__ == "__main__":
     try:
-        fetch_all(Fetches.read(sys.stdin.read()), partial(print, end="", flush=True))
+        # Named groups, as outside.yml's `weights` jobs ask, or the run's own Fetches on stdin, as conftest's child does.
+        if sys.argv[1:]:
+            fetch_weights(sys.argv[1:], partial(print, end="", flush=True))
+        else:
+            fetch_all(Fetches.read(sys.stdin.read()), partial(print, end="", flush=True))
     except pytest.UsageError as error:
         print(error, file=sys.stderr)
         sys.exit(CANNOT_FETCH)

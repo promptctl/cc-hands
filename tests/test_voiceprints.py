@@ -8,6 +8,7 @@ from hands.voice.clips import RATE
 
 
 @pytest.mark.outside
+@pytest.mark.weights("voiceprint")
 def test_the_model_loads_and_prints_are_of_unit_length() -> None:
     embed = voiceprints.load()
     assert np.linalg.norm(embed(np.random.default_rng(0).normal(0, 0.1, RATE).astype(np.float32))) == pytest.approx(1.0)

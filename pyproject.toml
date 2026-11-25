@@ -97,6 +97,7 @@ addopts = ["-p", "pytester", "-rxX", "--durations=20", "--report-log=.pytest_cac
 # that passed (XPASS, a quarantine its flake may have left), with its ticket and date, beside the log's pass count.
 markers = [
     "quarantined(ticket, until): a flaky test that runs and reports, and cannot fail the run until its date is past",
+    "weights(*groups): the groups of weights (src/hands/voice/pins.py) a test loads; one with no mark loads none, and a run given --weights takes the tests marked with exactly its groups",
     "outside: a test that needs a process, a socket or the speech models' weights, so it is not in the unit layer (tests/offline.py); `pytest --layer=audit` fails one the unit layer's hold stops nothing for",
 ]
 # [LAW:single-enforcer] the one owner of "no test hangs": one that never finishes fails here, named, with the stack it

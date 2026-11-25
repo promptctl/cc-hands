@@ -1,6 +1,6 @@
 """What hands relies on of the brain's terminal, as one contract held to two parties: the fake Claude Code the unit layer plays
 (tests/claudescreen.py), in `make check` (test_terminal_contract.py), and the pinned Claude Code itself, in a terminal of
-hands' own against the mock of Anthropic's API, in `make check-rest` (test_terminal_contract_pinned.py). The cases are
+hands' own against the mock of Anthropic's API, in `make check-outside` (test_terminal_contract_pinned.py). The cases are
 written once, here, and each of those modules runs all of them against its own `terminal`, so each asserts the same of both:
 that is what holds the fake to the pin. A claim the pin no longer keeps fails the pinned run, and the fake is changed to
 match.

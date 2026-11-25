@@ -979,7 +979,7 @@ async def test_a_rank_lit_is_killed_on_after_writing_it_is_a_drop_that_landed(pa
 
 @pytest.mark.outside
 @real_lit
-@pytest.mark.parametrize("export, why", [(refusing("workspace_busy", "locked"), "workspace_busy"), ("echo not json", "JSON")])
+@pytest.mark.parametrize("export, why", [(refusing("workspace_busy", "locked"), "workspace_busy"), ("echo not json", "JSON")], ids=["busy", "not json"])
 async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(page: Page, workspace: Workspace, tmp_path: Path, export: str, why: str) -> None:
     stub_lit(tmp_path, export=export)
     response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)

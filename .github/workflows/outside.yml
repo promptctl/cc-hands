@@ -1,9 +1,10 @@
 # The tests marked `outside` (the real speech models, the pinned Claude Code, a Chrome page), fritter's Go tests and wake-training's
-# suite: what test.yml leaves out. They run daily and on request (`gh workflow run outside.yml`), not on a PR or in the merge queue,
-# and the check named `outside` says whether they passed.
+# suite: what test.yml leaves out. They run daily and on request (`gh workflow run outside.yml`), not on a PR or in the merge
+# queue, and the check named `outside` says whether they passed.
 #
-# Why they are not on the path a merge waits on: docs/testing.md, "Where CI runs the suite". The `pair` and `rest` jobs below are
-# the two tiers as they were, with the limit each needs.
+# Every job that runs them ends inside 5 minutes, which is how many jobs there are: docs/testing.md, "Where CI runs the suite",
+# says how many, how long five runners take to work through them, and where these tests gate a merge. tests/test_outside_jobs.py
+# holds each job to what its tests cost.
 name: outside
 
 on:
@@ -17,20 +18,86 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # One matrix is the one list of tiers; the Makefile's targets are what each runs.
-  tiers:
-    name: ${{ matrix.tier }}
+  # A group's weights (src/hands/voice/pins.py) into the hub's cache, saved for the jobs that restore them. [LAW:no-ambient-temporal-coupling]
+  # the cache is filled here, by a job whose limit is a download's and not 5 minutes, and never by a test job: a test job cancelled
+  # at its limit saves nothing, so a cold cache it had to fill would stay cold, and cancel the next day's job the same way. A warm
+  # group costs this job a restore and a look. The limit is not measured: no group has been downloaded cold here yet.
+  weights:
+    name: weights ${{ matrix.group }}
     runs-on: macos-15
-    # A hung test fails the check instead of holding it for GitHub's 6 hours. These are not 5 minutes, which the jobs of test.yml
-    # are: the limit is a hung test's bound, set from the slowest runner seen (pytest's time swings nearly 2x), not a budget.
-    timeout-minutes: ${{ matrix.timeout }}
+    timeout-minutes: 20
     strategy:
-      # A red `pair` leaves `rest` to run: the day's run says what each tier found, since nobody is waiting on it.
+      fail-fast: false
+      matrix:
+        group: [streaming, smart_turn, whisper, voiceprint]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/prepare
+      # Python writes the keys itself, from the pins and with nothing installed: what an import prints on stdout cannot become part of one.
+      - name: The weights' cache keys
+        id: keys
+        run: python3 -I src/hands/voice/pins.py github-output >> "$GITHUB_OUTPUT"
+      # Each repository of the hub's cache holds its own blobs and the snapshots linking into them, so a group's directories restore on their own.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.keys.outputs[format('{0}_paths', matrix.group)] }}
+          key: weights-${{ matrix.group }}-${{ steps.keys.outputs[format('{0}_key', matrix.group)] }}
+      - name: make fetch-weights
+        run: make fetch-weights GROUP=${{ matrix.group }}
+
+  # [LAW:one-source-of-truth] one entry per shard: `weights` the groups its tests load (src/hands/voice/pins.py, each test's
+  # `weights` mark), `shard` its K/N of the tests that load exactly those, and `budget` the minutes its tests' step is held to,
+  # which leaves the job's 5 for what it pays before the first test. tests/test_outside_jobs.py holds the entries to the tests
+  # collected: every outside test is in one, and each is priced to fit its budget. fail-fast is off, so a red job does not hide what
+  # the others found.
+  tests:
+    name: ${{ matrix.weights || 'no weights' }} ${{ matrix.shard }}
+    needs: weights
+    runs-on: macos-15
+    timeout-minutes: 5
+    strategy:
       fail-fast: false
       matrix:
         include:
-          - { tier: pair, target: check-pair, timeout: 40 }
-          - { tier: rest, target: check-rest, timeout: 30 }
+          - { weights: "", shard: 1/16, budget: 3 }
+          - { weights: "", shard: 2/16, budget: 3 }
+          - { weights: "", shard: 3/16, budget: 3 }
+          - { weights: "", shard: 4/16, budget: 3 }
+          - { weights: "", shard: 5/16, budget: 3 }
+          - { weights: "", shard: 6/16, budget: 3 }
+          - { weights: "", shard: 7/16, budget: 3 }
+          - { weights: "", shard: 8/16, budget: 3 }
+          - { weights: "", shard: 9/16, budget: 3 }
+          - { weights: "", shard: 10/16, budget: 3 }
+          - { weights: "", shard: 11/16, budget: 3 }
+          - { weights: "", shard: 12/16, budget: 3 }
+          - { weights: "", shard: 13/16, budget: 3 }
+          - { weights: "", shard: 14/16, budget: 3 }
+          - { weights: "", shard: 15/16, budget: 3 }
+          - { weights: "", shard: 16/16, budget: 3 }
+          - { weights: "streaming", shard: 1/14, budget: 2 }
+          - { weights: "streaming", shard: 2/14, budget: 2 }
+          - { weights: "streaming", shard: 3/14, budget: 2 }
+          - { weights: "streaming", shard: 4/14, budget: 2 }
+          - { weights: "streaming", shard: 5/14, budget: 2 }
+          - { weights: "streaming", shard: 6/14, budget: 2 }
+          - { weights: "streaming", shard: 7/14, budget: 2 }
+          - { weights: "streaming", shard: 8/14, budget: 2 }
+          - { weights: "streaming", shard: 9/14, budget: 2 }
+          - { weights: "streaming", shard: 10/14, budget: 2 }
+          - { weights: "streaming", shard: 11/14, budget: 2 }
+          - { weights: "streaming", shard: 12/14, budget: 2 }
+          - { weights: "streaming", shard: 13/14, budget: 2 }
+          - { weights: "streaming", shard: 14/14, budget: 2 }
+          - { weights: "whisper", shard: 1/4, budget: 2 }
+          - { weights: "whisper", shard: 2/4, budget: 2 }
+          - { weights: "whisper", shard: 3/4, budget: 2 }
+          - { weights: "whisper", shard: 4/4, budget: 2 }
+          - { weights: "smart_turn,streaming", shard: 1/1, budget: 2 }
+          - { weights: "smart_turn", shard: 1/1, budget: 2 }
+          - { weights: "voiceprint", shard: 1/1, budget: 2 }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,40 +139,100 @@ jobs:
         with:
           path: .pytest_cache/d/mock-anthropic
           key: mock-anthropic-${{ steps.e2e.outputs.mock }}
-      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, the engaged tests run
-      # Smart Turn on MLX, the voiceprint tests run ERes2Net, and the Whisper tests Whisper, on real sound, fetched into the
-      # Hugging Face cache at the revisions hands pins; kept across runs, so a download outage cannot fail a run. The whole hub: a model's
-      # directory holds only links into the hub's shared store of blobs, where its weights are.
-      # [LAW:one-source-of-truth] keyed on tests/fetches.py's WEIGHTS, the list the run fetches, so a weight added to the
-      # fetch is a new key and never a hit on a cache saved without it; an edit to the rest of any file still finds them.
-      - name: The speech models' cache key
-        id: speech
-        # Python writes the output itself: whatever an import prints on stdout cannot become part of the key.
-        run: uv run --locked python -c 'import os, sys; sys.path.insert(0, "tests"); from fetches import hub_key; open(os.environ["GITHUB_OUTPUT"], "a").write(f"key={hub_key()}\n")'
-      - uses: actions/cache@v4
+      # [LAW:one-source-of-truth] a job restores the groups of weights its tests load, and no others: the entry's `weights`, which
+      # `make` gives the run to fetch and to take its tests by, is the list these steps read. Restored from what the `weights`
+      # job saved, and a miss stops the job, since a download here is what 5 minutes cannot hold.
+      - name: The weights' cache keys
+        id: keys
+        run: python3 -I src/hands/voice/pins.py github-output >> "$GITHUB_OUTPUT"
+      - name: The streaming weights
+        if: contains(format(',{0},', matrix.weights), ',streaming,')
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/huggingface/hub
-          key: speech-${{ steps.speech.outputs.key }}
-      # [LAW:one-source-of-truth] what each tier runs is the Makefile's: `make check-pair` for the real streaming pair,
-      # `make check-rest` for every other test that needs the outside.
-      - name: make ${{ matrix.target }}
+          path: ${{ steps.keys.outputs.streaming_paths }}
+          key: weights-streaming-${{ steps.keys.outputs.streaming_key }}
+          fail-on-cache-miss: true
+      - name: The smart_turn weights
+        if: contains(format(',{0},', matrix.weights), ',smart_turn,')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.keys.outputs.smart_turn_paths }}
+          key: weights-smart_turn-${{ steps.keys.outputs.smart_turn_key }}
+          fail-on-cache-miss: true
+      - name: The whisper weights
+        if: contains(format(',{0},', matrix.weights), ',whisper,')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.keys.outputs.whisper_paths }}
+          key: weights-whisper-${{ steps.keys.outputs.whisper_key }}
+          fail-on-cache-miss: true
+      - name: The voiceprint weights
+        if: contains(format(',{0},', matrix.weights), ',voiceprint,')
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.keys.outputs.voiceprint_paths }}
+          key: weights-voiceprint-${{ steps.keys.outputs.voiceprint_key }}
+          fail-on-cache-miss: true
+      # The step's own limit, under the job's: a test that outgrew its price ends this step, and the report below still runs and
+      # names it, where the job's limit would cancel everything and leave a cancellation to read.
+      - name: make check-outside
         id: check
-        run: make ${{ matrix.target }}
+        timeout-minutes: ${{ matrix.budget }}
+        run: make check-outside SHARD=${{ matrix.shard }} WEIGHTS=${{ matrix.weights }}
       # What each test cost, into this job's log, so a cancelled or failed run keeps its numbers (the step of test.yml's of the
       # same name).
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true
-        run: uv run --no-sync python tests/costs.py .pytest_cache/${{ matrix.target }}-log.jsonl
+        run: uv run --no-sync python tests/costs.py .pytest_cache/check-outside-log.jsonl
+      # The digest of the test ids this shard collected (tests/shards.py), for the verdict to hold each set's shards to one.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collected-${{ strategy.job-index }}
+          path: .pytest_cache/v/shards/collected
+          include-hidden-files: true
+          if-no-files-found: error
 
-  # The verdict of the tiers, on ubuntu for the same reason as test.yml's.
+  fritter:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - name: make check-fritter
+        run: make check-fritter
+
+  wake-training:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - name: make check-wake-training
+        run: make check-wake-training
+
+  # The verdict of the jobs above, on ubuntu for the same reason as test.yml's.
   outside:
-    needs: tiers
+    needs: [weights, tests, fritter, wake-training]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Every tier passed
+      - uses: actions/checkout@v4
+      - name: Every job passed
         env:
-          TIERS: ${{ needs.tiers.result }}
-        run: test "$TIERS" = success || { echo "the tiers' result is $TIERS, not success" >&2; exit 1; }
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key) is \(.value.result), not success"' <<< "$NEEDS")
+          test -z "$failed" || { echo "$failed" >&2; exit 1; }
+      # [LAW:single-enforcer] a test is in exactly one shard when every shard of its set collected the same ids (tests/agreement.py).
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: collected-*
+          path: collected
+      - name: Every shard collected the same tests
+        run: python3 -I tests/agreement.py collected/*/collected

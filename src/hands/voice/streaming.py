@@ -28,13 +28,14 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
 from hands.voice import loads
 from hands.threads import SerialThread
+from hands.voice import pins
 from hands.voice.clips import RATE, Clip, Fate, Heard, Hearings, Samples, Sound, decoded
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
-MODEL = "nvidia/nemotron-speech-streaming-en-0.6b"
-REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
-DIARIZATION = "mlx-community/Nemotron-3-Diarization"
-DIARIZATION_REVISION = "59ed2dbfc1346dcea9d423c71306a3a2499c568f"
+MODEL = pins.STREAMING.repo
+REVISION = pins.STREAMING.revision
+DIARIZATION = pins.DIARIZATION.repo
+DIARIZATION_REVISION = pins.DIARIZATION.revision
 
 # How the pair cuts the run, which `load` reads off the models and refuses to differ: a mel frame every MEL_HOP samples,
 # each needing N_FFT // 2 samples past its centre, and an encoder frame every SUBSAMPLING mel frames.

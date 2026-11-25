@@ -1,8 +1,8 @@
 """Whether the shards of a run collected the same tests, which is what puts each test in exactly one of them: every shard cuts
 the collection alone (tests/shards.py), so a collection that differs between jobs loses or doubles a test and no job fails.
 
-Each shard records its number, the number of shards, and a digest of the test ids it collected; test.yml's verdict job holds
-what they recorded to one with
+Each shard records its number, the number of shards, the groups of weights its tests load (None for a run not told), and a
+digest of the test ids it collected; the verdict job of test.yml and outside.yml holds what they recorded to one with
 
     python3 -I tests/agreement.py RECORD...
 
@@ -22,9 +22,19 @@ def digest(ids: Iterable[str]) -> str:
 
 
 def held_to_one(records: Mapping[str, Mapping[str, Any]]) -> None:
-    """Raise unless `records`, each shard's by its name, are every shard of one run, each once, and one digest."""
-    if not records:
+    """Raise unless `records`, each shard's by its name, are every shard of each set of groups of weights, each once, and one
+    digest in each set: the shards of a set cut the tests that load those groups, and are another set's no more than a test
+    is."""
+    sets: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for name, record in records.items():
+        sets.setdefault(json.dumps(record["weights"]), {})[name] = record
+    if not sets:
         raise ValueError("no shard recorded what it collected")
+    for held in sets.values():
+        held_to_one_set(held)
+
+
+def held_to_one_set(records: Mapping[str, Mapping[str, Any]]) -> None:
     totals = {record["total"] for record in records.values()}
     shards = sorted(record["shard"] for record in records.values())
     if len(totals) != 1 or shards != list(range(1, next(iter(totals)) + 1)):

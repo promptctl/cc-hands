@@ -13,7 +13,7 @@ from hands.voice.engaged import SMART_TURN, SMART_TURN_REVISION, STOP_SECS, load
 from test_engaged import Rig, stopped
 
 
-pytestmark = pytest.mark.outside
+pytestmark = [pytest.mark.outside, pytest.mark.weights("smart_turn")]
 
 
 class _Ticking(VirtualClock):

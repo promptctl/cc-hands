@@ -18,12 +18,13 @@ import numpy as np
 from huggingface_hub import is_offline_mode, snapshot_download  # pyright: ignore[reportUnknownVariableType]  (partly untyped in huggingface_hub)
 from huggingface_hub.errors import LocalEntryNotFoundError
 
+from hands.voice import pins
 from hands.voice.clips import LANGUAGE, decoded
 
 # The model every clip is transcribed with, fetched from the Hugging Face hub into its cache on the first load, at the
 # revision pinned: the weights a test measured are the weights hands runs, and CI keys its cache of them on it.
-MODEL = "mlx-community/whisper-large-v3-turbo"
-REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
+MODEL = pins.WHISPER.repo
+REVISION = pins.WHISPER.revision
 
 # hands' own TTS saying "Hands here.", a second of it, mono 16-bit at a clip's rate: what the model is loaded by.
 _HANDS_HERE = files("hands.voice") / "hands_here.wav"
