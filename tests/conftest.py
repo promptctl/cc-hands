@@ -634,20 +634,30 @@ def without_claude(path: str, links: Path) -> str:
     return os.pathsep.join(kept(index, directory) for index, directory in enumerate(path.split(os.pathsep)) if os.path.isabs(directory))
 
 
-# The files the hub keeps in its home, each named by the constant that holds its path, which the hub read from the developer's HOME
-# as it was imported.
-HUB_FILES = {"HF_TOKEN_PATH": "token", "HF_STORED_TOKENS_PATH": "stored_tokens", "AGENT_HARNESSES_PATH": ".agent_harnesses.json", "CHECK_FOR_UPDATE_DONE_PATH": ".check_for_update_done"}
+# The hub's weights, which the run fetched into the developer's own caches and reads from there: the part of the hub's home the
+# run does not make its own.
+WEIGHT_CACHES = ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_XET_CACHE", "default_cache_path", "default_xet_cache_path")
 
 
-def hermetic(machine: Mapping[str, str], path: str, hub: str, sentences: Path, home: Path, sockets: Path) -> dict[str, str]:
+def hub_paths(hub_home: Path) -> dict[str, str]:
+    """Every path the hub derived from its home as it was imported, the developer's, but the weights', under `hub_home`:
+    [LAW:one-source-of-truth] found by what the hub holds, not named, so a file a later hub keeps in its home is the run's too."""
+    constants = huggingface_hub.constants
+    was = Path(constants.HF_HOME)
+    return {name: str(hub_home / Path(value).relative_to(was)) for name, value in vars(constants).items()
+            if isinstance(value, str) and name not in WEIGHT_CACHES and os.path.isabs(value) and Path(value).is_relative_to(was)}
+
+
+def hermetic(machine: Mapping[str, str], path: str, hub: str, hub_home: str, sentences: Path, home: Path, sockets: Path) -> dict[str, str]:
     """The environment the run and each test run in, from the `machine`'s: the names PASSED, a `path` of its tools, the
-    Hugging Face `hub` cache the run fetched the weights into and the hub offline, NLTK's data looked for first in
+    Hugging Face `hub` cache the run fetched the weights into, the hub's own home, and the hub offline, NLTK's data looked for first in
     `sentences`, no git config but a repository's own and one identity to commit as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a
     `home` and a tmux socket directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
     tmux's or a proxy, which hands reads as a session's own, is absent."""
     return {name: machine[name] for name in PASSED if name in machine} | {
         "PATH": path,
         "HF_HUB_CACHE": hub,
+        "HF_HOME": hub_home,
         "HF_HUB_OFFLINE": "1",
         "NLTK_DATA": str(sentences),
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -686,7 +696,7 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
     with tempfile.TemporaryDirectory(dir="/tmp") as sockets:
         # The hub resolved its cache from the developer's HOME as it was imported; a child that loads weights finds them
         # there too.
-        names = hermetic(machine, tools, huggingface_hub.constants.HF_HUB_CACHE, sentences, home, Path(sockets))
+        names = hermetic(machine, tools, huggingface_hub.constants.HF_HUB_CACHE, huggingface_hub.constants.HF_HOME, sentences, home, Path(sockets))
         for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
             monkeypatch.delenv(name)
         for name, value in names.items():
@@ -702,8 +712,8 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     starts, reaches past loopback or finds the machine's Claude Code policy.
 
     The environment is entered first, so the fetches run as the tests do, with no credential of the developer's: the hub
-    took the paths of its token, its stored tokens and its other files from the developer's HOME as they were imported, so each is
-    pointed under the run's own HOME, and the registry of agents it builds a user agent and its terminal output from is a file
+    took the paths of its token, its stored tokens and its other files from the developer's HOME as they were imported, so each, its weights' caches aside, is
+    pointed under the run's own HOME, which every child is given as its hub's home, and the registry of agents it builds a user agent and its terminal output from is a file
     there, empty and fresh, so no caller of the hub fetches it and a fake hub holds only what the test put there. Then
     the hub in this process goes offline for the rest of the run, as a child's is by its environment, so a weight the run
     did not fetch fails the test that loads it and never downloads inside it. Undone by the config's cleanup, which runs however the session ends, but for the sandbox: the OS lifts it
@@ -721,11 +731,10 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     (home := run / "home").mkdir()
     tools = without_claude(machine["PATH"], links)
     monkeypatch = stack.enter_context(pytest.MonkeyPatch.context())
-    hub_home = home / ".cache" / "huggingface"
-    hub_home.mkdir(parents=True)
-    for name, leaf in HUB_FILES.items():
-        monkeypatch.setattr(huggingface_hub.constants, name, str(hub_home / leaf))
-    (hub_home / HUB_FILES["AGENT_HARNESSES_PATH"]).write_text(json.dumps({"standardEnvVars": [], "harnesses": {}}))
+    for name, path in hub_paths(home / ".cache" / "huggingface").items():
+        monkeypatch.setattr(huggingface_hub.constants, name, path)
+    Path(huggingface_hub.constants.AGENT_HARNESSES_PATH).parent.mkdir(parents=True)
+    Path(huggingface_hub.constants.AGENT_HARNESSES_PATH).write_text(json.dumps({"standardEnvVars": [], "harnesses": {}}))
     nltk_data = config.cache.mkdir("nltk-data")
     sentences = PUNKT_TAB.data(nltk_data)
     # NLTK read its data's path, the developer's ~/nltk_data among it, as it was imported; a child reads NLTK_DATA before

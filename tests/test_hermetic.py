@@ -79,7 +79,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "TMUX": "/private/tmp/tmux-501/default,1,0",
     }
 
-    tested = hermetic(machine, "/links/0:/usr/bin", "/Users/developer/.cache/huggingface/hub", Path("/run/sentences"), Path("/tmp/home"), Path("/tmp/sockets"))
+    tested = hermetic(machine, "/links/0:/usr/bin", "/Users/developer/.cache/huggingface/hub", "/tmp/home/.cache/huggingface", Path("/run/sentences"), Path("/tmp/home"), Path("/tmp/sockets"))
 
     assert tested == {
         "PATH": "/links/0:/usr/bin",
@@ -87,6 +87,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "CI": "true",
         "HF_HUB_OFFLINE": "1",
         "HF_HUB_CACHE": "/Users/developer/.cache/huggingface/hub",
+        "HF_HOME": "/tmp/home/.cache/huggingface",
         "NLTK_DATA": "/run/sentences",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
@@ -104,8 +105,14 @@ def test_a_test_runs_in_the_hermetic_environment(environment: dict[str, str], ma
     assert Path.home() == Path(environment["HOME"])
     assert shutil.which("claude") is None
     # Nor does the hub in this process read the developer's token, from under the HOME it found as it was imported.
-    assert not Path(huggingface_hub.constants.HF_TOKEN_PATH).is_relative_to(machine["HOME"])
-    assert not Path(huggingface_hub.constants.HF_STORED_TOKENS_PATH).is_relative_to(machine["HOME"])
+    assert huggingface_hub.get_token() is None
+    # Nor does it keep, read or send anything of its own from the developer's home: every path it holds is the run's, its weights'
+    # caches aside, a file it adds in a later release among them. (Its module's own file, and the directory it derives its home
+    # from, are paths it holds no file in.)
+    leaked = {name: value for name, value in vars(huggingface_hub.constants).items()
+              if isinstance(value, str) and not name.startswith("__") and name not in ("default_home", *conftest.WEIGHT_CACHES)
+              and Path(value).is_relative_to(machine["HOME"])}
+    assert leaked == {}
 
 
 def test_the_hub_online_asks_no_one_for_its_registry_of_agents(monkeypatch: pytest.MonkeyPatch) -> None:
