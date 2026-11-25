@@ -306,7 +306,7 @@ def run(children, argv, cwd, env, limit):
     return exited("")
 
 update.run = run
-sys.exit(cli.main(["--home", home, "update"]))
+sys.exit(cli.main(["--home", home, "update"], processes=cli.KERNEL))
 """
 
 

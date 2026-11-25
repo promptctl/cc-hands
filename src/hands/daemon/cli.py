@@ -198,13 +198,13 @@ def entry() -> int:
     """The `hands` script: loguru's default sink, DEBUG on stderr, let go of once as the process starts, so what it prints
     is the terminal's that `logging_to` sets up; then the command its arguments name."""
     logger.remove(0)
-    return main()
+    return main(processes=KERNEL)
 
 
 # [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, the pin of the Claude
 # Code its brain runs, where `hands install-brain` fetches that pin's builds from, and the processes every command reads
 # and signals, each bound here for every command.
-def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE, processes: Processes = KERNEL) -> int:
+def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE, *, processes: Processes) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")

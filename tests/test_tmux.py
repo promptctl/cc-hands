@@ -8,7 +8,7 @@ from fakeprocesses import USER, Running, processes
 from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import tmux
 from hands.sessions.tmux import Answered
-from hands.sessions.processes import Process, ancestor_terminals, front_terminal
+from hands.sessions.processes import ancestor_terminals, front_terminal
 
 # Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
 PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
@@ -17,17 +17,14 @@ HANDS = Pane(WORK, "%3", "cc-hands", 2)
 LAWS = Pane(PLAY, "%0", "laws", 0)
 # A session under fritter in a pane of the first server: claude on fritter's pseudoterminal, fritter on the pane's in
 # front of its shell. Another, in a pane of the second server, and one stopped there, behind it; and one in a plain tab.
-TABLE = {
-    process.pid: process
-    for process in (
-        Process(100, 1, 501, PANE, None),
-        Process(101, 100, 501, PANE, PANE),
-        Process(102, 101, 501, FRITTER, FRITTER),
-        Process(200, 1, 501, OTHER_PANE, OTHER_PANE),
-        Process(201, 1, 501, OTHER_PANE, None),
-        Process(300, 1, 501, TAB, TAB),
-    )
-}
+TABLE = processes(
+    Running(100, tty=PANE),
+    Running(101, parent=100, tty=PANE, in_front=True),
+    Running(102, parent=101, tty=FRITTER, in_front=True),
+    Running(200, tty=OTHER_PANE, in_front=True),
+    Running(201, tty=OTHER_PANE),
+    Running(300, tty=TAB, in_front=True),
+).table()
 SERVERS = [Listed({PANE: HANDS}), Listed({OTHER_PANE: LAWS})]
 
 

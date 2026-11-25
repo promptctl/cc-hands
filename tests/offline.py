@@ -76,7 +76,7 @@ def hold(unit: Unit | None = None) -> str:
     kept = refused and not found and (looped if unit is None else not looped and forked and unread and not scanned)
     if not kept:
         in_one = bool(sandbox.sandbox_check(os.getpid(), None, 0))
-        more = "" if unit is None else f"; a process start refused: {forked}; weights unread: {unread}; process reads that answered as they should not: {scanned}"
+        more = "" if unit is None else f"; a process start refused: {forked}; weights unread: {unread}; process reads not held as the unit layer holds them: {scanned}"
         raise pytest.UsageError(
             f"the run cannot hold itself to {held}: {error.value!r}; in a sandbox already: {in_one}; past loopback refused: {refused}; loopback open: {looped}; Claude Code policy found: {found}{more}"
         )
@@ -100,32 +100,39 @@ def _forked() -> bool:
 # The kernel's answers about a process: sysctl's CTL_KERN names, and libproc's PROC_PIDTBSDINFO with its record's size.
 _KERN_PROC_ALL, _KERN_PROC_PID, _KERN_PROCARGS2 = (1, 14, 0), (1, 14, 1), (1, 49)
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
+# What a read the unit layer refuses gets, and what one it lets through does.
+_REFUSED, _ANSWERED = errno.errorcode[errno.EPERM], "answered"
 
 
 def _scanned() -> list[str]:
-    """Each read of another process the kernel answered this process: the process table, the parent's record (its start
-    among it), what the parent was started as, the list of pids, and libproc's word on the parent; and this process's own
-    record and its word on itself, which must answer, named where they did not."""
+    """Each read of a process that did not get what the unit layer holds it to, with what it got: of another process, the
+    run's parent, the process table, its record (its start among it), what it was started as, the list of pids, and
+    libproc's word on it, each refused with EPERM; of this process, its own record and libproc's word on it, each
+    answered. [LAW:no-silent-failure] a read that failed otherwise, as one into too small a buffer would, is no refusal:
+    each sysctl asks only for the size of its answer, which needs no buffer."""
     libc = ctypes.CDLL(None, use_errno=True)
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
 
-    def sysctl(*mib: int) -> bool:
-        name, room = (ctypes.c_int * len(mib))(*mib), ctypes.c_size_t(1 << 20)
-        return libc.sysctl(name, len(mib), ctypes.create_string_buffer(room.value), ctypes.byref(room), None, 0) == 0
+    def got(answered: bool) -> str:
+        return _ANSWERED if answered else errno.errorcode.get(ctypes.get_errno(), f"errno {ctypes.get_errno()}")
 
-    def pidinfo(pid: int) -> bool:
-        return libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.create_string_buffer(_BSDINFO_SIZE), _BSDINFO_SIZE) > 0
+    def sysctl(*mib: int) -> str:
+        return got(libc.sysctl((ctypes.c_int * len(mib))(*mib), len(mib), None, ctypes.byref(ctypes.c_size_t(0)), None, 0) == 0)
+
+    def pidinfo(pid: int) -> str:
+        return got(libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.create_string_buffer(_BSDINFO_SIZE), _BSDINFO_SIZE) > 0)
 
     parent, own = os.getppid(), os.getpid()
-    others = {
-        "kern.proc.all": sysctl(*_KERN_PROC_ALL),
-        f"kern.proc.pid.{parent}": sysctl(*_KERN_PROC_PID, parent),
-        f"kern.procargs2.{parent}": sysctl(*_KERN_PROCARGS2, parent),
-        "proc_listallpids": libproc.proc_listallpids(None, 0) > 0,
-        f"proc_pidinfo of {parent}": pidinfo(parent),
+    held = {
+        "kern.proc.all": (sysctl(*_KERN_PROC_ALL), _REFUSED),
+        f"kern.proc.pid.{parent}": (sysctl(*_KERN_PROC_PID, parent), _REFUSED),
+        f"kern.procargs2.{parent}": (sysctl(*_KERN_PROCARGS2, parent), _REFUSED),
+        "proc_listallpids": (got(libproc.proc_listallpids(None, 0) > 0), _REFUSED),
+        f"proc_pidinfo of {parent}": (pidinfo(parent), _REFUSED),
+        f"kern.proc.pid.{own}": (sysctl(*_KERN_PROC_PID, own), _ANSWERED),
+        f"proc_pidinfo of {own}": (pidinfo(own), _ANSWERED),
     }
-    itself = {f"kern.proc.pid.{own}, refused": not sysctl(*_KERN_PROC_PID, own), f"proc_pidinfo of {own}, refused": not pidinfo(own)}
-    return [read for read, answered in (*others.items(), *itself.items()) if answered]
+    return [f"{read} {said}" for read, (said, holds) in held.items() if said != holds]
 
 
 def _unread(roots: tuple[Path, ...]) -> bool:

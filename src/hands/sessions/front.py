@@ -102,7 +102,7 @@ async def _screen(app: _App, table: Mapping[int, Process]) -> Screen:
         case str() as source:
             return Screen(app.name, frozenset({_device(await _applescript.run(lambda: _asked(app.name, source)))}))
         case None:
-            return Screen(app.name, frozenset(process.tty for process in _under(app.pid, table) if process.tty is not None))
+            return Screen(app.name, frozenset(process.terminal.device for process in _under(app.pid, table) if process.terminal is not None))
 
 
 def _asked(app: str, source: str) -> str:

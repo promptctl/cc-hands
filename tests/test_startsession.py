@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fakeprocesses import processes
+from fakeprocesses import Running, processes
 
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
@@ -18,7 +18,6 @@ from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
 from hands.sessions.membership import parse_membership
 from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends
-from hands.sessions.processes import Process
 from hands.voice.tool import Result
 from hands.voice.tools import start_session_tool
 
@@ -50,7 +49,7 @@ def started(home: Home) -> list[dict[str, Any]]:
 
 
 def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling() -> None:
-    table = {pid: Process(pid, parent, 501, None, None) for pid, parent in {10: 1, 11: 10, 12: 11, 20: 1, 1: 0}.items()}
+    table = processes(*(Running(pid, parent) for pid, parent in {10: 1, 11: 10, 12: 11, 20: 1}.items())).table()
     assert [descends(pid, 10, table) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
 
 

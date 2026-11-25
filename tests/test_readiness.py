@@ -8,7 +8,7 @@ import socket
 import tempfile
 import sys
 from collections import Counter
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, SYSTEM_PATH, Unstarting
-from fakeprocesses import FakeProcesses, Running, processes
+from fakeprocesses import PROC_PID, FakeProcesses, Running, processes
+from processescontract import PROCARGS2
 from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
@@ -272,7 +273,7 @@ def at_a_terminal(pid: int, executable: Path, cwd: Path, arguments: tuple[str, .
     """A process started as executable in cwd on a terminal of its own, as a session runs, its stdin a pipe if piped, as
     a shell starts a program: with the directory it starts in as its PWD."""
     environment = {"CLAUDE_CONFIG_DIR": CLAUDE_CONFIG, "PWD": str(cwd)}
-    return Running(pid, tty=TTY, in_front=True, start=start, cwd=cwd, path=executable, arguments=arguments, environment=environment, interactive=not piped)
+    return Running(pid, tty=TTY, in_front=True, start=start, cwd=cwd, path=executable, arguments=arguments, environment=environment, stdin=TTY, stdout=None if piped else TTY)
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
@@ -405,7 +406,7 @@ def test_a_process_the_kernel_will_not_describe_is_named_and_hides_no_other(root
     # As kern.procargs2 answers a process caught mid-exec, or on its way out.
     refused, described, ours = 4001, 4002, 4000
     table = processes(
-        Running(ours), Running(refused, parent=ours, tty=TTY, refused="kern.procargs2"), at_a_terminal(described, root / "install" / "9.9.9", root)
+        Running(ours), Running(refused, parent=ours, tty=TTY, refused={PROCARGS2: errno.EIO}), at_a_terminal(described, root / "install" / "9.9.9", root)
     )
     scan = terminal_processes(table)
     assert (scan.unread, [process.pid for process in scan.found]) == ([Undescribed(refused, ours, "kern.procargs2", errno.EIO)], [described])
@@ -453,19 +454,11 @@ def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_o
 def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
-    # Started on a version no longer installed: the kernel says the path it was started by, which names nothing now.
+    # Started on a version no longer installed: the kernel says the path it was started by, which names nothing now
+    # (processescontract.py).
     pid = 4001
     found = readiness.sessions(processes(at_a_terminal(pid, root / "install" / "9.9.8", root)), home, path, untmuxed)
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
-
-
-def test_a_program_started_by_a_relative_path_is_named_where_it_is_after_it_changes_directory(root: Path) -> None:
-    # As the shim starts the real `claude` under a relative PATH entry, and as a session then moves into a worktree: the
-    # kernel keeps the path it was started by and the PWD it was started with, and says where it works now.
-    program, worktree = root / "bin" / "claude", root / "worktree"
-    moved = Running(4001, tty=TTY, cwd=worktree, path=Path("bin/claude"), environment={"PWD": str(root)}, interactive=True)
-    [process] = terminal_processes(processes(moved)).found
-    assert (process.executable, process.cwd) == (program, worktree)
 
 
 @pytest.mark.outside
@@ -625,19 +618,14 @@ def test_sessions_that_cannot_be_looked_for_are_said_beside_the_ones_that_cannot
     assert isinstance(found, Missing) and "bad.json names no session" in found.said and "cannot be found: why" in found.said
 
 
-class Refusing(FakeProcesses):
-    """A table whose every start the kernel refuses."""
-
-    def starts(self, pids: Collection[int]) -> dict[int, float]:
-        raise OSError(1, f"sysctl refused pid {min(pids)}")
-
-
 def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path) -> None:
     home = Home(root / "home")
     pid = 4001
     joined(home, "running", pid, None)
-    found = readiness.sessions(Refusing({pid: Running(pid)}), home, "/nowhere", untmuxed)
-    assert isinstance(found, Unknown) and found.said == f"cannot look at the running sessions in {home.memberships}: [Errno 1] sysctl refused pid {pid}"
+    table = processes(Running(pid))
+    table.refused = {PROC_PID: errno.EPERM}
+    found = readiness.sessions(table, home, "/nowhere", untmuxed)
+    assert isinstance(found, Unknown) and found.said == f"cannot look at the running sessions in {home.memberships}: [Errno 1] sysctl could not say when pid {pid} started: Operation not permitted"
 
 
 def test_the_sessions_line_counts_sessions_and_unreadable_files_apart_with_the_fix_for_each() -> None:

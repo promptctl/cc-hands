@@ -59,7 +59,6 @@ UNMOVED = frozenset({
     "test_catch_up.py",
     "test_child.py",
     "test_clipowner.py",
-    "test_closesession.py",
     "test_command_event.py",
     "test_command_imports.py",
     "test_conversation.py",

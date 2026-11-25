@@ -2,9 +2,11 @@
 where it runs, whether it reads and writes its terminal, and a signal sent to one; and, from those, which of the user's
 processes run at a terminal and whether a pid still names the process it named before.
 
-[LAW:effects-at-boundaries] `Processes` is the one way hands reaches another process. `hands.sessions.kernel.KERNEL` asks
-the kernel, the composition root hands it on, and tests/fakeprocesses.py holds a table as values; tests/processescontract.py
-holds the two to one contract. Children hands starts and waits on are `hands.sessions.child`'s.
+[LAW:effects-at-boundaries] `Processes` is the way the daemon and its sessions reach another process.
+`hands.sessions.kernel.KERNEL` asks the kernel, the composition root hands it on, and tests/fakeprocesses.py holds a table as
+values; tests/processescontract.py holds the two to one contract. Children hands starts and waits on are
+`hands.sessions.child`'s. The brain still reads and signals its own pane's processes itself, each read marked as the
+exception it is, until promptctl-testing-c3u.fhu puts the brain on its fakes.
 
 A pid is a number the OS hands out again. A running process under a remembered pid is the remembered process only if it
 was already running when it was remembered; one that started later took the number of one that is dead. The session
@@ -28,18 +30,23 @@ START_SLACK_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
+class ControllingTerminal:
+    """The terminal a process is controlled by: its device number, which is `st_rdev` of that terminal's /dev path, and
+    whether the process's group is the one in front of it, the group a key typed there goes to; a stopped job is behind."""
+
+    device: int
+    in_front: bool
+
+
+@dataclass(frozen=True)
 class Process:
-    """A process of any user's: its parent, its effective user, and the device number of the terminal it is controlled
-    by, which is `st_rdev` of that terminal's /dev path; None for a process with no controlling terminal, as an app or a
-    daemon has none."""
+    """A process of any user's: its parent, its effective user, and its controlling terminal; None for a process with
+    none, as an app or a daemon has none."""
 
     pid: int
     parent: int
     uid: int
-    tty: int | None
-    # Its controlling terminal again when its process group is the one in front of that terminal, the group a key typed
-    # there goes to; None for a process with no terminal, or one behind another group at it, as a stopped job is.
-    front: int | None
+    terminal: ControllingTerminal | None
 
 
 @dataclass(frozen=True)
@@ -70,14 +77,14 @@ class TerminalProcess:
 
     pid: int
     parent: int
-    # The program it was started as, with links resolved as they are now: a file deleted since, as an updater prunes
-    # old versions, is still named.
+    # The program it was started as, by the absolute path it was exec'd by: a file deleted since, as an updater prunes old
+    # versions, is still named, and a link is named as the link.
     executable: Path
     cwd: Path
     environment: Mapping[str, str]
     # Its arguments after the program, as it was started with them.
     arguments: tuple[str, ...]
-    # The device of its controlling terminal, as Process.tty.
+    # The device of its controlling terminal, as ControllingTerminal.device.
     tty: int
 
 
@@ -90,8 +97,9 @@ class TerminalProcesses:
 
 
 class Processes(Protocol):
-    """The Mac's processes, as they stand when asked. A question about a process that has exited since it was listed is
-    answered None, and one the kernel refused about a process that runs is answered with the refusal."""
+    """The Mac's processes, as they stand when asked. A question about one process that has exited since it was listed is
+    answered None, and one the kernel refused about a process that runs is answered with the refusal; the table, the
+    starts and a signal, which the kernel answers for every process, raise OSError where it refused."""
 
     @property
     def user(self) -> int:
@@ -104,7 +112,8 @@ class Processes(Protocol):
         ...
 
     def starts(self, pids: Collection[int]) -> dict[int, float]:
-        """When each pid's process started, in wall-clock seconds; a pid no process has is absent."""
+        """When each pid's process started, in wall-clock seconds; a pid no process has is absent. Raises OSError where
+        the kernel refused one."""
         ...
 
     def started_as(self, process: Process) -> StartedAs | Undescribed | None:
@@ -115,10 +124,9 @@ class Processes(Protocol):
         """The directory a process of this user's runs in."""
         ...
 
-    def interactive(self, process: TerminalProcess) -> bool | Undescribed:
+    def interactive(self, process: TerminalProcess) -> bool | Undescribed | None:
         """Whether its stdin and stdout are both its terminal, as `[ -t 0 ] && [ -t 1 ]` finds them at a terminal: its
-        controlling terminal's device, or /dev/tty, which is that terminal under the name each process has for its own.
-        False for one that has exited since it was listed, which reads nothing."""
+        controlling terminal's device, or /dev/tty, which is that terminal under the name each process has for its own."""
         ...
 
     def signal(self, pid: int, signum: signal.Signals) -> bool:
@@ -129,7 +137,8 @@ class Processes(Protocol):
 
 def parse_pid(number: int) -> int:
     """A number read from a file, as a pid some process could have."""
-    # [LAW:parse-dont-validate] refused here, so nothing ever asks the kernel about a number no process can have.
+    # [LAW:parse-dont-validate] refused here, so no pid a file names, the only pids hands signals, is 0 or negative: a
+    # signal to either goes to a whole group of processes.
     if not 0 < number <= PID_MAX:
         raise Rejected(f"pid {number} is not a process id")
     return number
@@ -146,18 +155,9 @@ def still_running(pid: int, seen_at: float, starts: Mapping[int, float]) -> bool
 def terminal_processes(processes: Processes) -> TerminalProcesses:
     """Every process of this user's that has a controlling terminal: interactive programs, never daemons or apps."""
     own = processes.user
-    read = [_at_terminal(processes, process, process.tty) for process in processes.table().values() if process.uid == own and process.tty is not None]
+    read = [_at_terminal(processes, process, process.terminal.device) for process in processes.table().values() if process.uid == own and process.terminal is not None]
     # [LAW:no-silent-failure] one process the kernel will not describe is named, and hides none of the others.
     return TerminalProcesses([each for each in read if isinstance(each, TerminalProcess)], [each for each in read if isinstance(each, Undescribed)])
-
-
-def environment_of(processes: Processes, process: Process) -> Mapping[str, str] | Undescribed | None:
-    """The environment a process of this user's was started with."""
-    match processes.started_as(process):
-        case StartedAs(environment=environment):
-            return environment
-        case other:
-            return other
 
 
 def _at_terminal(processes: Processes, process: Process, tty: int) -> TerminalProcess | Undescribed | None:
@@ -166,9 +166,10 @@ def _at_terminal(processes: Processes, process: Process, tty: int) -> TerminalPr
         case (Path() as cwd, StartedAs(path=path, arguments=arguments, environment=environment)):
             # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree
             # and the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that
-            # directory, in the one record the path itself is read from; a program started with none, or one that is no
-            # absolute path, is taken to be where it started.
-            return TerminalProcess(process.pid, process.parent, (cwd / environment.get("PWD", "") / path).resolve(), cwd, environment, arguments, tty)
+            # directory, in the one record the path itself is read from. A program started with no PWD, as `env -i`
+            # starts one, has no record of it at all, and is read from the directory it runs in now, where it started
+            # unless it has moved since.
+            return TerminalProcess(process.pid, process.parent, cwd / environment.get("PWD", "") / path, cwd, environment, arguments, tty)
         case (Undescribed() as refused, _) | (_, Undescribed() as refused):
             return refused
         case _:
@@ -176,21 +177,23 @@ def _at_terminal(processes: Processes, process: Process, tty: int) -> TerminalPr
             return None
 
 
-def ancestors(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
-    """pid's line of ancestors in `processes`, pid itself first."""
-    process = processes.get(pid)
+def ancestors(pid: int, table: Mapping[int, Process]) -> Iterator[Process]:
+    """pid's line of ancestors in the process table, pid itself first."""
+    process = table.get(pid)
     while process is not None:
         yield process
-        process = processes.get(process.parent)
+        process = table.get(process.parent)
 
 
-def ancestor_terminals(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
-    """Every terminal on pid's line of ancestors in `processes`, its own first."""
-    return (process.tty for process in ancestors(pid, processes) if process.tty is not None)
+def ancestor_terminals(pid: int, table: Mapping[int, Process]) -> Iterator[int]:
+    """Every terminal on pid's line of ancestors in the process table, its own first."""
+    return (process.terminal.device for process in ancestors(pid, table) if process.terminal is not None)
 
 
-def front_terminal(pid: int, processes: Mapping[int, Process]) -> Iterator[int]:
+def front_terminal(pid: int, table: Mapping[int, Process]) -> Iterator[int]:
     """pid's controlling terminal while pid is in front of it, so a key typed there reaches it; nothing otherwise."""
-    process = processes.get(pid)
-    if process is not None and process.front is not None:
-        yield process.front
+    match table.get(pid):
+        case Process(terminal=ControllingTerminal(device=device, in_front=True)):
+            yield device
+        case _:
+            pass

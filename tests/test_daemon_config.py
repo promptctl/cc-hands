@@ -229,7 +229,7 @@ def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_fil
 
 def test_a_blank_model_flag_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exited:
-        cli.main(["--home", str(tmp_path), "run", "--model", "  "])
+        cli.main(["--home", str(tmp_path), "run", "--model", "  "], processes=processes())
     assert exited.value.code == 2
     assert f"argument --model: a model's id, such as {ANTHROPIC_MODEL}, not '  '" in capsys.readouterr().err
 
@@ -241,7 +241,7 @@ def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_sett
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: None)
     for given in ((), ("--model", " claude-opus-5-5 ")):
-        assert cli.main(["--home", str(home.root), "run", *given]) == 1
+        assert cli.main(["--home", str(home.root), "run", *given], processes=processes()) == 1
     capsys.readouterr()
     starts = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert [(start["outcome"], start["facts"]["model_flag"]) for start in starts] == [("failed", None), ("failed", "claude-opus-5-5")]
@@ -310,13 +310,13 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     monkeypatch.setattr(cli, "retire", retired)
     monkeypatch.setattr(cli, "execv", execv)
     with pytest.raises(Execed) as first:
-        cli.main(["--home", str(home.root), "run", *given])
+        cli.main(["--home", str(home.root), "run", *given], processes=processes())
     again = first.value.args[0][-3 - len(carried):]
     assert again == ["--restarted", "42", "--level=engaged", *carried]
     # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all, its desk to
     # start at the level the run before's desk was at; restarted before it steps it, it carries that level on again.
     with pytest.raises(Execed) as second:
-        cli.main(["--home", str(home.root), "run", *again])
+        cli.main(["--home", str(home.root), "run", *again], processes=processes())
     assert second.value.args[0][-3 - len(carried):] == again
     assert (loaded_on, started) == ([loads, loads], [("off", "off"), ("off", "engaged")])
     lines = list(map(json.loads, audit.tail(home.audit, 100)[0]))
@@ -329,7 +329,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
 def test_a_level_given_to_a_start_that_is_no_restart_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     for given, refused in ((("--level=engaged",), "--level is a restart's"), (("--restarted", "42", "--level=loud"), "argument --level: hands listens at off, wake word, engaged, not 'loud'")):
         with pytest.raises(SystemExit) as exited:
-            cli.main(["--home", str(tmp_path), "run", *given])
+            cli.main(["--home", str(tmp_path), "run", *given], processes=processes())
         assert exited.value.code == 2
         assert refused in capsys.readouterr().err
 
@@ -567,9 +567,9 @@ def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tm
 
     monkeypatch.setattr(cli, "loaded", loaded)
     with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
-        cli.main(["--home", str(home.root), "run"])
+        cli.main(["--home", str(home.root), "run"], processes=processes())
     assert capsys.readouterr().err == "hands: no key\n"
-    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert cli.main(["--home", str(home.root), "status"], processes=processes()) == 1
     assert capsys.readouterr().out == "hands refused to start 0s ago: no key\n"
 
 
@@ -585,7 +585,7 @@ def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path,
 
     monkeypatch.setattr(cli, "start_indicator", unshown)
     with pytest.raises(OSError, match="no indicator"):
-        cli.main(["--home", str(home.root), "run"])
+        cli.main(["--home", str(home.root), "run"], processes=processes())
     [failed] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert (failed["outcome"], failed["error"]) == ("failed", "OSError: no indicator")
 

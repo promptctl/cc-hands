@@ -11,7 +11,7 @@ import pytest
 
 from hands.clock import SYSTEM
 from hands.sessions.kernel import KERNEL, KernelProcesses
-from hands.sessions.processes import StartedAs
+from hands.sessions.processes import Process, StartedAs
 from processescontract import Child, ProcessesContract, Start
 
 pytestmark = pytest.mark.outside
@@ -63,10 +63,10 @@ class Kernel:
 
     def _exec(self, pid: int, start: Start) -> None:
         """Until the child runs `start`'s program with its arguments, not the forked Python it began as, which may be the
-        same program: polled, since nothing of the child's says when it has exec'd."""
+        same program, in the directory it moves to: polled, since nothing of the child's says when it has exec'd."""
         deadline = SYSTEM.now() + EXEC_SECONDS
-        while not isinstance(found := KERNEL.started_as(KERNEL.table()[pid]), StartedAs) or (found.path, found.arguments) != (start.program, start.arguments):
-            assert SYSTEM.now() < deadline, f"pid {pid} never ran {start.program}: {found}"
+        while not _runs(process := KERNEL.table()[pid], start):
+            assert SYSTEM.now() < deadline, f"pid {pid} never ran {start.program} in {start.directory}: {KERNEL.started_as(process)} in {KERNEL.directory_of(process)}"
             SYSTEM.sleep_blocking(0.01)
 
     def reaped(self, child: Child) -> None:
@@ -83,6 +83,14 @@ class Kernel:
     def close(self) -> None:
         for pid in list(self.children):
             self.stopped(Child(pid, None))
+
+
+def _runs(process: Process, start: Start) -> bool:
+    match KERNEL.started_as(process):
+        case StartedAs(path=start.program, arguments=start.arguments):
+            return KERNEL.directory_of(process) == start.directory
+        case _:
+            return False
 
 
 def _closed(popen: subprocess.Popen[bytes], opened: tuple[int, ...]) -> None:

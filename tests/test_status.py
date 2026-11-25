@@ -496,9 +496,11 @@ def test_a_stuck_daemon_that_recovers_unable_to_hear_says_so() -> None:
 
 def test_a_deaf_daemon_is_read_from_the_heartbeat_by_hands_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
-    heartbeat.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC), degraded=(heartbeat.NO_MICROPHONE, SLOW)))
-    assert main(["--home", str(tmp_path), "status"]) == 0
-    assert capsys.readouterr().out.startswith(f"hands is up but cannot hear, as there is no microphone, and is slow, as something made it so: pid {os.getpid()}")
+    # A daemon running since before its heartbeat began.
+    daemon = 4000
+    heartbeat.write(home.status, beat(pid=daemon, started_at=datetime.now(UTC), written_at=datetime.now(UTC), degraded=(heartbeat.NO_MICROPHONE, SLOW)))
+    assert main(["--home", str(tmp_path), "status"], processes=processes(Running(daemon))) == 0
+    assert capsys.readouterr().out.startswith(f"hands is up but cannot hear, as there is no microphone, and is slow, as something made it so: pid {daemon}")
 
 
 def shown_over(looks: Sequence[tuple[heartbeat.Verdict, datetime]]) -> list[tuple[str, ...]]:

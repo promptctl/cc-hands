@@ -414,6 +414,8 @@ class InTmux:
         # The client exits once the pane has written fritter's status, or the session is gone without it.
         await asyncio.shield(self._client.exit)
         # The client lets go as the session ends, which may be before the pane's shell has written fritter's status.
+        # [LAW:effects-at-boundaries] exception: the pane's shell is asked after through the machine, not Processes,
+        # and by kill(pid, 0) alone, which a reused pid passes, until promptctl-testing-c3u.fhu.
         while not (self._workspace / "status").exists() and (shell := self.shell) is not None and _alive(shell):
             await self._children.clock.sleep(0.02)
         try:
@@ -437,6 +439,8 @@ class InTmux:
                 await asyncio.shield(self.exit)
         except TimeoutError:
             if (shell := self.shell) is not None:
+                # [LAW:effects-at-boundaries] exception: the pane's group is signalled through the machine, not
+                # Processes, until promptctl-testing-c3u.fhu.
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(shell, signal.SIGKILL)
                 logger.info(f"killed the brain's pane ({shell}): it had not ended {STOP_SECONDS:.0f}s after its session was")
@@ -2127,6 +2131,8 @@ def _child_of(pid: int) -> int | None:
 
     [LAW:no-silent-failure] one that has started several cannot say which is the brain: typed into the wrong one, the
     brain's turns would go nowhere, so it is refused, naming each."""
+    # [LAW:effects-at-boundaries] exception: read through the machine, not Processes, whose table says each process's
+    # parent, until promptctl-testing-c3u.fhu.
     match child_pids(pid):
         case ():
             return None

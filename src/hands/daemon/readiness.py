@@ -459,7 +459,7 @@ def config_dir(environment: Mapping[str, str], cwd: Path) -> Path:
 
 
 def unjoined(
-    home: Home, claude: Path, config: Path, terminals: TerminalProcesses, members: Collection[int], interactive: Callable[[TerminalProcess], bool | Undescribed]
+    home: Home, claude: Path, config: Path, terminals: TerminalProcesses, members: Collection[int], interactive: Callable[[TerminalProcess], bool | Undescribed | None]
 ) -> Unrecorded:
     """The sessions at a terminal under `config` that no running membership names: started before the plugin, and not
     reloaded since.
@@ -470,14 +470,18 @@ def unjoined(
     hook records that same process, so it is matched by pid. One under another config, as the brain is, has other
     plugins, and is no session of the plugin this check looks at; one under the same directory by another path, through
     a link, is, since `config` and each process's are both as `config_dir` reads them. `interactive` says whether a process
-    reads and writes its terminal; it is asked only of a run of claude, the one process it matters for. A process the
-    kernel would not describe may be a session, unless it is one hands knows or a run's own helper.
+    reads and writes its terminal; it is asked only of a run of claude, the one process it matters for, and one that has
+    exited since is none. A process the kernel would not describe may be a session, unless it is one hands knows or a
+    run's own helper.
     """
     by_pid = {process.pid: process for process in terminals.found}
+    # The file each runs, its links resolved as they are now, as `claude` and the fritter are: one deleted since is named
+    # as it was. realpath, as `config_dir` reads a config.
+    programs = {process.pid: Path(os.path.realpath(process.executable)) for process in terminals.found}
     install = _unversioned(claude)
 
     def runs_claude(pid: int) -> bool:
-        return pid in by_pid and _unversioned(by_pid[pid].executable) == install
+        return pid in programs and _unversioned(programs[pid]) == install
 
     fritter = home.fritter.resolve()
     runs = [
@@ -490,7 +494,7 @@ def unjoined(
     # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
     ran: list[tuple[TerminalProcess, wrapper.Run]] = [(process, wrapper.run(process.arguments, reads)) for process, reads in described]
     return Unrecorded(
-        [Unjoined(process, wrapped if (wrapped := by_pid.get(process.parent)) and wrapped.executable == fritter else None) for process, why in ran if why == "session"],
+        [Unjoined(process, wrapped if (wrapped := by_pid.get(process.parent)) and programs[wrapped.pid] == fritter else None) for process, why in ran if why == "session"],
         Counter(why for _, why in ran if why != "session"),
         [
             *(each for each in terminals.unread if each.pid not in members and not runs_claude(each.parent)),

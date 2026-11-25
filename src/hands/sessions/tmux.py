@@ -17,7 +17,7 @@ from hands.core.session import Keystroke
 from hands.core.tmux import InPane, Keyboard, Listed, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import child
 from hands.sessions.child import Children
-from hands.sessions.processes import Process, Processes, Undescribed, ancestor_terminals, ancestors, environment_of, front_terminal
+from hands.sessions.processes import Process, Processes, StartedAs, Undescribed, ancestor_terminals, ancestors, front_terminal
 
 # What tmux says, on stderr, for a socket no server listens on any more, as a server that exited leaves behind, and
 # for one that is gone; never "error connecting to" for any other reason, as a path too long for a socket.
@@ -68,8 +68,11 @@ def sockets(processes: Processes, environment: Mapping[str, str], pids: Sequence
     # another user's now was reused after that server exited.
     mine = {process.pid: process for process in table.values() if process.uid == processes.user}
     # A pane's $TMUX is on the processes at its terminal; the tmux server, and the app and launchd above it, are at none.
-    lines = {process.pid: process for pid in pids for process in ancestors(pid, table) if process.pid in mine and process.tty is not None}
-    found = [*(path for path in socket_directory(environment, processes.user).glob("*") if path.is_socket()), *(socket for process in lines.values() for socket in _named(processes, process, mine))]
+    lines = {process.pid: process for pid in pids for process in ancestors(pid, table) if process.pid in mine and process.terminal is not None}
+    # [LAW:effects-at-boundaries] exception: tmux names its directory by hands' real uid, read from the machine until
+    # Terminals holds the tmux sockets (part 2 of promptctl-testing-c3u.avj).
+    directory = socket_directory(environment, os.getuid())
+    found = [*(path for path in directory.glob("*") if path.is_socket()), *(socket for process in lines.values() for socket in _named(processes, process, mine))]
     # Reversed, so the first path found for a server is the one kept.
     return list({os.path.realpath(socket) if isinstance(socket, Path) else socket: socket for socket in reversed(found)}.values())
 
@@ -77,8 +80,8 @@ def sockets(processes: Processes, environment: Mapping[str, str], pids: Sequence
 def _named(processes: Processes, process: Process, mine: Mapping[int, Process]) -> list[Path | Unanswered]:
     """The socket $TMUX names in the environment `process` was started with, its server among the user's processes
     `mine`: none outside tmux, or once it has exited."""
-    match environment_of(processes, process):
-        case {"TMUX": str(named)} if tmux := _TMUX.fullmatch(named):
+    match processes.started_as(process):
+        case StartedAs(environment={"TMUX": str(named)}) if tmux := _TMUX.fullmatch(named):
             return _socket(processes, Path(tmux["socket"]), mine.get(int(tmux["server"])))
         case Undescribed() as refused:
             # [LAW:no-silent-failure] a server its environment would name may hold a pane: never read as no pane.
@@ -106,10 +109,10 @@ def _unread(what: str, refused: Undescribed) -> Unanswered:
     return Unanswered(f"{what} could not be read: {refused.call} refused with errno {refused.errno}")
 
 
-def socket_directory(environment: Mapping[str, str], user: int) -> Path:
-    """Where tmux puts the socket of a server of `user`'s unless -S names one: in tmux-<uid> under $TMUX_TMPDIR, or /tmp
-    when that is unset or empty, as tmux reads it."""
-    return Path(environment.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{user}"
+def socket_directory(environment: Mapping[str, str], uid: int) -> Path:
+    """Where tmux puts the socket of a server the user of real uid `uid` starts, unless -S names one: in tmux-<uid> under
+    $TMUX_TMPDIR, or /tmp when that is unset or empty, as tmux reads it."""
+    return Path(environment.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{uid}"
 
 
 async def _answer(children: Children, tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:

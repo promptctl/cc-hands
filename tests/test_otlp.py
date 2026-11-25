@@ -2,7 +2,6 @@
 log record; each batch sent as each signal is said in the log, by span id, with why where the collector did not take it."""
 
 import json
-import os
 import socket
 import threading
 import time
@@ -24,11 +23,11 @@ from hands.core.wire import Answered, Ending, Exchanged, Garbled, MainTurn, Mess
 from hands.daemon import indicator
 from hands.daemon.cli import main
 from hands.sessions import heartbeat
-from hands.sessions.kernel import KERNEL
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions.home import Home
 from hands.sessions.otlp import BATCH_SPANS, ENCODINGS, FAILING_BATCHES, LOGS, STOPPED, TIMEOUT_SECONDS, TRACES, Exporter, Exports, Failing, answered, degradation, exporting, failing, logs, spans, traced
 from hands.sessions.wide import WideEvent, annotate, begun, count, root, unit
+from fakeprocesses import Running, processes
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
 
@@ -560,14 +559,17 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
     # It takes the log records all along: only the spans are failing.
     refusing = Collector(b'{"code": 14, "message": "the store is down"}', status=503, refusing=("traces",))
     home = Home(tmp_path)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
+    # A daemon running since before its heartbeat began.
+    daemon = 4000
+    table = processes(Running(daemon))
+    heart = heartbeat.Heart(home.status, daemon, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     entries: list[Entry] = []
     exports = Exports(entries.append, SYSTEM)
     exporter = Exporter(refusing.url, exports.record, linger=0.01, clock=SYSTEM)
 
     def look(before: indicator.Shown | None) -> indicator.Shown:
         heart.beat("running", None, 0, listening=False, degraded=exports.degraded())
-        return indicator.show(before, heartbeat.look(KERNEL, home.status, datetime.now(UTC)), datetime.now(UTC))
+        return indicator.show(before, heartbeat.look(table, home.status, datetime.now(UTC)), datetime.now(UTC))
 
     def batch(span_id: str) -> None:
         # Once the batch is said as every signal.
@@ -590,7 +592,7 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
         assert failing_now.title == "⚠︎ hands can't export traces"
         assert failing_now.text.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
         assert failing_now.notices == (failing_now.text,)
-        assert main(["--home", str(tmp_path), "status"]) == 0
+        assert main(["--home", str(tmp_path), "status"], processes=table) == 0
         assert capsys.readouterr().out.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
         # Refusing on, in other words each time, it stays said and is not news again.
         refusing.answer = b'{"code": 14, "message": "the store is still down"}'

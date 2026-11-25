@@ -4,7 +4,7 @@ from itertools import count
 
 import pytest
 
-from fakeprocesses import FakeProcesses, Running, processes
+from fakeprocesses import DEV_TTY, FakeProcesses, Running, processes
 from hands.virtualclock import VirtualClock
 from processescontract import Child, ProcessesContract, Start
 
@@ -34,11 +34,13 @@ class Fake:
 
     def started(self, start: Start) -> Child:
         pid, tty = next(self._pids), None if start.at == "none" else next(self._ttys)
+        # Its stdin and stdout as the kernel's child has them: a pipe is no device.
+        stdin, stdout = {"none": (None, None), "interactive": (tty, tty), "piped": (tty, None), "reopened": (DEV_TTY, tty)}[start.at]
         self.clock.advance(0.001)
         self.table.add(
             Running(
-                pid, parent=OURS, tty=tty, in_front=tty is not None, start=self.wall(), cwd=start.cwd, path=start.program, arguments=start.arguments,
-                environment=start.environment, interactive=start.at in ("interactive", "reopened"),
+                pid, parent=OURS, tty=tty, in_front=tty is not None, start=self.wall(), cwd=start.directory, path=start.program, arguments=start.arguments,
+                environment=start.environment, stdin=stdin, stdout=stdout,
             )
         )
         self.clock.advance(0.001)
