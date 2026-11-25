@@ -2,6 +2,8 @@
 cut in every job, since each job computes it alone."""
 
 import json
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 from collections.abc import Generator
@@ -196,3 +198,10 @@ def test_every_shard_of_one_suite_records_the_same_digest_and_another_suite_anot
 def test_a_shard_never_cut_says_so_and_not_that_it_packed_nothing() -> None:
     sharding = Sharding(Shard(1, 4), Costs({}, {}, 0.0))
     assert sharding.pytest_report_collectionfinish([]) == "shard 1/4: not cut, the collection stopped before its tests were chosen"
+
+
+@pytest.mark.outside
+def test_a_shard_of_a_run_that_is_not_of_the_unit_layer_is_refused_naming_the_layer() -> None:
+    ran = subprocess.run([sys.executable, "-m", "pytest", "--shard=2/4", "--collect-only", "-q", "tests/test_agreement.py"], cwd=Path(__file__).parents[1], capture_output=True, text=True)
+    assert ran.returncode == pytest.ExitCode.USAGE_ERROR
+    assert "run it with --layer=unit" in ran.stderr

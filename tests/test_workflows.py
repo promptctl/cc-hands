@@ -23,11 +23,6 @@ def macos(job: dict[str, Any]) -> bool:
     return str(job["runs-on"]).startswith("macos")
 
 
-def needed(job: dict[str, Any]) -> set[str]:
-    needs = job.get("needs", [])
-    return {needs} if isinstance(needs, str) else set(needs)
-
-
 def legs(job: dict[str, Any]) -> int:
     """How many jobs a job is: the product of the lists in its matrix, which has no include or exclude to change the count."""
     matrix = job.get("strategy", {}).get("matrix", {})
@@ -56,10 +51,10 @@ def test_a_shard_list_is_every_number_from_one_to_its_length_once() -> None:
 
 
 @pytest.mark.parametrize("workflow, verdict", [("test.yml", "test"), ("outside.yml", "outside")])
-def test_the_verdict_job_waits_for_every_job_that_is_not_after_it(workflow: str, verdict: str) -> None:
+def test_the_verdict_job_waits_for_every_other_job(workflow: str, verdict: str) -> None:
     jobs = jobs_of(workflow)
-    after = {name for name, job in jobs.items() if verdict in needed(job)}
-    assert needed(jobs[verdict]) == set(jobs) - {verdict} - after
+    needs = jobs[verdict]["needs"]
+    assert ({needs} if isinstance(needs, str) else set(needs)) == set(jobs) - {verdict}
     assert jobs[verdict]["if"] == "${{ !cancelled() }}"
 
 

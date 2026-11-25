@@ -109,8 +109,7 @@ of the jobs did and the shards' digests are one: a test is in exactly one shard 
 `.github/workflows/outside.yml`, daily and on request, runs what `test` leaves out: `make check-pair` and `make check-rest`,
 the tests marked `outside`, fritter's Go tests and wake-training's suite. They are about 1,800 s of tests and each job spends
 150 s before its first, so held to 5 minutes they would be 60 jobs and more against the 5 runners; they are not on the path a
-merge waits on. The check `outside` passes when both did, and a red run opens a GitHub issue (or comments on the one that is
-open), since no PR is waiting on it.
+merge waits on. The check `outside` passes when both did.
 
 ## Placing a new test
 
