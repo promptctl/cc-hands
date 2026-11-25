@@ -328,6 +328,11 @@ def station(tmp: Path) -> Station:
     return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
 
 
+def slim(station: Station) -> dict[str, str]:
+    """The environment of a slim Claude Code on `station` run before any login is read."""
+    return environment(station.config_dir, station.proxy_url, station.inherited, None)
+
+
 def launch(tmp: Path) -> Launch:
     return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None), Runnable(PinnedClaude(faked(tmp), pinned.PIN.version), None))
 
@@ -447,7 +452,9 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         "HTTPS_PROXY": "http://127.0.0.1:40000",
         "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
-    })
+        # What started hands is never what starts the brain.
+        "CLAUDE_CODE_ENTRYPOINT": "cli",
+    }, None)
     assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
@@ -458,7 +465,14 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
 def test_the_brain_is_not_given_hands_hugging_face_token(tmp_path: Path) -> None:
     # Set for the voice library's fetches, and inherited by whatever the brain runs: the brain has no use for it.
     inherited = {"PATH": "/usr/bin:/bin", "HF_TOKEN": "a-hub-token"}
-    assert "HF_TOKEN" not in environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)
+    assert "HF_TOKEN" not in environment(tmp_path / "brain", "http://127.0.0.1:1", inherited, None)
+
+
+@pytest.mark.parametrize(("method", "entrypoint"), [("api_key", "sdk-cli"), ("claude.ai", None), ("oauth_token", None)])
+@pytest.mark.parametrize("inherited", [{}, {"CLAUDE_CODE_ENTRYPOINT": "cli"}, {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}], ids=["none", "cli", "sdk-cli"])
+def test_a_brain_on_a_console_key_runs_as_the_sdks_cli_and_on_any_other_login_as_claude_codes_own(tmp_path: Path, method: str, entrypoint: str | None, inherited: dict[str, str]) -> None:
+    env = environment(tmp_path / "brain", "http://127.0.0.1:1", {"PATH": "/bin", **inherited}, Account(method, None))
+    assert env.get("CLAUDE_CODE_ENTRYPOINT") == entrypoint
 
 
 @pytest.mark.outside
@@ -470,14 +484,30 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     recorder.write_text(f'#!/bin/sh\nprintf "updater=%s" "${{DISABLE_AUTOUPDATER-unset}}" > {tmp_path / "seen"}\n')
     recorder.chmod(0o755)
     inherited = {name: value for name, value in os.environ.items() if name != "DISABLE_AUTOUPDATER"} | given
-    assert environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)["DISABLE_AUTOUPDATER"] == "1"
+    on = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited)
+    assert slim(on)["DISABLE_AUTOUPDATER"] == "1"
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
-        running = await in_tmux(children_on(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), [str(recorder)], workspace)
+        running = await in_tmux(children_on(SYSTEM), on, slim(on), [str(recorder)], workspace)
         assert await running.exit == 0
     finally:
         shutil.rmtree(workspace)
     assert (tmp_path / "seen").read_text() == "updater=1"
+
+
+@pytest.mark.outside
+async def test_a_brain_started_on_a_console_key_runs_as_the_sdks_cli_whatever_started_hands(tmp_path: Path, fake_claude: Path) -> None:
+    seen = tmp_path / "entrypoint"
+    shebang, _, script = fake_claude.read_text().partition("\n")
+    fake_claude.write_text(f"{shebang}\nimport os\nopen({str(seen)!r}, 'w').write(os.environ.get('CLAUDE_CODE_ENTRYPOINT', 'unset'))\n{script}")
+    unkeyed = launch(tmp_path)
+    keyed = replace(unkeyed, account=Account("api_key", None), station=replace(unkeyed.station, inherited={**unkeyed.station.inherited, "CLAUDE_CODE_ENTRYPOINT": "cli"}))
+    recorded: list[Entry] = []
+    brain = await launched_brain(SYSTEM, keyed, recorded.append)
+    await brain.stop()
+    assert seen.read_text() == "sdk-cli"
+    [launched] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "brain.launch"]
+    assert launched.facts["entrypoint"] == "sdk-cli"
 
 
 @pytest.mark.outside
@@ -507,7 +537,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
-        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
+        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
         "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
         "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
     }
@@ -1184,7 +1214,7 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
 async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
-    running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "sleep 60"], workspace)
+    running = await in_tmux(children_on(SYSTEM), station, slim(station), ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode == 0)
@@ -1208,10 +1238,10 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
 async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
-    assert await (await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
+    assert await (await in_tmux(children_on(SYSTEM), station, slim(station), ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
     (workspace / "status").unlink()
     (workspace / "pane").unlink()
-    ended = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "sleep 60"], workspace)
+    ended = await in_tmux(children_on(SYSTEM), station, slim(station), ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
         await until(lambda: tmux_at("has-session", "-t", f"={brain_session(station.config_dir)}").returncode == 0)
         tmux_at("kill-session", "-t", f"={brain_session(station.config_dir)}")
@@ -1227,7 +1257,7 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     go = tmp_path / "go"
-    running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
+    running = await in_tmux(children_on(SYSTEM), station, slim(station), ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
     try:
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 1)
@@ -1254,7 +1284,7 @@ async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_sessi
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         ready = tmp_path / "ready"
-        running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
+        running = await in_tmux(children_on(SYSTEM), station, slim(station), ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
         await until(ready.exists)
         await running.stop()
         assert running.exit.result() == 7
@@ -1273,7 +1303,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         seen = tmp_path / "seen"
-        assert await (await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", f'printf "%s" "${{ANTHROPIC_API_KEY-unset}} $CLAUDE_CONFIG_DIR" > {seen}'], workspace)).exit == 0
+        assert await (await in_tmux(children_on(SYSTEM), station, slim(station), ["/bin/sh", "-c", f'printf "%s" "${{ANTHROPIC_API_KEY-unset}} $CLAUDE_CONFIG_DIR" > {seen}'], workspace)).exit == 0
         assert seen.read_text() == f"unset {tmp_path / 'brain'}"
     finally:
         tmux_at("kill-session", "-t", "=theirs")
@@ -1424,8 +1454,8 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     # a loaded machine a second can pass before the pane is drawn, and the refusal would show only tmux's status line.
     panes: list[InTmux] = []
 
-    async def recording(children: Children, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
-        panes.append(await in_tmux(children, station, argv, workspace))
+    async def recording(children: Children, station: Station, env: Mapping[str, str], argv: Sequence[str], workspace: Path) -> InTmux:
+        panes.append(await in_tmux(children, station, env, argv, workspace))
         return panes[-1]
 
     monkeypatch.setattr("hands.brain.process.in_tmux", recording)
