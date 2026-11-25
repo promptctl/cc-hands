@@ -31,7 +31,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
-from hands.sessions.processes import TerminalProcess, TerminalProcesses, Undescribed, terminal_processes
+from hands.sessions.processes import ControllingTerminal, TerminalProcess, TerminalProcesses, Undescribed, terminal_processes
 from hands.sessions.wrapper import shim_script
 from hands.core.session import PinnedClaude, Runnable
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -273,7 +273,7 @@ def at_a_terminal(pid: int, executable: Path, cwd: Path, arguments: tuple[str, .
     """A process started as executable in cwd on a terminal of its own, as a session runs, its stdin a pipe if piped, as
     a shell starts a program: with the directory it starts in as its PWD."""
     environment = {"CLAUDE_CONFIG_DIR": CLAUDE_CONFIG, "PWD": str(cwd)}
-    return Running(pid, tty=TTY, foreground=True, start=start, cwd=cwd, path=executable, arguments=arguments, environment=environment, stdin=TTY, stdout=None if piped else TTY)
+    return Running(pid, terminal=ControllingTerminal(TTY, foreground=True), start=start, cwd=cwd, path=executable, arguments=arguments, environment=environment, stdin=TTY, stdout=None if piped else TTY)
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
@@ -406,7 +406,7 @@ def test_a_process_the_kernel_will_not_describe_is_named_and_hides_no_other(root
     # As kern.procargs2 answers a process caught mid-exec, or on its way out.
     refused, described, ours = 4001, 4002, 4000
     table = processes(
-        Running(ours), Running(refused, parent=ours, tty=TTY, refused={PROCARGS2: errno.EIO}), at_a_terminal(described, root / "install" / "9.9.9", root)
+        Running(ours), Running(refused, parent=ours, terminal=ControllingTerminal(TTY, foreground=False), refused={PROCARGS2: errno.EIO}), at_a_terminal(described, root / "install" / "9.9.9", root)
     )
     scan = terminal_processes(table)
     assert (scan.unread, [process.pid for process in scan.found]) == ([Undescribed(refused, ours, "kern.procargs2", errno.EIO)], [described])

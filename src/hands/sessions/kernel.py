@@ -30,7 +30,7 @@ class KernelProcesses:
             raise OSError(f"kern.proc.all gave {len(table)} bytes, not a whole number of this kernel's {_KINFO_PROC.size}-byte kinfo_proc")
         processes = (_process(*fields) for fields in _KINFO_PROC.iter_unpack(table))
         # Not kernel_task, pid 0, which is its own parent: without it every line of parents ends, at launchd.
-        return {process.pid: process for process in processes if process.pid != 0}
+        return {process.pid: process for process in processes if process is not None and process.pid != 0}
 
     def starts(self, pids: Collection[int]) -> dict[int, float]:
         # Two sysctls a pid, tens of microseconds, so it is asked on the event loop and five times a second from the menu
@@ -51,6 +51,9 @@ class KernelProcesses:
         return _described(process.pid, process.parent, lambda: all(_device(process.pid, fd) in terminal for fd in (0, 1)))
 
     def signal(self, pid: int, signum: signal.Signals) -> bool:
+        # A process that has exited and is not yet reaped takes a signal, and nothing comes of it.
+        if _process_start(pid) is None:
+            return False
         try:
             os.kill(pid, signum)
         except ProcessLookupError:
@@ -63,21 +66,27 @@ class KernelProcesses:
 KERNEL = KernelProcesses()
 
 
-def _process(flag: int, pid: int, uid: int, parent: int, group: int, tty: int, foreground: int) -> Process:
+def _process(flag: int, stat: int, pid: int, uid: int, parent: int, group: int, tty: int, foreground: int) -> Process | None:
+    """The process a kinfo_proc records; None for one that has exited, and is not yet reaped by its parent."""
+    if stat == _SZOMB:
+        return None
     return Process(pid, parent, uid, ControllingTerminal(tty, group == foreground) if flag & _P_CONTROLT else None)
 
 
-# sysctl kern.proc.all: one struct kinfo_proc of 648 bytes per process; its extern_proc's p_flag and p_pid, then its
+# sysctl kern.proc.all: one struct kinfo_proc of 648 bytes per process; its extern_proc's p_flag, p_stat and p_pid, then its
 # eproc's effective uid (e_ucred.cr_uid), parent's pid, process group, controlling terminal's device, and the
 # terminal's foreground process group (e_tpgid), at these offsets. The effective uid, not the real: /usr/bin/login, which
 # a terminal app starts each tab through, is set-uid root, and runs as root under the user's real uid.
 _KERN_PROC_ALL = (1, 14, 0)  # CTL_KERN, KERN_PROC, KERN_PROC_ALL
-_KINFO_PROC = struct.Struct("=32xi4xi376xI136xii4xii68x")
+_KINFO_PROC = struct.Struct("=32xib3xi376xI136xii4xii68x")
 _P_CONTROLT = 0x2
+# p_stat of a process that has exited, which the kernel still records until its parent reaps it: [LAW:one-source-of-truth]
+# gone, as libproc, which has nothing on it, has every other question about it answered.
+_SZOMB = 5
 # kern.proc.pid.<pid>: the same `struct kinfo_proc`, the record ps itself reads, or none for a pid no process has. It
-# opens with the process's start, a `struct timeval`: 8 bytes of seconds, then 4 of microseconds.
+# opens with the process's start, a `struct timeval`: 8 bytes of seconds, then 4 of microseconds; its p_stat is at 36.
 _KERN_PROC_PID = (1, 14, 1)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
-_START = struct.Struct("=qi")
+_START = struct.Struct("=qi24xb")
 # libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, struct proc_vnodepathinfo
 # (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info), and struct
 # vnode_fdinfowithpath (a 24-byte proc_fileinfo, then a vnode_info_path), whose vnode's vinfo_stat has st_rdev at 116, a dev_t as e_tdev is.
@@ -105,8 +114,8 @@ def _process_start(pid: int) -> float | None:
         raise OSError(refused.errno, f"sysctl could not say when pid {pid} started: {os.strerror(refused.errno)}") from None
     if not record:
         return None
-    seconds, microseconds = _START.unpack_from(record)
-    return seconds + microseconds / 1_000_000
+    seconds, microseconds, stat = _START.unpack_from(record)
+    return None if stat == _SZOMB else seconds + microseconds / 1_000_000
 
 
 def _sysctl(mib: tuple[int, ...], call: str) -> bytes:

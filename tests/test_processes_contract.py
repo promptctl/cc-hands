@@ -1,12 +1,11 @@
 """The processes contract (processescontract.py) held to the fake table: in `make check`."""
 
-import os
 from itertools import count
-from pathlib import Path
 
 import pytest
 
 from fakeprocesses import DEV_TTY, FakeProcesses, Running, processes
+from hands.sessions.processes import ControllingTerminal
 from hands.virtualclock import VirtualClock
 from processescontract import Child, ProcessesContract, Start
 
@@ -41,8 +40,8 @@ class Fake:
         self.clock.advance(0.001)
         self.table.add(
             Running(
-                pid, parent=OURS, tty=tty, foreground=start.at in {"interactive", "piped", "reopened"}, start=self.wall(), cwd=start.directory,
-                path=start.program, program=Path(os.path.realpath(start.cwd / start.program)), arguments=start.arguments, environment=start.environment,
+                pid, parent=OURS, terminal=None if tty is None else ControllingTerminal(tty, foreground=start.at != "behind"), start=self.wall(),
+                cwd=start.directory, started_in=start.cwd, path=start.program, arguments=start.arguments, environment=start.environment,
                 stdin=stdin, stdout=stdout, caught=frozenset() if start.catches is None else frozenset({start.catches}),
             )
         )
@@ -54,6 +53,10 @@ class Fake:
 
     def caught(self, child: Child) -> None:
         assert child.pid in self.table.running, f"pid {child.pid} has exited"
+
+    def exited(self, child: Child) -> None:
+        # Through Processes, a process that has exited is gone, reaped or not.
+        self.table.end(child.pid)
 
     def stopped(self, child: Child) -> None:
         self.table.end(child.pid)

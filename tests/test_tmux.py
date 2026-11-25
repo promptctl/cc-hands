@@ -8,7 +8,7 @@ from fakeprocesses import USER, Running, processes
 from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import tmux
 from hands.sessions.tmux import Answered
-from hands.sessions.processes import ancestor_terminals, foreground_terminal
+from hands.sessions.processes import ControllingTerminal, ancestor_terminals, foreground_terminal
 
 # Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
 PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
@@ -18,12 +18,12 @@ LAWS = Pane(PLAY, "%0", "laws", 0)
 # A session under fritter in a pane of the first server: claude on fritter's pseudoterminal, fritter on the pane's in
 # front of its shell. Another, in a pane of the second server, and one stopped there, behind it; and one in a plain tab.
 TABLE = processes(
-    Running(100, tty=PANE),
-    Running(101, parent=100, tty=PANE, foreground=True),
-    Running(102, parent=101, tty=FRITTER, foreground=True),
-    Running(200, tty=OTHER_PANE, foreground=True),
-    Running(201, tty=OTHER_PANE),
-    Running(300, tty=TAB, foreground=True),
+    Running(100, terminal=ControllingTerminal(PANE, foreground=False)),
+    Running(101, parent=100, terminal=ControllingTerminal(PANE, foreground=True)),
+    Running(102, parent=101, terminal=ControllingTerminal(FRITTER, foreground=True)),
+    Running(200, terminal=ControllingTerminal(OTHER_PANE, foreground=True)),
+    Running(201, terminal=ControllingTerminal(OTHER_PANE, foreground=False)),
+    Running(300, terminal=ControllingTerminal(TAB, foreground=True)),
 ).table()
 SERVERS = [Listed({PANE: HANDS}), Listed({OTHER_PANE: LAWS})]
 
@@ -63,7 +63,7 @@ def test_keys_reach_a_session_through_its_pane_only_while_it_is_in_front_of_that
 def test_a_relative_socket_whose_server_pid_is_now_another_users_names_no_server(tmp_path: Path) -> None:
     # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it.
     held = 4242
-    table = processes(Running(held, tty=1, environment={"TMUX": "mine,1,0"}))
+    table = processes(Running(held, terminal=ControllingTerminal(1, foreground=False), environment={"TMUX": "mine,1,0"}))
     assert tmux.sockets(table, {"TMUX_TMPDIR": str(tmp_path)}, [held], table.table()) == []
 
 

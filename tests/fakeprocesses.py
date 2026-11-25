@@ -31,17 +31,16 @@ class Running:
     pid: int
     parent: int = LAUNCHD
     uid: int = USER
-    # The device of its controlling terminal; None for one with none.
-    tty: int | None = None
-    # Whether its group is its terminal's foreground process group.
-    foreground: bool = False
+    terminal: ControllingTerminal | None = None
     # When it started, in wall-clock seconds: long before anything a test writes, unless it says otherwise.
     start: float = 0.0
     cwd: Path = Path("/")
-    # The path it was exec'd by, as execve was given it.
+    # The directory it was started in, which a relative path it was exec'd by is read against: where it runs, unless it
+    # has moved since.
+    started_in: Path | None = None
+    # The path it was exec'd by, as execve was given it. The kernel names the file that path reached when it started,
+    # links resolved; one deleted since it names none of, refusing proc_pidpath with ENOENT.
     path: Path = Path("/bin/sh")
-    # The file it runs, as the kernel names it, links resolved; None where the kernel names none, as for one deleted.
-    program: Path | None = None
     arguments: tuple[str, ...] = ()
     environment: Mapping[str, str] = field(default_factory=dict[str, str])
     # The device of the file it has open as its stdin and as its stdout, as `st_rdev`; None for a pipe, or none open.
@@ -71,7 +70,7 @@ class FakeProcesses:
         del self.running[pid]
 
     def table(self) -> dict[int, Process]:
-        return {each.pid: Process(each.pid, each.parent, each.uid, None if each.tty is None else ControllingTerminal(each.tty, each.foreground)) for each in self.running.values()}
+        return {each.pid: Process(each.pid, each.parent, each.uid, each.terminal) for each in self.running.values()}
 
     def starts(self, pids: Collection[int]) -> dict[int, float]:
         for pid in pids:
@@ -88,10 +87,8 @@ class FakeProcesses:
 
     def program_of(self, process: Process) -> Path | Undescribed | None:
         match self._described(process.pid, PIDPATH):
-            case Running(program=Path() as program):
-                return program
-            case Running(pid=pid, parent=parent):
-                return Undescribed(pid, parent, PIDPATH, errno.ENOENT)
+            case Running(cwd=cwd, started_in=started_in, path=path):
+                return Path(os.path.realpath((cwd if started_in is None else started_in) / path))
             case other:
                 return other
 

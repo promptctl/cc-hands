@@ -88,6 +88,10 @@ class World(Protocol):
         """Once `child` has caught the signal it catches."""
         ...
 
+    def exited(self, child: Child) -> None:
+        """`child` ended by a signal, and not yet reaped: its parent has not waited on it."""
+        ...
+
     def stopped(self, child: Child) -> None:
         """`child` ended and reaped."""
         ...
@@ -199,6 +203,18 @@ class ProcessesContract:
         assert child.pid not in world.processes.table()
         said = (world.processes.started_as(process), world.processes.program_of(process), world.processes.directory_of(process), world.processes.interactive(listed))
         assert said == (None, None, None, None)
+
+    def test_a_child_that_has_exited_and_is_not_yet_reaped_is_gone_from_every_question(self, world: World, tmp_path: Path) -> None:
+        child = world.started(Start(PYTHON, tmp_path, at="interactive"))
+        process = world.processes.table()[child.pid]
+        [listed] = [each for each in terminal_processes(world.processes).found if each.pid == child.pid]
+        world.exited(child)
+        try:
+            listing = (child.pid in world.processes.table(), world.processes.starts({child.pid}))
+            questions = (world.processes.started_as(process), world.processes.program_of(process), world.processes.directory_of(process), world.processes.interactive(listed))
+            assert (listing, questions, world.processes.signal(child.pid, signal.SIGTERM)) == ((False, {}), (None, None, None, None), False)
+        finally:
+            world.reaped(child)
 
     def test_a_program_started_by_a_relative_path_is_named_by_the_file_it_runs_after_it_moves(self, world: World, tmp_path: Path) -> None:
         folder = tmp_path.resolve()

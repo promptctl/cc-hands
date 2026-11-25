@@ -99,8 +99,9 @@ class TerminalProcesses:
 
 
 class Processes(Protocol):
-    """The Mac's processes, as they stand when asked. A question about one process that has exited since it was listed is
-    answered None, and one the kernel refused about a process that runs is answered with the refusal; the table, the
+    """The Mac's processes, as they stand when asked. A process that has exited is gone, whether or not its parent has
+    reaped it yet: absent from the table and the starts, sent no signal, and a question about it, since it was listed,
+    answered None. A question the kernel refused about a process that runs is answered with the refusal; the table, the
     starts and a signal, which the kernel answers for every process, raise OSError where it refused."""
 
     @property

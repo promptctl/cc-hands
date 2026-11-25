@@ -1,8 +1,10 @@
 """The processes contract (processescontract.py) held to the kernel, through `hands.sessions.kernel.KERNEL`, on children
 this test starts: outside, since it starts processes and reads the machine's process table."""
 
+import ctypes
 import fcntl
 import os
+import signal
 import subprocess
 import termios
 from collections.abc import Iterator
@@ -11,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from hands.clock import SYSTEM
+from hands.darwin import libc
 from hands.sessions.kernel import KERNEL, KernelProcesses
 from hands.sessions.processes import Process, StartedAs
 from processescontract import Child, ProcessesContract, Start
@@ -19,6 +22,8 @@ pytestmark = pytest.mark.outside
 
 # How long a child has to exec its program once started.
 EXEC_SECONDS = 10.0
+# waitid's idtype for one pid, and room for the siginfo_t it fills: os binds no waitid on macOS, so libc's is called.
+_P_PID, _SIGINFO_SIZE = 1, 104
 
 
 class Kernel:
@@ -81,6 +86,12 @@ class Kernel:
         while (where := KERNEL.directory_of(process)) is None or isinstance(where, Path) and where.name != "caught":
             assert SYSTEM.now() < deadline, f"pid {child.pid} never caught its signal: it runs in {where}"
             SYSTEM.sleep_blocking(0.01)
+
+    def exited(self, child: Child) -> None:
+        os.kill(child.pid, signal.SIGKILL)
+        # Waited on without reaping it, so it is a zombie once this returns.
+        if libc.waitid(_P_PID, child.pid, ctypes.create_string_buffer(_SIGINFO_SIZE), os.WEXITED | os.WNOWAIT) != 0:
+            raise OSError(ctypes.get_errno(), f"pid {child.pid} could not be waited on")
 
     def stopped(self, child: Child) -> None:
         popen, opened = self.children.pop(child.pid)

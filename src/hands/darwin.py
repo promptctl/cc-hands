@@ -15,6 +15,12 @@ def raise_errno(what: str) -> NoReturn:
     raise OSError(failure, f"{what} could not be read: {os.strerror(failure)}")
 
 
+def own_rusage(flavor: int, info: ctypes.Structure) -> None:
+    """This process's resource usage, read into `info` as `flavor`'s record lays it out."""
+    if libproc.proc_pid_rusage(os.getpid(), flavor, ctypes.byref(info)) != 0:
+        raise_errno("proc_pid_rusage")
+
+
 def child_pids(pid: int) -> tuple[int, ...]:
     """The pids of the processes `pid` started that are still its children, as the kernel lists them now: none for a
     pid that is gone. Up to 64, more than any process hands asks after starts."""

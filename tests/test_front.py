@@ -3,7 +3,7 @@ import pytest
 from hands.core.front import Candidate, FrontUnread, NoSessionInFront, Screen, SessionInFront, in_front, told
 from hands.core.session import SessionId
 from hands.sessions.front import _under  # pyright: ignore[reportPrivateUsage]
-from hands.sessions.processes import ancestor_terminals
+from hands.sessions.processes import ControllingTerminal, ancestor_terminals
 from fakeprocesses import Running, processes
 
 # Terminals by device number: two tabs, a tmux client in a third, and the panes behind it.
@@ -52,7 +52,7 @@ def test_a_session_runs_under_each_terminal_on_its_line_of_parents_its_own_first
     tab, fritters = 0x1000_0001, 0x1000_0002
     shell, fritter, claude, other = 4001, 4002, 4003, 4004
     table = processes(
-        Running(shell, tty=tab), Running(fritter, parent=shell, tty=tab), Running(claude, parent=fritter, tty=fritters), Running(other)
+        Running(shell, terminal=ControllingTerminal(tab, foreground=False)), Running(fritter, parent=shell, terminal=ControllingTerminal(tab, foreground=False)), Running(claude, parent=fritter, terminal=ControllingTerminal(fritters, foreground=False)), Running(other)
     ).table()
     assert list(ancestor_terminals(claude, table)) == [fritters, tab, tab]
     assert list(ancestor_terminals(other, table)) == []
