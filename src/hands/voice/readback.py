@@ -1,4 +1,4 @@
-"""What the user hears about a draft, a command, or an interrupt, built from what happened to it, never from the model repeating itself.
+"""What the user hears about a draft, a command, an interrupt, or a session's state, built from what happened to it, never from the model repeating itself.
 
 A draft is read back so the user can check what will be typed before it is, so its text and resolutions are
 `spelled` rather than left to the speaker's filter, which says a path as its file name and would have the user
@@ -13,9 +13,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftStaged, NothingStaged
 from hands.core.effects import Command, Key, NotTyped, Text, Typed
 from hands.core.keyboard import InBackground, KeyboardOutcome, NothingRunning
+from hands.core.progress import Doing, said
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core import session
-from hands.core.session import Known, Mode, PermissionMode, Resolution, SessionId, UnknownMode
+from hands.core.session import Blocker, Held, Idle, Known, Mode, Opened, Permission, PermissionMode, Plan, Question, Resolution, Running, Session, SessionId, SessionState, UnknownMode, Unreported, delegating
+from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
+from hands.core import status
 from hands.core.spoken import counted, spelled
 from hands.core.tmux import Behind, NotInTmux, PaneUnread
 from hands.sessions.registry import Listing, Sessions
@@ -119,6 +122,72 @@ def spoken_name(sessions: Sessions, session: SessionId) -> str:
     """How the user knows a session: its identifier, or its id when the registry has never heard of it."""
     listing = sessions.listing(session)
     return session if listing is None else identifier(listing)
+
+
+def describe_listing(listing: Listing[Session]) -> dict[str, str]:
+    """A live session as the brain's listing says it, and as a card says it: by id, name, state and mode."""
+    return {
+        "id": listing.session.membership.id,
+        "name": identifier(listing),
+        "state": spoken_state(listing.session),
+        "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
+    }
+
+
+def spoken_state(session: Session) -> str:
+    """How a live session stands, in the one sentence the brain hears in `list_sessions` and a card reads on the phone."""
+    # The dialog on its screen is the first it asked; the rest are queued beneath it.
+    match (next(iter(session.dialogs), None), session.state, session.turn):
+        case (Held(on=on), _, _):
+            # Said by what it asks on its screen, though the status saying it waits may not have been read yet.
+            return _waiting_on(on)
+        case (None, Running(status=Busy()), Opened(latest=Doing() as latest)):
+            # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
+            # notes are this listing at the tail of its every request.
+            return f"working; the last thing it set out to do: {said((latest,))}"
+        case (None, Idle(status=status.Idle()), Opened()):
+            # A turn opened at its prompt, before the status that says it is busy is read.
+            return "working"
+        case (None, _, _) if delegating(session):
+            # No turn runs: a prompt typed at it runs at once, and each subagent's report opens a turn of its own.
+            return f"idle, with {counted(len(session.background), 'subagent')} it started in the background still working"
+        case (None, state, _):
+            return _stated(state)
+
+
+def _stated(state: SessionState) -> str:
+    match state:
+        case Unreported():
+            return "not reported yet"
+        case Idle(status=Shell()):
+            # No turn runs: it does nothing until that task ends and its notification opens one.
+            return "idle, with a shell command it started in the background still running"
+        case Idle():
+            return "idle"
+        case Running(status=going):
+            return _running(going)
+
+
+def _running(going: Going) -> str:
+    match going:
+        case Waiting(reason=UnknownReason(name=name)):
+            return f"waiting at a dialog: {name}"
+        case Waiting(reason=reason):
+            return f"waiting at a dialog: {reason}"
+        case Busy():
+            return "working"
+        case Unknown(name=name):
+            return f"in a state hands does not know: {name}"
+
+
+def _waiting_on(on: Blocker) -> str:
+    match on:
+        case Permission(tool=tool):
+            return f"waiting for permission to use {tool}"
+        case Question():
+            return "waiting for the user to answer its question"
+        case Plan():
+            return "waiting for the user to approve its plan"
 
 
 def _reading(resolutions: Iterable[Resolution]) -> str:

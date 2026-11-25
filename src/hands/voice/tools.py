@@ -24,15 +24,12 @@ from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.progress import Doing, said
-from hands.core.session import Blocker, Membership, CommandName, Opened, Held, Idle, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
-from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
+from hands.core.session import Membership, CommandName, Idle, KEYSTROKES, PromptText, RequestId, Resolution, Running, SessionId, Staged, delegating
 from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
-from hands.core.spoken import counted
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.processes import Processes
 from hands.sessions.child import Children
@@ -44,16 +41,15 @@ from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Rejected
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
-from hands.sessions.registry import Listing, Sessions
+from hands.sessions.registry import Sessions
 from hands.sessions import attention as settings
-from hands.core import status
 from hands.core.place import Modality
 from hands.voice.listening import Level, Listening
 from hands.voice.trigger import PhoneLevel, described, described_at_phone
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.summaries import Sighted, SummaryStore, sighted
-from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
+from hands.voice.readback import describe_listing, keyboard_readback, readback, spoken_name, spoken_state
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import Voices
 from hands.voice.voicechoice import VOICES, parse_voice, spoken
@@ -475,70 +471,6 @@ def standing(sessions: Sessions) -> list[dict[str, str]]:
     return [describe_listing(listing) for listing in sessions.live()]
 
 
-def describe_listing(listing: Listing[Session]) -> dict[str, str]:
-    return {
-        "id": listing.session.membership.id,
-        "name": identifier(listing),
-        "state": _spoken_state(listing.session),
-        "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
-    }
-
-
-def _spoken_state(session: Session) -> str:
-    # The dialog on its screen is the first it asked; the rest are queued beneath it.
-    match (next(iter(session.dialogs), None), session.state, session.turn):
-        case (Held(on=on), _, _):
-            # Said by what it asks on its screen, though the status saying it waits may not have been read yet.
-            return _waiting_on(on)
-        case (None, Running(status=Busy()), Opened(latest=Doing() as latest)):
-            # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
-            # notes are this listing at the tail of its every request.
-            return f"working; the last thing it set out to do: {said((latest,))}"
-        case (None, Idle(status=status.Idle()), Opened()):
-            # A turn opened at its prompt, before the status that says it is busy is read.
-            return "working"
-        case (None, _, _) if delegating(session):
-            # No turn runs: a prompt typed at it runs at once, and each subagent's report opens a turn of its own.
-            return f"idle, with {counted(len(session.background), 'subagent')} it started in the background still working"
-        case (None, state, _):
-            return _stated(state)
-
-
-def _stated(state: SessionState) -> str:
-    match state:
-        case Unreported():
-            return "not reported yet"
-        case Idle(status=Shell()):
-            # No turn runs: it does nothing until that task ends and its notification opens one.
-            return "idle, with a shell command it started in the background still running"
-        case Idle():
-            return "idle"
-        case Running(status=going):
-            return _running(going)
-
-
-def _running(going: Going) -> str:
-    match going:
-        case Waiting(reason=UnknownReason(name=name)):
-            return f"waiting at a dialog: {name}"
-        case Waiting(reason=reason):
-            return f"waiting at a dialog: {reason}"
-        case Busy():
-            return "working"
-        case Unknown(name=name):
-            return f"in a state hands does not know: {name}"
-
-
-def _waiting_on(on: Blocker) -> str:
-    match on:
-        case Permission(tool=tool):
-            return f"waiting for permission to use {tool}"
-        case Question():
-            return "waiting for the user to answer its question"
-        case Plan():
-            return "waiting for the user to approve its plan"
-
-
 def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool[Result]:
     async def tell_turn(session: str) -> Result:
         """What a session's last finished turn did, as hands tells a turn when it finishes, and how it stands now.
@@ -555,7 +487,7 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool[Result]:
         if live is None:
             return {"error": f"no running session has the id {id!r}; take one from list_sessions"}
         name = spoken_name(sessions, id)
-        now = _spoken_state(live)
+        now = spoken_state(live)
         match recounts.of(id):
             case None:
                 # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
@@ -1033,7 +965,7 @@ def close_session_tool(processes: Processes, home: Home, record: Record, session
                     return {"closed": name}
                 case closesession.LeftRunning(session=found):
                     # [LAW:one-source-of-truth] what it was found doing, as list_sessions says it.
-                    return {"left_running": name, "state": _spoken_state(found)}
+                    return {"left_running": name, "state": spoken_state(found)}
         except closesession.NotClosed as why:
             return {"error": str(why)}
 

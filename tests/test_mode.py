@@ -10,7 +10,7 @@ from hands.core.effects import Allow
 from hands.core.events import Joined, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, Mode, PromptId, Permission, PermissionMode, RequestId, SessionId, UnknownMode
 from hands.voice.readback import spoken_mode
-from hands.voice.tools import describe_listing
+from hands.voice.readback import describe_listing
 
 from hands.core.status import Stamp
 from conftest import new_sessions
