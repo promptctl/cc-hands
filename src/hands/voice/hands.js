@@ -17,9 +17,10 @@ const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
 // [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of three
 // outcomes. One that is not an answer says whether asking again can change it, and every page that asks again reads that
-// alone (`transient`). hands says it of each refusal: a 503 is what it could not do now and may pass (a fetch that failed
-// on its way, hands.voice.phonewake), and any other refusal it would make the same again, the page's own mistake (a 4xx:
-// its key, its path, what it sent) or its own (a 500). An answer that never came may pass; one the page cannot read would
+// alone (`transient`). A 503 is hands saying what it could not do now may pass (a fetch that failed on its way,
+// hands.voice.phonewake); any other refusal is read as one it would make the same again: the page's own mistake (a 4xx:
+// its key, its path, what it sent), a cause hands said would not pass (a 500), and a failure no route stated (aiohttp's
+// 500 for an exception a route did not catch), which asked again would be raised again. An answer that never came may pass; one the page cannot read would
 // come again the same. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
 // key and fail in the browser's words. `readBody` reads an answer's body as the request wants it: its text, or its bytes.
 async function crossed(method, path, body, within, readBody) {
