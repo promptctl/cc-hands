@@ -112,7 +112,12 @@ async def fetched_off_the_loop(directory: Path, pin: Pin, stop: threading.Event)
 
 class Unserved(Exception):
     """A file hands runs or serves that cannot be had, and why: it could not be fetched, is not the one pinned, or is not
-    there."""
+    there. `passing` says whether asking again may change it: a fetch that failed on its way may come the next time, and
+    bytes that are not the ones pinned, or a file that is not there, would be the same."""
+
+    def __init__(self, why: str, passing: bool) -> None:
+        super().__init__(why)
+        self.passing = passing
 
 
 class Release:
@@ -141,9 +146,12 @@ class Release:
             try:
                 self._directory.mkdir(parents=True, exist_ok=True)
                 kept = await self._within_deadline(pin)
-            # A fetch's failures are its own: the directory's, the network's, a read cut short, one that took too long, and a file that is not the one pinned.
-            except (OSError, HTTPException, Mismatch) as error:
-                raise Unserved(f"hands cannot get {pin.at}'s {pin.name}: {error}") from error
+            # A fetch's failures are its own: the directory's, the network's, a read cut short, and one that took too long,
+            # each of which may pass; and a file that is not the one pinned, which fetched again would be the same.
+            except (OSError, HTTPException) as error:
+                raise Unserved(f"hands cannot get {pin.at}'s {pin.name}: {error}", passing=True) from error
+            except Mismatch as error:
+                raise Unserved(f"hands cannot get {pin.at}'s {pin.name}: {error}", passing=False) from error
             self._held[pin] = kept.path
             return kept
 

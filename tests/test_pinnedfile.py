@@ -97,13 +97,15 @@ async def test_a_held_file_that_has_gone_from_the_directory_is_fetched_again(tmp
     PermissionError("the directory is read-only"),
     TimeoutError("took too long"),
 ])
-async def test_a_fetch_that_fails_is_unserved_with_the_reason_and_the_next_ask_fetches_again(tmp_path: Path, failure: Exception) -> None:
+async def test_a_fetch_that_fails_is_unserved_with_the_reason_and_whether_it_may_pass_and_the_next_ask_fetches_again(tmp_path: Path, failure: Exception) -> None:
     fetching = Fetching()
     release = Release(tmp_path, VirtualClock(), fetching)
     fetching.failure = failure
     with pytest.raises(Unserved) as unserved:
         await release.path(SECOND)
     assert (str(unserved.value).startswith("hands cannot get release 2's second.bin: "), str(failure) in str(unserved.value)) == (True, True)
+    # Bytes that are not the pinned ones would be the same fetched again; the rest fail on the way, and may pass.
+    assert unserved.value.passing is not isinstance(failure, Mismatch)
     fetching.failure = None
     assert (await release.path(SECOND)).path == tmp_path / "second.bin"
     assert len(fetching.calls) == 2

@@ -32,9 +32,13 @@ MODEL_PREFIX = "/wake/models/"
 
 
 def unavailable(error: Unserved) -> web.Response:
-    """What cannot be had, said to the page that asked for it in hands' words, and recorded as the unit's failure."""
+    """What cannot be had, said to the page that asked for it in hands' words, and recorded as the unit's failure.
+
+    [LAW:one-source-of-truth] whether asking again may change it is hands' to say, and a page reads it as the status alone
+    (hands.js, `transient`): a 503 is what may pass, and a 500 what would be the same again."""
     fail(str(error))
-    return web.Response(status=503, text=str(error))
+    annotate(passing=error.passing)
+    return web.Response(status=503 if error.passing else 500, text=str(error))
 
 
 def wake_routes(clock: Clock, word: Word, models: WakeModels, runtime: Release, key: str, record: Record) -> list[web.RouteDef]:

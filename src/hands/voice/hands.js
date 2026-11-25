@@ -17,9 +17,10 @@ const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
 // [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of three
 // outcomes. One that is not an answer says whether asking again can change it, and every page that asks again reads that
-// alone (`transient`): what hands refuses as the page's own mistake (a 4xx: its key, its path, what it sent) it refuses
-// again, and an answer the page cannot read would come again the same, while what hands could not do now (a 5xx: a
-// restart, a fetch that failed) and an answer that never came may pass. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
+// alone (`transient`). hands says it of each refusal: a 503 is what it could not do now and may pass (a fetch that failed
+// on its way, hands.voice.phonewake), and any other refusal it would make the same again, the page's own mistake (a 4xx:
+// its key, its path, what it sent) or its own (a 500). An answer that never came may pass; one the page cannot read would
+// come again the same. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
 // key and fail in the browser's words. `readBody` reads an answer's body as the request wants it: its text, or its bytes.
 async function crossed(method, path, body, within, readBody) {
   const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(within) };
@@ -42,7 +43,7 @@ async function crossed(method, path, body, within, readBody) {
   } catch (error) {
     return { kind: "lost", transient: true, why: `hands' answer was cut off: ${error.message}` };
   }
-  if (!response.ok) return { kind: "refused", status: response.status, transient: response.status >= 500, text: answer || `hands refused with ${response.status}` };
+  if (!response.ok) return { kind: "refused", status: response.status, transient: response.status === 503, text: answer || `hands refused with ${response.status}` };
   return { kind: "answered", body: answer };
 }
 

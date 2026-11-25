@@ -105,6 +105,7 @@ def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: P
     ('answer(202, "")', {"kind": "answered", "body": None}),
     ('answer(400, "the page sends {voice: ...}")', {"kind": "refused", "status": 400, "transient": False, "text": "the page sends {voice: ...}"}),
     ('answer(503, "")', {"kind": "refused", "status": 503, "transient": True, "text": "hands refused with 503"}),
+    ('answer(500, "no wake word model at /m.onnx")', {"kind": "refused", "status": 500, "transient": False, "text": "no wake word model at /m.onnx"}),
     ('cutOff("network reset")', {"kind": "lost", "transient": True, "why": "hands' answer was cut off: network reset"}),
     ('lose("TimeoutError")', {"kind": "lost", "transient": True, "why": "hands did not answer within 60 s"}),
     ('lose("TypeError")', {"kind": "lost", "transient": True, "why": "hands is out of reach: lost"}),
@@ -159,8 +160,15 @@ def test_a_request_hands_could_not_answer_now_is_asked_again_after_a_pause_sayin
     assert [asked.path for asked in page.asking()] == ["/wake/settings"]
 
 
-@pytest.mark.parametrize(("status", "text"), [(401, "this page's address is missing the phone's key"), (404, "Not Found")])
-def test_a_request_refused_as_the_pages_own_mistake_is_hands_word_and_is_not_asked_again(page: Page, status: int, text: str) -> None:
+FINAL = pytest.mark.parametrize(("status", "text"), [
+    (401, "this page's address is missing the phone's key"),
+    (404, "Not Found"),
+    (500, "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: it is aaa, not the bbb pinned"),
+])
+
+
+@FINAL
+def test_a_request_refused_as_what_asking_again_would_not_change_is_hands_word_and_is_not_asked_again(page: Page, status: int, text: str) -> None:
     page.run(PATIENTLY)
     page.answer(status, text)
     assert (page.seen("waits"), page.asking(), page.timers()) == ([], [], [])
@@ -215,8 +223,8 @@ def test_a_read_refused_for_any_other_reason_than_the_key_is_read_again(reading:
     assert (reading.seen("unread"), reading.timers()) == (["hands is restarting; reading it again…"], [2000])
 
 
-@pytest.mark.parametrize(("status", "text"), [(401, "this page's address is missing the phone's key"), (404, "Not Found")])
-def test_a_read_refused_as_the_pages_own_mistake_stops_with_hands_words(reading: Page, status: int, text: str) -> None:
+@FINAL
+def test_a_read_refused_as_what_asking_again_would_not_change_stops_with_hands_words(reading: Page, status: int, text: str) -> None:
     reading.answer(status, text)
     assert reading.seen("unread") == [text]
     assert (reading.asking(), reading.timers()) == ([], [])

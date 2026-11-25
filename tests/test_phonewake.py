@@ -87,10 +87,10 @@ async def test_a_version_or_a_file_hands_does_not_serve_is_not_found_and_nothing
     assert (served.runtime.calls, served.models.calls) == ([], [])
 
 
-async def test_a_runtime_hands_cannot_fetch_is_refused_in_hands_words_and_never_served(served: Served) -> None:
+async def test_a_runtime_not_the_one_pinned_is_refused_in_hands_words_as_what_asking_again_would_not_change(served: Served) -> None:
     served.runtime.failure = Mismatch("ort.wasm.bundle.min.mjs at onnxruntime-web 1.31.1 is aaa, not the bbb pinned")
     response = await served.client.get(f"/ort/{ortweb.VERSION}/{SCRIPT}")
-    assert response.status == 503
+    assert response.status == 500
     assert "is aaa, not the bbb pinned" in await response.text()
     [event] = served.events("phone.wake.runtime")
     assert (event.outcome, "is aaa, not the bbb pinned" in (event.error or "")) == ("failed", True)
@@ -141,16 +141,16 @@ async def test_a_word_the_user_trained_is_served_from_where_they_keep_it_under_t
         assert (response.status, await response.read()) == (200, b"my model")
 
 
-async def test_a_model_that_is_not_there_is_refused_in_hands_words_naming_it(tmp_path: Path) -> None:
+async def test_a_model_that_is_not_there_is_refused_in_hands_words_naming_it_as_what_asking_again_would_not_change(tmp_path: Path) -> None:
     missing = tmp_path / "mine" / "hey_hands.onnx"
     async for each in serving(tmp_path, Trained("Hey Hands", missing)):
         for path, unit in (("/wake/settings", "phone.wake.settings"), ("/wake/models/word", "phone.wake.model")):
             response = await each.client.get(path, headers=AUTHORISED)
-            assert (response.status, await response.text()) == (503, f"no wake word model at {missing}")
+            assert (response.status, await response.text()) == (500, f"no wake word model at {missing}")
             assert [(event.outcome, event.error) for event in each.events(unit)] == [("failed", f"no wake word model at {missing}")]
 
 
-async def test_models_hands_cannot_fetch_are_refused_in_hands_words_naming_why(served: Served) -> None:
+async def test_models_hands_cannot_fetch_are_refused_in_hands_words_naming_why_as_what_may_pass(served: Served) -> None:
     served.models.failure = OSError("the network is down")
     response = await served.client.get("/wake/models/word", headers=AUTHORISED)
     said = await response.text()

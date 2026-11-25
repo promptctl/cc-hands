@@ -30,7 +30,7 @@ from hands.voice.milestone import ClipDiscarded, ClipOpened, TurnUnopened
 from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import phone_pages
-from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
+from hands.voice.pinnedfile import Fetch, Kept, Mismatch, Pin, Release
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.tool import audited, tool
@@ -553,6 +553,17 @@ class WithTwoWords:
 
 def unreachable(_models: Path) -> Fetch:
     return Unreachable()
+
+
+class NotPinned:
+    """A fetch whose bytes are not the ones pinned."""
+
+    async def __call__(self, directory: Path, pin: Pin, stop: threading.Event) -> Kept:
+        raise Mismatch(f"{pin.name} at {pin.at} is aaa, not the {pin.digest} pinned")
+
+
+def not_pinned(_models: Path) -> Fetch:
+    return NotPinned()
 
 
 @pytest.mark.parametrize("wake_models", [unreachable], indirect=True)

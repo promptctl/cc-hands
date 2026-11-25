@@ -17,7 +17,7 @@ from conftest import events, running
 from playwright.async_api import Page, Route, expect
 from speech import spoken
 from test_clipowner import Heeding, Scripted
-from test_pages import IN_PASSING, PHRASE, Hands, Opened, browser, chrome, hands, unreachable, wake_models  # pyright: ignore[reportUnusedImport]  (fixtures, found by their names)
+from test_pages import IN_PASSING, PHRASE, Hands, Opened, browser, chrome, hands, not_pinned, wake_models  # pyright: ignore[reportUnusedImport]  (fixtures, found by their names)
 
 from hands.clock import SYSTEM
 from hands.voice.clipowner import ClipOwner
@@ -347,10 +347,12 @@ async def test_holding_the_button_during_a_wakes_turn_sends_it_and_opens_the_but
         await until(lambda: not hands.gate.gate.turn_open)
 
 
-@pytest.mark.parametrize("wake_models", [unreachable], indirect=True)
+# Bytes that are not the ones pinned would be the same asked for again (a fetch that fails on its way is waited on:
+# tests/test_pages.py).
+@pytest.mark.parametrize("wake_models", [not_pinned], indirect=True)
 async def test_a_detector_that_cannot_load_is_said_with_why_and_told_to_hands_and_the_button_works(browser: Opened, hands: Hands) -> None:
     page = await connected(browser, hands)
-    await expect(page.locator("#wake-note")).to_have_text("The wake word is not listening: hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down.")
+    await expect(page.locator("#wake-note")).to_have_text(re.compile(r"^The wake word is not listening: hands cannot get openWakeWord v0\.5\.1's melspectrogram\.onnx: melspectrogram\.onnx at openWakeWord v0\.5\.1 is aaa, not the \w+ pinned\.$"))
     await expect(page.locator("#state")).to_have_text(LOADING)
     [failed] = events(hands.recorded, "phone.detector")
     assert failed.outcome == "failed" and failed.facts["state"] == "failed" and "melspectrogram.onnx" in str(failed.error)
