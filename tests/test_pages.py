@@ -556,10 +556,11 @@ def unreachable(_models: Path) -> Fetch:
 
 
 @pytest.mark.parametrize("wake_models", [unreachable], indirect=True)
-async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_cannot_listen_in_hands_words(browser: Opened, hands: Hands) -> None:
+async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_waits_in_hands_words(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
     await detecting(page)
-    assert await page.evaluate("events") == [{"kind": "failed", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
+    # Waited on, not given up: hands fetches again as it is next asked (`patiently`, tests/test_handsjs.py).
+    assert await page.evaluate("events") == [{"kind": "waiting", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
 
 
 @pytest.mark.quarantined("promptctl-testing-c3u.sm9", until="2026-11-29")

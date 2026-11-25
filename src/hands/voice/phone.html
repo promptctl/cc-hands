@@ -634,16 +634,19 @@ async function connect(claim) {
     });
     const outcome = await asked("POST", "/offer", {sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}, OFFER_MS);
     if (made.ended) return;
-    // hands declines a call made again while another page has the phone: that page is the one in the user's hand. A
-    // server error may pass, as hands is restarted; a refusal of the page's key or its offer never does.
+    // hands declines a call made again while another page has the phone: that page is the one in the user's hand. What may
+    // pass (`transient`), as hands is restarted, is dialled again; a refusal of the page's key or its offer never passes.
     switch (outcome.kind) {
       case "answered": await pc.setRemoteDescription(outcome.body); break;
       case "refused":
         if (outcome.status === 409) end("Another page has hands' phone. Press Connect to take it here.");
-        else if (outcome.status >= 500) dropped(made, `hands could not answer: ${outcome.text}.`);
+        else if (outcome.transient) dropped(made, `hands could not answer: ${outcome.text}.`);
         else end(`Could not connect: ${outcome.text}`);
         break;
-      case "lost": dropped(made, `Could not reach hands: ${outcome.why}.`); break;
+      case "lost":
+        if (outcome.transient) dropped(made, `Could not reach hands: ${outcome.why}.`);
+        else end(`Could not connect: ${outcome.why}`);
+        break;
     }
   } catch (error) {
     dropped(made, `Could not reach hands: ${error.message}.`);

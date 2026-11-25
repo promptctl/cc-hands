@@ -114,7 +114,9 @@ async def serve_phone(clock: Clock, pages: web.Application, home: Home, asked: C
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`, and each renewal after it one of its own,
     `phone.renewed`, the root of a trace of its own: each says the port or what Tailscale answered, as `_Served` says it.
     """
-    runner = web.AppRunner(pages, access_log=None)
+    # [LAW:no-ambient-temporal-coupling] a page that gives up on an answer does not cancel the work it asked for: a
+    # `/wake/settings` the page stopped waiting on goes on fetching the models, so the page's next ask finds them kept.
+    runner = web.AppRunner(pages, access_log=None, handler_cancellation=False)
     await runner.setup()
     try:
         with unit("phone.served", record, begun(clock)):

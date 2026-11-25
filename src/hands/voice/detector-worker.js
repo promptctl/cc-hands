@@ -1,7 +1,7 @@
 // The wake word's models, run on the phone in a worker (hands.voice.phonewake serves it at /detector-worker.js): the Mac's own
 // three, on ONNX Runtime Web's WebAssembly build, one thread. detector.js starts it with the rate of the audio it will be
 // given; it answers `ready` with the word it listens for, `heard` with a score each time it hears it and how many seconds of
-// audio it had been given by then, `waiting` with why each time hands gave it no answer and it asks again (and with none once hands answers), and `failed` with
+// audio it had been given by then, `waiting` with why each time it asks hands again (and with none once the wait is over), and `failed` with
 // why when it cannot listen. Nothing it loads comes from any site but hands.
 //
 // The phone's key reaches it in its address's fragment, as it reaches a page, so it asks hands through hands.js as a page does.
@@ -26,10 +26,10 @@ function settingsOf(body) {
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
 
-// hands that did not answer, or could not be reached, is waited for and never given up on (`patiently`): on a cold first run
-// `/wake/settings` waits on the models' fetch for longer than any one request is given, and a `failed` is final, so a page
-// that gave up there could only be recovered by reloading it. hands refuses a model it cannot fetch, and says why, which
-// asking again would not change. Each wait is a `waiting` with why, and its end a `waiting` with no `why`.
+// What may pass is waited for and never given up on (`patiently`): on a cold first run `/wake/settings` waits on the models'
+// fetch for longer than any one request is given, and a fetch that failed is fetched again as hands is next asked, while a
+// `failed` is final, so a page that gave up there could only be recovered by reloading it. Each wait is a `waiting` with
+// why, and its end a `waiting` with no `why`.
 const waitingFor = why => postMessage({ kind: "waiting", why });
 
 async function fileOf(path) {

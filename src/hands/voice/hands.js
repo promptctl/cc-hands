@@ -9,15 +9,17 @@
 const key = decodeURIComponent(location.hash.slice(1));
 export const carriesKey = key !== "";
 
-// How long any request is given to be answered once hands has it: a minute. What takes hands longer, as `/wake/settings`
-// on a cold first run waits on the models' fetch, is lost to its asker, which asks again (`patiently`).
+// How long any request is given to be answered once hands has it: a minute.
 // A read that has seen something waits at hands, for as long as hands said its reads wait, and is then answered at
 // once: it is given that wait and the time an answer takes to cross back, so a phone that lost its way to hands says
 // so soon after.
 const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
 // [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of three
-// outcomes. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
+// outcomes. One that is not an answer says whether asking again can change it, and every page that asks again reads that
+// alone (`transient`): what hands refuses as the page's own mistake (a 4xx: its key, its path, what it sent) it refuses
+// again, and an answer the page cannot read would come again the same, while what hands could not do now (a 5xx: a
+// restart, a fetch that failed) and an answer that never came may pass. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
 // key and fail in the browser's words. `readBody` reads an answer's body as the request wants it: its text, or its bytes.
 async function crossed(method, path, body, within, readBody) {
   const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(within) };
@@ -31,16 +33,16 @@ async function crossed(method, path, body, within, readBody) {
   try {
     response = await fetch(path, init);
   } catch (error) {
-    return { kind: "lost", why: error.name === "TimeoutError" ? `hands did not answer within ${Math.round(within / 1000)} s` : `hands is out of reach: ${error.message}` };
+    return { kind: "lost", transient: true, why: error.name === "TimeoutError" ? `hands did not answer within ${Math.round(within / 1000)} s` : `hands is out of reach: ${error.message}` };
   }
   // A refusal is always words, whatever the request wanted.
   let answer;
   try {
     answer = response.ok ? await readBody(response) : await response.text();
   } catch (error) {
-    return { kind: "lost", why: `hands' answer was cut off: ${error.message}` };
+    return { kind: "lost", transient: true, why: `hands' answer was cut off: ${error.message}` };
   }
-  if (!response.ok) return { kind: "refused", status: response.status, text: answer || `hands refused with ${response.status}` };
+  if (!response.ok) return { kind: "refused", status: response.status, transient: response.status >= 500, text: answer || `hands refused with ${response.status}` };
   return { kind: "answered", body: answer };
 }
 
@@ -53,7 +55,7 @@ export async function asked(method, path, body, within = ANSWER_MS) {
   try {
     return { kind: "answered", body: JSON.parse(outcome.body) };
   } catch (error) {
-    return { kind: "lost", why: `hands' answer is not one this page reads: ${error.message}` };
+    return { kind: "lost", transient: false, why: `hands' answer is not one this page reads: ${error.message}` };
   }
 }
 
@@ -84,21 +86,20 @@ let ahead = 0;
 export const handsNow = () => Date.now() / 1000 + ahead;
 
 // How long a page, or its worker, waits to ask hands again after an ask that got no answer.
-export const AGAIN_MS = 2000;
+const AGAIN_MS = 2000;
 
-// What `ask` comes to once hands answers it, refusing or not: one that got no answer is asked again after a pause, for as
-// long as it takes, with `waiting` told why each time and told null once hands answers after a wait. A refusal is hands'
-// word, returned as it is: asking again would not change it.
+// What `ask` comes to once asking again cannot change it: one that may pass (`transient`) is asked again after a pause, for
+// as long as it takes, with `waiting` told why each time and told null once the wait is over.
 export async function patiently(ask, waiting) {
   let waited = false;
   for (;;) {
     const outcome = await ask();
-    if (outcome.kind !== "lost") {
+    if (outcome.kind === "answered" || !outcome.transient) {
       if (waited) waiting(null);
       return outcome;
     }
     waited = true;
-    waiting(outcome.why);
+    waiting(unanswered(outcome));
     await new Promise(resolve => setTimeout(resolve, AGAIN_MS));
   }
 }
@@ -106,9 +107,8 @@ export async function patiently(ask, waiting) {
 // Read `path` for as long as the page is open: each read says what it last saw and waits at hands until what it shows
 // changes from it (hands.voice.longpoll), bounded by the wait hands said; a read that has seen nothing is answered at once.
 // `draw` is given what hands shows each time it changes, and `unread` why the page cannot show it, until it is drawn again.
-// A read hands refuses as the page's own mistake (a 4xx: its key, its path) ends the reading, as every read after it would
-// be refused the same way; one hands could not answer, or that never reached it, reads again after a pause, saying nothing
-// was seen, so hands answers it at once and the page is drawn as soon as hands is back, whether a new run answers or the
+// A read that asking again cannot change (`transient`) ends the reading, saying why, as every read after it would come to
+// the same; one that may pass reads again after a pause, saying nothing was seen, so hands answers it at once and the page is drawn as soon as hands is back, whether a new run answers or the
 // one that was there all along.
 export async function reading(path, draw, unread) {
   try {
@@ -122,8 +122,8 @@ export async function reading(path, draw, unread) {
         // A read that answers at the end of its wait with nothing changed has nothing new to draw.
         if (read.seen !== last?.seen) draw(read.shown);
         last = read;
-      } else if (outcome.kind === "refused" && outcome.status < 500) {
-        unread(outcome.text);
+      } else if (!outcome.transient) {
+        unread(unanswered(outcome));
         return;
       } else {
         unread(`${unanswered(outcome)}; reading it again…`);

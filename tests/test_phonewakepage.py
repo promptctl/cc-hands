@@ -373,7 +373,7 @@ async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_th
     await browser.context.route("**/wake/models/melspectrogram", partial(held_open, models_come_in))
     page = await connected(browser, hands)
     # Lost, as a request past the page's bound is too, and waited on the same (`patiently`, tests/test_handsjs.py).
-    await expect(page.locator("#wake-note")).to_have_text(re.compile(r"The wake word is waiting on hands: \S"))
+    await expect(page.locator("#wake-note")).to_have_text(re.compile(r"The wake word is waiting on hands: hands is out of reach: \S"))
     # hands answered: the models still coming in is no wait on hands, and the page does not go on saying it is.
     await expect(page.locator("#wake-note")).to_have_text("")
     await expect(page.locator("#state")).to_have_text(LOADING)
