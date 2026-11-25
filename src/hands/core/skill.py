@@ -5,16 +5,16 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Skill:
-    """A skill and its arguments, made by `of`, which is where whatever a call carried for `args` becomes one of the two
-    things it can be: the arguments, or none."""
+    """A skill and its arguments, made by `of`, so that however a call carried its arguments, a Skill holds them trimmed or
+    holds none."""
 
     name: str
     args: str | None
 
     @classmethod
     def of(cls, name: str, args: object) -> "Skill":
-        # [LAW:parse-dont-validate] the one crossing for a skill's arguments: a call's `args` is a string, padded or blank,
-        # or absent, and every reader of a Skill is past asking which.
+        # [LAW:parse-dont-validate] a call's `args` is a string, padded or blank, or absent; every reader of a Skill is past
+        # asking which.
         text = args.strip() if isinstance(args, str) else ""
         return cls(name.strip(), text or None)
 

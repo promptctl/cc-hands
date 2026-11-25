@@ -7,7 +7,7 @@ tell when it finishes, and a call is worth hearing about while it runs, before t
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import cast
@@ -20,29 +20,39 @@ from hands.core.turn import AGENT_ID, AgentId
 
 @dataclass(frozen=True)
 class Work:
-    """A kind of work a call does, and how several calls of it are said together.
+    """A kind of work a call does, how several calls of it are said together, and how one is said of what it was done to.
 
     [LAW:one-type-per-behavior] the kinds differ only in their words, so they are values of one type, and a new kind
-    is a new constant rather than new code.
+    is a new constant rather than new code. A kind has one act, so what a call is done to is all that tells two of it apart.
     """
 
     # "{count}" stands for how many different things were done: "edit {count} files".
     several: str
     # One call of it whose input does not say what it was done to.
     one: str
+    # What is done to a thing: "edit" of a file. Empty where the thing says all there is, as a command's own words do.
+    act: str = ""
+    # Its calls are spoken as they arrive by something other than progress, which leaves them out.
+    hooked: bool = False
 
 
-EDITING = Work("edit {count} files", "edit a file")
-READING = Work("read {count} files", "read a file")
-SEARCHING = Work("run {count} searches", "search the code")
-LOOKING_UP = Work("make {count} web lookups", "look something up on the web")
+EDITING = Work("edit {count} files", "edit a file", "edit")
+WRITING_FILES = Work("write {count} files", "write a file", "write")
+READING = Work("read {count} files", "read a file", "read")
+SEARCHING = Work("run {count} searches", "search the code", "search for")
+LOOKING_UP = Work("make {count} web lookups", "look something up on the web", "search the web for")
+FETCHING = Work("read {count} pages", "read a page", "read a page on")
 RUNNING = Work("run {count} commands", "run a command")
-DELEGATING = Work("start {count} subagents", "start a subagent")
+DELEGATING = Work("start {count} subagents", "start a subagent", "start a subagent to")
 PLANNING = Work("update its plan", "update its plan")
-USING = Work("use {count} tools", "use a tool")
-MESSAGING = Work("send {count} messages", "send a message")
-# A call that asks the user: the voice speaks it as its PermissionRequest hook arrives, and the page shows it.
-ASKING = Work("ask {count} questions", "ask the user")
+ADDING_TASKS = Work("add {count} tasks", "add a task", "add task")
+UPDATING_TASKS = Work("update {count} tasks", "update a task", "update task")
+SKILLS = Work("use {count} skills", "use a skill")
+USING = Work("use {count} tools", "use a tool", "use")
+MESSAGING = Work("send {count} messages", "send a message", "send a message")
+# Calls that ask the user: the voice speaks each as its PermissionRequest hook arrives, and the page shows it.
+ASKING = Work("ask {count} questions", "ask the user", hooked=True)
+APPROVING = Work("ask for {count} approvals", "asked to approve its plan", hooked=True)
 # Text Claude wrote, said by a summary of it, which every burst of it has: alone, it is never said as this work's.
 EXPLAINING = Work("explain {count} things", "explain something")
 # Text Claude wrote that could not be summarised: said to have been written, since what it says is not known, and never
@@ -122,10 +132,11 @@ class Message:
 
 @dataclass(frozen=True)
 class ToolInput:
-    """A tool no row knows, and its input: the voice says only the tool, and the page shows the input as JSON."""
+    """A tool no row knows, and its input as JSON, kept to what the page shows of it: the voice says only the tool. Two
+    calls of one tool are one thing to a listener, whatever their inputs, so the input is no part of what makes them equal."""
 
     tool: str
-    input: Mapping[str, object]
+    json: str = field(compare=False)
 
 
 Part = Path | Words | Pattern | Command | Site | Skill | Message | ToolInput
@@ -133,20 +144,20 @@ Part = Path | Words | Pattern | Command | Site | Skill | Message | ToolInput
 
 @dataclass(frozen=True)
 class Doing:
-    """One call as it is made: its kind of work, and what it is said as when it is the only one of its kind; None when
-    its input does not say what it was done to, and then no other call is the same thing done.
+    """One call as it is made: its kind of work, what it is said as when it is the only one of its kind, and what it was
+    done to; `alone` is None where the voice has nothing to say of it, and `of` where its input does not say.
 
-    `thing` is what it was done to, as the page tells it, which is what makes two calls one thing done: an edit and a write
-    of one file are one file, and two files of one name in two directories are two. It stays out of what makes two Doings
-    equal, which is what they say. Where it is None, `alone` stands for it."""
+    `of` is what makes two calls one thing done: an edit of one file twice is that file, and two files of one name in two
+    directories are two. Where it is None, `alone` stands for it, and a call that has neither is its own thing."""
 
     work: Work
     alone: str | None
-    thing: str | None = field(default=None, compare=False)
+    of: Part | None = None
 
-    def same(self, at: int) -> str | int:
+    def same(self, at: int) -> Hashable:
         """What this call is the same thing done as, `at` being where it stands among the calls said together."""
-        return at if self.alone is None else self.alone if self.thing is None else self.thing
+        return at if self.of is None and self.alone is None else self.alone if self.of is None else self.of
+
 
 # How much of one call the page shows on its line.
 LINE = 120
@@ -154,28 +165,28 @@ LINE = 120
 
 @dataclass(frozen=True)
 class Intent:
-    """What a call sets out to do, as the voice and the page each tell it: the kind of work, the act, and what it is done
-    to. [LAW:one-source-of-truth] the one value per call; `heard` and `line` differ only in how a medium renders a part, so
-    no tool's act is worded twice. A call whose input says nothing of what it was done to is its act alone."""
+    """What a call sets out to do, as the voice and the page each tell it: its kind of work, which holds its act, and what
+    it is done to. [LAW:one-source-of-truth] the one value per call; `heard` and `line` word it from the same two things,
+    each rendering a part as its medium needs and the voice leaving out the parts a listener cannot follow. A call whose
+    input says nothing of what it was done to is its kind of work, one."""
 
     work: Work
-    act: str
     of: Part | None
 
     def heard(self) -> Doing | None:
         """What the voice says of it; None for a call that asks the user, which is spoken as it is asked."""
-        if self.work == ASKING:
+        if self.work.hooked:
             return None
         match self.of:
             case None:
                 return Doing(self.work, None)
             case part:
                 said_of = _voiced(part)
-                return Doing(self.work, None) if said_of is None else Doing(self.work, _joined(self.act, said_of), _cut(_first_line(_shown(part, PurePath("/"))), LINE))
+                return Doing(self.work, None if said_of is None else _joined(self.work.act, said_of), part)
 
     def line(self, cwd: PurePath) -> str:
         """The one line the page shows of it, `cwd` taken off the front of a path under it, and cut to LINE."""
-        return _cut(_first_line(self.act if self.of is None else _joined(self.act, _shown(self.of, cwd))), LINE)
+        return _cut(_first_line(self.work.one if self.of is None else _joined(self.work.act, _shown(self.of, cwd))), LINE)
 
 
 def intent(tool: str, input: Mapping[str, object]) -> Intent:
@@ -192,9 +203,9 @@ def doing(tool: str, input: Mapping[str, object]) -> Doing | None:
 def said(doings: Sequence[Doing]) -> str:
     """A burst of calls as one spoken clause, each kind of work once, in the order it was first done: "edit ten files,
     then run the test suite". A kind done to one thing only is said as that thing."""
-    # Ordered and deduplicated in one step: ten edits of one file are one thing done, and eight commands that say
-    # nothing of themselves are eight, each its own by where it stands.
-    grouped: dict[Work, dict[str | int, str]] = {}
+    # Ordered and deduplicated in one step: ten edits of one file are one thing done, and eight calls that say nothing of
+    # what they were done to are eight, each its own by where it stands.
+    grouped: dict[Work, dict[Hashable, str]] = {}
     for at, each in enumerate(doings):
         grouped.setdefault(each.work, {})[each.same(at)] = each.work.one if each.alone is None else each.alone
     return ", then ".join(
@@ -207,44 +218,42 @@ def _ran(_tool: str, input: Mapping[str, object]) -> Intent:
     # this sentence is made of; the command itself is code, and never read aloud.
     description = _text(input, "description")
     if description is not None:
-        return Intent(RUNNING, "", Words(lowered(description)))
+        return Intent(RUNNING, Words(lowered(description)))
     command = _text(input, "command")
-    return Intent(RUNNING, RUNNING.one, None) if command is None else Intent(RUNNING, "", Command(_first_line(command)))
+    return Intent(RUNNING, None if command is None else Command(_first_line(command)))
 
 
-def _on_file(work: Work, act: str) -> Callable[[str, Mapping[str, object]], Intent]:
+def _on_file(work: Work) -> Callable[[str, Mapping[str, object]], Intent]:
     def row(_tool: str, input: Mapping[str, object]) -> Intent:
         file = _file(input)
-        return Intent(work, work.one, None) if file is None else Intent(work, act, Path(file))
+        return Intent(work, None if file is None else Path(file))
 
     return row
 
 
 def _searched(_tool: str, input: Mapping[str, object]) -> Intent:
     pattern = _text(input, "pattern")
-    return Intent(SEARCHING, SEARCHING.one, None) if pattern is None else Intent(SEARCHING, "search for", Pattern(pattern, _text(input, "path")))
+    return Intent(SEARCHING, None if pattern is None else Pattern(pattern, _text(input, "path")))
 
 
 def _looked_up(_tool: str, input: Mapping[str, object]) -> Intent:
     query = _text(input, "query")
-    return Intent(LOOKING_UP, LOOKING_UP.one, None) if query is None else Intent(LOOKING_UP, "search the web for", Words(query))
+    return Intent(LOOKING_UP, None if query is None else Words(query))
 
 
 def _fetched(_tool: str, input: Mapping[str, object]) -> Intent:
     host = _host(_text(input, "url"))
-    return Intent(LOOKING_UP, LOOKING_UP.one, None) if host is None else Intent(LOOKING_UP, "read a page on", Site(host))
+    return Intent(FETCHING, None if host is None else Site(host))
 
 
 def _dispatched(_tool: str, input: Mapping[str, object]) -> Intent:
     description = _text(input, "description")
-    if description is None:
-        return Intent(DELEGATING, DELEGATING.one, None)
-    return Intent(DELEGATING, "start a subagent to", Words(lowered(description), aside=_text(input, "subagent_type")))
+    return Intent(DELEGATING, None if description is None else Words(lowered(description), aside=_text(input, "subagent_type")))
 
 
 def _skilled(_tool: str, input: Mapping[str, object]) -> Intent:
     name = _text(input, "skill")
-    return Intent(USING, USING.one, None) if name is None else Intent(USING, "", Skill.of(name, input.get("args")))
+    return Intent(SKILLS, None if name is None else Skill.of(name, input.get("args")))
 
 
 def _messaged(_tool: str, input: Mapping[str, object]) -> Intent:
@@ -252,51 +261,52 @@ def _messaged(_tool: str, input: Mapping[str, object]) -> Intent:
     to = _text(input, "to")
     message = _text(input, "message")
     text = _text(input, "summary") or (None if message is None else _first_line(message))
-    return Intent(MESSAGING, MESSAGING.one, None) if to is None else Intent(MESSAGING, "send a message", Message(recipient(to), text))
+    return Intent(MESSAGING, None if to is None else Message(recipient(to), text))
 
 
 def _task_added(_tool: str, input: Mapping[str, object]) -> Intent:
     subject = _text(input, "subject")
-    return Intent(PLANNING, PLANNING.one, None) if subject is None else Intent(PLANNING, "add task", Words(subject))
+    return Intent(ADDING_TASKS, None if subject is None else Words(subject))
 
 
 def _task_updated(_tool: str, input: Mapping[str, object]) -> Intent:
     task = _text(input, "taskId")
-    if task is None:
-        return Intent(PLANNING, PLANNING.one, None)
     # Its status as Claude Code names it, "in_progress" said as words.
     status = _text(input, "status")
-    return Intent(PLANNING, "update task", Words(task if status is None else f"{task}: {status.replace('_', ' ')}"))
+    return Intent(UPDATING_TASKS, None if task is None else Words(task if status is None else f"{task}: {status.replace('_', ' ')}"))
 
 
 def _planned(_tool: str, _input: Mapping[str, object]) -> Intent:
-    return Intent(PLANNING, PLANNING.one, None)
+    return Intent(PLANNING, None)
 
 
 def _asked(_tool: str, input: Mapping[str, object]) -> Intent:
+    # The first question that has its text, as the turn's record of the dialog reads them.
     questions = input.get("questions")
-    first = cast(list[object], questions)[0] if isinstance(questions, list) and questions else None
-    question = _text(cast(Mapping[str, object], first), "question") if isinstance(first, dict) else None
-    return Intent(ASKING, ASKING.one, None) if question is None else Intent(ASKING, "", Words(question))
+    blocks = cast(list[object], questions) if isinstance(questions, list) else []
+    asked = (_text(cast(Mapping[str, object], each), "question") for each in blocks if isinstance(each, dict))
+    question = next((text for text in asked if text is not None), None)
+    return Intent(ASKING, None if question is None else Words(question))
 
 
 def _approval(_tool: str, _input: Mapping[str, object]) -> Intent:
-    return Intent(ASKING, "asked to approve its plan", None)
+    return Intent(APPROVING, None)
 
 
 def _used(tool: str, input: Mapping[str, object]) -> Intent:
-    # An MCP tool is named mcp__<server>__<tool>: the tool's own name is the part a listener can follow.
-    return Intent(USING, "use", ToolInput(tool.rsplit("__", 1)[-1].replace("_", " "), input))
+    # An MCP tool is named mcp__<server>__<tool>: the tool's own name is the part a listener can follow. The page cuts
+    # its input to a line, so no more of it is kept.
+    return Intent(USING, ToolInput(tool.rsplit("__", 1)[-1].replace("_", " "), _cut(json.dumps(dict(input), ensure_ascii=False), LINE)))
 
 
 # [LAW:one-type-per-behavior] one table keyed by tool name, as the step recognisers are; a tool not in it is used.
 _SAID: Mapping[str, Callable[[str, Mapping[str, object]], Intent]] = {
     "Bash": _ran,
-    "Edit": _on_file(EDITING, "edit"),
-    "MultiEdit": _on_file(EDITING, "edit"),
-    "NotebookEdit": _on_file(EDITING, "edit"),
-    "Write": _on_file(EDITING, "write"),
-    "Read": _on_file(READING, "read"),
+    "Edit": _on_file(EDITING),
+    "MultiEdit": _on_file(EDITING),
+    "NotebookEdit": _on_file(EDITING),
+    "Write": _on_file(WRITING_FILES),
+    "Read": _on_file(READING),
     "Grep": _searched,
     "Glob": _searched,
     "WebSearch": _looked_up,
@@ -314,7 +324,7 @@ _SAID: Mapping[str, Callable[[str, Mapping[str, object]], Intent]] = {
 
 
 def _joined(act: str, what: str) -> str:
-    return f"{act} {what}".strip()
+    return " ".join(part for part in (act, what) if part)
 
 
 def _voiced(part: Part) -> str | None:
@@ -366,8 +376,8 @@ def _shown(part: Part, cwd: PurePath) -> str:
             return f"to {_called(to)}: {text}"
         case Message(to=to):
             return f"to {_called(to)}"
-        case ToolInput(tool=tool, input=input):
-            return f"{tool} {json.dumps(dict(input), ensure_ascii=False)}"
+        case ToolInput(tool=tool, json=json_text):
+            return f"{tool} {json_text}"
 
 
 def _called(to: Recipient) -> str:
@@ -391,7 +401,7 @@ def _cut(text: str, width: int) -> str:
 
 
 def _first_line(text: str) -> str:
-    return text.splitlines()[0] if text else text
+    return text.splitlines()[0]
 
 
 # What a listener can follow: words, and the dashes, dots, and underscores names are spelled with.

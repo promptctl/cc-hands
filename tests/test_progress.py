@@ -15,7 +15,8 @@ from hands.core.attention import Amount, Attention, Level, Overlay, Route, Switc
 from hands.core.effects import Progress
 from hands.core.events import Displayed, Progressed, Read, StatusReported, Tick
 from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
-from hands.core.progress import LINE, EDITING, READING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, intent, said
+from hands.core.progress import LINE, EDITING, READING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, Words, doing, explained, intent, said
+from hands.core.progress import Path as Filed
 from hands.core.reducer import reduce
 from hands.core.session import Gone, Idle, Membership, Opened, PromptId, Registry, Running, Session, SessionId, Told, Turn, Untold
 from hands.core import status
@@ -40,33 +41,15 @@ TURN = PromptId("p1")
 IN_TURN = frozenset({TURN})
 IN_NEXT = frozenset({PromptId("p2")})
 MEMBER = Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
-TESTS = Doing(RUNNING, "run the test suite")
+TESTS = Doing(RUNNING, "run the test suite", Words("run the test suite"))
+
+
+def burst(*calls: tuple[str, Mapping[str, object]]) -> tuple[Doing, ...]:
+    return tuple(made for tool, input in calls if (made := doing(tool, input)) is not None)
 
 
 def edit(name: str) -> Doing:
-    return Doing(EDITING, f"edit {name}")
-
-
-@pytest.mark.parametrize(
-    ("tool", "input", "done"),
-    [
-        pytest.param("Bash", {"command": "uv run pytest", "description": "Run the test suite"}, "run the test suite", id="a command by what it is for"),
-        pytest.param("Bash", {"command": "ls"}, "run a command", id="a command with no description, never its code"),
-        pytest.param("Grep", {"pattern": r"def\s+_\w+\("}, "search the code", id="a regular expression is code, never read out"),
-        pytest.param("Glob", {"pattern": "**/*.py"}, "search the code", id="a glob is code, never read out"),
-        pytest.param("Bash", {"command": "gh pr view", "description": "PR status"}, "PR status", id="an initialism kept as written"),
-        pytest.param("Edit", {"file_path": "/code/a/src/tail.py"}, "edit tail.py", id="an edit by the file's name"),
-        pytest.param("Write", {"file_path": "/code/a/new.md", "content": "x"}, "write new.md", id="a write"),
-        pytest.param("Read", {"file_path": "/code/a/README.md"}, "read README.md", id="a read"),
-        pytest.param("Grep", {"pattern": "Progressed"}, "search for Progressed", id="a search"),
-        pytest.param("WebFetch", {"url": "https://docs.python.org/3/library/re.html"}, "read a page on docs.python.org", id="a fetch by its site"),
-        pytest.param("Agent", {"description": "Find hook callers", "prompt": "..."}, "start a subagent to find hook callers", id="a subagent"),
-        pytest.param("mcp__claude_ai_Firecrawl__firecrawl_search", {}, "use firecrawl search", id="an MCP tool by its own name"),
-    ],
-)
-def test_a_call_is_said_by_what_it_sets_out_to_do(tool: str, input: Mapping[str, object], done: str) -> None:
-    made = doing(tool, input)
-    assert made is not None and said((made,)) == done
+    return Doing(EDITING, f"edit {name}", Filed(f"/a/{name}"))
 
 
 @pytest.mark.parametrize("tool", ["AskUserQuestion", "ExitPlanMode"])
@@ -82,6 +65,7 @@ CWD = PurePath("/code/a")
     ("tool", "input", "heard", "line"),
     [
         pytest.param("Bash", {"command": "uv run pytest -q\nmake check", "description": "Run the tests"}, "run the tests", "run the tests", id="a command by its description"),
+        pytest.param("Bash", {"command": "gh pr view", "description": "PR status"}, "PR status", "PR status", id="an initialism kept as written"),
         pytest.param("Bash", {"command": "uv run pytest -q\nmake check"}, "run a command", "uv run pytest -q", id="a command with none by its first line, which the voice does not read"),
         pytest.param("Edit", {"file_path": "/code/a/src/tail.py"}, "edit tail.py", "edit src/tail.py", id="an edit by the file and its path from the cwd"),
         pytest.param("MultiEdit", {"file_path": "/code/a/src/tail.py"}, "edit tail.py", "edit src/tail.py", id="a multi edit"),
@@ -130,12 +114,26 @@ def test_a_tool_the_page_has_no_row_for_is_cut_to_a_line() -> None:
     assert len(intent("mcp__s__t", {"text": "x" * 500}).line(CWD)) == LINE
 
 
-@pytest.mark.parametrize("tool", ["Edit", "Read", "Grep", "WebFetch", "WebSearch", "Agent", "Skill", "SendMessage", "TaskCreate", "TaskUpdate", "AskUserQuestion"])
-def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(tool: str) -> None:
-    acts = {"Edit": "edit a file", "Read": "read a file", "Grep": "search the code", "WebFetch": "look something up on the web", "WebSearch": "look something up on the web",
-            "Agent": "start a subagent", "Skill": "use a tool", "SendMessage": "send a message", "TaskCreate": "update its plan", "TaskUpdate": "update its plan",
-            "AskUserQuestion": "ask the user"}
-    assert intent(tool, {}).line(CWD) == acts[tool]
+@pytest.mark.parametrize(
+    ("tool", "act"),
+    [
+        ("Edit", "edit a file"),
+        ("Write", "write a file"),
+        ("Read", "read a file"),
+        ("Grep", "search the code"),
+        ("WebFetch", "read a page"),
+        ("WebSearch", "look something up on the web"),
+        ("Agent", "start a subagent"),
+        ("Skill", "use a skill"),
+        ("SendMessage", "send a message"),
+        ("TaskCreate", "add a task"),
+        ("TaskUpdate", "update a task"),
+        ("AskUserQuestion", "ask the user"),
+        ("ExitPlanMode", "asked to approve its plan"),
+    ],
+)
+def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(tool: str, act: str) -> None:
+    assert intent(tool, {}).line(CWD) == act
 
 
 @pytest.mark.parametrize(
@@ -146,9 +144,16 @@ def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(
         pytest.param((edit("tail.py"),) * 10, "edit tail.py", id="ten edits of one file are that file"),
         pytest.param((Doing(RUNNING, None),) * 8, "run eight commands", id="calls that say nothing of themselves are each their own"),
         pytest.param((edit("a.py"), TESTS, edit("b.py"), TESTS), "edit two files, then run the test suite", id="each kind once, in the order first done"),
-        pytest.param(tuple(d for tool in ("Write", "Edit") if (d := doing(tool, {"file_path": "/c/a/x.py"})) is not None), "edit x.py", id="a file written and then edited is one file"),
-        pytest.param(tuple(d for path in ("/c/a/__init__.py", "/c/b/__init__.py") if (d := doing("Edit", {"file_path": path})) is not None), "edit two files", id="two files of one name are two files"),
-        pytest.param(tuple(d for to in ("a0123456789abcdef", "afedcba9876543210") if (d := doing("SendMessage", {"to": to})) is not None), "send two messages", id="messages to two agents are two messages"),
+        pytest.param(burst(("Write", {"file_path": "/c/a/x.py"}), ("Edit", {"file_path": "/c/a/x.py"})), "write x.py, then edit x.py", id="a file written and then edited is said as each"),
+        pytest.param(burst(("Write", {"file_path": "/c/a/x.py"}), ("Write", {"file_path": "/c/a/y.py"})), "write two files", id="two writes are two files written"),
+        pytest.param(burst(("Edit", {"file_path": "/c/a/__init__.py"}), ("Edit", {"file_path": "/c/b/__init__.py"})), "edit two files", id="two files of one name are two files"),
+        pytest.param(burst(("Edit", {"file_path": "/x/" + "y" * 130 + "/a.py"}), ("Edit", {"file_path": "/x/" + "y" * 130 + "/b.py"})), "edit two files", id="files that differ only past what the page shows are two files"),
+        pytest.param(burst(("SendMessage", {"to": "a0123456789abcdef"}), ("SendMessage", {"to": "afedcba9876543210"})), "send two messages", id="messages to two agents are two messages"),
+        pytest.param(burst(("Grep", {"pattern": "a.*b"}), ("Grep", {"pattern": "a.*b"})), "search the code", id="one regular expression twice is one search, though the voice does not read it"),
+        pytest.param(burst(("Bash", {"command": "ls"}), ("Bash", {"command": "ls"}), ("Bash", {"command": "pwd"})), "run two commands", id="a command twice is one command"),
+        pytest.param(burst(("WebSearch", {"query": "example.com"}), ("WebFetch", {"url": "https://example.com"})), "search the web for example.com, then read a page on example.com", id="a search and a fetch of one text are two things"),
+        pytest.param(burst(("mcp__s__firecrawl_search", {"query": "a"}), ("mcp__s__firecrawl_search", {"query": "b"})), "use firecrawl search", id="one tool twice is that tool"),
+        pytest.param(burst(("Edit", {"file_path": "/c/a/a.py"}), ("Read", {"file_path": "/c/a/b.py"}), ("Write", {"file_path": "/c/a/a.py"})), "edit a.py, then read b.py, then write a.py", id="each kind says its own act whichever call comes last"),
     ],
 )
 def test_a_burst_is_one_clause(doings: tuple[Doing, ...], sentence: str) -> None:
@@ -405,7 +410,7 @@ def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
         "type": "Progressed",
         "session": SID,
         "of": ["p1"],
-        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command"}, "alone": "run the test suite", "thing": None}],
+        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command", "act": "", "hooked": False}, "alone": "run the test suite", "of": {"type": "Words", "text": "run the test suite", "aside": None}}],
         "at": 7.0,
     }
 
@@ -598,7 +603,7 @@ async def test_a_burst_is_not_kept_waiting_on_the_summary_of_the_one_ahead_of_it
 
 AGENT = AgentId("a0eea659e39132f84")
 REVIEW = AgentTask(AGENT, "Review the parser change")
-READ_TAIL = Doing(READING, "read tail.py")
+READ_TAIL = Doing(READING, "read tail.py", Filed("/a/tail.py"))
 
 # The job a subagent is given is the record its transcript starts from, and no call of its own.
 JOB = '{"type":"user","parentUuid":null,"uuid":"u0","message":{"role":"user","content":"Review the diff."}}'
