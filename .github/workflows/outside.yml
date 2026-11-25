@@ -1,11 +1,9 @@
 # The tests marked `outside` (the real speech models, the pinned Claude Code, a Chrome page), fritter's Go tests and wake-training's
 # suite: what test.yml leaves out. They run daily and on request (`gh workflow run outside.yml`), not on a PR or in the merge queue,
-# and the check named `outside` says whether they passed.
+# and the check named `outside` says whether they passed. A red run opens an issue (the `alarm` job), since no PR is waiting on it.
 #
-# They are not on the path a merge waits on because they cannot be inside 5 minutes there: they are about 1,800 s of tests, a job
-# that loads the speech models spends 150 s before its first test (the runner and the tools, then restoring the 3.8 GB Hugging
-# Face cache), and so cutting them into 5-minute jobs takes 60 and more, against a Free plan's 5 macOS runners, which every PR,
-# the queue and master share. The `pair` and `rest` jobs below are the two tiers as they were, with the limit each needs.
+# Why they are not on the path a merge waits on: docs/testing.md, "Where CI runs the suite". The `pair` and `rest` jobs below are
+# the two tiers as they were, with the limit each needs.
 name: outside
 
 on:
@@ -109,3 +107,27 @@ jobs:
         env:
           TIERS: ${{ needs.tiers.result }}
         run: test "$TIERS" = success || { echo "the tiers' result is $TIERS, not success" >&2; exit 1; }
+
+  # [LAW:nothing-unseen] No PR waits on this run, so a red one reaches a person here: one open issue says the outside tests are
+  # red, and each further red run is a comment on it. The issue is closed by whoever fixes the tests.
+  alarm:
+    needs: outside
+    if: ${{ needs.outside.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      TITLE: the outside tests are red
+    steps:
+      - name: Say so
+        run: |
+          open=$(gh issue list --repo "$REPO" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$REPO" --body "Red again: $RUN"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body "outside.yml went red: $RUN"
+          fi

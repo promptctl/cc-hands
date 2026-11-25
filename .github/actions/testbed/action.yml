@@ -1,7 +1,7 @@
-# What the suite's tests run in beyond the locked environment (prepare): the sentence tokenizer, lit, and the machine's Claude
-# Code policy. A job that only reads the code, as the type checks do, does not need them.
+# What the suite's tests run in beyond the locked environment (prepare): the sentence tokenizer, the echo canceller's models, lit,
+# and the machine's Claude Code policy. A job that only reads the code, as the type checks do, does not need them.
 name: testbed
-description: The tokenizer, lit and a Claude Code policy, as the suite's tests find them on a developer's Mac
+description: The tokenizer, the echo canceller's models, lit and a Claude Code policy, as the suite's tests find them on a developer's Mac
 runs:
   using: composite
   steps:
@@ -11,6 +11,12 @@ runs:
       with:
         path: .pytest_cache/d/nltk-data
         key: nltk-data-${{ hashFiles('tests/sentences.py') }}
+    # The echo canceller's two models, which the unit layer's tests of it run for real (tests/fetches.py), fetched by the run at
+    # the revision src/hands/voice/dtln.py pins; kept the same way, for every shard.
+    - uses: actions/cache@v4
+      with:
+        path: .pytest_cache/d/dtln-aec
+        key: dtln-aec-${{ hashFiles('src/hands/voice/dtln.py') }}
     # The backlog tests that run lit itself skip without one; the release its own installer hands out is what hands
     # meets, so a lit release that changes what hands reads fails here, not days later in every brain's audit log.
     # gh names that release under the job's token, and the installer comes from the same tag as the archive it

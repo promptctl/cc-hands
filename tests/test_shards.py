@@ -3,12 +3,13 @@ cut in every job, since each job computes it alone."""
 
 import json
 from collections import Counter
+from pathlib import Path
 from collections.abc import Generator
 import pytest
 
 from costs import report
-from shards import COSTS, Costs, Shard, Sharding, costs_from, partition
-from test_costs import FINISHED, STARTED, spent
+from shards import COSTS, DIGEST, Costs, Shard, ShardError, Sharding, costs_from, partition
+from reportlogs import FINISHED, STARTED, spent
 
 
 def numbered(module: str, count: int) -> list[str]:
@@ -27,7 +28,7 @@ def test_a_shard_is_k_of_n(text: str, shard: Shard) -> None:
 
 @pytest.mark.parametrize("text", ["", "2", "2/", "/4", "0/4", "5/4", "a/b", "-1/4", "1/0", "1/4/4"])
 def test_anything_else_is_no_shard(text: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ShardError):
         Shard.parse(text)
 
 
@@ -73,10 +74,23 @@ def test_a_test_the_file_does_not_name_costs_the_fallback() -> None:
 def test_costs_come_from_the_most_any_log_gives_each_test_and_each_modules_setup() -> None:
     fast = report(STARTED + spent("tests/a.py::test_slow", 1, 5, 1) + spent("tests/a.py::test_quick", 1, 0.01, 0) + spent("tests/b.py::test_x", 0, 0.01, 0) + FINISHED)
     slow = report(STARTED + spent("tests/a.py::test_slow", 3, 9, 1) + spent("tests/a.py::test_quick", 1, 0.02, 0) + FINISHED)
-    costs = costs_from([fast, slow])
+    costs = costs_from({"fast": fast, "slow": slow})
     assert costs.tests == {"tests/a.py::test_slow": 10.0}
     assert costs.setups == {"tests/a.py": 4.0}
     assert costs.fallback == pytest.approx(0.015)
+
+
+def test_a_log_with_no_row_of_the_report_is_refused_by_name_and_not_made_a_cost_file() -> None:
+    with pytest.raises(ValueError, match="expired.log holds no row"):
+        costs_from({"expired.log": ""})
+
+
+@pytest.mark.parametrize("data", [{"fallback": None, "setups": {}, "tests": {}}, {"fallback": 0, "setups": {}, "tests": {"tests/a.py::t": "1.5"}}, {"fallback": 0, "setups": {"tests/a.py": True}, "tests": {}}])
+def test_a_cost_file_of_anything_but_seconds_is_refused_naming_the_file(data: dict[str, object], tmp_path: Path) -> None:
+    path = tmp_path / "costs.json"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="costs.json"):
+        Costs.load(path)
 
 
 def test_the_committed_cost_file_is_the_shape_the_cost_reader_takes() -> None:
@@ -103,7 +117,7 @@ def test_a_shards_run_keeps_its_tests_and_says_what_it_was_packed_at(pytester: p
     for index in (1, 2, 3):
         result = shard_run(pytester, Shard(index, 3), costs)
         result.assert_outcomes(passed=4, deselected=8)
-        result.stdout.fnmatch_lines([f"shard {index}/3: 4 tests, packed at 4.0 s"])
+        result.stdout.fnmatch_lines([f"shard {index}/3: 4 tests, packed at 4.0 s, of the ids digest *"])
         ran += [line.split()[0] for line in result.outlines if " PASSED" in line]
     assert sorted(ran) == sorted(f"test_{module}.py::test_{n}" for module in "abc" for n in range(4))
 
@@ -111,7 +125,7 @@ def test_a_shards_run_keeps_its_tests_and_says_what_it_was_packed_at(pytester: p
 def test_the_shard_comes_after_the_tests_a_selection_drops(pytester: pytest.Pytester) -> None:
     result = shard_run(pytester, Shard(1, 2), Costs({}, {}, 1.0), "-k", "test_0 or test_1")
     # Six tests are selected, as three modules of two: the shard's two modules, not the eight of a cut of all twelve.
-    result.stdout.fnmatch_lines(["shard 1/2: 4 tests, packed at 4.0 s"])
+    result.stdout.fnmatch_lines(["shard 1/2: 4 tests, packed at 4.0 s, of the ids digest *"])
     result.assert_outcomes(passed=4, deselected=8)
 
 
@@ -139,3 +153,21 @@ def test_a_slow_test_the_file_does_not_name_is_said_to_be_missing_from_it(pytest
     pytester.makepyfile(test_slow="def test_slept():\n    pass\n")
     result = pytester.runpytest_inprocess("-p", "no:randomly", plugins=[Takes(0.6), Sharding(Shard(1, 1), Costs({}, {}, 0.0))])
     result.stdout.fnmatch_lines(["*cost 0.6 s and not in tests/shard-costs.json: test_slow.py::test_slept"])
+
+
+def test_a_slow_module_setup_the_file_does_not_name_is_said_to_be_missing_from_it(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(test_fixture="import pytest\n\n@pytest.fixture\ndef slow():\n    pass\n\ndef test_uses(slow):\n    pass\n")
+    pytester.makeconftest("import pytest\n\n@pytest.hookimpl(wrapper=True)\ndef pytest_runtest_makereport(call):\n    report = yield\n    if call.when == 'setup':\n        report.duration = 0.7\n    return report\n")
+    result = pytester.runpytest_inprocess("-p", "no:randomly", plugins=[Sharding(Shard(1, 1), Costs({}, {}, 0.0))])
+    result.stdout.fnmatch_lines(["*setup, call and teardown: 0.7 s, packed at 0.0 s", "*setup cost 0.7 s and not in tests/shard-costs.json: test_fixture.py"])
+
+
+def test_every_shard_of_one_suite_records_the_same_digest_and_another_suite_another(pytester: pytest.Pytester) -> None:
+    digests: list[str] = []
+    for index in (1, 2, 3):
+        result = shard_run(pytester, Shard(index, 3), Costs({}, {}, 1.0))
+        assert result.ret == pytest.ExitCode.OK
+        digests.append((pytester.path / ".pytest_cache" / "v" / DIGEST).read_text())
+    assert len(set(digests)) == 1
+    shard_run(pytester, Shard(1, 3), Costs({}, {}, 1.0), "-k", "test_0")
+    assert (pytester.path / ".pytest_cache" / "v" / DIGEST).read_text() not in digests

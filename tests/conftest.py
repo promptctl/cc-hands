@@ -594,8 +594,8 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("layer", None) == "audit":
         config.option.timeout = AUDIT_TIMEOUT
     config.pluginmanager.register(timeouts, "timeouts")
-    if (shard := cast(shards.Shard, config.getoption("shard", shards.WHOLE))) != shards.WHOLE:
-        config.pluginmanager.register(shards.Sharding(shard, shards.Costs.load(shards.COSTS)), "shards")
+    # [LAW:dataflow-not-control-flow] the run that is not cut is a cut of 1 of 1, through the same plugin: a cost file `make check` never read would be one only CI's jobs find broken.
+    config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard", shards.WHOLE)), shards.Costs.load(shards.COSTS)), "shards")
     clockwatch.register(config, clockwatch.UNMOVED)
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")

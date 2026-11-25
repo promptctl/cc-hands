@@ -7,9 +7,11 @@
 # on every turn.
 check: check-unit check-types
 
-# The unit layer. SHARD=K/N runs the Kth of N shards of it (tests/shards.py): test.yml's `unit` jobs each run one.
+# The unit layer. SHARD=K/N runs the Kth of N shards of it (tests/shards.py): test.yml's `unit` jobs each run one, and a run that
+# names none is the 1st of 1.
+SHARD ?= 1/1
 check-unit:
-	uv run pytest --layer=unit $(if $(SHARD),--shard=$(SHARD)) --report-log=.pytest_cache/$@-log.jsonl
+	uv run pytest --layer=unit --shard=$(SHARD) --report-log=.pytest_cache/$@-log.jsonl
 
 # test.yml's `types` job.
 check-types:

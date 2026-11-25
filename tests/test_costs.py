@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from costs import REPORT_LOG, Cost, report, rows
+from reportlogs import FINISHED, STARTED, phase, spent
 
 ROOT = Path(__file__).parents[1]
 
@@ -20,18 +21,6 @@ def test_passes():
 def test_fails():
     assert False
 """
-
-
-def phase(test: str, when: str, duration: float) -> str:
-    return json.dumps({"$report_type": "TestReport", "nodeid": test, "when": when, "duration": duration}) + "\n"
-
-
-def spent(test: str, setup: float, call: float, teardown: float) -> str:
-    return phase(test, "setup", setup) + phase(test, "call", call) + phase(test, "teardown", teardown)
-
-
-STARTED = json.dumps({"$report_type": "SessionStart", "pytest_version": "9.1.1"}) + "\n"
-FINISHED = json.dumps({"$report_type": "SessionFinish", "exitstatus": 0}) + "\n"
 
 
 def test_a_report_gives_the_run_then_each_module_then_each_test_slowest_first() -> None:

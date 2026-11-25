@@ -101,15 +101,16 @@ Free plan runs 5 macOS jobs at once, shared by every PR, the merge queue and mas
 `.github/workflows/test.yml`, every PR and the merge queue, ends inside 5 minutes: `make check-unit` as four shards, `unit 1/4`
 to `unit 4/4`, and `make check-types`, five jobs, one wave. Each shard is `pytest --shard=K/N` (tests/shards.py): the tests the
 Kth of N holds, packed to equal seconds from what each test cost on CI (tests/shard-costs.json), the same cut in every job. The
-cost file is made from the jobs' logs, which print each test's cost (tests/costs.py), with
-`gh run view --job <id> --log > log; uv run python tests/shards.py log... > tests/shard-costs.json`: a test costs the most any
-log gives it, so the shards hold on a slow runner, and a stale file only unbalances them. Each shard prints what it was packed
-at beside what it cost, and the slow tests the file does not name. The check `test` passes when all of them did.
+cost file is made from the jobs' logs, which print each test's cost (tests/costs.py); tests/shards.py says how. A stale file
+loses no test: it unbalances the shards, and each prints what it was packed at beside what it cost, and the slow tests and
+setups the file does not name. Each also records a digest of the test ids it collected, and the check `test` passes when all
+of the jobs did and the shards' digests are one: a test is in exactly one shard when they collected the same.
 
 `.github/workflows/outside.yml`, daily and on request, runs what `test` leaves out: `make check-pair` and `make check-rest`,
 the tests marked `outside`, fritter's Go tests and wake-training's suite. They are about 1,800 s of tests and each job spends
 150 s before its first, so held to 5 minutes they would be 60 jobs and more against the 5 runners; they are not on the path a
-merge waits on. The check `outside` passes when both did.
+merge waits on. The check `outside` passes when both did, and a red run opens a GitHub issue (or comments on the one that is
+open), since no PR is waiting on it.
 
 ## Placing a new test
 
