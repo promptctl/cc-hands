@@ -114,8 +114,8 @@ other connection goes through fritter unopened, through the proxy fritter itself
 given if there was one.
 
 How a connection is told apart, answered or joined, and how the child is given a
-certificate to trust, lives in `intercept/`, which brioche, the brain's proxy, shares. A
-change there is a change to fritter, and so to every session that runs under it.
+certificate to trust, lives in `intercept/`. A change there is a change to fritter, and so
+to every session that runs under it.
 
 A copy of each exchange with UPSTREAM goes to `SOCKET`, one connection per exchange, as
 JSON lines in the order it happened:

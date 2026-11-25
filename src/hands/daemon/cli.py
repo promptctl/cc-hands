@@ -974,7 +974,7 @@ def login(children: Children, home: Home, pin: pinned.Pin, method: "Method", rec
     from hands.brain.configdir import Unstartable
     from hands.brain.process import LoginFailed, NotLoggedIn, starting_settings
     from hands.brain.process import login as brain_login
-    from hands.sessions.proxy import Direct
+    from hands.core.wire import Direct
 
     # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
     # it took Claude Code's first run, and the account it ended on.
@@ -983,7 +983,7 @@ def login(children: Children, home: Home, pin: pinned.Pin, method: "Method", rec
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            # Direct: a login runs while no hands, and so no proxy of its, may be running.
+            # Direct: this terminal's environment, os.environ, never carries hands' proxy, which only the brain is given.
             signed = brain_login(children, home.brain, pin, Direct(), os.environ, method)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))

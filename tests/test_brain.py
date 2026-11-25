@@ -2,9 +2,11 @@
 side questions hands asks of a Claude Code of their own."""
 
 import asyncio
+import getpass
 import json
 import os
 import pickle
+import plistlib
 import re
 import shutil
 import signal
@@ -31,7 +33,7 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, Request, Unanswer
 from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
-from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, LOOPBACK, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, entrypoint, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, entrypoint, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.brain.configdir import Unstartable
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
@@ -50,11 +52,13 @@ from hands.brain.stage import BrainStage
 from hands.core.session import SessionId, pasted
 from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Sent, Written
 from hands.core.wire import Text as Said
+from hands.core import loopback
+from hands.core.wire import Direct, ThroughProxy
 from hands.daemon.cli import main
 from hands.daemon import run
 from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
-from hands.sessions.proxy import Direct, ThroughProxy, Wire
+from hands.sessions.proxy import Wire
 from hands.sessions.untap import ROUTING, untapped
 from hands.sessions.summaries import Summaries
 from hands.sessions import heartbeat, wrapper
@@ -472,7 +476,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     # but loopback's, where hands serves it, and the proxy's authority is among what it trusts. Set in the tap's mark, the
     # values hands' environment held before are kept beside them for what the brain runs.
     tapped = {name: THROUGH.url for name in ("FRITTER_TAP", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")}
-    exempt = {"NO_PROXY": LOOPBACK, "no_proxy": LOOPBACK, "NODE_EXTRA_CA_CERTS": str(THROUGH.trust), "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128"}
+    exempt = {"NO_PROXY": loopback.HOST, "no_proxy": loopback.HOST, "NODE_EXTRA_CA_CERTS": str(THROUGH.trust), "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128"}
     assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", **tapped, **exempt, **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain")}
     # What the brain runs is given hands' own environment's way to the world back, as fritter's untap gives it.
     assert {name: value for name, value in untapped(env).items() if name in ROUTING} == {"HTTPS_PROXY": "http://corp:3128"}
@@ -631,6 +635,33 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
     settings.unlink()
     settings.mkdir()
     assert "the brain's settings could not be read" in refused(configdir.runnable(configdir.read(brain, brain_pin)))
+
+
+def test_each_file_of_the_machines_policy_whose_env_routes_the_brain_around_hands_proxy_refuses_the_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    brain = tmp_path / "brain"
+    onboard(brain)
+    script = tmp_path / "claude"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    brain_pin = pin(brain, script)
+    assert configdir.runnable(configdir.read(brain, brain_pin)) == Runnable(brain_pin.verified(brain), None)
+    # Its managed settings, their drop-ins, and the plists of the machine and of the account the brain runs as.
+    machine = configdir.Machine(tmp_path / "ClaudeCode", tmp_path / "Managed Preferences")
+    drop_ins, account = machine.folder / "managed-settings.d", machine.preferences / getpass.getuser()
+    drop_ins.mkdir(parents=True)
+    account.mkdir(parents=True)
+    (machine.folder / "managed-settings.json").write_text(json.dumps({"permissions": {"allow": ["WebFetch"]}, "env": {"PATH": "/bin"}}))
+    (drop_ins / "10-proxy.json").write_text(json.dumps({"env": {"HTTPS_PROXY": "http://corp:3128", "NO_PROXY": "*"}}))
+    (machine.preferences / "com.anthropic.claudecode.plist").write_text("not a plist")
+    (account / "com.anthropic.claudecode.plist").write_bytes(plistlib.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gateway.example"}}))
+    monkeypatch.setattr(configdir, "MACHINE", machine)
+    match configdir.runnable(configdir.read(brain, brain_pin)):
+        case (proxied, unread, based):
+            assert proxied == f"the machine's Claude Code policy at {drop_ins / '10-proxy.json'} sets HTTPS_PROXY, NO_PROXY in its env, which would send the brain's requests around hands' proxy: remove them from it"
+            assert unread.startswith(f"the machine's Claude Code policy at {machine.preferences / 'com.anthropic.claudecode.plist'} could not be read (")
+            assert based == f"the machine's Claude Code policy at {account / 'com.anthropic.claudecode.plist'} sets ANTHROPIC_BASE_URL in its env, which would send the brain's requests around hands' proxy: remove them from it"
+        case ran:
+            raise AssertionError(f"{ran} is not the three refusals")
 
 
 @pytest.mark.outside

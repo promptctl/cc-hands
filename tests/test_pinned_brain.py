@@ -10,6 +10,7 @@ import pytest
 from pinnedbrain import TURN, Hands, MockApi
 from pinnedbrain import claude_code, hands, mock_api, mock_binary  # pyright: ignore[reportUnusedImport]
 from hands.core.wire import MainTurn
+from hands.sessions.wide import WideEvent
 
 pytestmark = pytest.mark.outside
 
@@ -25,7 +26,9 @@ async def test_a_turn_said_to_hands_goes_through_its_proxy_to_the_mock_and_the_r
     # its HTTPS proxy and no base URL, reached https://api.anthropic.com through the proxy and trusted the authority the
     # proxy ended its TLS with, so it took the proxy for the API itself.
     assert isinstance(turn.kind, MainTurn) and turn.kind.prompt is not None, turn.kind
-    # Each exchange is recorded once, the turn's among them, by the one recorder every request through the proxy passes.
+    # Each exchange is recorded once, the turn's among them, by the one recorder every request through the proxy passes:
+    # counted once the brain's turn has ended, so every exchange of it has had its chance to be recorded twice.
+    await hands.until(lambda: any(isinstance(entry, WideEvent) and entry.event == "brain.turn" for entry in hands.recorded))
     await hands.until(lambda: any(ended.exchange == turn.exchange for ended in hands.exchanged))
     assert all(count == 1 for count in Counter(ended.exchange for ended in hands.exchanged).values()), hands.exchanged
     assert {ended.exchange for ended in hands.exchanged} <= {request.exchange for request in hands.sent}

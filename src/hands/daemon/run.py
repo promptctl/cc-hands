@@ -41,7 +41,7 @@ from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
 from hands.core.stopfailure import LoginExpired
-from hands.core.wire import API_HOST, UPSTREAM, Answering, Exchanged, Heard, Observed, Received, Sent
+from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Received, Sent, ThroughProxy
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
@@ -54,8 +54,8 @@ from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import Summaries
-from hands.sessions.authority import Uninterceptable, mint
-from hands.sessions.proxy import ThroughProxy, Wire, serve_proxy
+from hands.sessions.authority import Uninterceptable
+from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
 from hands.sessions.server import serve_display, serve_hooks
 from hands.sessions.tap import serve_tap, tap_observer
@@ -316,10 +316,10 @@ async def run(
         logged = wire_to(record)
         wire = Wire(clock, logged)
         try:
-            proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock, environment, mint(API_HOST, clock), home.trust)
+            proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock, environment, home.trust, record)
         except Uninterceptable as error:
             # [LAW:no-silent-failure] the brain reaches the API through hands' proxy or not at all.
-            raise CannotStart(f"hands' proxy cannot end the brain's TLS to the API: {error}") from error
+            raise CannotStart(f"hands' proxy cannot serve the brain's way to the API: {error}") from error
         held.push_async_callback(proxy.close)
         # The url the brain's HTTPS_PROXY is set to, and the file its NODE_EXTRA_CA_CERTS names.
         run_start.heard(proxy=proxy.url, trust=proxy.through.trust, upstream=UPSTREAM)

@@ -13,7 +13,7 @@ from conftest import children_on, laid_out, new_sessions, shell_without_hands_se
 from fixtures import pins
 from fixtures.pins import LAID_OUT
 from fakeprocesses import processes
-from hands.brain import process
+from hands.brain import configdir, process
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
@@ -60,6 +60,14 @@ def _untrusted(home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
     (home.brain / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(home.root.resolve()): {"hasTrustDialogAccepted": False}}}))
 
 
+def _policed(home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A machine's Claude Code policy, as a managed Mac holds one, whose env Claude Code puts over the brain's too.
+    machine = configdir.Machine(home.root / "ClaudeCode", home.root / "Managed Preferences")
+    machine.folder.mkdir()
+    (machine.folder / "managed-settings.json").write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": "/etc/corp.pem"}}))
+    monkeypatch.setattr(configdir, "MACHINE", machine)
+
+
 def _unreadable(path: Path) -> None:
     path.chmod(0)
 
@@ -94,6 +102,7 @@ FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("a bad defaultMode", lambda home, _: (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "permissions": {"defaultMode": "acceptedits"}})), 'a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in'),
     # Claude Code puts settings.json's env over the environment hands starts the brain in, hands' proxy's variables too.
     ("an env that routes the brain around hands' proxy", lambda home, _: (home.brain / "settings.json").write_text(json.dumps({**KEPT_OUT, "env": {"HTTPS_PROXY": "http://corp:3128", "ANTHROPIC_BASE_URL": "https://gateway.example", "PATH": "/bin"}})), "the brain's settings set HTTPS_PROXY, ANTHROPIC_BASE_URL in their env, which would send the brain's requests around hands' proxy: remove them from "),
+    ("a machine policy that routes the brain around hands' proxy", _policed, "/ClaudeCode/managed-settings.json sets NODE_EXTRA_CA_CERTS in its env, which would send the brain's requests around hands' proxy: remove them from it"),
     ("a kept voice hands has no voice for", lambda home, _: home.voice.write_text("zed\n"), "says 'zed', which names no voice hands has"),
 ]
 

@@ -1,4 +1,4 @@
-"""`hands <command>` in a fresh interpreter, writing which of Pipecat and torch it loaded to a file.
+"""`hands <command>` in a fresh interpreter, writing which of Pipecat, torch and cryptography it loaded to a file.
 
     python command_imports_child.py <home> <command> <out>
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from hands.brain import pinned, process
     from hands.sessions.child import Children
-    from hands.sessions.proxy import ApiRoute
+    from hands.core.wire import ApiRoute
     from hands.voice import phoneaddress
 
 
@@ -64,7 +64,7 @@ def main() -> None:
     # command that waits would.
     code = cli.main(["--home", home, command], Interrupting(VirtualClock()), processes=cli.KERNEL)
     with open(out, "w") as file:
-        json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch"})}, file)
+        json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch", "cryptography"})}, file)
 
 
 main()

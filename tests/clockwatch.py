@@ -42,7 +42,8 @@ CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 # those to move: they run a real Claude Code, and nothing tells them when it has done what they wait on; nor is
 # test_processes_contract_kernel.py, whose children's exec and exit the kernel's table alone says, polled on the machine's
 # time; nor test_terminals_contract_tmux.py, whose tmux server and programs say only by what they leave that they are up;
-# nor are test_pages.py and test_phonewakepage.py, whose verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
+# nor are test_pages.py and test_phonewakepage.py, whose verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it; nor is
+# test_proxy_connect.py, whose clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
 UNMOVED = frozenset({
     "conftest.py",
@@ -102,6 +103,7 @@ UNMOVED = frozenset({
     "test_terminals_contract_tmux.py",
     "test_progress.py",
     "test_proxy.py",
+    "test_proxy_connect.py",
     "test_read_session.py",
     "test_readiness.py",
     "test_recall.py",

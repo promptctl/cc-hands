@@ -29,11 +29,10 @@ from hands.brain.process import starting_settings, workdir
 from hands.clock import SYSTEM
 from hands.core.attention import Attention
 from hands.core.session import Runnable
-from hands.core.wire import API_HOST, SIDE_QUESTION_OPENING, Exchanged, Observed, Sent
+from hands.core.wire import SIDE_QUESTION_OPENING, Exchanged, Observed, Sent
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
 from hands.sessions.home import Home
-from hands.sessions.authority import mint
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.summaries import Summaries
 from hands.sessions.tmux import TmuxExit, ran_at
@@ -264,7 +263,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
     # [LAW:effects-at-boundaries] the change from the run's own wiring, beside the pinned claude: the upstream hands' proxy
     # forwards to.
-    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, SYSTEM, environment, mint(API_HOST, SYSTEM), tmp_path / "trusted.pem")
+    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, SYSTEM, environment, tmp_path / "trusted.pem", recorded.append)
     try:
         refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
         config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT, brain=_runnable(brain)), voice=voicechoice.DEFAULT)

@@ -18,7 +18,6 @@ from hands.brain.session import BrainSession
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.wire import (
-    API_HOST,
     CLASS_HEADER,
     CONTINUATION_CLOSING,
     CONTINUATION_OPENING,
@@ -45,7 +44,6 @@ from hands.core.wire import (
     classify,
 )
 from hands.sessions.audit import Entry
-from hands.sessions.authority import mint
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.core.trace import Span
 from hands.sessions.wide import WideEvent, root
@@ -482,7 +480,7 @@ async def brain(tmp_path: Path) -> AsyncIterator[Callable[[list[Entry]], Awaitab
         await web.TCPSite(upstream, "127.0.0.1", 0).start()
         clock = VirtualClock(epoch=datetime.fromtimestamp(0, UTC))
         wire = Wire(clock, lambda _observed: None)
-        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock, {}, mint(API_HOST, clock), tmp_path / "trusted.pem")
+        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock, {}, tmp_path / "trusted.pem", recorded.append)
         asides = Asides(clock, proxy.url, Newest(BrainSession(BRAIN)), recorded.append)
 
         class Listening:

@@ -1,13 +1,17 @@
 """Claude Code's config directory as the brain uses it, read from its files alone, starting no Claude Code: the pinned
-claude, settings.json, the first screens .claude.json records, and the syncs settings.json keeps out.
+claude, settings.json, the first screens .claude.json records, and the syncs settings.json keeps out; and the machine's
+Claude Code policy, which every config directory on it is started under.
 
 [LAW:parse-dont-validate] each file is parsed once into a value whose unreadable fields are variants of it, never an
 exception that discards the fields parsed beside it, so every refusal is read off the values and none hides another.
 """
 
 import os
+import plistlib
+import getpass
 from dataclasses import dataclass
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 from hands.brain import pinned
 from hands.core.session import PERMISSION_MODES, PermissionMode, PinnedClaude, Runnable, UnknownMode
@@ -31,6 +35,20 @@ STATE = ".claude.json"
 
 
 @dataclass(frozen=True)
+class Machine:
+    """Where Claude Code reads the machine's policy on macOS (docs/claude-code-behavior.md, machine policy): the folder
+    of its managed settings and their drop-ins, and the managed preferences that hold its plists, the machine's and each
+    account's."""
+
+    folder: Path
+    preferences: Path
+
+
+MACHINE = Machine(Path("/Library/Application Support/ClaudeCode"), Path("/Library/Managed Preferences"))
+_PLIST = "com.anthropic.claudecode.plist"
+
+
+@dataclass(frozen=True)
 class Env:
     """What settings.json's env puts in the brain's environment that hands weighs: the API key, by the last 20
     characters Claude Code records its answer on, None for none; and each variable of ROUTING it sets, which Claude Code
@@ -48,6 +66,16 @@ class Settings:
     synced: tuple[str, ...]
     mode: PermissionMode | UnknownMode | Unread | None
     env: Env | Unread
+
+
+@dataclass(frozen=True)
+class Policy:
+    """One file of the machine's Claude Code policy, and each variable of ROUTING its env sets: Claude Code puts a
+    policy's env over the environment it is started in, as it does settings.json's (docs/claude-code-behavior.md, policy
+    env), so over hands' way to the API."""
+
+    path: Path
+    routing: tuple[str, ...] | Unread
 
 
 @dataclass(frozen=True)
@@ -75,6 +103,8 @@ class ConfigDir:
     claude: PinnedClaude | pinned.Unpinned
     settings: Settings | Unread
     state: State | Absent | Unread
+    # Each file of the machine's policy that is there.
+    policy: tuple[Policy, ...]
 
 
 def cwd(config_dir: Path) -> Path:
@@ -83,15 +113,16 @@ def cwd(config_dir: Path) -> Path:
 
 
 def read(config_dir: Path, pin: pinned.Pin) -> ConfigDir:
-    """Every file of `config_dir` the brain starts on, read, its claude weighed against `pin`; never raises on what they
-    hold. Hashes a pinned claude this process has not hashed since it changed, about 230 MB, so it is called off the loop."""
+    """Every file of `config_dir` the brain starts on, read, its claude weighed against `pin`, and the machine's policy;
+    never raises on what they hold. Hashes a pinned claude this process has not hashed since it changed, about
+    230 MB, so it is called off the loop."""
     try:
         claude: PinnedClaude | pinned.Unpinned = pin.verified(config_dir)
     except pinned.Unpinned as error:
         claude = error
     # realpath, not resolve: a link loop is a directory Claude Code trusts none of, never a raise.
     here = Path(os.path.realpath(cwd(config_dir)))
-    return ConfigDir(config_dir, here, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here))
+    return ConfigDir(config_dir, here, claude, _settings(config_dir / SETTINGS), _state(config_dir / STATE, here), _policies(MACHINE))
 
 
 def _settings(path: Path) -> Settings | Unread:
@@ -125,7 +156,35 @@ def _env(said: Payload) -> Env | Unread:
         return Unread(str(error))
     # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its last 20
     # characters once it is trimmed.
-    return Env(key.strip()[-20:] if key else None, tuple(name for name in ROUTING if name in env.fields))
+    return Env(key.strip()[-20:] if key else None, _routing(env))
+
+
+def _routing(env: Payload) -> tuple[str, ...]:
+    return tuple(name for name in ROUTING if name in env.fields)
+
+
+def _policies(machine: Machine) -> tuple[Policy, ...]:
+    # Claude Code reads every one of them, the plist of the account the brain runs as among them; a variable any of them
+    # sets is put over hands' way to the API.
+    plists = (machine.preferences / _PLIST, machine.preferences / getpass.getuser() / _PLIST)
+    files = (machine.folder / "managed-settings.json", *sorted((machine.folder / "managed-settings.d").glob("*.json")), *plists)
+    return tuple(policy for file in files for policy in _policy(file))
+
+
+def _policy(path: Path) -> tuple[Policy, ...]:
+    """The policy at `path`, or none where there is no file."""
+    try:
+        held = path.read_bytes()
+    except FileNotFoundError:
+        return ()
+    except OSError as error:
+        return (Policy(path, Unread(str(error))),)
+    try:
+        said = Payload.of(plistlib.loads(held), "the plist") if path.suffix == ".plist" else Payload.parse(held)
+        env = Payload.of(said.fields.get("env", {}), "its env")
+    except (Rejected, ValueError, ExpatError) as error:
+        return (Policy(path, Unread(str(error))),)
+    return (Policy(path, _routing(env)),)
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -165,7 +224,7 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     """What a Claude Code of hands' own is run with on `config`, or every reason none may run on it, each naming its fix:
     no pinned claude, or settings it must not start on, which a run of one, `hands login`'s among them, would load."""
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
-    refused = (*_pinned(config.claude), *_kept_out(config))
+    refused = (*_pinned(config.claude), *_kept_out(config), *(refusal for policy in config.policy for refusal in _policed(policy)))
     match config.claude, config.settings:
         case PinnedClaude() as claude, Settings(mode=str() | None as mode) if not refused:
             return Runnable(claude, mode)
@@ -211,6 +270,17 @@ def _routed(env: Env | Unread, path: Path) -> tuple[str, ...]:
             return (f"the brain's settings set {', '.join(routing)} in their env, which would send the brain's requests around hands' proxy: remove them from {path}",)
 
 
+def _policed(policy: Policy) -> tuple[str, ...]:
+    match policy.routing:
+        case Unread(reason=reason):
+            return (f"the machine's Claude Code policy at {policy.path} could not be read ({reason}), and its env may send the brain's requests around hands' proxy: correct it",)
+        case ():
+            return ()
+        case routing:
+            # [LAW:single-enforcer] as settings.json's env is refused, for the same reason.
+            return (f"the machine's Claude Code policy at {policy.path} sets {', '.join(routing)} in its env, which would send the brain's requests around hands' proxy: remove them from it",)
+
+
 def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:
     named = f"name one of {', '.join(SETTINGS_MODES)} in {path}"
     match mode:
@@ -234,12 +304,10 @@ def unanswered(config: ConfigDir) -> tuple[str, ...]:
             return (_unreadable(state, unread),)
         case State(onboarded=onboarded, trusted=trusted, answered=answered):
             pass
-    env = config.settings.env if isinstance(config.settings, Settings) else config.settings
-    key = env.key if isinstance(env, Env) else env
     return (
         *_screen(onboarded, state, "its onboarding unfinished"),
         *_screen(trusted, state, f"{config.cwd} untrusted"),
-        *_keyed(answered, key, state, config.path / SETTINGS),
+        *_keyed(answered, config.settings, state, config.path / SETTINGS),
     )
 
 
@@ -255,17 +323,15 @@ def _screen(passed: bool | Unread, state: Path, why: str) -> tuple[str, ...]:
             return () if passed else (why,)
 
 
-def _keyed(answered: frozenset[str] | Unread, key: str | Unread | None, state: Path, settings: Path) -> tuple[str, ...]:
-    match answered, key:
+def _keyed(answered: frozenset[str] | Unread, settings: Settings | Unread, state: Path, path: Path) -> tuple[str, ...]:
+    match answered, settings:
         case Unread() as unread, _:
             return (_unreadable(state, unread),)
-        case frozenset(), str():
-            return () if key in answered else (f"the API key {settings} sets unanswered",)
-        case frozenset(), None:
-            return ()
-        case frozenset(), Unread():
-            # A key that cannot be read is the settings' own refusal, said by runnable: whether it was answered is told
-            # once they are mended.
+        case frozenset(), Settings(env=Env(key=str() as key)):
+            return () if key in answered else (f"the API key {path} sets unanswered",)
+        case _:
+            # No key, or settings whose key cannot be read, which is their own refusal, said by runnable: whether it was
+            # answered is told once they are mended.
             return ()
 
 

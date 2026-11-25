@@ -22,9 +22,12 @@ PROXIES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
 EXEMPT = ("NO_PROXY", "no_proxy")
 REPLACED = (*PROXIES, *EXEMPT, TRUST)
 
+# The base URL a Claude Code reaches in the API's place, a gateway's.
+BASE_URL = "ANTHROPIC_BASE_URL"
+
 # [LAW:one-source-of-truth] what decides where a Claude Code's requests to the API go: its proxy and the certificates it
 # trusts, which a tap replaces, and the base URL it would reach in the API's place.
-ROUTING = (*REPLACED, "ANTHROPIC_BASE_URL")
+ROUTING = (*REPLACED, BASE_URL)
 
 
 def _outer(name: str) -> str:

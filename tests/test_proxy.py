@@ -5,7 +5,7 @@ import contextlib
 import gzip
 import json
 from datetime import UTC, datetime
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -18,12 +18,11 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.usage import InContext, Spent, Tally, Usage
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
-    API_HOST,
     Answered,
     Answering,
     Auxiliary,
@@ -56,7 +55,6 @@ from hands.core.wire import (
 from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
 from hands.sessions import proxy
-from hands.sessions.authority import mint
 from hands.sessions.proxy import Proxy, serve_proxy
 from hands.sessions.replies import sent_of, spent
 from hands.sessions.wide import root
@@ -100,6 +98,8 @@ class Wire:
     proxy: Proxy
     seen: list[Observed]
     exchanged: asyncio.Event
+    # What the proxy recorded beside what it saw, as it recorded it: the event of each CONNECT it answered.
+    recorded: asyncio.Queue[Entry]
     # Where each request goes; a test that holds one sets it before the request is sent.
     route: Callable[[Sent], Route] = forward
 
@@ -119,17 +119,21 @@ class Ticking(VirtualClock):
         return read
 
 
-@pytest.fixture
-async def serve(tmp_path: Path) -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]]:
+Serve = Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]
+
+
+@contextlib.asynccontextmanager
+async def serving(tmp_path: Path, clock: Clock) -> AsyncGenerator[Serve]:
+    """Starts, for each handler, a stand-in for the API answering by it and a proxy on `clock` forwarding to it; stops
+    them all at the end."""
     cleanups: list[Callable[[], Awaitable[None]]] = []
-    ticks = Ticking()
 
     async def start(handler: Handler) -> tuple[Upstream, Wire]:
         runner = web.AppRunner(web.Application())
         upstream = Upstream(url="")
 
         async def recorded(request: web.Request) -> web.StreamResponse:
-            upstream.asked.append((request.path_qs, dict(request.headers), await request.read()))
+            upstream.asked.append((request.rel_url.raw_path_qs, dict(request.headers), await request.read()))
             return await handler(request)
 
         runner.app.router.add_route("*", "/{path:.*}", recorded)
@@ -147,14 +151,23 @@ async def serve(tmp_path: Path) -> AsyncIterator[Callable[[Handler], Awaitable[t
         def route(sent: Sent) -> Route:
             return made.route(sent)
 
-        proxy = await serve_proxy(upstream.url, observe, route, ticks, {}, mint(API_HOST, SYSTEM), tmp_path / "trusted.pem")
+        entries: asyncio.Queue[Entry] = asyncio.Queue()
+        proxy = await serve_proxy(upstream.url, observe, route, clock, {}, tmp_path / "trusted.pem", entries.put_nowait)
         cleanups.extend([proxy.close, runner.cleanup])
-        made = Wire(proxy, seen, exchanged)
+        made = Wire(proxy, seen, exchanged, entries)
         return upstream, made
 
-    yield start
-    for cleanup in cleanups:
-        await cleanup()
+    try:
+        yield start
+    finally:
+        for cleanup in cleanups:
+            await cleanup()
+
+
+@pytest.fixture
+async def serve(tmp_path: Path) -> AsyncIterator[Serve]:
+    async with serving(tmp_path, Ticking()) as start:
+        yield start
 
 
 async def streamed(request: web.Request) -> web.StreamResponse:
@@ -380,7 +393,7 @@ async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, forward, VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, mint(API_HOST, SYSTEM), tmp_path / "trusted.pem")
+    proxy = await serve_proxy(dead, seen.append, forward, VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, tmp_path / "trusted.pem", lambda _: None)
     try:
         status, _, body = await post(proxy.url)
     finally:
@@ -484,7 +497,7 @@ async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Li
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root(SYSTEM)), VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, mint(API_HOST, SYSTEM), tmp_path / "trusted.pem")
+    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root(SYSTEM)), VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)), {}, tmp_path / "trusted.pem", lambda _: None)
     try:
         status, headers, _ = await post(proxy.url)
     finally:

@@ -5,7 +5,8 @@
 A client given it as its HTTPS proxy, and its trust file, reaches https://api.anthropic.com as it would Anthropic's own
 API: the proxy ends that TLS itself and serves the requests inside it (`hands.sessions.connect`), so Claude Code behaves
 as it does first-party. A request posted to the proxy's own origin, as hands' side questions are, is served the same way.
-Every other host such a client reaches is tunnelled, untouched.
+Every other host such a client reaches is tunnelled, untouched, and a request in absolute form is relayed; the proxy
+reaches each as hands' own environment says, through its outer proxy or directly.
 
 It forwards each request upstream as it came, or with the changes its route gives it made to it, and
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
@@ -16,20 +17,22 @@ its route answers itself, with the words the route gives it, so the model is not
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Generator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 import aiohttp
-from aiohttp import web
+from aiohttp import hdrs, web
 from loguru import logger
 from multidict import CIMultiDict
 from yarl import URL
 
 from hands.clock import Clock
+from hands.core import loopback
 from hands.core.wire import (
+    API_HOST,
     Answered,
     Answering,
     Body,
@@ -49,6 +52,7 @@ from hands.core.wire import (
     Synthesize,
     Synthetic,
     Text,
+    ThroughProxy,
     Unfinished,
     Unreached,
     Written,
@@ -59,8 +63,9 @@ from hands.core.wire import (
     serialized,
     streams,
 )
-from hands.sessions.authority import Authority, trusted
-from hands.sessions.connect import Dialed, Doors, Onward, Outer, outward
+from hands.sessions.audit import Record
+from hands.sessions.authority import also_trusted, mint, onward_trust, trusted
+from hands.sessions.connect import Connects, host_port, outward
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
 from hands.sessions.untap import untapped
 from hands.sessions.wide import root
@@ -128,22 +133,9 @@ class Wire:
             self._listener = _NoOne(self._clock)
 
 
-@dataclass(frozen=True)
-class ThroughProxy:
-    """How a client reaches the API with the proxy as its HTTPS proxy: the proxy's url, and the file of the certificates
-    it is to trust, the proxy's authority and those hands' own environment trusts."""
-
-    url: str
-    trust: Path
-
-
-@dataclass(frozen=True)
-class Direct:
-    """How a client reaches the API with no proxy of hands' between, as one run while none may be running does."""
-
-
-# [LAW:types-are-the-program] how a Claude Code of hands' own reaches the API, which whoever starts it says.
-ApiRoute = ThroughProxy | Direct
+# How long a stopping proxy waits on each request still served before cancelling it, rather than on replies that stream
+# for minutes. Not 0: aiohttp reads a timeout of 0 as none at all.
+SHUTDOWN_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -152,7 +144,9 @@ class Proxy:
     side questions are posted to."""
 
     through: ThroughProxy
-    runner: web.AppRunner
+    runner: web.ServerRunner
+    inside: web.Server
+    connects: Connects
     client: aiohttp.ClientSession
 
     @property
@@ -160,57 +154,53 @@ class Proxy:
         return self.through.url
 
     async def close(self) -> None:
+        # The requests inside each TLS the proxy ended, then each CONNECT's connection, then its own origin's.
+        await self.inside.shutdown(SHUTDOWN_SECONDS)
+        await self.connects.close()
         await self.runner.cleanup()
         await self.client.close()
 
 
-class _Site(web.BaseSite):
-    """The proxy's one listening socket, on loopback: each connection made to it is taken by its doors."""
-
-    __slots__ = ("_doors",)
-
-    def __init__(self, runner: web.AppRunner, doors: Doors) -> None:
-        super().__init__(runner)
-        self._doors = doors
-
-    @property
-    def name(self) -> str:
-        return "hands' proxy"
-
-    async def start(self) -> None:
-        await super().start()
-        self._server = await asyncio.get_running_loop().create_server(self._doors, "127.0.0.1", 0)
-
-    async def stop(self) -> None:
-        # The app's own connections, a TLS one among them, are its server's to end, as the runner ends it after.
-        self._doors.close()
-        await super().stop()
-
-
-async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clock, environ: Mapping[str, str], authority: Authority, trust: Path) -> Proxy:
-    """Listen on a free local port until the returned proxy is closed, ending the TLS of a CONNECT to the host
-    `authority` signs for and forwarding the requests inside it, and those made to its own origin, to `upstream`.
-    `authority` is written to `trust`, with the certificates `environ` trusts, and every other host is reached as
-    `environ` says; raises Uninterceptable when either cannot be."""
+async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clock, environ: Mapping[str, str], trust: Path, record: Record) -> Proxy:
+    """Listen on a free loopback port until the returned proxy is closed, ending the TLS of a CONNECT to the API's host
+    with an authority of its own and forwarding the requests inside it, and those made to its own origin, to
+    `upstream`. Its authority is written to `trust`, with the certificates `environ` trusts, and every other host is
+    reached as `environ` says; raises Uninterceptable when either cannot be."""
     # [LAW:one-source-of-truth] the world beyond the proxy as hands' own environment has it, wherever hands was started:
     # a hands started inside a tapped session reaches it as that session's own environment did.
     world = untapped(environ)
-    onward = outward(world)
-    written = trusted(authority, world, trust)
+    reach = outward(world)
+    also = also_trusted(world, trust)
+    # [LAW:types-are-the-program] the host whose TLS the proxy ends is the API's, by construction.
+    authority = mint(API_HOST, clock)
+    written = trusted(authority, also, trust)
+    api = URL(upstream)
+    match api.host, api.port:
+        case str() as api_host, int() as api_port:
+            through_api = reach.onward(api.scheme, api_host, api_port)
+        case _:
+            raise ValueError(f"the API the proxy forwards to is reached at a host and a port, not {upstream}")
     # The client's own timeouts govern a request: a long reply streams as long as the client keeps reading it.
     # Replies are read as sent, compressed or not, so the client gets the bytes the API wrote; and no header the client
-    # left out is added, so the API is asked for no encoding the client did not ask for.
+    # left out is added, so the API is asked for no encoding the client did not ask for. [LAW:single-enforcer] every
+    # connection it makes, to the API and every relayed origin, trusts what hands trusts.
     client = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=None), auto_decompress=False, skip_auto_headers=("Accept-Encoding", "Content-Type", "User-Agent")
+        timeout=aiohttp.ClientTimeout(total=None),
+        auto_decompress=False,
+        skip_auto_headers=("Accept-Encoding", "Content-Type", "User-Agent"),
+        connector=aiohttp.TCPConnector(ssl=onward_trust(also)),
     )
 
     tell = shielded(observe)
 
-    async def forward(request: web.Request) -> web.StreamResponse:
+    async def forward(request: web.BaseRequest) -> web.StreamResponse:
         # Read whole whatever its size: the request is classified from its body before any of it goes upstream.
         body = await request.content.read()
         requested_at = clock.wall().timestamp()
-        sent = sent_of(clock, request.headers, request.path_qs, body)
+        # Its path and query as the client wrote them, in origin form or absolute: aiohttp's path_qs rewrites a path that
+        # begins with "//".
+        path = request.rel_url.raw_path_qs
+        sent = sent_of(clock, request.headers, path, body)
         exchange, session, kind, named, parsed = sent.exchange, sent.session, sent.kind, sent.named, sent.body
         tell(sent)
         try:
@@ -224,7 +214,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
         sent_at = clock.wall().timestamp()
 
         def exchanged(changes: tuple[Change, ...], reply: Ending, final: bool) -> Exchanged:
-            return Exchanged(exchange, session, kind, named, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, routed.span)
+            return Exchanged(exchange, session, kind, named, request.method, path, len(body), changes, requested_at, sent_at, reply, final, routed.span)
 
         changes: tuple[Change, ...] = ()
         # [LAW:single-enforcer] from here until the API's answer has a head, whatever stops the exchange ends it here.
@@ -240,14 +230,14 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
                     # Its answer made before its ending is told: once told, nothing here can raise and tell another.
                     response = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
                     # The request as the client sent it: the client holds it, answered, as its conversation's newest.
-                    tell(Received(exchange, request.path_qs, tuple(headers.items()), body, built=False))
+                    tell(Received(exchange, path, tuple(headers.items()), body, built=False))
                     tell(exchanged((), Synthetic(written, clock.wall().timestamp()), False))
                     return response
                 case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
-            tell(Received(exchange, request.path_qs, tuple(headers.items()), onward, built))
+            tell(Received(exchange, path, tuple(headers.items()), onward, built))
             try:
-                reached = await client.request(request.method, upstream + request.path_qs, headers=headers, data=onward)
+                reached = await client.request(request.method, upstream + path, headers=headers, data=onward, proxy=through_api)
             except (aiohttp.ClientError, OSError) as error:
                 # A client asks again after the proxy's 502 unless told the refusal is final.
                 final = refusal == "final"
@@ -266,39 +256,33 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
             # What a reply is recorded as when its handler is cancelled mid-way: the client hung up, or hands is stopping.
             reply: Body = Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
 
-            async def read(relay: Callable[[bytes], Awaitable[None]]) -> None:
-                nonlocal first, ended, size, reply
+            async def heard() -> AsyncIterator[bytes]:
+                nonlocal first, size
                 async for chunk in reached.content.iter_any():
                     first = clock.wall().timestamp() if first is None else first
                     size += len(chunk)
                     # [LAW:no-ambient-temporal-coupling] read before it is written on: whatever the client does once it
                     # has these bytes, its result line on stdout included, comes after hands has heard them.
                     reader.feed(chunk)
-                    await relay(chunk)
-                ended = clock.wall().timestamp()
-                reply = reader.finish(None)
+                    yield chunk
 
             try:
                 limit = spent(reached.status, reached.headers)
                 tell(Answering(exchange, reached.status, limit))
                 reader = reply_reader(kind, reached.headers, lambda event: tell(Heard(exchange, event)))
                 if reached.status < 400 and is_stream(reached.headers.get("Content-Type", "")):
-                    response = _relayed(reached)
-                    await response.prepare(request)
-                    await read(response.write)
-                    await response.write_eof()
+                    response = await _streamed(request, reached, heard())
+                    ended = clock.wall().timestamp()
+                    reply = reader.finish(None)
                 else:
                     # A reply sent whole is read whole before it is answered: a message is heard only once it is all
                     # here, and a refusal is held final or not on what it says. Held final, it reaches the client as the
                     # proxy's own, which Claude Code ends on, since it asks again after an overload whatever the header
                     # says, and waits out a spent limit to continue the task at its reset (autoContinueAtUsageLimit,
                     # autoContinueAtUsageLimit); whoever speaks the turn's failure reads it off the wire.
-                    parts: list[bytes] = []
-
-                    async def keep(chunk: bytes) -> None:
-                        parts.append(chunk)
-
-                    await read(keep)
+                    parts = [chunk async for chunk in heard()]
+                    ended = clock.wall().timestamp()
+                    reply = reader.finish(None)
                     final = refusal == "final" and (limit is not None or _asked_again(reached.status, reached.headers, reply))
                     response = _refused(reached) if final else web.Response(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers), body=b"".join(parts))
             except Exception as error:
@@ -315,50 +299,46 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
                     _hands_bug(exchange, reached.status, reached.headers.get("request-id"), parsed, built, changes, reply)
         return response
 
-    async def relayed(request: web.Request) -> web.StreamResponse:
+    async def relayed(request: web.BaseRequest) -> web.StreamResponse:
         """A request in absolute form, a client asking its proxy for another origin's answer: relayed there and back as
         sent, through the outer proxy hands' environment names for it, and none of it the API's or recorded."""
-        target = URL(request.raw_path)
-        through, told = _proxied(onward.onward(str(target.host), target.scheme == "https"))
+        # aiohttp's reading of its absolute-form target (RFC 9112 §3.2.2).
+        target = request.url
+        match target.host, target.port:
+            case str() as host, int() as port if port > 0:
+                pass
+            case _:
+                return web.Response(status=400, text=f"hands' proxy relays a request to a host and a port that is not 0, not {request.raw_path!r}")
         try:
-            reached = await client.request(request.method, target, headers=_end_to_end(request.headers), data=request.content, proxy=through, proxy_headers=told)
+            reached = await client.request(request.method, target, headers=_end_to_end(request.headers), data=request.content, proxy=reach.onward(target.scheme, host, port))
         except (aiohttp.ClientError, OSError) as error:
             unreached = f"hands' proxy could not reach {target.origin()}: {error}"
             logger.warning(unreached)
             return web.Response(status=REFUSED, text=unreached)
         async with reached:
-            response = _relayed(reached)
-            await response.prepare(request)
-            async for chunk in reached.content.iter_any():
-                await response.write(chunk)
-            await response.write_eof()
-        return response
+            return await _streamed(request, reached, reached.content.iter_any())
 
-    async def served(request: web.Request) -> web.StreamResponse:
-        # [LAW:dataflow-not-control-flow] the request's own form says whose it is: in absolute form, its origin's; in
-        # origin form, whether it came to the proxy's origin or inside the TLS it ended, the API's.
-        return await (relayed if URL(request.raw_path).absolute else forward)(request)
+    async def served(request: web.BaseRequest) -> web.StreamResponse:
+        # [LAW:dataflow-not-control-flow] on the proxy's own origin a request's form says whose it is (RFC 9112 §3.2): a
+        # CONNECT asks for a tunnel, origin form, its target a path, is the API's, as hands' side questions are, and
+        # absolute form is a client asking for another origin's answer. Inside the TLS a CONNECT ended, every request is
+        # the API's: `inside` serves it.
+        match request.method, request.raw_path.startswith("/"):
+            case hdrs.METH_CONNECT, _:
+                return await connects.answer(request)
+            case _, True:
+                return await forward(request)
+            case _, False:
+                return await relayed(request)
 
-    app = web.Application()
-    app.router.add_route("*", "/{path:.*}", served)
-    # A client that hangs up cancels its handler, and a stopping daemon cancels every handler within a tenth of a
-    # second rather than waiting on replies that stream for minutes. Not 0: aiohttp reads a timeout of 0 as none at all.
-    runner = web.AppRunner(app, access_log=None, handler_cancellation=True, shutdown_timeout=0.1)
+    # A client that hangs up cancels its handler, and a stopping daemon cancels every handler within SHUTDOWN_SECONDS.
+    inside = web.Server(forward, handler_cancellation=True, access_log=None)
+    connects = Connects(authority, reach, inside, clock, record)
+    runner = web.ServerRunner(web.Server(served, handler_cancellation=True, access_log=None), shutdown_timeout=SHUTDOWN_SECONDS)
     await runner.setup()
-    assert runner.server is not None
-    site = _Site(runner, Doors(authority, onward, runner.server))
-    await site.start()
+    await web.TCPSite(runner, loopback.HOST, 0).start()
     host, port = runner.addresses[0][:2]
-    return Proxy(through=ThroughProxy(f"http://{host}:{port}", written), runner=runner, client=client)
-
-
-def _proxied(onward: Onward) -> tuple[str | None, dict[str, str] | None]:
-    """aiohttp's proxy and proxy_headers for a request reached `onward`: none, its own way of saying directly."""
-    match onward:
-        case Outer(authorization=authorization) as outer:
-            return outer.url, dict(authorization)
-        case Dialed():
-            return None, None
+    return Proxy(through=ThroughProxy(f"http://{host_port(host, port)}", written), runner=runner, inside=inside, connects=connects, client=client)
 
 
 def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, ...]) -> tuple[bytes, tuple[Change, ...]]:
@@ -419,11 +399,16 @@ def _told(final: bool) -> dict[str, str]:
     return {"x-should-retry": "false"} if final else {}
 
 
-def _relayed(reached: aiohttp.ClientResponse) -> web.StreamResponse:
-    """The API's reply as it came, to be streamed on byte for byte."""
+async def _streamed(request: web.BaseRequest, reached: aiohttp.ClientResponse, chunks: AsyncIterable[bytes]) -> web.StreamResponse:
+    """[LAW:one-source-of-truth] the one tail of a reply streamed on: `reached`'s status and headers as they came, and
+    its body byte for byte as `chunks` give it."""
     response = web.StreamResponse(status=reached.status, reason=reached.reason, headers=_end_to_end(reached.headers))
     if "Content-Length" in reached.headers:
         response.content_length = int(reached.headers["Content-Length"])
+    await response.prepare(request)
+    async for chunk in chunks:
+        await response.write(chunk)
+    await response.write_eof()
     return response
 
 

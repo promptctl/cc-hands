@@ -63,11 +63,12 @@ and no `ANTHROPIC_BASE_URL`: it reaches `https://api.anthropic.com` as Claude Co
 Anthropic's own API, so it behaves first-party (its main turns carry `cc_prompt_id`). The proxy ends that TLS itself, inside hands' process, with a certificate
 for the API's host signed by an authority it mints as it starts (`sessions/authority.py`),
 and serves the requests inside it with the same handler as a request to its own origin
-(`sessions/connect.py`); a CONNECT to any other host is tunnelled, through the outer proxy
-hands' environment names when it names one. hands' side questions post to the proxy's
+(`sessions/connect.py`); a CONNECT to any other host is tunnelled, and a request in absolute
+form relayed, each reached as hands' environment says, read as Python's urllib reads it: through
+its outer proxy, unless its `no_proxy` names the host. hands' side questions post to the proxy's
 plain origin. The brain's MCP server and hooks' listener are on loopback, which its
 `NO_PROXY` names, so they are reached directly. `hands login` and the `claude auth status`
-the start asks run while no proxy may, and reach Anthropic directly. The
+the start asks run while no proxy may, in hands' environment as it stands. The
 working sessions' exchanges reach the same observer by another path, the tap
 (`sessions/tap.py`): each session's fritter is its proxy, forwards its requests to the API it
 still names, and copies each exchange to `<hands home>/wire.sock`, read into the same values, so a session

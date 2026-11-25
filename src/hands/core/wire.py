@@ -10,6 +10,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Literal, cast, get_args
 
 from hands.core.session import PromptId, SessionId
@@ -18,6 +19,24 @@ from hands.core.trace import Span
 # The host Claude Code reaches the API at when nothing says otherwise, and where.
 API_HOST = "api.anthropic.com"
 UPSTREAM = f"https://{API_HOST}"
+
+
+@dataclass(frozen=True)
+class ThroughProxy:
+    """How a client reaches the API with hands' proxy as its HTTPS proxy: the proxy's url, and the file of the
+    certificates it is to trust, the proxy's authority and those hands' own environment trusts."""
+
+    url: str
+    trust: Path
+
+
+@dataclass(frozen=True)
+class Direct:
+    """How a client reaches the API with no proxy of hands' between, in the environment it was started in."""
+
+
+# [LAW:types-are-the-program] how a Claude Code of hands' own reaches the API, which whoever starts it says.
+ApiRoute = ThroughProxy | Direct
 
 # ── What a request is ────────────────────────────────────────────────────────────────────────────────────────────────
 

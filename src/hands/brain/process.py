@@ -46,7 +46,8 @@ from hands.core.events import Ended, Ending, Event, Joined, Prompted, StartSourc
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
 from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PinnedClaude, PromptId, PromptText, RequestId, Runnable, Session, SessionId, Submit, all_told, holds, ids, pasted
-from hands.core.wire import MainTurn, Observed, Sent, tool_names
+from hands.core import loopback
+from hands.core.wire import ApiRoute, Direct, MainTurn, Observed, Sent, ThroughProxy, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import LoginExpired, StopFailed, expired
 from hands.darwin import child_pids
@@ -71,9 +72,8 @@ from hands.sessions.tmux import TmuxExit, TmuxUnstarted, ran_at, styled
 # to send; promptctl-testing-c3u.fhu hands it Fritters and deletes this import.
 from hands.sessions.typing import Typist
 from hands.tasks import cancel_and_wait
-from hands.sessions.proxy import ApiRoute, Direct, ThroughProxy
 from hands.sessions.startsession import as_from_a_terminal
-from hands.sessions.untap import REPLACED, ROUTING, tap, untapped
+from hands.sessions.untap import BASE_URL, tap, untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
 from hands.voice.backends import Account
@@ -92,10 +92,6 @@ SLIM = {
     # are turned off in the brain's settings.json, the only place Claude Code reads that switch from.
     "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
 }
-
-# The hosts the brain reaches without hands' proxy, as NO_PROXY names them: loopback's, where hands serves it its MCP
-# server and its hooks' listener.
-LOOPBACK = "127.0.0.1,localhost,::1"
 
 # The tool Claude Code offers in place of the MCP tools it defers.
 TOOL_SEARCH = "ToolSearch"
@@ -197,7 +193,8 @@ class Station:
     config_dir: Path
     cwd: Path
     model: str
-    # [LAW:types-are-the-program] the brain is never started but through hands' proxy.
+    # [LAW:types-are-the-program] what starts on a station, the brain, reaches the API through hands' proxy; a login and
+    # its status, started on none, reach it Direct.
     through: ThroughProxy
     # hands' own environment, which each is started in less what environment() keeps out; kept out of the repr, as it
     # holds keys, and out of the station's identity, which it is not part of.
@@ -341,21 +338,20 @@ def environment(config_dir: Path, route: ApiRoute, inherited: Mapping[str, str])
     # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped
     # session, or inside any Claude Code's, hands the brain nothing of that session (`as_from_a_terminal`).
     world = as_from_a_terminal(inherited)
-    # [LAW:single-enforcer] every variable that decides where its requests go is the route's to set, and none is passed on.
-    kept = {name: value for name, value in world.items() if name not in FOREIGN_LOGINS and name not in ROUTING}
+    kept = {name: value for name, value in world.items() if name not in FOREIGN_LOGINS and name != BASE_URL}
     return {**kept, **_routed(route, world), **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir)}
 
 
 def _routed(route: ApiRoute, world: Mapping[str, str]) -> dict[str, str]:
-    """What reaches the API by `route` from `world`: hands' proxy as its proxy, in the tap's mark, so what the brain
-    runs, a shell command or a claude of its own, is given `world`'s values back (`untapped`); or, directly, `world`'s
-    own proxy and the certificates it trusts, as any Claude Code started there reaches the API, and no base URL."""
+    """What `route` puts over `world` to reach the API by: hands' proxy as every proxy, in the tap's mark, so what the
+    brain runs, a shell command or a claude of its own, is given `world`'s values back (`untapped`); or, directly,
+    nothing, so the client reaches the API as any Claude Code started in `world` does."""
     match route:
         case ThroughProxy(url=url, trust=trust):
             # hands' own servers, its MCP server and its hooks' listener, are on loopback, reached directly.
-            return tap(world, url, str(trust), LOOPBACK)
+            return tap(world, url, str(trust), loopback.HOST)
         case Direct():
-            return {name: world[name] for name in REPLACED if name in world}
+            return {}
 
 
 def entrypoint(account: Account) -> dict[str, str]:
@@ -599,7 +595,8 @@ class Untaken(Exception):
 
 
 class NotLoggedIn(Exception):
-    """The brain's config directory holds no login whose requests reach hands' proxy, so every turn would fail or go unheard."""
+    """The brain's config directory holds no login to Anthropic's own API, the one host whose requests hands' proxy
+    hears, so every turn would fail or go unheard."""
 
 
 class LoginFailed(Exception):
@@ -677,7 +674,7 @@ def starting_settings(config_dir: Path) -> bool:
 
 def logged_in(children: Children, claude: Path, config_dir: Path, route: ApiRoute, inherited: Mapping[str, str]) -> Account:
     """The account `config_dir` is logged in as, asked of `claude`, its pinned Claude Code; raises NotLoggedIn, naming the
-    command that makes a login, when it has none, or one whose requests do not reach hands' proxy, and Unstartable when
+    command that makes a login, when it has none, or one on a provider other than Anthropic's API, and Unstartable when
     Claude Code could not be asked.
 
     Asked as hands starts and by `hands check`, before any brain runs to say it; never by a weigh of an edit, which starts
@@ -698,8 +695,8 @@ def _account(config_dir: Path, asked: Ran, out: bytes) -> Account:
         status = Payload.parse(out)
         if not status.flag("loggedIn"):
             raise NotLoggedIn("the brain has no login: `hands login` gives it one")
-        # [LAW:no-silent-failure] hands' proxy, which hears what the brain says, forwards to Anthropic's API alone, so a
-        # brain on another provider would answer nothing. hands' environment never chooses one (FOREIGN_LOGINS).
+        # [LAW:no-silent-failure] hands' proxy hears what the brain says at the API's host alone: a brain on another
+        # provider would be tunnelled past it, unheard. hands' environment never chooses one (FOREIGN_LOGINS).
         if (provider := status.text("apiProvider")) != "firstParty":
             raise NotLoggedIn(f"the brain reaches Claude through {provider}, not the Anthropic API hands' proxy forwards to: {config_dir / 'settings.json'} or the machine's managed settings choose {provider}")
         return Account(status.text("authMethod"), status.optional_text("email") or status.optional_text("apiKeySource"))
@@ -2153,7 +2150,7 @@ async def _listen(posting: "asyncio.Future[Callable[[str, bytes], Awaitable[Mapp
     app.router.add_post("/{event}", hook)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
+    site = web.TCPSite(runner, loopback.HOST, 0)
     await site.start()
     host, port = runner.addresses[0][:2]
     return runner, f"http://{host}:{port}"

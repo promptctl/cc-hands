@@ -6,7 +6,7 @@ The adapter over the tools in hands.voice.tools, reading each through hands.voic
 tools-only server needs: initialize, ping, tools/list, and tools/call, each POSTed as JSON-RPC and answered as JSON. It
 opens no event stream of its own, so a GET is refused, as the transport allows.
 
-Its tools type into sessions and answer permissions, and a port on 127.0.0.1 is reachable by every local process and
+Its tools type into sessions and answer permissions, and a port on loopback is reachable by every local process and
 every web page, so each request carries a token only the brain's --mcp-config holds.
 """
 
@@ -19,6 +19,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.clock import Clock
+from hands.core import loopback
 from hands.core.bearer import bearer, bears
 from hands.core.trace import Span
 from hands.sessions.audit import Record, said
@@ -175,7 +176,7 @@ async def serve_mcp(clock: Clock, tools: Sequence[Tool[Answer]], record: Record,
     # done is worse than one whose result nobody reads, and the draft tools say so of themselves.
     runner = web.AppRunner(app, access_log=None, handler_cancellation=False)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
+    site = web.TCPSite(runner, loopback.HOST, 0)
     await site.start()
     host, port = runner.addresses[0][:2]
     return McpServer(url=f"http://{host}:{port}{PATH}", token=token, runner=runner)

@@ -274,6 +274,7 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **machine policy plists:** Claude Code also reads its policy from the com.anthropic.claudecode plists under /Library/Managed Preferences, the machine's and each account's; read out of the bundle, and CI's run holds a policy in both from the brain, which shows the hide and not the read (measured on 2.1.308)
 - **unreadable machine policy:** an interactive Claude Code stops at a blocking Settings Error dialog when those reads answer EPERM (measured on 2.1.308)
 - **machine policy allow:** a policy allowing WebFetch has Claude Code fetch with no permission dialog; an allow of Fetch(*) changes nothing (measured on 2.1.308)
+- **policy env:** the env of a machine's policy settings, its managed-settings.json, their drop-ins and its plists, is put over the environment Claude Code is started in, as its settings.json's env is [ref: src/hands/brain/configdir.py] (read from its source, not measured) (measured on 2.1.308)
 
 ## Fritter (terminal input)
 
