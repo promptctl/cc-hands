@@ -32,10 +32,11 @@ START_SLACK_SECONDS = 1.0
 @dataclass(frozen=True)
 class ControllingTerminal:
     """The terminal a process is controlled by: its device number, which is `st_rdev` of that terminal's /dev path, and
-    whether the process's group is the one in front of it, the group a key typed there goes to; a stopped job is behind."""
+    whether the process's group is that terminal's foreground process group, the one a key typed there goes to; a job
+    stopped there is in the background."""
 
     device: int
-    in_front: bool
+    foreground: bool
 
 
 @dataclass(frozen=True)
@@ -77,8 +78,9 @@ class TerminalProcess:
 
     pid: int
     parent: int
-    # The program it was started as, by the absolute path it was exec'd by: a file deleted since, as an updater prunes old
-    # versions, is still named, and a link is named as the link.
+    # The program it runs: by the path it was exec'd by where that is absolute, so a file deleted since, as an updater
+    # prunes old versions, is still named, and a link is named as the link; by the file the kernel says it runs where it
+    # was exec'd by a relative one.
     executable: Path
     cwd: Path
     environment: Mapping[str, str]
@@ -118,6 +120,11 @@ class Processes(Protocol):
 
     def started_as(self, process: Process) -> StartedAs | Undescribed | None:
         """What a process of this user's was started as."""
+        ...
+
+    def program_of(self, process: Process) -> Path | Undescribed | None:
+        """The file a process of this user's runs, as the kernel names it, its links resolved; refused for one deleted since
+        it started, which the kernel names none of."""
         ...
 
     def directory_of(self, process: Process) -> Path | Undescribed | None:
@@ -165,11 +172,13 @@ def _at_terminal(processes: Processes, process: Process, tty: int) -> TerminalPr
     match (processes.directory_of(process), processes.started_as(process)):
         case (Path() as cwd, StartedAs(path=path, arguments=arguments, environment=environment)):
             # A path exec'd relative to the directory the process was started in, which a session leaves for a worktree
-            # and the kernel keeps no record of. [LAW:one-source-of-truth] The PWD its shell started it with names that
-            # directory, in the one record the path itself is read from. A program started with no PWD, as `env -i`
-            # starts one, has no record of it at all, and is read from the directory it runs in now, where it started
-            # unless it has moved since.
-            return TerminalProcess(process.pid, process.parent, cwd / environment.get("PWD", "") / path, cwd, environment, arguments, tty)
+            # and the kernel keeps no record of, names no file once it has moved; nor does its PWD, which its parent may
+            # never have kept to where it ran. [LAW:one-source-of-truth] The kernel's own name for the file it runs does.
+            match path if path.is_absolute() else processes.program_of(process):
+                case Path() as executable:
+                    return TerminalProcess(process.pid, process.parent, executable, cwd, environment, arguments, tty)
+                case unnamed:
+                    return unnamed
         case (Undescribed() as refused, _) | (_, Undescribed() as refused):
             return refused
         case _:
@@ -190,10 +199,11 @@ def ancestor_terminals(pid: int, table: Mapping[int, Process]) -> Iterator[int]:
     return (process.terminal.device for process in ancestors(pid, table) if process.terminal is not None)
 
 
-def front_terminal(pid: int, table: Mapping[int, Process]) -> Iterator[int]:
-    """pid's controlling terminal while pid is in front of it, so a key typed there reaches it; nothing otherwise."""
+def foreground_terminal(pid: int, table: Mapping[int, Process]) -> Iterator[int]:
+    """pid's controlling terminal while pid is in its foreground process group, so a key typed there reaches it; nothing
+    otherwise."""
     match table.get(pid):
-        case Process(terminal=ControllingTerminal(device=device, in_front=True)):
+        case Process(terminal=ControllingTerminal(device=device, foreground=True)):
             yield device
         case _:
             pass

@@ -17,7 +17,7 @@ from hands.core.session import Keystroke
 from hands.core.tmux import InPane, Keyboard, Listed, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import child
 from hands.sessions.child import Children
-from hands.sessions.processes import Process, Processes, StartedAs, Undescribed, ancestor_terminals, ancestors, front_terminal
+from hands.sessions.processes import Process, Processes, StartedAs, Undescribed, ancestor_terminals, ancestors, foreground_terminal
 
 # What tmux says, on stderr, for a socket no server listens on any more, as a server that exited leaves behind, and
 # for one that is gone; never "error connecting to" for any other reason, as a path too long for a socket.
@@ -69,9 +69,8 @@ def sockets(processes: Processes, environment: Mapping[str, str], pids: Sequence
     mine = {process.pid: process for process in table.values() if process.uid == processes.user}
     # A pane's $TMUX is on the processes at its terminal; the tmux server, and the app and launchd above it, are at none.
     lines = {process.pid: process for pid in pids for process in ancestors(pid, table) if process.pid in mine and process.terminal is not None}
-    # [LAW:effects-at-boundaries] exception: tmux names its directory by hands' real uid, read from the machine until
-    # Terminals holds the tmux sockets (part 2 of promptctl-testing-c3u.avj).
-    directory = socket_directory(environment, os.getuid())
+    # tmux names its directory by its real uid, which hands, set-uid to no one, runs as its effective one.
+    directory = socket_directory(environment, processes.user)
     found = [*(path for path in directory.glob("*") if path.is_socket()), *(socket for process in lines.values() for socket in _named(processes, process, mine))]
     # Reversed, so the first path found for a server is the one kept.
     return list({os.path.realpath(socket) if isinstance(socket, Path) else socket: socket for socket in reversed(found)}.values())
@@ -274,7 +273,7 @@ async def panes(children: Children, processes: Processes, pids: Sequence[int], e
 async def keyboards(children: Children, processes: Processes, pids: Sequence[int], environment: Mapping[str, str]) -> list[Keyboard]:
     """The tmux pane whose keys reach each of `pids`, from one read of the processes and of each tmux server that may hold
     it."""
-    return await _read(children, processes, pids, environment, lambda pid, table, read: keyboard_of(front_terminal(pid, table), ancestor_terminals(pid, table), read))
+    return await _read(children, processes, pids, environment, lambda pid, table, read: keyboard_of(foreground_terminal(pid, table), ancestor_terminals(pid, table), read))
 
 
 async def _read[P](

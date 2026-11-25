@@ -6,6 +6,7 @@ import os
 import subprocess
 import termios
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -44,7 +45,7 @@ class Kernel:
                 # A session of its own, so it holds no controlling terminal, whatever pytest's is.
                 popen = subprocess.Popen(argv, cwd=start.cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
                 opened, tty = (), None
-            case "interactive" | "piped" | "reopened" as at:
+            case "interactive" | "piped" | "reopened" | "behind" as at:
                 controller, terminal = os.openpty()
 
                 def control() -> None:
@@ -73,6 +74,13 @@ class Kernel:
         popen, opened = self.children.pop(child.pid)
         popen.wait(timeout=EXEC_SECONDS)
         _closed(popen, opened)
+
+    def caught(self, child: Child) -> None:
+        """Until the child has moved into `caught`, which it does from its handler: polled, as `_exec` is."""
+        process, deadline = KERNEL.table()[child.pid], SYSTEM.now() + EXEC_SECONDS
+        while (where := KERNEL.directory_of(process)) is None or isinstance(where, Path) and where.name != "caught":
+            assert SYSTEM.now() < deadline, f"pid {child.pid} never caught its signal: it runs in {where}"
+            SYSTEM.sleep_blocking(0.01)
 
     def stopped(self, child: Child) -> None:
         popen, opened = self.children.pop(child.pid)

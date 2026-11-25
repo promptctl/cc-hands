@@ -70,13 +70,15 @@ def hold(unit: Unit | None = None) -> str:
     sandbox.sandbox_init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p)]
     sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     error = ctypes.c_char_p()
+    # Found before the hold, which refuses the read that finds it.
+    outside = None if unit is None else _outside()
     sandbox.sandbox_init(profile.encode(), 0, ctypes.byref(error))
     refused, looped, found = _refused(), _looped(), policy_found()
-    forked, unread, scanned = (True, True, []) if unit is None else (_forked(), _unread(roots), _scanned())
+    forked, unread, scanned = (True, True, []) if outside is None else (_forked(), _unread(roots), _scanned(outside))
     kept = refused and not found and (looped if unit is None else not looped and forked and unread and not scanned)
     if not kept:
         in_one = bool(sandbox.sandbox_check(os.getpid(), None, 0))
-        more = "" if unit is None else f"; a process start refused: {forked}; weights unread: {unread}; process reads not held as the unit layer holds them: {scanned}"
+        more = "" if unit is None else f"; a process start refused: {forked}; weights unread: {unread}; process reads and signals not held as the unit layer holds them: {scanned}"
         raise pytest.UsageError(
             f"the run cannot hold itself to {held}: {error.value!r}; in a sandbox already: {in_one}; past loopback refused: {refused}; loopback open: {looped}; Claude Code policy found: {found}{more}"
         )
@@ -100,15 +102,30 @@ def _forked() -> bool:
 # The kernel's answers about a process: sysctl's CTL_KERN names, and libproc's PROC_PIDTBSDINFO with its record's size.
 _KERN_PROC_ALL, _KERN_PROC_PID, _KERN_PROCARGS2 = (1, 14, 0), (1, 14, 1), (1, 49)
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
+# struct proc_bsdinfo's pbi_ppid, after its flags, status, exit status and pid.
+_BSDINFO_PPID_AT = 16
 # What a read the unit layer refuses gets, and what one it lets through does.
 _REFUSED, _ANSWERED = errno.errorcode[errno.EPERM], "answered"
 
 
-def _scanned() -> list[str]:
-    """Each read of a process that did not get what the unit layer holds it to, with what it got: of another process, the
-    run's parent, the process table, its record (its start among it), what it was started as, the list of pids, and
-    libproc's word on it, each refused with EPERM; of this process, its own record and libproc's word on it, each
-    answered. [LAW:no-silent-failure] a read that failed otherwise, as one into too small a buffer would, is no refusal:
+def _outside() -> int:
+    """A process outside the run's process group, which the sandbox lets the run signal: the run's parent, where the run
+    leads its group; otherwise the parent of the process that does, as uv leads the one `uv run` starts the run in."""
+    leader = os.getpgrp()
+    if leader == os.getpid():
+        return os.getppid()
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    record = ctypes.create_string_buffer(_BSDINFO_SIZE)
+    if libproc.proc_pidinfo(leader, _PROC_PIDTBSDINFO, 0, record, _BSDINFO_SIZE) != _BSDINFO_SIZE:
+        raise OSError(ctypes.get_errno(), f"the parent of pid {leader}, which leads the run's process group, could not be read")
+    return int.from_bytes(record.raw[_BSDINFO_PPID_AT : _BSDINFO_PPID_AT + 4], "little")
+
+
+def _scanned(outside: int) -> list[str]:
+    """Each read or signal of a process that did not get what the unit layer holds it to, with what it got: of another
+    process, the run's parent, the process table, its record (its start among it), what it was started as, the list of
+    pids, and libproc's word on it, each refused with EPERM, as a signal to `outside` is; of this process, its own record,
+    libproc's word on it, and a signal to it, each answered. [LAW:no-silent-failure] a read that failed otherwise, as one into too small a buffer would, is no refusal:
     each sysctl asks only for the size of its answer, which needs no buffer."""
     libc = ctypes.CDLL(None, use_errno=True)
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
@@ -122,6 +139,14 @@ def _scanned() -> list[str]:
     def pidinfo(pid: int) -> str:
         return got(libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.create_string_buffer(_BSDINFO_SIZE), _BSDINFO_SIZE) > 0)
 
+    def kill(pid: int) -> str:
+        # Signal 0, which is checked as any signal is and delivers none.
+        try:
+            os.kill(pid, 0)
+        except OSError as error:
+            return errno.errorcode.get(error.errno or 0, f"errno {error.errno}")
+        return _ANSWERED
+
     parent, own = os.getppid(), os.getpid()
     held = {
         "kern.proc.all": (sysctl(*_KERN_PROC_ALL), _REFUSED),
@@ -129,8 +154,10 @@ def _scanned() -> list[str]:
         f"kern.procargs2.{parent}": (sysctl(*_KERN_PROCARGS2, parent), _REFUSED),
         "proc_listallpids": (got(libproc.proc_listallpids(None, 0) > 0), _REFUSED),
         f"proc_pidinfo of {parent}": (pidinfo(parent), _REFUSED),
+        f"kill of {outside}": (kill(outside), _REFUSED),
         f"kern.proc.pid.{own}": (sysctl(*_KERN_PROC_PID, own), _ANSWERED),
         f"proc_pidinfo of {own}": (pidinfo(own), _ANSWERED),
+        f"kill of {own}": (kill(own), _ANSWERED),
     }
     return [f"{read} {said}" for read, (said, holds) in held.items() if said != holds]
 

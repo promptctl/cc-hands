@@ -4,6 +4,7 @@ test starts (test_processes_contract_kernel.py, outside). The cases are written 
 all of them against its own `world`, so each asserts the same of both: that is what holds the fake to the kernel. A claim the
 kernel no longer keeps fails the kernel's run, and the fake is changed to match."""
 
+import os
 import signal
 import sys
 from collections.abc import Mapping
@@ -17,8 +18,10 @@ from hands.sessions.processes import ControllingTerminal, Processes, StartedAs, 
 
 # How a child is started on a terminal: none, with no controlling terminal at all; or controlled by a terminal of the test's
 # own, reading and writing it (`interactive`), reading it and writing a pipe (`piped`), or writing it and reading it by
-# the name each process has for its own, /dev/tty, as `xargs -o` and `< /dev/tty` give a run its stdin (`reopened`).
-At = Literal["none", "interactive", "piped", "reopened"]
+# the name each process has for its own, /dev/tty, as `xargs -o` and `< /dev/tty` give a run its stdin (`reopened`); or
+# reading and writing it with another of its session's process groups in its foreground, as a job stopped there has
+# (`behind`).
+At = Literal["none", "interactive", "piped", "reopened", "behind"]
 # How far a start may be read before the wall clock the test read just before it: the kernel keeps microseconds.
 START_SLACK = 0.01
 
@@ -33,6 +36,8 @@ class Start:
     environment: Mapping[str, str] = field(default_factory=dict[str, str])
     at: At = "none"
     runs_in: Path | None = None
+    # A signal it catches, and lives on: it moves into `caught` under where it runs once it has.
+    catches: signal.Signals | None = None
 
     @property
     def directory(self) -> Path:
@@ -43,7 +48,9 @@ class Start:
     def arguments(self) -> tuple[str, ...]:
         # Python waiting on a signal, not /bin/sleep, since the kernel says nothing of the environment of a program of
         # the system's own, whoever started it.
-        return ("-c", "import os, signal, sys; os.chdir(sys.argv[1]); signal.pause()", str(self.directory))
+        if self.catches is not None:
+            return ("-c", _CATCHES, str(self.directory), self.catches.name)
+        return ("-c", _BEHIND if self.at == "behind" else _WAITS, str(self.directory))
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,10 @@ class World(Protocol):
         """Once `child` has exited by itself or a signal, reaped, so the kernel has nothing more of it."""
         ...
 
+    def caught(self, child: Child) -> None:
+        """Once `child` has caught the signal it catches."""
+        ...
+
     def stopped(self, child: Child) -> None:
         """`child` ended and reaped."""
         ...
@@ -87,6 +98,35 @@ LAUNCHD = 1
 # The kernel's calls a question about one process is answered by, as an Undescribed names the one it refused.
 PROCARGS2 = "kern.procargs2"
 VNODEPATHINFO = "proc_pidinfo flavor 9"
+PIDPATH = "proc_pidpath"
+# The call a signal is sent by.
+KILL = "kill"
+# What a child runs: it moves where it is told, then waits. Behind its terminal, it first starts a process of its own in
+# a group of its own, which waits too, and puts that group in the terminal's foreground: it moves only once it is
+# behind, so a world that waits for it to move has it behind.
+_WAITS = "import os, signal, sys; os.chdir(sys.argv[1]); signal.pause()"
+_BEHIND = "\n".join([
+    "import os, signal, sys",
+    "front = os.fork()",
+    "if front == 0:",
+    "    os.setpgid(0, 0)",
+    "    signal.pause()",
+    "os.setpgid(front, front)",
+    "os.tcsetpgrp(0, front)",
+    "os.chdir(sys.argv[1])",
+    "signal.pause()",
+])  # fmt: skip
+_CATCHES = "\n".join([
+    "import os, signal, sys",
+    "caught = os.path.join(sys.argv[1], 'caught')",
+    "def moved(*_):",
+    "    os.makedirs(caught, exist_ok=True)",
+    "    os.chdir(caught)",
+    "signal.signal(signal.Signals[sys.argv[2]], moved)",
+    "os.chdir(sys.argv[1])",
+    "while True:",
+    "    signal.pause()",
+])  # fmt: skip
 # What a child runs.
 PYTHON = Path(sys.executable)
 
@@ -103,12 +143,22 @@ class ProcessesContract:
         finally:
             world.stopped(child)
 
-    def test_a_child_started_on_a_terminal_is_controlled_by_it_and_in_front_of_it(self, world: World, tmp_path: Path) -> None:
+    def test_a_child_started_on_a_terminal_is_controlled_by_it_and_in_its_foreground(self, world: World, tmp_path: Path) -> None:
         child = world.started(Start(PYTHON, tmp_path, at="interactive"))
         try:
             process = world.processes.table()[child.pid]
             assert child.tty is not None
-            assert process.terminal == ControllingTerminal(child.tty, in_front=True)
+            assert process.terminal == ControllingTerminal(child.tty, foreground=True)
+        finally:
+            world.stopped(child)
+
+    def test_a_child_whose_terminal_has_another_group_in_its_foreground_is_in_its_background(self, world: World, tmp_path: Path) -> None:
+        (tmp_path / "behind").mkdir()
+        child = world.started(Start(PYTHON, tmp_path, at="behind", runs_in=tmp_path / "behind"))
+        try:
+            process = world.processes.table()[child.pid]
+            assert child.tty is not None
+            assert process.terminal == ControllingTerminal(child.tty, foreground=False)
         finally:
             world.stopped(child)
 
@@ -137,6 +187,7 @@ class ProcessesContract:
                 case other:
                     pytest.fail(f"started as {other}")
             assert world.processes.directory_of(process) == folder
+            assert world.processes.program_of(process) == Path(os.path.realpath(PYTHON))
         finally:
             world.stopped(child)
 
@@ -146,20 +197,22 @@ class ProcessesContract:
         [listed] = [each for each in terminal_processes(world.processes).found if each.pid == child.pid]
         world.stopped(child)
         assert child.pid not in world.processes.table()
-        assert (world.processes.started_as(process), world.processes.directory_of(process), world.processes.interactive(listed)) == (None, None, None)
+        said = (world.processes.started_as(process), world.processes.program_of(process), world.processes.directory_of(process), world.processes.interactive(listed))
+        assert said == (None, None, None, None)
 
-    def test_a_program_started_by_a_relative_path_is_read_through_the_pwd_it_was_started_with_after_it_moves(self, world: World, tmp_path: Path) -> None:
+    def test_a_program_started_by_a_relative_path_is_named_by_the_file_it_runs_after_it_moves(self, world: World, tmp_path: Path) -> None:
         folder = tmp_path.resolve()
         (folder / "bin").mkdir()
         (folder / "bin" / "python").symlink_to(PYTHON)
         worktree = folder / "worktree"
         worktree.mkdir()
         # As the shim starts the real `claude` under a relative PATH entry, and as a session then moves into a worktree:
-        # the kernel keeps the path as it was given, and no record of the directory it was given in.
-        child = world.started(Start(Path("bin/python"), folder, {"PWD": str(folder)}, at="interactive", runs_in=worktree))
+        # the kernel keeps the path as it was given, and no record of the directory it was given in. Its PWD, which a
+        # parent need not keep to where it runs, names the worktree, where no bin/python is.
+        child = world.started(Start(Path("bin/python"), folder, {"PWD": str(worktree)}, at="interactive", runs_in=worktree))
         try:
             [process] = [each for each in terminal_processes(world.processes).found if each.pid == child.pid]
-            assert (process.executable, process.cwd) == (folder / "bin" / "python", worktree)
+            assert (process.executable, process.cwd) == (Path(os.path.realpath(PYTHON)), worktree)
         finally:
             world.stopped(child)
 
@@ -197,6 +250,23 @@ class ProcessesContract:
         world.reaped(child)
         assert child.pid not in world.processes.table()
         assert not world.processes.signal(child.pid, signal.SIGTERM)
+
+    def test_a_signal_a_child_catches_is_sent_and_leaves_it_running(self, world: World, tmp_path: Path) -> None:
+        # As a claude wedged in its handler for SIGTERM lives on through it. It moves once its handler is in, so a world
+        # that waits for it to move signals it only then.
+        (tmp_path / "catching").mkdir()
+        child = world.started(Start(PYTHON, tmp_path, catches=signal.SIGTERM, runs_in=tmp_path / "catching"))
+        try:
+            assert world.processes.signal(child.pid, signal.SIGTERM)
+            world.caught(child)
+            assert isinstance(world.processes.started_as(world.processes.table()[child.pid]), StartedAs)
+        finally:
+            world.stopped(child)
+
+    def test_a_signal_the_kernel_will_not_send_raises_the_errno_it_refused_with(self, world: World) -> None:
+        # Root's launchd, which this user may not signal; SIGCONT, which would leave it running were it sent.
+        with pytest.raises(PermissionError, match=r"^\[Errno 1\] Operation not permitted$"):
+            world.processes.signal(LAUNCHD, signal.SIGCONT)
 
     def test_a_childs_line_of_parents_ends_at_launchd_which_is_roots_and_whose_parent_is_not_in_the_table(self, world: World, tmp_path: Path) -> None:
         child = world.started(Start(PYTHON, tmp_path))

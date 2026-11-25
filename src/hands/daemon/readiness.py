@@ -472,7 +472,8 @@ def unjoined(
     a link, is, since `config` and each process's are both as `config_dir` reads them. `interactive` says whether a process
     reads and writes its terminal; it is asked only of a run of claude, the one process it matters for, and one that has
     exited since is none. A process the kernel would not describe may be a session, unless it is one hands knows or a
-    run's own helper.
+    run's own helper; and a run of claude under one is that one's to say, since whether it is a helper, or fritter's,
+    cannot be told.
     """
     by_pid = {process.pid: process for process in terminals.found}
     # The file each runs, its links resolved as they are now, as `claude` and the fritter are: one deleted since is named
@@ -484,10 +485,15 @@ def unjoined(
         return pid in programs and _unversioned(programs[pid]) == install
 
     fritter = home.fritter.resolve()
+    unread = {each.pid for each in terminals.unread}
     runs = [
         process
         for process in terminals.found
-        if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment, process.cwd) == config and process.pid not in members
+        if runs_claude(process.pid)
+        and not runs_claude(process.parent)
+        and process.parent not in unread
+        and config_dir(process.environment, process.cwd) == config
+        and process.pid not in members
     ]
     told = [(process, interactive(process)) for process in runs]
     described = [(process, reads) for process, reads in told if isinstance(reads, bool)]

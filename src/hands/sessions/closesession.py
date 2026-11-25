@@ -86,7 +86,11 @@ async def close(processes: Processes, home: Home, clock: Clock, record: audit.Re
 def _signalled(processes: Processes, home: Home, session: Session) -> bool:
     """Send the session's `claude` SIGTERM, where its process still holds it: whether it was sent."""
     pid = session.membership.pid
-    match liveness.observed(processes, home, session.membership):
+    try:
+        seen = liveness.observed(processes, home, session.membership)
+    except OSError as error:
+        raise NotClosed(f"session {session.membership.id}'s claude, pid {pid}, could not be looked for: {error}") from error
+    match seen:
         case Attached():
             pass
         case Died() | MovedOn():

@@ -8,7 +8,6 @@ import signal
 import struct
 from collections.abc import Callable, Collection
 from pathlib import Path
-from typing import NoReturn
 
 from hands.darwin import libc, libproc
 from hands.sessions.processes import ControllingTerminal, Process, StartedAs, TerminalProcess, Undescribed
@@ -23,23 +22,26 @@ class KernelProcesses:
 
     def table(self) -> dict[int, Process]:
         try:
-            table = _sysctl(_KERN_PROC_ALL)
-        except _Unread as error:
-            raise OSError(error.errno, f"kern.proc.all could not be read: {os.strerror(error.errno)}") from None
-        if len(table) % _KINFO_PROC_SIZE:
+            table = _sysctl(_KERN_PROC_ALL, "kern.proc.all")
+        except _Refused as refused:
+            raise OSError(refused.errno, f"kern.proc.all could not be read: {os.strerror(refused.errno)}") from None
+        if len(table) % _KINFO_PROC.size:
             # A record of another size is a kernel whose struct is not the one laid out below; no errno says so.
-            raise OSError(f"kern.proc.all gave {len(table)} bytes, not a whole number of this kernel's {_KINFO_PROC_SIZE}-byte kinfo_proc")
+            raise OSError(f"kern.proc.all gave {len(table)} bytes, not a whole number of this kernel's {_KINFO_PROC.size}-byte kinfo_proc")
         processes = (_process(*fields) for fields in _KINFO_PROC.iter_unpack(table))
         # Not kernel_task, pid 0, which is its own parent: without it every line of parents ends, at launchd.
         return {process.pid: process for process in processes if process.pid != 0}
 
     def starts(self, pids: Collection[int]) -> dict[int, float]:
-        # One sysctl a pid, about ten microseconds, so it is asked on the event loop and five times a second from the menu
+        # Two sysctls a pid, tens of microseconds, so it is asked on the event loop and five times a second from the menu
         # bar alike.
         return {pid: start for pid in pids if (start := _process_start(pid)) is not None}
 
     def started_as(self, process: Process) -> StartedAs | Undescribed | None:
         return _described(process.pid, process.parent, lambda: _started_as(process.pid))
+
+    def program_of(self, process: Process) -> Path | Undescribed | None:
+        return _described(process.pid, process.parent, lambda: _program(process.pid))
 
     def directory_of(self, process: Process) -> Path | Undescribed | None:
         return _described(process.pid, process.parent, lambda: _cwd(process.pid))
@@ -66,16 +68,16 @@ def _process(flag: int, pid: int, uid: int, parent: int, group: int, tty: int, f
 
 
 # sysctl kern.proc.all: one struct kinfo_proc of 648 bytes per process; its extern_proc's p_flag and p_pid, then its
-# eproc's effective uid (e_ucred.cr_uid), parent's pid, process group, controlling terminal's device, and the process
-# group in front of that terminal (e_tpgid), at these offsets.
+# eproc's effective uid (e_ucred.cr_uid), parent's pid, process group, controlling terminal's device, and the
+# terminal's foreground process group (e_tpgid), at these offsets. The effective uid, not the real: /usr/bin/login, which
+# a terminal app starts each tab through, is set-uid root, and runs as root under the user's real uid.
 _KERN_PROC_ALL = (1, 14, 0)  # CTL_KERN, KERN_PROC, KERN_PROC_ALL
 _KINFO_PROC = struct.Struct("=32xi4xi376xI136xii4xii68x")
-_KINFO_PROC_SIZE = _KINFO_PROC.size
 _P_CONTROLT = 0x2
-# kern.proc.pid.<pid>: the same `struct kinfo_proc`, the record ps itself reads. It opens with the process's start, a
-# `struct timeval`: 8 bytes of seconds, then 4 of microseconds.
+# kern.proc.pid.<pid>: the same `struct kinfo_proc`, the record ps itself reads, or none for a pid no process has. It
+# opens with the process's start, a `struct timeval`: 8 bytes of seconds, then 4 of microseconds.
 _KERN_PROC_PID = (1, 14, 1)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
-_KINFO_PROC_ROOM = 1024  # more than the 648 bytes the record takes, so a larger one in a later macOS still fits
+_START = struct.Struct("=qi")
 # libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, struct proc_vnodepathinfo
 # (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info), and struct
 # vnode_fdinfowithpath (a 24-byte proc_fileinfo, then a vnode_info_path), whose vnode's vinfo_stat has st_rdev at 116, a dev_t as e_tdev is.
@@ -83,30 +85,35 @@ _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
 _PROC_PIDFDVNODEPATHINFO, _FDVNODEPATHINFO_SIZE = 2, 1200
 _FD_RDEV = struct.Struct("=140xi1056x")
+# proc_pidpath's room, PROC_PIDPATHINFO_MAXSIZE.
+_PIDPATH_SIZE = 4 * _MAXPATHLEN
 # kern.procargs2.<pid>: argc, the path the process was exec'd by as execve was given it, padding, its arguments, and
 # its environment, each string ending in a NUL.
 _KERN_PROCARGS2 = (1, 49)  # CTL_KERN, KERN_PROCARGS2
+_ARGC = struct.Struct("=i")
+# How many times a read is sized again where what it reads grew past its size between the sizing and the read, as the
+# table does when processes start then, before it is refused: one that outgrows each new size is a Mac starting
+# processes faster than they can be listed.
+_RESIZES = 4
 
 
 def _process_start(pid: int) -> float | None:
-    mib = (ctypes.c_int * 4)(*_KERN_PROC_PID, pid)
-    record = ctypes.create_string_buffer(_KINFO_PROC_ROOM)
-    size = ctypes.c_size_t(_KINFO_PROC_ROOM)
-    if libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
-        failure = ctypes.get_errno()
+    try:
+        record = _sysctl((*_KERN_PROC_PID, pid), "kern.proc.pid")
+    except _Refused as refused:
         # [LAW:no-silent-failure] the kernel refusing a question it always answers is raised, never taken for "gone".
-        raise OSError(failure, f"sysctl could not say when pid {pid} started: {os.strerror(failure)}")
-    if size.value == 0:
-        return None  # no process has the pid; the kernel answers with an empty record
-    return ctypes.c_int64.from_buffer(record, 0).value + ctypes.c_int32.from_buffer(record, 8).value / 1_000_000
+        raise OSError(refused.errno, f"sysctl could not say when pid {pid} started: {os.strerror(refused.errno)}") from None
+    if not record:
+        return None
+    seconds, microseconds = _START.unpack_from(record)
+    return seconds + microseconds / 1_000_000
 
 
-def _sysctl(mib: tuple[int, ...]) -> bytes:
+def _sysctl(mib: tuple[int, ...], call: str) -> bytes:
     """What sysctl says of `mib`, read whole: sized first, then read again at its new size wherever it grew between the
-    two calls, as processes started then grow the table and an exec grows a process's arguments. _Unread where it
-    refused."""
+    two calls, as processes started then grow the table and an exec grows a process's arguments. Refused as `call`."""
     name = (ctypes.c_int * len(mib))(*mib)
-    while True:
+    for _ in range(_RESIZES):
         size = ctypes.c_size_t(0)
         if libc.sysctl(name, len(mib), None, ctypes.byref(size), None, 0) != 0:
             break
@@ -115,7 +122,7 @@ def _sysctl(mib: tuple[int, ...]) -> bytes:
             return record.raw[: size.value]
         if ctypes.get_errno() != errno.ENOMEM:
             break
-    raise _Unread(ctypes.get_errno())
+    raise _Refused(call, ctypes.get_errno())
 
 
 def _described[T](pid: int, parent: int, read: Callable[[], T]) -> T | Undescribed | None:
@@ -123,17 +130,21 @@ def _described[T](pid: int, parent: int, read: Callable[[], T]) -> T | Undescrib
     kernel would not say.
 
     [LAW:single-enforcer] the one place a question about a process that ran when it was listed is told apart from one
-    the kernel refused.
+    the kernel refused, whichever call it refused.
     """
     try:
         return read()
-    except _Exited:
-        return None
     except _Refused as refused:
+        # libproc has nothing on a process that exited, or is a zombie waiting on its parent.
+        probe = ctypes.create_string_buffer(_BSDINFO_SIZE)
+        if libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, probe, _BSDINFO_SIZE) <= 0 and ctypes.get_errno() == errno.ESRCH:
+            return None
+        # [LAW:no-silent-failure] anything else is the kernel refusing a question about one of this user's own processes.
         return Undescribed(pid, parent, refused.call, refused.errno)
 
 
 def _cwd(pid: int) -> Path:
+    # A directory removed since the process moved into it is still named by the path it had.
     return Path(os.fsdecode(_string(_pidinfo(pid, _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE).raw[_CWD_PATH_AT : _CWD_PATH_AT + _MAXPATHLEN])))
 
 
@@ -146,7 +157,7 @@ def _device(pid: int, fd: int) -> int | None:
         # EBADF is an fd that is no file, or no fd at all: nothing a terminal is.
         if failure == errno.EBADF:
             return None
-        _raise_unless_exited(pid, f"proc_pidfdinfo of fd {fd}", failure)
+        raise _Refused(f"proc_pidfdinfo of fd {fd}", failure)
     if filled != _FDVNODEPATHINFO_SIZE:
         raise OSError(f"proc_pidfdinfo gave {filled} bytes for fd {fd} of pid {pid}, where this kernel's struct was taken to be {_FDVNODEPATHINFO_SIZE}")
     # A regular file's st_rdev is 0, never a terminal's device.
@@ -154,14 +165,22 @@ def _device(pid: int, fd: int) -> int | None:
     return device
 
 
+def _program(pid: int) -> Path:
+    # ENOENT for a program deleted since it started: the kernel keeps the file, and no name for it.
+    record = ctypes.create_string_buffer(_PIDPATH_SIZE)
+    if libproc.proc_pidpath(pid, record, _PIDPATH_SIZE) <= 0:
+        raise _Refused("proc_pidpath", ctypes.get_errno())
+    return Path(os.fsdecode(record.value))
+
+
 def _started_as(pid: int) -> StartedAs:
-    try:
-        raw = _sysctl((*_KERN_PROCARGS2, pid))
-    except _Unread as error:
-        _raise_unless_exited(pid, "kern.procargs2", error.errno)
-    argc = ctypes.c_int.from_buffer_copy(raw, 0).value
-    path, rest = raw[ctypes.sizeof(ctypes.c_int) :].split(b"\0", 1)
+    raw = _sysctl((*_KERN_PROCARGS2, pid), "kern.procargs2")
+    (argc,) = _ARGC.unpack_from(raw) if len(raw) >= _ARGC.size else (-1,)
+    path, ended, rest = raw[_ARGC.size :].partition(b"\0")
     strings = rest.lstrip(b"\0").split(b"\0")
+    if not ended or not 0 <= argc <= len(strings):
+        # A record of another shape is a kernel whose layout is not the one laid out above; no errno says so.
+        raise OSError(f"kern.procargs2 gave {len(raw)} bytes for pid {pid}, not argc, a path, and argc strings after it")
     # The environment runs from after the arguments to the first empty string.
     after = strings[argc:]
     entries = after[: after.index(b"")] if b"" in after else after
@@ -173,17 +192,9 @@ def _string(raw: bytes) -> bytes:
     return raw.split(b"\0", 1)[0]
 
 
-class _Unread(Exception):
-    def __init__(self, errno: int) -> None:
-        super().__init__(errno)
-        self.errno = errno
-
-
-class _Exited(Exception):
-    pass
-
-
 class _Refused(Exception):
+    """A call the kernel answered with an errno."""
+
     def __init__(self, call: str, errno: int) -> None:
         super().__init__(call, errno)
         self.call = call
@@ -194,20 +205,8 @@ def _pidinfo(pid: int, flavor: int, size: int) -> ctypes.Array[ctypes.c_char]:
     record = ctypes.create_string_buffer(size)
     filled = libproc.proc_pidinfo(pid, flavor, 0, record, size)
     if filled <= 0:
-        _raise_unless_exited(pid, f"proc_pidinfo flavor {flavor}", ctypes.get_errno())
+        raise _Refused(f"proc_pidinfo flavor {flavor}", ctypes.get_errno())
     if filled != size:
         # A record of another size is a kernel whose struct is not the one laid out above; no errno says so.
         raise OSError(f"proc_pidinfo flavor {flavor} gave {filled} bytes for pid {pid}, where this kernel's struct was taken to be {size}")
     return record
-
-
-def _raise_unless_exited(pid: int, call: str, failure: int) -> NoReturn:
-    """Raised after `call` failed for pid with errno `failure`: _Exited when the process is gone, or a zombie, and
-    _Refused when it runs."""
-    # [LAW:single-enforcer] the one test for an exit, whichever call failed: libproc has nothing on a process that
-    # exited, or is a zombie waiting on its parent.
-    probe = ctypes.create_string_buffer(_BSDINFO_SIZE)
-    if libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, probe, _BSDINFO_SIZE) <= 0 and ctypes.get_errno() == errno.ESRCH:
-        raise _Exited
-    # [LAW:no-silent-failure] anything else is the kernel refusing a question about one of this user's own processes.
-    raise _Refused(call, failure)

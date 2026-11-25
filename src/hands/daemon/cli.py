@@ -733,6 +733,8 @@ def retire(indicator: int, clock: Clock, grace: float = RETIRE_GRACE_SECONDS) ->
 def signalled(group: int, signum: signal.Signals) -> None:
     """Send `signum` to the process group `group` leads, where any of it has yet to exit."""
     try:
+        # [LAW:effects-at-boundaries] exception: the indicator, a child of this run, is signalled through the machine,
+        # not Children, until Children holds it (part 3 of promptctl-testing-c3u.avj).
         os.killpg(group, signum)
     except (ProcessLookupError, PermissionError):
         # Every process in the group had exited: gone, ProcessLookupError; exited and not yet reaped, macOS says

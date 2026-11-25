@@ -1,6 +1,8 @@
 """The processes contract (processescontract.py) held to the fake table: in `make check`."""
 
+import os
 from itertools import count
+from pathlib import Path
 
 import pytest
 
@@ -35,12 +37,13 @@ class Fake:
     def started(self, start: Start) -> Child:
         pid, tty = next(self._pids), None if start.at == "none" else next(self._ttys)
         # Its stdin and stdout as the kernel's child has them: a pipe is no device.
-        stdin, stdout = {"none": (None, None), "interactive": (tty, tty), "piped": (tty, None), "reopened": (DEV_TTY, tty)}[start.at]
+        stdin, stdout = {"none": (None, None), "interactive": (tty, tty), "piped": (tty, None), "reopened": (DEV_TTY, tty), "behind": (tty, tty)}[start.at]
         self.clock.advance(0.001)
         self.table.add(
             Running(
-                pid, parent=OURS, tty=tty, in_front=tty is not None, start=self.wall(), cwd=start.directory, path=start.program, arguments=start.arguments,
-                environment=start.environment, stdin=stdin, stdout=stdout,
+                pid, parent=OURS, tty=tty, foreground=start.at in {"interactive", "piped", "reopened"}, start=self.wall(), cwd=start.directory,
+                path=start.program, program=Path(os.path.realpath(start.cwd / start.program)), arguments=start.arguments, environment=start.environment,
+                stdin=stdin, stdout=stdout, caught=frozenset() if start.catches is None else frozenset({start.catches}),
             )
         )
         self.clock.advance(0.001)
@@ -48,6 +51,9 @@ class Fake:
 
     def reaped(self, child: Child) -> None:
         assert child.pid not in self.table.running, f"pid {child.pid} has not exited"
+
+    def caught(self, child: Child) -> None:
+        assert child.pid in self.table.running, f"pid {child.pid} has exited"
 
     def stopped(self, child: Child) -> None:
         self.table.end(child.pid)

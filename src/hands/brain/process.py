@@ -57,6 +57,7 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_hook
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.processes import parse_pid
 from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
@@ -349,9 +350,11 @@ _UNHELD = re.compile(rb"can't find session|no server running on |error connectin
 
 def _pid(path: Path) -> int | None:
     try:
-        return int(path.read_text())
+        number = int(path.read_text())
     except (FileNotFoundError, ValueError):
         return None
+    # [LAW:parse-dont-validate] the pane's shell is signalled as a group: 0 or a negative pid would be another group.
+    return parse_pid(number)
 
 
 class InTmux:
@@ -2112,6 +2115,7 @@ def _unstarted(running: InTmux, waiting: str) -> Unstartable:
 
 def _alive(pid: int) -> bool:
     try:
+        # [LAW:effects-at-boundaries] exception: asked of the machine, not Processes, until promptctl-testing-c3u.fhu.
         os.kill(pid, 0)
     except ProcessLookupError:
         return False

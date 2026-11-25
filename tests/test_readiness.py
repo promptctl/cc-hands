@@ -273,7 +273,7 @@ def at_a_terminal(pid: int, executable: Path, cwd: Path, arguments: tuple[str, .
     """A process started as executable in cwd on a terminal of its own, as a session runs, its stdin a pipe if piped, as
     a shell starts a program: with the directory it starts in as its PWD."""
     environment = {"CLAUDE_CONFIG_DIR": CLAUDE_CONFIG, "PWD": str(cwd)}
-    return Running(pid, tty=TTY, in_front=True, start=start, cwd=cwd, path=executable, arguments=arguments, environment=environment, stdin=TTY, stdout=None if piped else TTY)
+    return Running(pid, tty=TTY, foreground=True, start=start, cwd=cwd, path=executable, arguments=arguments, environment=environment, stdin=TTY, stdout=None if piped else TTY)
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
@@ -427,6 +427,14 @@ def test_a_process_not_described_is_unknown_unless_hands_knows_it_or_it_is_a_run
     stranger, member, helper = (Undescribed(pid, parent, "kern.procargs2", errno.EIO) for pid, parent in ((7, 0), (8, 0), (9, 1)))
     found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, TerminalProcesses([run], [stranger, member, helper]), {1, 8}, reads_its_terminal)
     assert found.unread == [stranger]
+
+
+def test_a_run_of_claude_whose_parent_the_kernel_will_not_describe_is_unknown_by_that_parent() -> None:
+    # Its parent may be a run of claude, whose helper it is, or the fritter it runs under: neither can be said.
+    run = terminal(2, "/v/1.0.0", parent=1)
+    parent = Undescribed(1, 0, "kern.procargs2", errno.EIO)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, TerminalProcesses([run], [parent]), set(), reads_its_terminal)
+    assert (found.sessions, found.others, found.unread) == ([], {}, [parent])
 
 
 def test_a_run_of_claude_whose_terminal_the_kernel_will_not_say_is_unknown_not_a_failed_scan() -> None:
@@ -622,8 +630,7 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path) -> None:
     home = Home(root / "home")
     pid = 4001
     joined(home, "running", pid, None)
-    table = processes(Running(pid))
-    table.refused = {PROC_PID: errno.EPERM}
+    table = processes(Running(pid, refused={PROC_PID: errno.EPERM}))
     found = readiness.sessions(table, home, "/nowhere", untmuxed)
     assert isinstance(found, Unknown) and found.said == f"cannot look at the running sessions in {home.memberships}: [Errno 1] sysctl could not say when pid {pid} started: Operation not permitted"
 

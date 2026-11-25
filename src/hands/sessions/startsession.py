@@ -20,7 +20,7 @@ from hands.sessions import audit, wide
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions.home import HOME_VARIABLE, Home
-from hands.sessions.processes import Process, Processes
+from hands.sessions.processes import Process, Processes, ancestors
 from hands.sessions.tmux import TmuxExit, ran_at, shown
 from hands.sessions.untap import untap_script, untapped
 
@@ -95,11 +95,7 @@ def joined(members: Iterable[Membership], root: int, table: Mapping[int, Process
 
 def descends(pid: int, root: int, table: Mapping[int, Process]) -> bool:
     """Whether process `pid` is `root` or one of the processes it started, by each process's parent in `table`."""
-    while pid != root:
-        if pid not in table:
-            return False
-        pid = table[pid].parent
-    return True
+    return any(process.pid == root for process in ancestors(pid, table))
 
 
 async def start(home: Home, children: Children, processes: Processes, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:

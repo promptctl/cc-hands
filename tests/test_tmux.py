@@ -8,7 +8,7 @@ from fakeprocesses import USER, Running, processes
 from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import tmux
 from hands.sessions.tmux import Answered
-from hands.sessions.processes import ancestor_terminals, front_terminal
+from hands.sessions.processes import ancestor_terminals, foreground_terminal
 
 # Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
 PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
@@ -19,11 +19,11 @@ LAWS = Pane(PLAY, "%0", "laws", 0)
 # front of its shell. Another, in a pane of the second server, and one stopped there, behind it; and one in a plain tab.
 TABLE = processes(
     Running(100, tty=PANE),
-    Running(101, parent=100, tty=PANE, in_front=True),
-    Running(102, parent=101, tty=FRITTER, in_front=True),
-    Running(200, tty=OTHER_PANE, in_front=True),
+    Running(101, parent=100, tty=PANE, foreground=True),
+    Running(102, parent=101, tty=FRITTER, foreground=True),
+    Running(200, tty=OTHER_PANE, foreground=True),
     Running(201, tty=OTHER_PANE),
-    Running(300, tty=TAB, in_front=True),
+    Running(300, tty=TAB, foreground=True),
 ).table()
 SERVERS = [Listed({PANE: HANDS}), Listed({OTHER_PANE: LAWS})]
 
@@ -45,7 +45,7 @@ def test_a_server_that_did_not_answer_leaves_unread_only_the_sessions_no_other_s
 
 
 def keyboard(pid: int, servers: Sequence[Server] = SERVERS) -> object:
-    return keyboard_of(front_terminal(pid, TABLE), ancestor_terminals(pid, TABLE), servers)
+    return keyboard_of(foreground_terminal(pid, TABLE), ancestor_terminals(pid, TABLE), servers)
 
 
 def test_keys_reach_a_session_through_its_pane_only_while_it_is_in_front_of_that_pane_itself() -> None:
