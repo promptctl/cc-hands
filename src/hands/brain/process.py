@@ -63,10 +63,10 @@ from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.core.tmux import Unanswered
 from hands.sessions.panes import socket_directory
-from hands.sessions.terminals import Untyped
+from hands.sessions.terminals import Unconfirmed, Untyped
 # [LAW:effects-at-boundaries] exception: the brain runs tmux on its own pane past Terminals, a minimum kept knowingly;
 # promptctl-testing-c3u.fhu hands it Terminals and deletes this import.
-from hands.sessions.tmux import TmuxExit, ran_at, styled
+from hands.sessions.tmux import TmuxExit, TmuxUnstarted, ran_at, styled
 # [LAW:effects-at-boundaries] exception: the brain types into its own Claude Code past Fritters, with a chord of its own
 # to send; promptctl-testing-c3u.fhu hands it Fritters and deletes this import.
 from hands.sessions.typing import Typist
@@ -458,8 +458,8 @@ class InTmux:
 
     async def end_session(self) -> None:
         match await ran_at(self._children, Path(self._tmux), self._socket, ("kill-session", "-t", f"={self._session}")):
-            case Unanswered() as unanswered:
-                logger.warning(f"the brain's tmux server did not end its session: {unanswered.reason}")
+            case TmuxUnstarted(reason=reason) | Unanswered(reason=reason):
+                logger.warning(f"the brain's tmux server did not end its session: {reason}")
             case TmuxExit(code=code, err=err) if code != 0 and not _UNHELD.search(err):
                 logger.warning(f"the brain's tmux server did not end its session: {err.decode(errors='replace').strip()}")
             case TmuxExit():
@@ -486,6 +486,8 @@ async def in_tmux(children: Children, station: Station, argv: Sequence[str], wor
     match await ran_at(children, Path(tmux), socket, ("kill-session", "-t", f"={session}")):
         case TmuxExit(code=0):
             logger.info(f"ended tmux session {session}, a brain left by an earlier hands")
+        case TmuxUnstarted(reason=reason):
+            raise Unstartable(f"the brain's tmux server could not be asked: {reason}")
         case Unanswered() as unanswered:
             raise Unstartable(f"the brain's tmux server did not answer: {unanswered.reason}")
         case TmuxExit(err=err) if not _UNHELD.search(err):
@@ -1639,7 +1641,7 @@ class Brain:
                 annotate(waited_after_exit=await self.drained())
 
     async def _type(self, typing: Callable[[BrainTypist], None]) -> None:
-        # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, which no turn's end catches: `_broke` says it.
+        # [LAW:no-silent-failure] a key the terminal refuses raises Untyped, or Unconfirmed where it never answers, which no turn's end catches: `_broke` says it.
         await asyncio.to_thread(typing, self._typist)
 
     async def _run_out(self, up: Begun) -> int:
@@ -2161,7 +2163,7 @@ async def _input_up(typist: Typist) -> None:
     which Claude Code takes as one more line."""
     try:
         await asyncio.to_thread(typist.pasting)
-    except Untyped as error:
+    except (Untyped, Unconfirmed) as error:
         raise _NotYet(f"the brain had not turned its input on ({error})") from error
 
 

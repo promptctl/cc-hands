@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from hands.core.effects import Fritter, NotTyped, Text, Type, Typed
+from hands.core.effects import Fritter, MaybeTyped, NotTyped, Text, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
 from hands.core.session import Gone, Known, Registry, Running, Session, SessionId, Staged
 from hands.core.status import Waiting
@@ -74,7 +74,7 @@ class NothingStaged:
     session: SessionId
 
 
-DraftOutcome =DraftStaged | DraftAmended | DraftDiscarded | NothingStaged | Unreached | Typed[Text] | NotTyped[Text]
+DraftOutcome =DraftStaged | DraftAmended | DraftDiscarded | NothingStaged | Unreached | Typed[Text] | NotTyped[Text] | MaybeTyped[Text]
 
 
 def decide(registry: Registry, request: Decidable) -> tuple[Registry, DraftOutcome | Type[Text]]:

@@ -2,7 +2,6 @@
 server that may hold the pane, once each time it is asked, never kept (`hands.core.tmux`)."""
 
 import asyncio
-import os
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 from loguru import logger
 
 from hands.core.tmux import InPane, Keyboard, PaneUnread, Server, Unanswered, keyboard_of, pane_of
-from hands.sessions.processes import Process, Processes, StartedAs, Undescribed, ancestor_terminals, ancestors, foreground_terminal, still_running
+from hands.sessions.processes import Process, Processes, StartedAs, TableRefused, Undescribed, ancestor_terminals, ancestors, foreground_terminal, still_running, table_of
 from hands.sessions.terminals import Terminals
 
 # $TMUX as tmux sets it in a pane: its server's socket, the server's pid, and the session's index.
@@ -33,11 +32,9 @@ async def _read[P](
     terminals: Terminals, processes: Processes, pids: Sequence[int], environment: Mapping[str, str], of: Callable[[int, Mapping[int, Process], list[Server]], P]
 ) -> list[P | PaneUnread]:
     try:
-        try:
-            table = await asyncio.to_thread(processes.table)
-        except OSError as refused:
-            # A refusal the kernel answers with, as Processes declares: no fault of hands'.
-            return [PaneUnread(f"the processes could not be read: {refused}")] * len(pids)
+        table = await table_of(processes)
+        if isinstance(table, TableRefused):
+            return [PaneUnread(table.reason)] * len(pids)
         read = await across(terminals, processes, environment, pids, table, terminals.panes)
     except Exception as error:
         # [LAW:no-silent-failure] the pane is a fact its readers can go without: a read that broke is logged with
@@ -62,9 +59,8 @@ def sockets(terminals: Terminals, processes: Processes, environment: Mapping[str
     and each named by $TMUX on a line of ancestors of `pids`, which is the only word of a server started with `-S`
     elsewhere, or under another $TMUX_TMPDIR; or why one process on such a line could not be read.
 
-    [LAW:one-source-of-truth] tmux sets $TMUX to its socket, then its pid and the session's index; it resolves the
-    directory's path (/tmp is /private/tmp), so one server found both ways is known by its real path and asked once, by
-    its path in the directory.
+    [LAW:one-source-of-truth] tmux sets $TMUX to its socket by its real path (/tmp is /private/tmp), then its pid and the
+    session's index, and Terminals lists a directory's sockets by theirs: one server found both ways is asked once.
     """
     # Only the user's own processes are read, and only their own can be a server of theirs.
     mine = {process.pid: process for process in table.values() if process.uid == processes.user}
@@ -72,9 +68,7 @@ def sockets(terminals: Terminals, processes: Processes, environment: Mapping[str
     lines = {process.pid: process for pid in pids for process in ancestors(pid, table) if process.pid in mine and process.terminal is not None}
     # tmux names its directory by its real uid, which hands, set-uid to no one, runs as its effective one.
     directory = socket_directory(environment, processes.user)
-    found = [*terminals.sockets(directory), *(socket for process in lines.values() for socket in _named(processes, process, mine))]
-    # Reversed, so the first path found for a server is the one kept.
-    return list({os.path.realpath(socket) if isinstance(socket, Path) else socket: socket for socket in reversed(found)}.values())
+    return list(dict.fromkeys([*terminals.sockets(directory), *(socket for process in lines.values() for socket in _named(processes, process, mine))]))
 
 
 def _named(processes: Processes, process: Process, mine: Mapping[int, Process]) -> list[Path | Unanswered]:
@@ -129,17 +123,6 @@ def _relative(processes: Processes, server: Process, path: Path) -> list[Path | 
 
 def _unread(what: str, refused: Undescribed) -> Unanswered:
     return Unanswered(f"{what} could not be read: {refused.call} refused with errno {refused.errno}")
-
-
-def reached(environment: Mapping[str, str], uid: int) -> Path:
-    """The socket of the server a `tmux` run in `environment` by the user of real uid `uid` reaches with no -S or -L: the
-    one $TMUX names, as tmux reads it (all of it before the first comma, where it neither is empty nor begins with one),
-    or else the default one in `socket_directory`."""
-    match environment.get("TMUX", ""):
-        case str(named) if named and not named.startswith(","):
-            return Path(named.partition(",")[0])
-        case _:
-            return socket_directory(environment, uid) / "default"
 
 
 def socket_directory(environment: Mapping[str, str], uid: int) -> Path:

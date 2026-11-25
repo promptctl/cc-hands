@@ -10,7 +10,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unbaselined, Unclosed, Unfiled, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, MaybeTyped, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unbaselined, Unclosed, Unfiled, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Dequeued, Event, PermissionRequested, Removed, Stopped, Tick, ToolFinished, Unqueuing
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -19,7 +19,7 @@ from hands.core.session import Gone, Instant, Known, Membership, PromptId, Regis
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.child import Children
-from hands.sessions.audit import Record, Typing, TypingFailed
+from hands.sessions.audit import Record, Typing, TypingFailed, TypingUnconfirmed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
 from hands.clock import Clock, stamp
@@ -28,7 +28,7 @@ from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import Titles
-from hands.sessions.terminals import Untyped
+from hands.sessions.terminals import Unconfirmed, Untyped
 
 
 # How a Stop's hook ended: decided inside the hold, let go at it with Claude Code going on undecided, or released
@@ -364,7 +364,7 @@ class Sessions:
                 [pane] = await self._keyboards([known.membership.pid])
                 return pane
 
-    async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I]:
+    async def _type[I: Input](self, effect: Type[I]) -> Typed[I] | NotTyped[I] | MaybeTyped[I]:
         # [LAW:single-enforcer] everything typed into a session passes here, so every one is in the log before it is typed,
         # joined to the event of the tool call that typed it by its span.
         self._record(Typing(effect, here()))
@@ -374,6 +374,9 @@ class Sessions:
             # [LAW:no-silent-failure] said, with what was to be typed, on the line that pairs with the Typing before it.
             self._record(TypingFailed(effect, str(error)))
             return NotTyped(effect.session, effect.input, str(error))
+        except Unconfirmed as error:
+            self._record(TypingUnconfirmed(effect, str(error)))
+            return MaybeTyped(effect.session, effect.input, str(error))
         return Typed(effect.session, effect.input)
 
     async def keep_time(self, period: float) -> None:

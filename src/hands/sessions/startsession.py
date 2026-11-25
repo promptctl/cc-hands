@@ -18,8 +18,7 @@ from hands.core.session import Membership, SessionId
 from hands.core.tmux import Unanswered
 from hands.sessions import audit, wide
 from hands.sessions.home import HOME_VARIABLE, Home
-from hands.sessions.panes import reached
-from hands.sessions.processes import Process, Processes, ancestors
+from hands.sessions.processes import Process, Processes, TableRefused, ancestors, table_of
 from hands.sessions.terminals import Opened, Terminals, Unopened
 from hands.sessions.untap import untap_script, untapped
 
@@ -103,24 +102,23 @@ async def start(home: Home, clock: Clock, terminals: Terminals, processes: Proce
         # their own. hands' own `claude`, its shim, whatever comes first on the window's PATH: the session runs under
         # fritter, so hands can type into it.
         claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", "--settings", SETTINGS, *(() if model is None else (f"--model={model}",))]
-        # The server a `tmux` typed where hands was started reaches.
-        socket = reached(environment, processes.user)
-        # The terminal's environment: a tmux server this starts takes it as every window's, so it holds nothing of
-        # hands'. The home the session reports to is given its window by name.
-        match await terminals.open(socket, name, where, ("-e", f"{HOME_VARIABLE}={home.root}", "--", *claude), terminal):
+        # In the server a `tmux` typed at that terminal reaches, as tmux picks it. The terminal's environment: a tmux
+        # server this starts takes it as every window's, so it holds nothing of hands'. The home the session reports to
+        # is given its window alone.
+        match await terminals.open(name, where, claude, {HOME_VARIABLE: str(home.root)}, terminal):
             case Unopened(reason=reason):
                 raise NotStarted(f"hands starts a session in a tmux window, and none was opened: {reason}")
             case Unanswered(reason=reason):
                 # [LAW:no-silent-failure] a tmux that gave no answer may have opened the window all the same.
                 raise NotStarted(f"hands starts a session in a tmux window, and tmux did not say whether it opened one, so `claude` may be starting in tmux session {name} now: {reason}")
             case Opened() as window:
-                return await _started(home, clock, terminals, processes, members, where, name, socket, window)
+                return await _started(home, clock, terminals, processes, members, where, name, window)
 
 
-async def _started(home: Home, clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], where: Path, name: str, socket: Path, window: Opened) -> Started:
+async def _started(home: Home, clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], where: Path, name: str, window: Opened) -> Started:
     """The session `claude` in `window` joins hands as, once it has."""
-    wide.annotate(tmux_session=name, made_tmux_session=window.made, pane=window.pane, tmux_socket=socket)
-    member = await _joined(clock, terminals, processes, members, where, socket, window)
+    wide.annotate(tmux_session=name, made_tmux_session=window.made, pane=window.pane, tmux_socket=window.socket)
+    member = await _joined(clock, terminals, processes, members, where, window)
     wide.annotate(session=member.id, under_fritter=member.fritter is not None)
     if member.fritter is None:
         raise NotStarted(f"session {member.id} joined hands in tmux pane {window.pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
@@ -149,10 +147,10 @@ def tmux_name(folder: Path) -> str:
     return folder.name.replace(".", "_").replace(":", "_")
 
 
-async def _joined(clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], folder: Path, socket: Path, window: Opened) -> Membership:
-    pane = window.pane
+async def _joined(clock: Clock, terminals: Terminals, processes: Processes, members: Callable[[], Iterable[Membership]], folder: Path, window: Opened) -> Membership:
+    socket, pane = window.socket, window.pane
     deadline = clock.now() + JOIN_SECONDS
-    while (member := joined(members(), window.pid, _table(processes))) is None:
+    while (member := joined(members(), window.pid, await _table(processes))) is None:
         # Asked of the server that opened the pane, the one its id names a pane of.
         match await terminals.state(socket, pane):
             case Unanswered(reason=reason):
@@ -179,8 +177,9 @@ def _read(screen: str | Unanswered) -> str:
             return f"(tmux could not show it: {reason})"
 
 
-def _table(processes: Processes) -> dict[int, Process]:
-    try:
-        return processes.table()
-    except OSError as error:
-        raise NotStarted(f"the processes could not be read to tell which session is the one started: {error}") from error
+async def _table(processes: Processes) -> dict[int, Process]:
+    match await table_of(processes):
+        case TableRefused(reason=reason):
+            raise NotStarted(f"which session is the one started could not be told: {reason}")
+        case table:
+            return table

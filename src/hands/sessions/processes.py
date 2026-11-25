@@ -13,6 +13,7 @@ was already running when it was remembered; one that started later took the numb
 sweep and the daemon's heartbeat both ask that, and both answer it here.
 """
 
+import asyncio
 import signal
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
@@ -142,6 +143,22 @@ class Processes(Protocol):
         Rejected for a number no process could have, as 0 or a negative one, which would name a group; and OSError where
         the kernel refused it."""
         ...
+
+
+@dataclass(frozen=True)
+class TableRefused:
+    """The kernel refused the process table, and what it said."""
+
+    reason: str
+
+
+async def table_of(processes: Processes) -> dict[int, Process] | TableRefused:
+    """[LAW:single-enforcer] the process table, read off the event loop, or the refusal the kernel answered with, which
+    Processes declares and which is no fault of hands'."""
+    try:
+        return await asyncio.to_thread(processes.table)
+    except OSError as refused:
+        return TableRefused(f"the processes could not be read: {refused}")
 
 
 def parse_pid(number: int) -> int:

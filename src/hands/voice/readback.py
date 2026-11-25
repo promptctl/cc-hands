@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 
 from hands.core.drafts import DraftAmended, DraftDiscarded, DraftOutcome, DraftStaged, NothingStaged
-from hands.core.effects import Command, Key, NotTyped, Text, Typed
+from hands.core.effects import Command, Key, MaybeTyped, NotTyped, Text, Typed
 from hands.core.keyboard import InBackground, KeyboardOutcome, NothingRunning
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unwrapped
 from hands.core import session
@@ -45,6 +45,8 @@ def readback(outcome: DraftOutcome, name: str) -> str:
             return f"Sent the draft to {name}."
         case NotTyped(input=Text(prompt=text), reason=reason):
             return f"The draft for {name} was not sent, and is no longer staged: {reason}. It said: {_said(text)}"
+        case MaybeTyped(input=Text(prompt=text), reason=reason):
+            return f"The draft for {name} may have been sent, and is no longer staged: {reason}. Read {name} before sending it again, which may send it twice. It said: {_said(text)}"
         case Unwrapped() as unwrapped:
             return f"{_unreachable(unwrapped, name)} The draft is still staged."
         case AtItsDialog():
@@ -58,6 +60,8 @@ def keyboard_readback(outcome: KeyboardOutcome, name: str) -> str:
             return f"Typed {_spoken_input(input)} into {name}."
         case NotTyped(input=input, reason=reason):
             return f"{_spoken_input(input)} was not typed into {name}: {reason}."
+        case MaybeTyped(input=input, reason=reason):
+            return f"{_spoken_input(input)} may have been typed into {name}: {reason}. Read {name} before typing it again."
         case NothingRunning():
             return f"{name} is at its prompt, so there is nothing to interrupt."
         case InBackground(subagents=subagents):

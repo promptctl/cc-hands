@@ -14,15 +14,21 @@ from hands.core.tmux import Pane, Server, Unanswered
 
 
 class Untyped(Exception):
-    """fritter or tmux could not be reached, or refused, or could not write. The message says which."""
+    """Nothing was typed: fritter or tmux could not be reached, or refused, or could not write. The message says which."""
+
+
+class Unconfirmed(Exception):
+    """fritter or tmux was handed the input and never said whether it typed it: it may be in the session. The message
+    says why no answer came."""
 
 
 @dataclass(frozen=True)
 class Opened:
-    """A window opened in a tmux session: whether the session was made for it, the window's pane (`%12`), and the pid of
-    the process the pane runs."""
+    """A window opened in a tmux session: whether the session was made for it, the socket of the server it opened in by
+    its real path, as tmux names it, the window's pane (`%12`), and the pid of the process the pane runs."""
 
     made: bool
+    socket: Path
     pane: str
     pid: int
 
@@ -43,8 +49,8 @@ class Terminals(Protocol):
     """The user's tmux servers, as they stand when asked."""
 
     def sockets(self, directory: Path) -> list[Path]:
-        """Every socket in `directory`, where tmux puts the sockets of the servers it starts: one a server that exited
-        left behind among them."""
+        """Every socket in `directory`, where tmux puts the sockets of the servers it starts, by its real path, as tmux
+        names a server in each pane's $TMUX and Opened: one a server that exited left behind among them."""
         ...
 
     async def panes(self, socket: Path) -> Server:
@@ -72,14 +78,16 @@ class Terminals(Protocol):
         """Whether pane `pane` of the server at `socket` still runs its process."""
         ...
 
-    async def open(self, socket: Path, session: str, folder: Path, command: Sequence[str], environment: Mapping[str, str]) -> Opened | Unopened | Unanswered:
-        """Open a detached window of tmux session `session` of the server at `socket`, in `folder`, running `command`,
-        making the session where there is none: a server this starts takes `environment` as every window's. Unanswered
-        where tmux gave no answer, so a window may have opened."""
+    async def open(self, session: str, folder: Path, command: Sequence[str], window: Mapping[str, str], environment: Mapping[str, str]) -> Opened | Unopened | Unanswered:
+        """Open a detached window of tmux session `session`, in `folder`, running `command` with the variables of `window`
+        set, making the session where there is none, in the server a `tmux` run in `environment` reaches, as tmux picks
+        it: the one its $TMUX names, or else its default one. A server this starts takes `environment` as every window's.
+        Unanswered where tmux gave no answer, so a window may have opened."""
         ...
 
     async def type(self, pane: Pane, input: Input) -> None:
-        """Type `input` into `pane` as someone at its keyboard would. Raises Untyped saying why it was not typed."""
+        """Type `input` into `pane` as someone at its keyboard would. Raises Untyped saying why nothing was typed, or
+        Unconfirmed where tmux gave no answer, so it may have been."""
         ...
 
 
@@ -88,7 +96,7 @@ class Fritters(Protocol):
 
     async def type(self, fritter: Fritter, input: Input) -> None:
         """Type `input` into the session `fritter` wrapped, as someone at its keyboard would. Raises Untyped saying why
-        it was not typed."""
+        nothing was typed, or Unconfirmed where fritter was asked and gave no answer, so it may have been."""
         ...
 
 

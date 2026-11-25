@@ -81,11 +81,13 @@ def test_a_relative_socket_is_where_its_server_runs_while_that_server_started_be
     assert panes.sockets(FakeTerminals(), table, environment, [601], table.table()) == []
 
 
-def test_a_server_found_in_its_directory_and_by_the_tmux_a_pane_names_is_asked_once_by_its_path_there(tmp_path: Path) -> None:
-    socket = panes.socket_directory({"TMUX_TMPDIR": str(tmp_path)}, USER) / "default"
-    table = processes(Running(101, terminal=ControllingTerminal(PANE, foreground=True), environment={"TMUX": f"{os.path.realpath(socket)},100,0"}))
+def test_a_server_found_in_its_directory_and_by_the_tmux_a_pane_names_is_asked_once() -> None:
+    # Both by its real path: tmux's $TMUX, and Terminals' listing of the directory (terminalscontract.py).
+    environment = {"TMUX_TMPDIR": "/private/tmp"}
+    socket = panes.socket_directory(environment, USER) / "default"
+    table = processes(Running(101, terminal=ControllingTerminal(PANE, foreground=True), environment={"TMUX": f"{socket},100,0"}))
     terminals = FakeTerminals({socket: FakeServer([FakePane("%3", PANE, "cc-hands", 2)])})
-    assert panes.sockets(terminals, table, {"TMUX_TMPDIR": str(tmp_path)}, [101], table.table()) == [socket]
+    assert panes.sockets(terminals, table, environment, [101], table.table()) == [socket]
 
 
 async def test_a_session_is_read_in_the_pane_of_a_server_only_its_tmux_names_and_left_unread_where_a_server_would_not_say(tmp_path: Path) -> None:
@@ -101,13 +103,6 @@ async def test_a_session_is_read_in_the_pane_of_a_server_only_its_tmux_names_and
 def test_sockets_are_looked_for_where_tmux_puts_them_with_an_empty_tmux_tmpdir_read_as_unset() -> None:
     assert panes.socket_directory({"TMUX_TMPDIR": "/var/run/mine"}, USER) == Path(f"/var/run/mine/tmux-{USER}")
     assert panes.socket_directory({"TMUX_TMPDIR": ""}, USER) == panes.socket_directory({}, USER) == Path(f"/tmp/tmux-{USER}")
-
-
-def test_the_server_a_tmux_reaches_is_the_one_its_tmux_names_inside_tmux_and_the_default_outside() -> None:
-    assert panes.reached({"TMUX": "/srv/tmux/work,100,0", "TMUX_TMPDIR": "/var/run/mine"}, USER) == Path("/srv/tmux/work")
-    # tmux reads an empty $TMUX, or one with no socket before its first comma, as none.
-    for outside in ({}, {"TMUX": ""}, {"TMUX": ",100,0"}):
-        assert panes.reached({**outside, "TMUX_TMPDIR": "/var/run/mine"}, USER) == Path(f"/var/run/mine/tmux-{USER}/default")
 
 
 def test_a_tmux_that_names_no_server_is_said_and_an_empty_one_is_outside_tmux(tmp_path: Path) -> None:

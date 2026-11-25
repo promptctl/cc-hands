@@ -62,6 +62,15 @@ class TypingFailed:
 
 
 @dataclass(frozen=True)
+class TypingUnconfirmed:
+    """What a Typing line said was about to be typed, and why its writer never said whether it was: it may have reached
+    its session."""
+
+    effect: Type[Input]
+    reason: str
+
+
+@dataclass(frozen=True)
 class CopiesLost:
     """Copies of a session's exchanges that its fritter could not hand to hands, told with the first copy since that it
     did: hands was down, or was not reading them. The session's own exchanges went on regardless."""
@@ -266,6 +275,7 @@ class Logged:
 Entry = (
     Typing
     | TypingFailed
+    | TypingUnconfirmed
     | SettingsEdited
     | LoginReported
     | CopiesLost
@@ -300,7 +310,7 @@ def level(entry: Entry) -> Level:
             return logged
         case TypingFailed() | Exported(error=str()):
             return "error"
-        case Exported(warning=str()):
+        case Exported(warning=str()) | TypingUnconfirmed():
             return "warning"
         case Exchanged(reply=reply):
             return _reply_level(reply)

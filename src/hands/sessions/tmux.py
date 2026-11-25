@@ -1,5 +1,5 @@
 """The user's tmux servers as tmux answers for them: the one real adapter of `hands.sessions.terminals.Terminals`, which
-runs tmux against a server's socket.
+runs tmux against a server's socket, or, to open a window, as from a terminal, in the server tmux picks.
 
 What hands asks a terminal is decided in `hands.sessions.panes` and `hands.sessions.startsession`; the tmux commands that
 ask it are here alone.
@@ -7,7 +7,6 @@ ask it are here alone.
 
 import re
 import shutil
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +16,7 @@ from hands.core.session import Keystroke
 from hands.core.tmux import Listed, Pane, Server, Unanswered
 from hands.sessions import child
 from hands.sessions.child import Children
-from hands.sessions.terminals import Opened, PaneState, Terminals, Unopened, Untyped, device
+from hands.sessions.terminals import Opened, PaneState, Terminals, Unconfirmed, Unopened, Untyped, device
 
 # What tmux says, on stderr, for a socket no server listens on any more, as a server that exited leaves behind, and
 # for one that is gone; never "error connecting to" for any other reason, as a path too long for a socket.
@@ -31,9 +30,10 @@ OPEN_SECONDS = 5.0
 # What tmux says when the session a new one would be named for is there already (tmux 3.6): the contract's run against
 # tmux (tests/test_terminals_contract_tmux.py) opens two windows in one session, so a tmux that rewords it fails there.
 DUPLICATE = b"duplicate session"
-# tmux's -P answer to opening a window, in the format `_PRINTED` asks for.
-_PRINTED = "#{pane_id} #{pane_pid}"
-_OPENED = re.compile(rb"(?P<pane>%\d+) (?P<pid>\d+)\n?")
+# tmux's -P answer to opening a window, in the format `_PRINTED` asks for: the socket of the server it opened in, which
+# tmux names by its real path, and the window's pane and its pid.
+_PRINTED = "#{socket_path} #{pane_id} #{pane_pid}"
+_OPENED = re.compile(rb"(?P<socket>/.+) (?P<pane>%\d+) (?P<pid>\d+)\n?")
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,13 @@ class TmuxExit:
     code: int
     out: bytes
     err: bytes
+
+
+@dataclass(frozen=True)
+class TmuxUnstarted:
+    """tmux could not be run, so it did nothing, and why, as the OS said."""
+
+    reason: str
 
 
 def on_path(children: Children, path: str) -> Terminals:
@@ -56,11 +63,13 @@ def on_path(children: Children, path: str) -> Terminals:
 
 
 class TmuxTerminals:
-    """The user's tmux servers, asked through the tmux at `tmux`."""
+    """The user's tmux servers, asked through the tmux at `tmux`: each ask given `answer` seconds, an open `opening`."""
 
-    def __init__(self, children: Children, tmux: Path) -> None:
+    def __init__(self, children: Children, tmux: Path, answer: float = ANSWER_SECONDS, opening: float = OPEN_SECONDS) -> None:
         self._children = children
         self._tmux = tmux
+        self._answer = answer
+        self._opening_limit = opening
 
     def sockets(self, directory: Path) -> list[Path]:
         return _sockets(directory)
@@ -89,11 +98,11 @@ class TmuxTerminals:
                         return {terminal: shown for client, pane in pairs if (terminal := devices[client]) is not None and (shown := devices[pane]) is not None}
 
     async def shown(self, socket: Path, pane: str) -> str | Unanswered:
-        return await _capture(self._children, self._tmux, socket, pane, ("-p",))
+        return await _capture(self._children, self._tmux, socket, pane, ("-p",), self._answer)
 
     async def tail(self, socket: Path, pane: str, lines: int) -> str | Unanswered:
         # From the start of its history: any number of empty rows may lie under the last `lines` that hold text.
-        match await _capture(self._children, self._tmux, socket, pane, ("-p", "-S", "-")):
+        match await _capture(self._children, self._tmux, socket, pane, ("-p", "-S", "-"), self._answer):
             case str(drawn):
                 return "\n".join([line for line in drawn.split("\n") if line.strip()][-lines:])
             case Unanswered() as unanswered:
@@ -101,7 +110,7 @@ class TmuxTerminals:
 
     async def state(self, socket: Path, pane: str) -> PaneState | Unanswered:
         # list-panes, since display-message answers for a pane that is gone as though it were there (tmux 3.6).
-        match await ran_at(self._children, self._tmux, socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")):
+        match await ran_at(self._children, self._tmux, socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}"), self._answer):
             case TmuxExit(code=0, out=b"0\n"):
                 return "running"
             case TmuxExit(code=0, out=b"1\n"):
@@ -111,27 +120,33 @@ class TmuxTerminals:
                 return "closed"
             case TmuxExit() as answered:
                 return Unanswered(f"tmux at {socket} did not say whether pane {pane} runs: it answered {answered.out!r}, {_said(answered)}")
+            case TmuxUnstarted(reason=reason):
+                return Unanswered(reason)
             case Unanswered() as unanswered:
                 return unanswered
 
-    async def open(self, socket: Path, session: str, folder: Path, command: Sequence[str], environment: Mapping[str, str]) -> Opened | Unopened | Unanswered:
-        # The directory tmux makes for its own default socket, where -S names it.
-        socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # [LAW:no-ambient-temporal-coupling] made or not is what tmux answers the making with, never a look beforehand
-        # that a second open could make stale.
-        match await self._opening(socket, environment, "new-session", "-s", session, "-c", str(folder), *command):
+    async def open(self, session: str, folder: Path, command: Sequence[str], window: Mapping[str, str], environment: Mapping[str, str]) -> Opened | Unopened | Unanswered:
+        # [LAW:single-enforcer] no -S: tmux picks the server, as it does for a `tmux` typed at a terminal, and makes its
+        # directory, refusing one another user could reach. [LAW:no-ambient-temporal-coupling] made or not is what tmux
+        # answers the making with, never a look beforehand that a second open could make stale.
+        opening = ("-c", str(folder), *(part for name, value in window.items() for part in ("-e", f"{name}={value}")), "--", *command)
+        match await self._opened_by(environment, "new-session", "-s", session, *opening):
             case TmuxExit(code=0) as made:
                 return _opened(True, made)
             case TmuxExit(err=err) if err.startswith(DUPLICATE):
-                match await self._opening(socket, environment, "new-window", "-t", f"={session}:", "-c", str(folder), *command):
-                    case TmuxExit(code=0) as window:
-                        return _opened(False, window)
+                match await self._opened_by(environment, "new-window", "-t", f"={session}:", *opening):
+                    case TmuxExit(code=0) as opened:
+                        return _opened(False, opened)
                     case TmuxExit() as refused:
                         return Unopened(f"tmux could not open a window in session {session}: {_said(refused)}")
+                    case TmuxUnstarted(reason=reason):
+                        return Unopened(reason)
                     case Unanswered() as unanswered:
                         return unanswered
             case TmuxExit() as refused:
                 return Unopened(f"tmux could not make session {session}: {_said(refused)}")
+            case TmuxUnstarted(reason=reason):
+                return Unopened(reason)
             case Unanswered() as unanswered:
                 return unanswered
 
@@ -142,23 +157,24 @@ class TmuxTerminals:
         together or not at all: no half-typed prompt is left in the input for a retry to double. And an Escape is answered
         only once it has been read alone, so whatever is typed next cannot be read with it as one chord.
         """
-        # A buffer of its own per paste, so two sends cannot paste each other's text; loaded from a file, since a command
-        # tmux is handed is far shorter than a prompt can be.
+        # A buffer of its own per paste, so two sends cannot paste each other's text; loaded from tmux's stdin, since a
+        # command tmux is handed is far shorter than a prompt can be.
         buffer = f"hands-{self._children.clock.uuid()}"
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="hands-paste-", delete_on_close=False) as pasted:
-            pasted.write(_pasted(input))
-            pasted.close()
-            match await ran_at(self._children, self._tmux, pane.socket, _typing(pane.id, input, buffer, pasted.name)):
-                case TmuxExit(code=0):
-                    await self._children.clock.sleep(_quiet(input))
-                case TmuxExit() as refused:
-                    raise Untyped(f"tmux at {pane.socket} did not type into pane {pane.id}: {_said(refused)}")
-                case Unanswered(reason=reason):
-                    raise Untyped(f"tmux at {pane.socket} did not type into pane {pane.id}: {reason}")
+        match await ran_at(self._children, self._tmux, pane.socket, _typing(pane.id, input, buffer), self._answer, given=_pasted(input)):
+            case TmuxExit(code=0):
+                await self._children.clock.sleep(_quiet(input))
+            case TmuxExit() as refused:
+                raise Untyped(f"tmux at {pane.socket} did not type into pane {pane.id}: {_said(refused)}")
+            case TmuxUnstarted(reason=reason):
+                raise Untyped(f"tmux at {pane.socket} did not type into pane {pane.id}: {reason}")
+            case Unanswered(reason=reason):
+                # [LAW:no-silent-failure] tmux may have typed it all before the wait for it ended: told as typed or not, a
+                # retry would type it twice, or never.
+                raise Unconfirmed(f"tmux at {pane.socket} was asked to type into pane {pane.id} and never said whether it did: {reason}")
 
     async def _lines(self, socket: Path, arguments: Sequence[str]) -> list[str] | Unanswered:
         """The lines the server at `socket` answered `arguments` with; none from a socket no server listens on."""
-        match await ran_at(self._children, self._tmux, socket, arguments):
+        match await ran_at(self._children, self._tmux, socket, arguments, self._answer):
             case TmuxExit(code=0, out=out):
                 # By newline alone: a session's name, which is a folder's, may hold any other line separator.
                 return [line for line in out.decode(errors="replace").split("\n") if line]
@@ -166,12 +182,14 @@ class TmuxTerminals:
                 return []
             case TmuxExit() as refused:
                 return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: {_said(refused)}")
+            case TmuxUnstarted(reason=reason):
+                return Unanswered(reason)
             case Unanswered() as unanswered:
                 return unanswered
 
-    async def _opening(self, socket: Path, environment: Mapping[str, str], *arguments: str) -> TmuxExit | Unanswered:
+    async def _opened_by(self, environment: Mapping[str, str], *arguments: str) -> TmuxExit | TmuxUnstarted | Unanswered:
         # A server this starts takes `environment` as every window's, so it holds what the caller gave it and nothing else.
-        return await ran_at(self._children, self._tmux, socket, (arguments[0], "-d", "-P", "-F", _PRINTED, *arguments[1:]), OPEN_SECONDS, environment)
+        return await _ran(self._children, self._tmux, (arguments[0], "-d", "-P", "-F", _PRINTED, *arguments[1:]), f"tmux did not answer {arguments[0]}", self._opening_limit, environment)
 
 
 class NoTmux:
@@ -198,7 +216,7 @@ class NoTmux:
     async def state(self, socket: Path, pane: str) -> PaneState | Unanswered:
         return Unanswered(self._reason)
 
-    async def open(self, socket: Path, session: str, folder: Path, command: Sequence[str], environment: Mapping[str, str]) -> Opened | Unopened | Unanswered:
+    async def open(self, session: str, folder: Path, command: Sequence[str], window: Mapping[str, str], environment: Mapping[str, str]) -> Opened | Unopened | Unanswered:
         return Unopened(self._reason)
 
     async def type(self, pane: Pane, input: Input) -> None:
@@ -216,7 +234,8 @@ def listed(socket: Path, lines: Sequence[str]) -> Server:
 
 
 def _sockets(directory: Path) -> list[Path]:
-    return [path for path in directory.glob("*") if path.is_socket()]
+    # By the directory's real path (/tmp is /private/tmp), as tmux names its servers.
+    return [path for path in directory.resolve().glob("*") if path.is_socket()]
 
 
 def _devices(socket: Path, ttys: Sequence[str]) -> dict[str, int | None] | Unanswered:
@@ -231,10 +250,10 @@ def _devices(socket: Path, ttys: Sequence[str]) -> dict[str, int | None] | Unans
 def _opened(made: bool, opened: TmuxExit) -> Opened | Unanswered:
     match _OPENED.fullmatch(opened.out):
         case re.Match() as printed:
-            return Opened(made, printed["pane"].decode(), int(printed["pid"]))
+            return Opened(made, Path(printed["socket"].decode()), printed["pane"].decode(), int(printed["pid"]))
         case None:
             # [LAW:parse-dont-validate] tmux opened something it did not name: a window may be running.
-            return Unanswered(f"tmux opened a window and named it {opened.out!r}, which is no pane and pid")
+            return Unanswered(f"tmux opened a window and named it {opened.out!r}, which is no socket, pane and pid")
 
 
 def _said(ran: TmuxExit) -> str:
@@ -244,29 +263,32 @@ def _said(ran: TmuxExit) -> str:
 async def styled(children: Children, tmux: Path, socket: Path, pane: str) -> str | Unanswered:
     """What pane `pane` of the server at `socket` shows, with the attributes each character is drawn in kept as SGR
     (`-e`): what tells Claude Code's dim placeholder from words (hands.core.screen)."""
-    return await _capture(children, tmux, socket, pane, ("-p", "-e"))
+    return await _capture(children, tmux, socket, pane, ("-p", "-e"), ANSWER_SECONDS)
 
 
-async def _capture(children: Children, tmux: Path, socket: Path, pane: str, how: tuple[str, ...]) -> str | Unanswered:
+async def _capture(children: Children, tmux: Path, socket: Path, pane: str, how: tuple[str, ...], limit: float) -> str | Unanswered:
     # [LAW:no-silent-failure] a server gone since the pane was named is said, never read as a blank screen.
-    match await ran_at(children, tmux, socket, ("capture-pane", *how, "-t", pane)):
+    match await ran_at(children, tmux, socket, ("capture-pane", *how, "-t", pane), limit):
         case TmuxExit(code=0, out=out):
             return out.decode(errors="replace").rstrip()
         case TmuxExit() as refused:
             return Unanswered(f"tmux at {socket} did not show pane {pane}: {_said(refused)}")
+        case TmuxUnstarted(reason=reason):
+            return Unanswered(reason)
         case Unanswered() as unanswered:
             return unanswered
 
 
-def _pasted(input: Input) -> str:
-    """What of `input` is pasted rather than pressed: a prompt, a command's arguments, nothing of a key."""
+def _pasted(input: Input) -> bytes | None:
+    """What of `input` is pasted rather than pressed, as tmux's stdin: a prompt, a command's arguments; none of a key or
+    a command with none."""
     match input:
         case Text() as text:
-            return text.typed
+            return text.typed.encode()
         case Command(args=str() as args):
-            return args
+            return args.encode()
         case Command() | Key():
-            return ""
+            return None
 
 
 def _quiet(input: Input) -> float:
@@ -278,8 +300,8 @@ def _quiet(input: Input) -> float:
             return 0.0
 
 
-def _typing(pane: str, input: Input, buffer: str, pasted: str) -> list[str]:
-    """The tmux command list that types `input` into `pane`, the file `pasted` holding what of it is pasted.
+def _typing(pane: str, input: Input, buffer: str) -> list[str]:
+    """The tmux command list that types `input` into `pane`, tmux's stdin holding what of it is pasted.
 
     Something is typed into the pane before anything is loaded - a command's name, or nothing ahead of a prompt - so a
     pane gone since it was read stops the list before the prompt sits in a buffer that only a paste would delete. A
@@ -288,7 +310,7 @@ def _typing(pane: str, input: Input, buffer: str, pasted: str) -> list[str]:
     pressed as keys and its arguments pasted after them, as fritter types one, so a long paste Claude Code folds into a
     placeholder cannot fold the command in with it.
     """
-    paste = ["load-buffer", "-b", buffer, pasted, ";", "paste-buffer", "-p", "-r", "-d", "-b", buffer, "-t", pane, ";"]
+    paste = ["load-buffer", "-b", buffer, "-", ";", "paste-buffer", "-p", "-r", "-d", "-b", buffer, "-t", pane, ";"]
     enter = ["send-keys", "-t", pane, "Enter"]
     match input:
         case Text():
@@ -334,12 +356,20 @@ def tmux_key(key: Keystroke) -> str:
             return "BTab"
 
 
-async def ran_at(children: Children, tmux: Path, socket: Path, arguments: Sequence[str], limit: float = ANSWER_SECONDS, environment: Mapping[str, str] | None = None) -> TmuxExit | Unanswered:
-    """How the tmux server at `socket` exited from `arguments`, or why it gave no answer within `limit`: wedged, or
-    `tmux` not run. `environment` is the one tmux runs in, the daemon's where none is given."""
-    ran = await children.run(str(tmux), "-S", str(socket), *arguments, limit=limit, env=environment)
+async def ran_at(children: Children, tmux: Path, socket: Path, arguments: Sequence[str], limit: float = ANSWER_SECONDS, environment: Mapping[str, str] | None = None, given: bytes | None = None) -> TmuxExit | TmuxUnstarted | Unanswered:
+    """How the tmux server at `socket` exited from `arguments`, `given` on tmux's stdin: or that tmux was not run, so did
+    nothing; or why it gave no answer within `limit`, so may have done any of it. `environment` is the one tmux runs in,
+    the daemon's where none is given."""
+    return await _ran(children, tmux, ("-S", str(socket), *arguments), f"tmux at {socket} did not answer {arguments[0]}", limit, environment, given)
+
+
+async def _ran(children: Children, tmux: Path, arguments: Sequence[str], unanswered: str, limit: float, environment: Mapping[str, str] | None, given: bytes | None = None) -> TmuxExit | TmuxUnstarted | Unanswered:
+    """[LAW:single-enforcer] the one run of tmux: its exit, or that it did nothing, or `unanswered` and why."""
+    ran = await children.run(str(tmux), *arguments, limit=limit, env=environment, given=given)
     match ran:
         case child.Ran(ending=child.Exited(code=code), out=out, err=err):
             return TmuxExit(code, out.data, err.data)
-        case child.Ran() | child.NeverStarted() | child.Unreaped() | child.Lost():
-            return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: tmux {child.said(ran)}")
+        case child.NeverStarted():
+            return TmuxUnstarted(f"tmux {child.said(ran)}")
+        case child.Ran() | child.Unreaped() | child.Lost():
+            return Unanswered(f"{unanswered}: tmux {child.said(ran)}")

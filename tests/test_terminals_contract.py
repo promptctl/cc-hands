@@ -6,13 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from faketerminals import FakeFritters, FakePane, FakeServer, FakeTerminals, Refusing, Wedged
+from fakeprocesses import USER
+from faketerminals import Exited, FakeFritters, FakePane, FakeServer, FakeTerminals, Refusing, Wedged
 from hands.core.effects import Fritter, Writer
 from hands.core.tmux import Pane
+from hands.sessions.panes import socket_directory
 from hands.sessions.terminals import Opened
-from terminalscontract import DRAWN, Ending, TerminalsContract
+from terminalscontract import DRAWN, VALUE, VARIABLE, Ending, TerminalsContract
 
-SOCKET = Path("/private/tmp/hands-contract/tmux-501/default")
+ENVIRONMENT = {"TMUX_TMPDIR": "/private/tmp/hands-contract"}
 
 
 class Fake:
@@ -29,12 +31,23 @@ class Fake:
 
     @property
     def socket(self) -> Path:
-        return SOCKET
+        return self.directory / "default"
 
-    async def window(self, session: str) -> Opened:
-        opened = await self.terminals.open(SOCKET, session, Path("/code"), ("program",), {})
+    @property
+    def environment(self) -> Mapping[str, str]:
+        return ENVIRONMENT
+
+    @property
+    def directory(self) -> Path:
+        return socket_directory(ENVIRONMENT, USER)
+
+    async def window(self, session: str, environment: Mapping[str, str] | None = None) -> Opened:
+        opened = await self.terminals.open(session, Path("/code"), ("program",), {VARIABLE: VALUE}, {**ENVIRONMENT, **(environment or {})})
         assert isinstance(opened, Opened)
         return opened
+
+    def given(self, window: Opened) -> str | None:
+        return self._pane(window).environment.get(VARIABLE)
 
     def pid(self, window: Opened) -> int:
         return self._pane(window).pid
@@ -55,14 +68,13 @@ class Fake:
         return client
 
     async def stop(self) -> None:
-        del self.terminals.servers[SOCKET]
-        self.terminals.left.append(SOCKET)
+        self._server.answering = Exited()
 
     async def refuse(self) -> None:
-        self._server.answering = Refusing(f"error connecting to {SOCKET} (Permission denied)")
+        self._server.answering = Refusing(f"error connecting to {self.socket} (Permission denied)")
 
     async def wedge(self) -> None:
-        self._server.answering = Wedged("did not exit in 2.0 s, so it was killed")
+        self._server.answering = Wedged("was killed with SIGKILL, because it ran past 0.2s")
 
     async def wrapped(self) -> Fritter:
         fritter = Fritter(Path(f"/private/tmp/fritter-{next(self._fritters)}/fritter.sock"), 8000)
@@ -72,6 +84,9 @@ class Fake:
     def unheard(self) -> Fritter:
         return Fritter(Path("/private/tmp/fritter-gone/fritter.sock"), 8001)
 
+    async def stall(self, fritter: Fritter) -> None:
+        self.fritters.wedged.add(fritter.socket)
+
     async def reads(self, writer: Writer, expected: str) -> str:
         match writer:
             case Fritter(socket=socket):
@@ -80,16 +95,14 @@ class Fake:
                 pane = self._server.pane(id)
                 assert pane is not None
                 read = pane.read
-        if read != expected:
-            raise TimeoutError(f"the program read {read!r}, not {expected!r}")
         return read
 
     @property
     def _server(self) -> FakeServer:
-        return self.terminals.servers[SOCKET]
+        return self.terminals.servers[self.socket]
 
     def _pane(self, window: Opened) -> FakePane:
-        pane = self._server.pane(window.pane)
+        pane = self.terminals.servers[window.socket].pane(window.pane)
         assert pane is not None
         return pane
 

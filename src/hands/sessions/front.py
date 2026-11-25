@@ -5,7 +5,6 @@ hands is tied to no one terminal. An app that can say which of its tabs is in fr
 terminal running under it, which names the session in front whenever it holds only one.
 """
 
-import asyncio
 from collections.abc import Iterator, Mapping, Sequence
 
 from loguru import logger
@@ -14,7 +13,7 @@ from hands.core.front import Candidate, FrontUnread, InFront, OnScreen, in_front
 from hands.core.session import SessionId
 from hands.core.tmux import Unanswered
 from hands.sessions import panes
-from hands.sessions.processes import Process, Processes, ancestor_terminals
+from hands.sessions.processes import Process, Processes, TableRefused, ancestor_terminals, table_of
 from hands.sessions.screen import FrontApp, FrontTab, Screen
 from hands.sessions.terminals import Terminals
 
@@ -27,11 +26,9 @@ async def read_front(screen: Screen, terminals: Terminals, processes: Processes,
         app = await screen.front()
         if isinstance(app, FrontUnread):
             return app
-        try:
-            table = await asyncio.to_thread(processes.table)
-        except OSError as refused:
-            # A refusal the kernel answers with, as Processes declares: no fault of hands'.
-            return FrontUnread(f"the processes could not be read: {refused}")
+        table = await table_of(processes)
+        if isinstance(table, TableRefused):
+            return FrontUnread(table.reason)
         on_screen = _on_screen(app, table)
         # A tmux client is on screen only in a terminal the app in front shows: none is asked while none is shown, so
         # a server that does not answer keeps no turn waiting while the user is in an app with no terminal.

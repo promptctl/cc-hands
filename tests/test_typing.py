@@ -15,8 +15,7 @@ import pytest
 
 from hands.core.effects import Command, Fritter, Input, Key, Text
 from hands.core.session import CommandName, PromptText, SessionId
-from hands.sessions import typing
-from hands.sessions.terminals import Untyped
+from hands.sessions.terminals import Unconfirmed, Untyped
 from hands.sessions.typing import FritterSockets, Typist
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
@@ -111,17 +110,23 @@ def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None
 
 
 @pytest.mark.outside
+def test_a_no_is_raised_as_untyped_with_what_fritter_said(short_dir: Path) -> None:
+    with pytest.raises(Untyped, match="no key named f13"):
+        asked(short_dir / "f.sock", b'{"ok":false,"reason":"no key named f13"}\n', lambda t: t.type(PromptText("hello"), "enter"))
+
+
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("answer", "says"),
     [
-        (b'{"ok":false,"reason":"no key named f13"}\n', "no key named f13"),
-        (b'{"ok":"sure"}\n', "answered {'ok': 'sure'}"),
-        (b"not json\n", "cannot talk to the fritter"),
-        (b"", "answered None"),
+        (b'{"ok":"sure"}\n', "answered {'ok': 'sure'}, which says neither"),
+        (b"not json\n", "answered b'not json\\n', which says neither"),
+        (b"", "hung up without saying whether it did"),
     ],
 )
-def test_anything_but_a_yes_is_raised_with_what_fritter_said(short_dir: Path, answer: bytes, says: str) -> None:
-    with pytest.raises(Untyped, match=re.escape(says)):
+def test_anything_but_a_yes_or_a_no_is_raised_as_maybe_typed_with_what_fritter_said(short_dir: Path, answer: bytes, says: str) -> None:
+    # fritter had the request: whatever it said after, it may have typed it.
+    with pytest.raises(Unconfirmed, match=re.escape(says)):
         asked(short_dir / "f.sock", answer, lambda t: t.type(PromptText("hello"), "enter"))
 
 
@@ -159,12 +164,11 @@ class MuteFritter:
 
 
 @pytest.mark.outside
-def test_a_fritter_that_never_answers_does_not_hold_the_daemon(short_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(typing, "ANSWER_TIMEOUT", 0.3)
+def test_a_fritter_that_never_answers_does_not_hold_the_daemon(short_dir: Path) -> None:
     path = short_dir / "mute.sock"
     fritter = MuteFritter(path, hold=3.0)
     try:
-        with pytest.raises(Untyped, match="timed out"):
-            typist(path).type(PromptText("hello"), "enter")
+        with pytest.raises(Unconfirmed, match="never said whether it did: timed out"):
+            Typist(path, pid=4242, answer=0.3).type(PromptText("hello"), "enter")
     finally:
         fritter.close()

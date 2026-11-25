@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from hands.core.effects import Command, Fritter, Key, NotTyped, Type, Typed
+from hands.core.effects import Command, Fritter, Key, MaybeTyped, NotTyped, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
 from hands.core.session import Gone, Idle, Registry, Running, Session, SessionId, delegating
 from hands.core.status import Waiting
@@ -41,7 +41,7 @@ class InBackground:
     subagents: int
 
 
-KeyboardOutcome = Unreached | NothingRunning | InBackground | Typed[Command | Key] | NotTyped[Command | Key]
+KeyboardOutcome = Unreached | NothingRunning | InBackground | Typed[Command | Key] | NotTyped[Command | Key] | MaybeTyped[Command | Key]
 
 
 def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> KeyboardOutcome | Type[Command | Key]:

@@ -121,7 +121,8 @@ async def test_a_session_is_started_in_a_window_of_the_tmux_session_named_for_it
     [(command, environment), _] = starts.ran
     # The window is handed the home its session reports to, and runs hands' own claude as from a terminal outside any
     # session, trusting its project's MCP servers, whose dialog would hold it before it joined.
-    assert list(command[:3]) == ["-e", f"HANDS_HOME={starts.home.root}", "--"]
+    [server] = starts.fake.servers.values()
+    assert [pane.environment for pane in server.panes] == [{"HANDS_HOME": str(starts.home.root)}] * 2
     assert list(command[-4:]) == ["claude", "--settings", '{"enableAllProjectMcpServers": true}', "--model=opus"]
     assert environment == {"PATH": "/usr/bin"}
     # The start's event says which settings its session was launched with.
@@ -160,12 +161,10 @@ async def test_a_claude_still_running_unjoined_once_its_time_is_up_is_said_with_
     folder = folder_in(tmp_path)
     started_at = starts.clock.at
     answer = asyncio.ensure_future(starts.start(folder))
-    # Looked at once every LOOK_SECONDS, until the time to join is past.
-    while not answer.done():
+    # Looked at once every LOOK_SECONDS, until the time to join is past: the look after that says so.
+    while starts.clock.at - started_at <= JOIN_SECONDS:
         await starts.clock.sleeping(starts.clock.at + LOOK_SECONDS)
         starts.clock.advance(LOOK_SECONDS)
-        await asyncio.sleep(0)
-    assert starts.clock.at - started_at > JOIN_SECONDS
     assert (await answer)["error"] == f"`claude` in {folder} has not joined hands in 30 seconds, and is still running in tmux pane %0, which shows:\nDo you trust the files in this folder?"
 
 
@@ -186,8 +185,7 @@ async def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not
     starts.terminals = TmuxTerminals(children_on(SYSTEM), tmux)
     answer = await starts.start(folder_in(tmp_path), environment={"PATH": "/usr/bin", "TMUX_TMPDIR": str(tmp_path)})
     assert answer.keys() == {"error"}
-    assert answer["error"].startswith("hands starts a session in a tmux window, and tmux did not say whether it opened one, so `claude` may be starting in tmux session billing now: ")
-    assert "could not be started" in answer["error"]
+    assert answer["error"].startswith("hands starts a session in a tmux window, and none was opened: tmux could not be started: ")
 
 
 async def test_a_tmux_that_gives_no_answer_to_the_opening_is_said_to_maybe_have_opened_the_window(tmp_path: Path) -> None:

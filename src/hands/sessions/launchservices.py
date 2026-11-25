@@ -76,17 +76,25 @@ class LaunchServices:
         self._scripts: dict[str, NSAppleScript] = {}
 
     async def front(self) -> FrontTab | FrontApp | FrontUnread:
+        match await self.launched():
+            case FrontUnread() as unread:
+                return unread
+            case Launched(bundle=str(bundle), name=name) if bundle in _FRONT_TAB:
+                try:
+                    tty = await self._applescript.run(lambda: self._asked(name, _FRONT_TAB[bundle]))
+                    return FrontTab(name, device(tty))
+                except _Unread as unread:
+                    return FrontUnread(str(unread))
+                except OSError as error:
+                    return FrontUnread(f"the terminal {name} named its front tab's could not be read: {error}")
+            case Launched(pid=pid, name=name):
+                return FrontApp(pid, name)
+
+    async def launched(self) -> Launched | FrontUnread:
+        """The app in front, as LaunchServices names it: read through lsappinfo alone, which asks no app anything."""
         try:
             serial = _known(serial_of(await self._ran(_LSAPPINFO, "front")))
-            match _known(launched(serial, await self._ran(_LSAPPINFO, "info", "-only", "pid", "-only", "bundleid", "-only", "name", serial))):
-                case Launched(bundle=str(bundle), name=name) if bundle in _FRONT_TAB:
-                    tty = await self._applescript.run(lambda: self._asked(name, _FRONT_TAB[bundle]))
-                    try:
-                        return FrontTab(name, device(tty))
-                    except OSError as error:
-                        return FrontUnread(f"the terminal {tty} could not be read: {error}")
-                case Launched(pid=pid, name=name):
-                    return FrontApp(pid, name)
+            return launched(serial, await self._ran(_LSAPPINFO, "info", "-only", "pid", "-only", "bundleid", "-only", "name", serial))
         except _Unread as unread:
             return FrontUnread(str(unread))
 
@@ -104,4 +112,7 @@ class LaunchServices:
         answer, error = self._scripts[source].executeAndReturnError_(None)
         if answer is None:
             raise _Unread(f"{app} did not say which tab is in front: {error.get('NSAppleScriptErrorMessage', error) if error else 'no answer'}")
-        return str(answer.stringValue())
+        # [LAW:no-silent-failure] an answer that is no text, as `missing value` for a window with no session, names no tab.
+        if (tty := answer.stringValue()) is None:
+            raise _Unread(f"{app} answered which tab is in front with no terminal: {answer.description()}")
+        return str(tty)

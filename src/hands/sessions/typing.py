@@ -20,7 +20,7 @@ from pathlib import Path
 
 from hands.core.effects import Command, Fritter, Input, Key, Text
 from hands.core.session import Keystroke, PromptText, Submit
-from hands.sessions.terminals import Untyped
+from hands.sessions.terminals import Unconfirmed, Untyped
 
 # How long the exchange may take. fritter answers as soon as its one write is done.
 ANSWER_TIMEOUT = 5.0
@@ -35,6 +35,8 @@ class Typist:
     # fritter types only into the process it wrapped, and its address is inherited, so a
     # session started from inside a wrapped one carries its parent's. Every request names this.
     pid: int
+    # How long fritter has to answer each ask.
+    answer: float = ANSWER_TIMEOUT
 
     def type(self, text: PromptText, submit: Submit) -> None:
         """Type text into the session's input and press `submit`, the chord that sends it: Return at Claude Code's
@@ -56,28 +58,46 @@ class Typist:
         self._ask({"pid": self.pid, "kind": "pasting"})
 
     def _ask(self, request: dict[str, object]) -> None:
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(ANSWER_TIMEOUT)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(self.answer)
+            try:
                 connection.connect(str(self.socket))
+                # fritter acts on a whole line: one cut short before its newline is never typed.
                 connection.sendall(json.dumps(request).encode() + b"\n")
-                answer = json.loads(connection.makefile("rb").readline() or b"null")
-        except (OSError, ValueError) as error:
-            raise Untyped(f"cannot talk to the fritter wrapping {self.pid} at {self.socket}: {error}") from error
-        match answer:
+            except OSError as error:
+                raise Untyped(f"cannot talk to the fritter wrapping {self.pid} at {self.socket}: {error}") from error
+            try:
+                said = connection.makefile("rb").readline()
+            except OSError as error:
+                # [LAW:no-silent-failure] fritter has the request, and may have typed it before its answer was lost.
+                raise Unconfirmed(f"the fritter wrapping {self.pid} at {self.socket} was asked to type and never said whether it did: {error}") from error
+        match _answer(said):
             case {"ok": True}:
                 return
             case {"ok": False, "reason": str() as reason}:
                 raise Untyped(f"the fritter wrapping {self.pid} did not type: {reason}")
+            case b"":
+                raise Unconfirmed(f"the fritter wrapping {self.pid} at {self.socket} was asked to type and hung up without saying whether it did")
             case other:
-                raise Untyped(f"the fritter wrapping {self.pid} answered {other!r}")
+                raise Unconfirmed(f"the fritter wrapping {self.pid} at {self.socket} was asked to type and answered {other!r}, which says neither")
+
+
+def _answer(said: bytes) -> object:
+    """What fritter answered: the JSON it said, or what it said where that is none."""
+    try:
+        return json.loads(said)
+    except ValueError:
+        return said
 
 
 class FritterSockets:
-    """The fritters that wrapped sessions, each asked at its control socket."""
+    """The fritters that wrapped sessions, each asked at its control socket and given `answer` seconds to answer."""
+
+    def __init__(self, answer: float = ANSWER_TIMEOUT) -> None:
+        self._answer = answer
 
     async def type(self, fritter: Fritter, input: Input) -> None:
-        await asyncio.to_thread(_by_fritter, Typist(fritter.socket, fritter.pid), input)
+        await asyncio.to_thread(_by_fritter, Typist(fritter.socket, fritter.pid, self._answer), input)
 
 
 def _by_fritter(typist: Typist, input: Input) -> None:

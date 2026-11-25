@@ -378,12 +378,6 @@ class Command:
     name: CommandName
     args: PromptText | None
 
-    def __post_init__(self) -> None:
-        # [LAW:types-are-the-program] a command has arguments or none: empty ones would be pasted as nothing, which tmux
-        # refuses with the command's name left half-typed in the input.
-        if self.args == "":
-            raise ValueError(f"/{self.name} has no arguments: give None, not an empty string")
-
     @property
     def word(self) -> str:
         """The command with its slash, which is what makes Claude Code run it rather than read it as a prompt."""
@@ -446,6 +440,16 @@ class Typed[I: Input]:
 @dataclass(frozen=True)
 class NotTyped[I: Input]:
     """The session's writer could not be reached, or refused, or could not write: `reason` says which."""
+
+    session: SessionId
+    input: I
+    reason: str
+
+
+@dataclass(frozen=True)
+class MaybeTyped[I: Input]:
+    """The session's writer was handed the input and never said whether it typed it: it may be in the session, where
+    typing it again would type it twice. `reason` says why no answer came."""
 
     session: SessionId
     input: I
