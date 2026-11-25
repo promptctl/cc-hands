@@ -175,6 +175,7 @@ def test_a_test_is_charged_for_the_waits_it_and_its_tasks_ask_the_loop_for_howev
 # A library outside tests/: a thread and a task it starts for itself, and a wait it is handed.
 LIBRARY = """
 import asyncio, threading, time
+from hands.clock import SYSTEM
 
 class Monitor(threading.Thread):
     def run(self):
@@ -193,6 +194,14 @@ def snooze():
 
 def nap(*_):
     time.sleep(0.001)
+
+async def dozes():
+    time.sleep(0.001)
+
+def clocked():
+    thread = threading.Thread(target=SYSTEM.now)
+    thread.start()
+    thread.join()
 """
 
 # A pool and a SerialThread another module makes, shared by the tests that hand them work.
@@ -221,6 +230,10 @@ def test_a_wait_handed_to_a_thread_a_job_or_a_serial_thread_is_charged_to_the_te
         "test_threaded": ("import threading, time\n\ndef test_runs():\n    thread = threading.Thread(target=time.sleep, args=(0.001,))\n    thread.start()\n    thread.join()\n", ["time.sleep"]),
         "test_submitted": ("import concurrent.futures, time\n\ndef test_runs():\n    with concurrent.futures.ThreadPoolExecutor(1) as pool:\n        pool.submit(time.sleep, 0.001).result()\n", ["time.sleep"]),
         "test_off_loop": ("import asyncio, functools, time\nfrom hands.threads import off_loop\n\ndef test_runs():\n    asyncio.run(off_loop(functools.partial(time.sleep, 0.001), 'slow'))\n", ["time.sleep"]),
+        # Callbacks and a coroutine handed to the loop, by the test and by a thread it started.
+        "test_scheduled": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        asyncio.get_running_loop().call_soon(library.nap)\n        await asyncio.sleep(0)\n    asyncio.run(main())\n", ["time.sleep"]),
+        "test_told": ("import asyncio, threading, library\n\ndef test_runs():\n    async def main():\n        thread = threading.Thread(target=asyncio.get_running_loop().call_soon_threadsafe, args=(library.nap,))\n        thread.start()\n        thread.join()\n        await asyncio.sleep(0)\n    asyncio.run(main())\n", ["time.sleep"]),
+        "test_threadsafe": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        future = await asyncio.to_thread(asyncio.run_coroutine_threadsafe, library.dozes(), asyncio.get_running_loop())\n        await asyncio.wrap_future(future)\n    asyncio.run(main())\n", ["time.sleep"]),
         "test_gathered": ("import asyncio, pytest, time\n\n@pytest.mark.asyncio\nasync def test_runs():\n    await asyncio.gather(asyncio.to_thread(time.sleep, 0.001))\n", ["time.sleep"]),
         # Work handed to a SerialThread and a pool conftest.py made, which charges conftest.py the pool's initializer.
         "test_given": ("import asyncio, functools, time\n\ndef test_runs(serial):\n    asyncio.run(serial.run(functools.partial(time.sleep, 0.001)))\n", ["time.sleep"]),
@@ -230,6 +243,8 @@ def test_a_wait_handed_to_a_thread_a_job_or_a_serial_thread_is_charged_to_the_te
         # A thread and a task the library starts for itself.
         "test_monitored": ("import library\n\ndef test_runs():\n    library.watch()\n", []),
         "test_offloaded": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.offload()\n    asyncio.run(main())\n", []),
+        # A thread the library starts for the test's sake reads the clock for hands, which is the test's read.
+        "test_clocked": ("import library\n\ndef test_runs():\n    library.clocked()\n", ["SystemClock.now"]),
         "test_snoozed": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.snooze()\n    asyncio.run(main())\n", []),
     }  # fmt: skip
     result = run(pytester, monkeypatch, hooks=SHARED, **{name: source for name, (source, _) in handed.items()})
@@ -259,20 +274,28 @@ def test_a_task_a_wider_fixtures_setup_starts_is_charged_to_the_fixture_and_not_
     assert not any(line.startswith(("test_user.py", "helper.py")) for line in result.outlines)
 
 
+# A wider fixture's setup, which starts a thread through a helper of tests/ or the library, and its teardown: undecorated,
+# and wrapped by a decorator from outside tests/, so the decorator is its outermost layer and the fixture's own its
+# innermost. Each with what it reaches.
+WIDER = {
+    "decorated": ("@pytest.fixture(scope='module')\n@wrapped\ndef started():\n    asked = threading.Event()\n    thread = helper.start(asked)\n    yield asked\n    thread.join()\n", "time.strftime"),
+    "plain": ("@pytest.fixture(scope='module')\ndef started():\n    asked = threading.Event()\n    thread = helper.start(asked)\n    yield asked\n    thread.join()\n", "time.strftime"),
+    "torn_down": ("@pytest.fixture(scope='session')\n@wrapped\ndef started():\n    yield threading.Event()\n    helper.stamp()\n", "time.strftime"),
+    "library_thread": ("@pytest.fixture(scope='module')\ndef started():\n    library.clocked()\n    yield threading.Event()\n", "SystemClock.now"),
+}  # fmt: skip
+
+
 @pytest.mark.outside
-def test_a_thread_a_tests_helper_starts_for_a_wider_fixture_is_charged_to_the_fixture_and_not_the_helper(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A sync fixture, so the decorator from outside tests/ is its outermost layer and the fixture's own its innermost.
+@pytest.mark.parametrize(("fixture", "facility"), WIDER.values(), ids=WIDER.keys())
+def test_what_a_wider_fixture_does_through_a_helper_is_charged_to_the_fixture_and_not_the_helper_or_the_test(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, fixture: str, facility: str) -> None:
+    pytester.makepyfile(library=LIBRARY)
     pytester.makepyfile(swap="import functools\n\ndef wrapped(fixture):\n    @functools.wraps(fixture)\n    def run():\n        yield from fixture()\n    return run\n")
-    helper = "import threading, time\n\ndef start(asked):\n    thread = threading.Thread(target=lambda: (asked.wait(), time.strftime('%H')))\n    thread.start()\n    return thread\n"
-    hooks = (
-        "\nimport threading\nimport helper, pytest\nfrom swap import wrapped\n\n"
-        "@pytest.fixture(scope='module')\n@wrapped\ndef started():\n"
-        "    asked = threading.Event()\n    thread = helper.start(asked)\n    yield asked\n    thread.join()\n"
-    )
+    helper = "import threading, time\n\ndef stamp():\n    time.strftime('%H')\n\ndef start(asked):\n    thread = threading.Thread(target=lambda: (asked.wait(), stamp()))\n    thread.start()\n    return thread\n"
+    hooks = f"\nimport threading\nimport helper, library, pytest\nfrom swap import wrapped\n\n{fixture}"
     user = "def test_uses(started):\n    started.set()\n"
     result = run(pytester, monkeypatch, hooks=hooks, helper=helper, test_user=user)
     result.assert_outcomes(passed=1)
-    assert "conftest.py: ['time.strftime']" in result.outlines
+    assert f"conftest.py: ['{facility}']" in result.outlines
     assert not any(line.startswith(("test_user.py", "helper.py")) for line in result.outlines)
 
 
@@ -280,8 +303,12 @@ def test_a_thread_a_tests_helper_starts_for_a_wider_fixture_is_charged_to_the_fi
 def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     helper = "import functools, time\n\ndef later():\n    time.strftime('%H')\n\ndef wrapped(test):\n    @functools.wraps(test)\n    def run():\n        test()\n    return run\n"
     user = "import threading\nfrom helper import later, wrapped\n\n@wrapped\ndef test_decorated():\n    later()\n\ndef test_polls():\n    threading.Timer(interval=0, function=lambda: None).cancel()\n"
-    lines = reached(pytester, monkeypatch, helper=helper, test_user=user)
+    # A decorator from outside tests/ is the test's own layer: what it reaches, with no frame of tests/ under it, is the test's.
+    pytester.makepyfile(retry="import functools, threading, time\n\ndef retried(test):\n    @functools.wraps(test)\n    def run():\n        time.strftime('%H')\n        waited = threading.Thread(target=time.sleep, args=(0.001,))\n        waited.start()\n        waited.join()\n        test()\n    return run\n")
+    retried = "from retry import retried\n\n@retried\ndef test_retried():\n    pass\n"
+    lines = reached(pytester, monkeypatch, helper=helper, test_user=user, test_retried=retried)
     assert "test_user.py: ['time.strftime']" in lines
+    assert "test_retried.py: ['time.sleep', 'time.strftime']" in lines
     assert not any(line.startswith("helper.py") for line in lines)
 
 
