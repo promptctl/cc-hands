@@ -21,6 +21,7 @@ import aiohttp
 import pytest
 from hands.clock import SYSTEM, Clock, SystemClock
 from hands.sessions.child import Children
+from hands.sessions.startsession import SESSION_GIVEN
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from loguru import logger
 
@@ -30,7 +31,7 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, Request, Unanswer
 from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
-from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, entrypoint, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.brain.configdir import Unstartable
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
@@ -328,8 +329,12 @@ def station(tmp: Path) -> Station:
     return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
 
 
+# The login a pane's command runs on, where which one is no part of the test.
+PLAN = Account("claude.ai", "brain@example.com")
+
+
 def launch(tmp: Path) -> Launch:
-    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None), Runnable(PinnedClaude(faked(tmp), pinned.PIN.version), None))
+    return Launch(station(tmp), PLAN, "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None), Runnable(PinnedClaude(faked(tmp), pinned.PIN.version), None))
 
 
 async def launched_brain(clock: Clock, launch: Launch, record: Record) -> Brain:
@@ -447,6 +452,8 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
         "HTTPS_PROXY": "http://127.0.0.1:40000",
         "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem",
         "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128",
+        # What started hands is never what starts the brain.
+        "CLAUDE_CODE_ENTRYPOINT": "cli",
     })
     assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
@@ -461,6 +468,17 @@ def test_the_brain_is_not_given_hands_hugging_face_token(tmp_path: Path) -> None
     assert "HF_TOKEN" not in environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)
 
 
+def test_a_brain_started_by_a_hands_inside_a_claude_code_session_is_no_child_of_that_session(tmp_path: Path) -> None:
+    # Handed these, the brain's claude would write its turns into that session's transcript and never its own.
+    env = environment(tmp_path / "brain", "http://127.0.0.1:1", {"PATH": "/bin", **{name: "given" for name in SESSION_GIVEN}})
+    assert env.keys() & set(SESSION_GIVEN) == set()
+
+
+@pytest.mark.parametrize(("method", "told"), [("api_key", {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}), ("claude.ai", {}), ("oauth_token", {})])
+def test_a_brain_on_a_console_key_is_told_the_agent_sdks_cli_started_it_and_on_any_other_login_nothing(method: str, told: dict[str, str]) -> None:
+    assert entrypoint(Account(method, None)) == told
+
+
 @pytest.mark.outside
 @pytest.mark.parametrize("given", [{}, {"DISABLE_AUTOUPDATER": "0"}], ids=["unset", "on"])
 async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp_path: Path, given: dict[str, str]) -> None:
@@ -473,11 +491,26 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     assert environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)["DISABLE_AUTOUPDATER"] == "1"
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
-        running = await in_tmux(children_on(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), [str(recorder)], workspace)
+        running = await in_tmux(children_on(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), PLAN, [str(recorder)], workspace)
         assert await running.exit == 0
     finally:
         shutil.rmtree(workspace)
     assert (tmp_path / "seen").read_text() == "updater=1"
+
+
+@pytest.mark.outside
+async def test_a_brain_started_on_a_console_key_runs_as_the_sdks_cli_whatever_started_hands(tmp_path: Path, fake_claude: Path) -> None:
+    seen = tmp_path / "entrypoint"
+    shebang, _, script = fake_claude.read_text().partition("\n")
+    fake_claude.write_text(f"{shebang}\nimport os\nopen({str(seen)!r}, 'w').write(os.environ.get('CLAUDE_CODE_ENTRYPOINT', 'unset'))\n{script}")
+    unkeyed = launch(tmp_path)
+    keyed = replace(unkeyed, account=Account("api_key", None), station=replace(unkeyed.station, inherited={**unkeyed.station.inherited, "CLAUDE_CODE_ENTRYPOINT": "cli"}))
+    recorded: list[Entry] = []
+    brain = await launched_brain(SYSTEM, keyed, recorded.append)
+    await brain.stop()
+    assert seen.read_text() == "sdk-cli"
+    [launched] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "brain.launch"]
+    assert launched.facts["entrypoint"] == "sdk-cli"
 
 
 @pytest.mark.outside
@@ -507,7 +540,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
-        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
+        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
         "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
         "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
     }
@@ -1184,7 +1217,7 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
 async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
-    running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "sleep 60"], workspace)
+    running = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode == 0)
@@ -1208,10 +1241,10 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
 async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
-    assert await (await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
+    assert await (await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
     (workspace / "status").unlink()
     (workspace / "pane").unlink()
-    ended = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", "sleep 60"], workspace)
+    ended = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
         await until(lambda: tmux_at("has-session", "-t", f"={brain_session(station.config_dir)}").returncode == 0)
         tmux_at("kill-session", "-t", f"={brain_session(station.config_dir)}")
@@ -1227,7 +1260,7 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     go = tmp_path / "go"
-    running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
+    running = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
     try:
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 1)
@@ -1254,7 +1287,7 @@ async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_sessi
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         ready = tmp_path / "ready"
-        running = await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
+        running = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
         await until(ready.exists)
         await running.stop()
         assert running.exit.result() == 7
@@ -1273,7 +1306,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         seen = tmp_path / "seen"
-        assert await (await in_tmux(children_on(SYSTEM), station, ["/bin/sh", "-c", f'printf "%s" "${{ANTHROPIC_API_KEY-unset}} $CLAUDE_CONFIG_DIR" > {seen}'], workspace)).exit == 0
+        assert await (await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f'printf "%s" "${{ANTHROPIC_API_KEY-unset}} $CLAUDE_CONFIG_DIR" > {seen}'], workspace)).exit == 0
         assert seen.read_text() == f"unset {tmp_path / 'brain'}"
     finally:
         tmux_at("kill-session", "-t", "=theirs")
@@ -1424,8 +1457,8 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     # a loaded machine a second can pass before the pane is drawn, and the refusal would show only tmux's status line.
     panes: list[InTmux] = []
 
-    async def recording(children: Children, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
-        panes.append(await in_tmux(children, station, argv, workspace))
+    async def recording(children: Children, station: Station, account: Account, argv: Sequence[str], workspace: Path) -> InTmux:
+        panes.append(await in_tmux(children, station, account, argv, workspace))
         return panes[-1]
 
     monkeypatch.setattr("hands.brain.process.in_tmux", recording)
