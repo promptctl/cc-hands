@@ -18,9 +18,8 @@ from hands.brain.pinned import CACHE_TTL, STELLAR_DRIFT
 from hands.brain.session import SessionView
 from hands.core.session import SessionId
 from hands.core.wire import (
-    AUTHORIZATION_HEADER,
     CLASS_HEADER,
-    authorization_of,
+    login_of,
     cache_marked,
     content_blocks,
     Content,
@@ -41,6 +40,7 @@ from hands.core.wire import (
     UnreadableRequest,
     Written,
     with_header,
+    with_login,
 )
 
 # Verbatim from DTt: the text block Claude Code opens every side question's prompt with, the question in a block after it.
@@ -94,8 +94,9 @@ class Credential:
     """The login the brain's Claude Code sent on `exchange`."""
 
     exchange: str
-    # A live token, kept out of every repr; never empty, as a request with an empty one carries no login (`authorization_of`).
-    authorization: str = field(repr=False)
+    # The header the login was in, and its value: a live secret, kept out of every repr, and never empty (`login_of`).
+    header: str
+    value: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -140,7 +141,7 @@ def fork(turn: Turn, question: str, credential: Credential | None) -> Forked:
     marked = point if point is not None else Unmarked.NO_FORK_POINT if turn_marked else Unmarked.TURN_UNMARKED
     headers = with_header(turn.headers, CLASS_HEADER, SIDE_QUESTION_CLASS)
     if credential is not None:
-        headers = with_header(headers, AUTHORIZATION_HEADER, credential.authorization)
+        headers = with_login(headers, (credential.header, credential.value))
     login_from = turn.exchange if credential is None else credential.exchange
     marker = {} if sent.marker is None else {"cache_control": _retimed(sent.marker)}
     body = {"model": sent.model, **sent.rest, **marker, **_prompt(sent.system), "messages": messages}
@@ -158,7 +159,7 @@ class Newest:
         self._main: dict[str, SessionId | None] = {}
         # [LAW:one-source-of-truth] the newest turn held of each conversation, so a /resume back forks from where it was left.
         self._turns: dict[SessionId | None, Turn] = {}
-        # [LAW:one-source-of-truth] the login a question is sent with: the newest the brain's Claude Code sent on any request
+        # [LAW:one-source-of-truth] the login a question is sent with: the newest, of either kind, the brain's Claude Code sent on any request
         # through the proxy, a question's own excepted. It renews its token when it expires within five minutes of a request
         # it builds, and an idle one sends a request every ten minutes (docs/claude-code-behavior.md): so this one is live
         # when the turn a question forks carries one long expired, bar the minutes between a token's expiry and that
@@ -185,8 +186,8 @@ class Newest:
                 self._main[exchange] = session
             case Received(exchange=exchange, path=path, headers=headers, body=body, built=built):
                 # A question's request carries the login it was given, which is not one the brain has sent.
-                if not built and (authorization := authorization_of(headers)) is not None:
-                    self._credential = Credential(exchange, authorization)
+                if not built and (login := login_of(headers)) is not None:
+                    self._credential = Credential(exchange, *login)
                 if exchange in self._main:
                     self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
                     self._change()

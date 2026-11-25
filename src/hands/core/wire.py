@@ -92,8 +92,11 @@ BILLING_OPENING = "x-anthropic-billing-header:"
 # The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
 # for every Claude Code it starts: derived from the request's querySource in its services/api/client.ts.
 CLASS_HEADER = "x-claude-code-request-class"
-# The header Claude Code carries its login in, as the OAuth token it renews before each request it builds.
+# The headers Claude Code carries its login in: the OAuth token of a Claude plan, which it renews before each request it
+# builds, or the key of an Anthropic Console account. It sends one of them, never both.
 AUTHORIZATION_HEADER = "authorization"
+API_KEY_HEADER = "x-api-key"
+LOGIN_HEADERS = (AUTHORIZATION_HEADER, API_KEY_HEADER)
 
 
 _ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
@@ -497,17 +500,23 @@ def named_class(headers: Mapping[str, str]) -> str | None:
     return _header(headers, CLASS_HEADER)
 
 
-def authorization_of(headers: Iterable[tuple[str, str]]) -> str | None:
-    """The login a request carries; None from one that carries none, an empty one included, as a client on an API key does."""
-    return _first(headers, AUTHORIZATION_HEADER) or None
+def login_of(headers: Iterable[tuple[str, str]]) -> tuple[str, str] | None:
+    """The login a request carries, as the lowercase name of the header it is in and its value; None from one that carries
+    none, an empty one included."""
+    pairs = tuple(headers)
+    return next(((name, value) for name in LOGIN_HEADERS if (value := _first(pairs, name))), None)
+
+
+def with_login(headers: tuple[tuple[str, str], ...], login: tuple[str, str]) -> tuple[tuple[str, str], ...]:
+    """`headers` carrying `login` and no other: the client's own, in whichever header, is replaced, so a request is never
+    sent with a login of each kind."""
+    return (*((given, value) for given, value in headers if given.lower() not in LOGIN_HEADERS), login)
 
 
 def with_header(headers: tuple[tuple[str, str], ...], name: str, value: str) -> tuple[tuple[str, str], ...]:
     """`headers` with `name`, a lowercase name, set to `value`: the client's own header of it, whatever casing it named it
     in, replaced, or one added where it sent none."""
-    if _first(headers, name) is None:
-        return (*headers, (name, value))
-    return tuple((given, value if given.lower() == name else current) for given, current in headers)
+    return (*((given, current) for given, current in headers if given.lower() != name), (name, value))
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:

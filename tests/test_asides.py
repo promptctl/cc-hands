@@ -264,41 +264,50 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
 async def test_a_question_is_sent_with_the_newest_login_the_brain_sent_on_any_request_and_none_of_its_own() -> None:
     newest = Newest(BrainSession(BRAIN))
     main_turn(newest, "x1", OPENED, answered(reply(Text("Done."))))
-    assert newest.credential() == Credential("x1", "Bearer the-brains-own")
+    assert newest.credential() == Credential("x1", "authorization", "Bearer the-brains-own")
     # The idle brain's own request renews it, whatever the request is, the casing of its header included.
     newest.hear(Received("i1", "/api/oauth/organizations/o/skills/list-skills", logged_in("Bearer renewed", "Authorization"), b"", built=False))
     credential = newest.credential()
-    assert credential == Credential("i1", "Bearer renewed")
+    assert credential == Credential("i1", "authorization", "Bearer renewed")
     # The turn stays as the proxy received it: the login is the fork's own.
     turn = await newest.turn()
     assert turn.headers == HEADERS and turn.exchange == "x1"
-    assert forked(turn, "what now?", credential)[0]["authorization"] == "Bearer renewed"
+    question = fork(turn, "what now?", credential)
+    assert dict(question.headers)["authorization"] == "Bearer renewed" and question.login_from == "i1"
     # A side question the brain's own Claude Code sends is the brain's request, and renews it.
     newest.hear(Sent("b1", BRAIN, Fork(), "auxiliary", {"messages": []}))
     newest.hear(Received("b1", "/v1/messages", logged_in("Bearer renewed again"), b"{}", built=False))
-    assert newest.credential() == Credential("b1", "Bearer renewed again")
+    assert newest.credential() == Credential("b1", "authorization", "Bearer renewed again")
     # A request hands built carries the login it was given: it renews nothing, or one refusal would outlive its cause.
     newest.hear(Received("f1", "/v1/messages", logged_in("Bearer stale"), b"{}", built=True))
-    assert newest.credential() == Credential("b1", "Bearer renewed again")
     # A request that carries none, or an empty one, leaves it.
-    newest.hear(Received("i2", "/api/hello", (("x-api-key", "k"),), b"", built=False))
+    newest.hear(Received("i2", "/api/hello", (("x-forwarded-for", "h"),), b"", built=False))
     newest.hear(Received("i3", "/api/hello", logged_in(""), b"", built=False))
-    assert newest.credential() == Credential("b1", "Bearer renewed again")
+    assert newest.credential() == Credential("b1", "authorization", "Bearer renewed again")
 
 
-async def test_a_question_to_a_brain_that_has_sent_no_login_keeps_the_login_of_the_turn_it_forks() -> None:
+async def test_a_question_is_sent_with_the_one_login_the_brain_sent_last_whichever_kind_it_is() -> None:
+    newest = Newest(BrainSession(BRAIN))
+    main_turn(newest, "x1", OPENED, answered(reply(Text("Done."))))
+    # The brain's login changes kind, as /login in its pane changes it: the question goes out with the key alone.
+    newest.hear(Received("i1", "/api/hello", (("x-api-key", "k"),), b"", built=False))
+    credential = newest.credential()
+    assert credential == Credential("i1", "x-api-key", "k")
+    question = fork(await newest.turn(), "what now?", credential)
+    assert {name: value for name, value in question.headers if name in ("authorization", "x-api-key")} == {"x-api-key": "k"}
+    # ...and back, from a turn that carried a key.
+    keyed = Turn("x2", "/v1/messages", (("x-api-key", "k"), *HEADERS[1:]), as_sent(OPENED), None)
+    question = fork(keyed, "what now?", Credential("i2", "authorization", "Bearer renewed"))
+    assert {name: value for name, value in question.headers if name in ("authorization", "x-api-key")} == {"authorization": "Bearer renewed"}
+
+
+async def test_a_question_to_a_brain_that_sent_no_login_goes_out_as_the_turn_it_forks_did() -> None:
     newest = Newest(BrainSession(BRAIN))
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
-    newest.hear(Received("x1", "/v1/messages", (("x-api-key", "k"), *HEADERS[1:]), as_sent(OPENED), built=False))
+    newest.hear(Received("x1", "/v1/messages", HEADERS[1:], as_sent(OPENED), built=False))
     assert newest.credential() is None
-    assert forked(await newest.turn(), "what now?", newest.credential())[0]["x-api-key"] == "k"
-    assert fork(await newest.turn(), "what now?", newest.credential()).login_from == "x1"
-
-
-async def test_a_question_is_sent_with_the_brains_login_though_the_turn_it_forks_carried_none() -> None:
-    turn = Turn("x1", "/v1/messages", (("x-api-key", "k"), *HEADERS[1:]), as_sent(OPENED), None)
-    question = fork(turn, "what now?", Credential("i1", "Bearer renewed"))
-    assert dict(question.headers)["authorization"] == "Bearer renewed" and question.login_from == "i1"
+    question = fork(await newest.turn(), "what now?", newest.credential())
+    assert "authorization" not in dict(question.headers) and question.login_from == "x1"
 
 
 # The brain's held turn: its stay_silent call answered, and the proxy answering the request that carries the answer.
