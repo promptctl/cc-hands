@@ -1129,6 +1129,7 @@ async def test_a_turn_taken_as_other_words_is_typed_once_and_what_it_left_runnin
 
 
 @pytest.mark.outside
+@pytest.mark.quarantined("promptctl-testing-px1f.bj0", until="2026-11-29")
 async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the_prompt_claude_code_queued_it_as(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
