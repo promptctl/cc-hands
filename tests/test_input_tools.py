@@ -333,12 +333,14 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await call(tools, "send_draft", session=id)
     written = [json.loads(line) for line in tail(path, 1000)[0]]
-    assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
-    assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
+    # Written before it is typed, and its end after: here, that its typist said it typed it.
+    assert [kind(line) for line in written][-3:] == ["Typing", "TypingConfirmed", "tool.run"]
+    assert written[-3]["effect"] == written[-2]["effect"]
+    assert written[-3]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
     # Which writer typed it: the fritter that wrapped the session, or tmux in its pane.
-    assert written[-2]["effect"]["writer"] == {"type": "Fritter", "socket": str(tmp_path / "f.sock"), "pid": 4242}
+    assert written[-3]["effect"]["writer"] == {"type": "Fritter", "socket": str(tmp_path / "f.sock"), "pid": 4242}
     # What was typed is joined to the call that typed it by the call's span.
-    assert written[-2]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "send_draft"
+    assert written[-3]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "send_draft"
 
 
 async def test_a_command_with_blank_arguments_is_typed_without_them(tmp_path: Path) -> None:
@@ -448,8 +450,8 @@ async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path)
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
     await call([audited(SYSTEM, tool, record) for tool in keyboard_tools(sessions)], "send_command", session=id, command="compact")
     written = [json.loads(line) for line in tail(path, 1000)[0]]
-    assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
-    assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}
+    assert [kind(line) for line in written][-3:] == ["Typing", "TypingConfirmed", "tool.run"]
+    assert written[-3]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}
 
 
 async def test_an_act_served_in_a_voice_turn_says_hands_is_acting_as_it_is_called_and_answers_as_before(tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ from hands.sessions.startsession import joined
 from hands.sessions.liveness import live
 from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
-from hands.sessions.audit import ClipHeard, Typing, TypingFailed, Unsaid, encoded, segment
+from hands.sessions.audit import ClipHeard, Typing, TypingConfirmed, TypingFailed, TypingUnconfirmed, Unsaid, encoded, segment
 from hands.sessions.home import Home
 from hands.voice import transcription
 from hands.sessions.wide import Fact, Outcome, WideEvent
@@ -49,9 +49,16 @@ def as_logged(record: object) -> Line:
     return encoded(record)
 
 
+def sent(session: SessionId) -> Type[Text]:
+    return Type(session, Fritter(Path("/tmp/f/session.sock"), 7), Text(PromptText("Reply with the file.")))
+
+
 def typing(session: SessionId, span: str = SPAN) -> Line:
-    effect = Type(session, Fritter(Path("/tmp/f/session.sock"), 7), Text(PromptText("Reply with the file.")))
-    return as_logged(Typing(effect, Span("t", span, None)))
+    return as_logged(Typing(sent(session), Span("t", span, None)))
+
+
+def confirmed(session: SessionId) -> Line:
+    return as_logged(TypingConfirmed(sent(session)))
 
 
 def event(name: str, span: str = "s", outcome: Outcome = "ok", error: str | None = None, **facts: Fact) -> Line:
@@ -113,23 +120,29 @@ def test_a_session_that_asks_permission_never_finishes_and_says_so() -> None:
     assert raised.value.stage == "finished" and raised.value.why.startswith(f"session {SESSION} asked permission to use a tool")
 
 
-def test_a_send_is_typed_only_once_the_unit_that_typed_it_has_ended() -> None:
-    # The Typing line is written before the typing: alone, it says the send is under way, not that it landed.
-    assert proof("typed", [typing(SESSION)], SESSION) is None
-    assert proof("typed", [typing(SESSION), ended("another")], SESSION) is None
-    assert proof("typed", [typing(SESSION), ended()], SESSION) == f"typed 'Reply with the file.' into session {SESSION}"
+def test_a_send_is_typed_only_once_its_typist_said_it_typed_it() -> None:
+    # The Typing line is written before the typing: alone, it says the send is under way, not that it landed. Nor does
+    # the unit of work that typed it ending, which it does however its send ended.
+    assert proof("typed", [typing(SESSION), ended()], SESSION) is None
+    assert proof("typed", [typing(SESSION), confirmed(SESSION), ended()], SESSION) == f"typed 'Reply with the file.' into session {SESSION}"
 
 
 def test_a_send_that_failed_is_never_typed_and_says_why() -> None:
-    effect = Type(SESSION, Fritter(Path("/tmp/f/session.sock"), 7), Text(PromptText("Reply with the file.")))
-    failed = as_logged(TypingFailed(effect, "this socket types into process 45443"))
+    failed = as_logged(TypingFailed(sent(SESSION), "this socket types into process 45443"))
     with pytest.raises(NotReached) as raised:
         proof("typed", [typing(SESSION), failed, ended()], SESSION)
     assert (raised.value.stage, raised.value.why) == ("typed", f"hands could not type into session {SESSION}: this socket types into process 45443")
 
 
+def test_a_send_never_confirmed_is_never_typed_and_says_why() -> None:
+    unconfirmed = as_logged(TypingUnconfirmed(sent(SESSION), "the fritter never answered"))
+    with pytest.raises(NotReached) as raised:
+        proof("typed", [typing(SESSION), unconfirmed, ended()], SESSION)
+    assert (raised.value.stage, raised.value.why) == ("typed", f"hands was never told whether what it typed into session {SESSION} arrived: the fritter never answered")
+
+
 def test_only_the_smoke_session_counts_for_its_send_and_its_finish() -> None:
-    lines = [typing(OTHER), ended(), stop(OTHER)]
+    lines = [typing(OTHER), confirmed(OTHER), ended(), stop(OTHER)]
     assert proof("typed", lines, SESSION) is None
     assert proof("finished", lines, SESSION) is None
     assert proof("finished", [*lines, stop(SESSION)], SESSION) == f"session {SESSION} finished its turn"

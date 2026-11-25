@@ -24,7 +24,7 @@ from hands.core.tmux import Pane
 from hands.sessions.child import Children
 from hands.sessions.panes import socket_directory
 from hands.sessions.terminals import Opened, Unopened, Untyped
-from hands.sessions.tmux import TmuxTerminals
+from hands.sessions.tmux import TYPING, TmuxExit, TmuxTerminals, ran_at
 from hands.sessions.typing import FritterSockets, Typist
 from terminalscontract import DRAWN, VALUE, VARIABLE, Ending, TerminalsContract
 
@@ -239,6 +239,21 @@ async def world(fritter: Path) -> AsyncIterator[Tmux]:
 
 class TestTmuxTerminals(TerminalsContract):
     pass
+
+
+async def test_tmux_stops_a_list_at_its_first_failure_having_printed_what_ran_before_it(world: Tmux) -> None:
+    # What TmuxTerminals.type tells a typing that failed after a key from one that failed before any by: TYPING printed.
+    window = await world.window("play")
+    tmux, children = shutil.which("tmux"), Children(SYSTEM, lambda _: None)
+    assert tmux is not None
+    partway = await ran_at(children, Path(tmux), world.socket, ["display-message", "-p", TYPING, ";", "paste-buffer", "-b", "hands-none", "-t", window.pane, ";", "send-keys", "-t", window.pane, "Enter"], PATIENT)
+    before = await ran_at(children, Path(tmux), world.socket, ["send-keys", "-t", "%999999", "-l", "", ";", "display-message", "-p", TYPING], PATIENT)
+    match partway, before:
+        case TmuxExit(code=failed, out=out, err=err), TmuxExit(code=refused, out=nothing):
+            assert (failed != 0, out.splitlines(), b"no buffer hands-none" in err) == (True, [TYPING.encode()], True)
+            assert (refused != 0, nothing) == (True, b"")
+        case other:
+            pytest.fail(f"tmux answered {other}")
 
 
 async def test_tmux_opens_no_window_where_its_socket_directory_is_one_another_user_could_reach() -> None:

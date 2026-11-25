@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on
+from conftest import Answering, children_on, exited
 from hands.clock import SYSTEM
-from hands.core.effects import Text
-from hands.core.session import PromptText
+from hands.core.effects import Command, Text
+from hands.core.session import CommandName, PromptText
 from hands.core.tmux import Pane, Unanswered
-from hands.sessions.terminals import Unopened, Untyped
-from hands.sessions.tmux import NoTmux, TmuxTerminals, on_path
+from hands.sessions.terminals import Unconfirmed, Unopened, Untyped
+from hands.sessions.tmux import TYPING, NoTmux, TmuxTerminals, on_path
 from hands.virtualclock import VirtualClock
 
 SOCKET = Path("/tmp/tmux-501/default")
@@ -49,3 +49,15 @@ async def test_a_tmux_that_cannot_be_run_opens_and_types_nothing_and_answers_not
             assert reason.startswith("tmux could not be started: ")
         case other:
             pytest.fail(f"listed as {other}")
+
+
+async def test_a_typing_tmux_stopped_after_its_first_key_may_have_typed_and_one_stopped_before_typed_nothing(tmp_path: Path) -> None:
+    # tmux keeps what a list ran before the command it stopped at (test_terminals_contract_tmux.py), so the name of a
+    # command can be in the input when its arguments' paste fails.
+    pane, command = Pane(SOCKET, "%3", "billing", 0), Command(CommandName("model"), PromptText("opus"))
+    partway = Answering(VirtualClock(), lambda _: None, exited(1, out=f"{TYPING}\n".encode(), err=b"no buffer hands-1\n"))
+    with pytest.raises(Unconfirmed, match=f"tmux at {SOCKET} began typing into pane %3 and stopped partway: no buffer hands-1"):
+        await TmuxTerminals(partway, tmp_path / "tmux").type(pane, command)
+    before = Answering(VirtualClock(), lambda _: None, exited(1, err=b"can't find pane: %3\n"))
+    with pytest.raises(Untyped, match=f"tmux at {SOCKET} did not type into pane %3: can't find pane: %3"):
+        await TmuxTerminals(before, tmp_path / "tmux").type(pane, command)

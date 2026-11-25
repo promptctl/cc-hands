@@ -47,10 +47,18 @@ from hands.sessions.wide import WideEvent, chain
 @dataclass(frozen=True)
 class Typing:
     """What is about to be typed into a session: written before the typing, so the log holds every send, and the span of
-    the unit of work that typed it, whose event says why."""
+    the unit of work that typed it, whose event says why. The line its typing ends with follows it: a TypingConfirmed,
+    a TypingFailed, or a TypingUnconfirmed."""
 
     effect: Type[Input]
     span: Span
+
+
+@dataclass(frozen=True)
+class TypingConfirmed:
+    """What a Typing line said was about to be typed, which its writer said it typed: the send reached its session."""
+
+    effect: Type[Input]
 
 
 @dataclass(frozen=True)
@@ -274,6 +282,7 @@ class Logged:
 
 Entry = (
     Typing
+    | TypingConfirmed
     | TypingFailed
     | TypingUnconfirmed
     | SettingsEdited
@@ -323,7 +332,7 @@ def level(entry: Entry) -> Level:
         case LoginReported(expired=expired):
             return "info" if expired is None else "warning"
         case (
-            Typing() | Exported() | CopiesLost()
+            Typing() | TypingConfirmed() | Exported() | CopiesLost()
             | Transcribed() | ClipHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"

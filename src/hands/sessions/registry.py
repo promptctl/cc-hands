@@ -19,7 +19,7 @@ from hands.core.session import Gone, Instant, Known, Membership, PromptId, Regis
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.child import Children
-from hands.sessions.audit import Record, Typing, TypingFailed, TypingUnconfirmed
+from hands.sessions.audit import Record, Typing, TypingConfirmed, TypingFailed, TypingUnconfirmed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
 from hands.clock import Clock, stamp
@@ -377,6 +377,7 @@ class Sessions:
         except Unconfirmed as error:
             self._record(TypingUnconfirmed(effect, str(error)))
             return MaybeTyped(effect.session, effect.input, str(error))
+        self._record(TypingConfirmed(effect))
         return Typed(effect.session, effect.input)
 
     async def keep_time(self, period: float) -> None:
