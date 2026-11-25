@@ -1748,6 +1748,98 @@ async def test_a_halt_with_a_turn_in_flight_that_is_cancelled_ends_that_turn_and
     assert (halt.outcome, halt.facts["with_turn"]) == ("cancelled", True)
 
 
+async def test_a_halt_with_a_turn_in_flight_claude_code_does_not_carry_out_ends_that_turn_and_says_why_on_its_event(errors: list[str]) -> None:
+    recorded: list[Entry] = []
+    clock = VirtualClock()
+    brain, keys = _built(clock, recorded.append)
+    await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path(TRANSCRIPT))))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(Prompted(SessionId("b1"), clock.now(), "default", PromptId("n1"), NOTICE))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(1000)), clock.now()))  # pyright: ignore[reportPrivateUsage]
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    turn = await _typed_turn(brain, "and now?")
+    assert brain.interrupt(notified) is True
+    _took(brain, "n1", "and now?", queued=True)
+    await until(lambda: "escape" in keys.pressed)
+    # Claude Code runs on past the stop's time.
+    await passed(clock, INTERRUPT_SECONDS)
+    await brain.drained()
+    with pytest.raises(process.StopUnrecorded):
+        turn.answered.result()
+    # [LAW:one-source-of-truth] the halted turn runs on in Claude Code, so it ends only as the model reads it.
+    assert (notified.ended.done(), errors) == (False, [])
+    [halt] = events(recorded, "brain.halt")
+    assert (halt.outcome, halt.facts["with_turn"]) == ("failed", True)
+    assert halt.error is not None and "did not stop what hands pressed Escape for" in halt.error
+
+
+async def test_a_stop_cancelled_while_it_waits_for_the_input_is_said_on_its_event(errors: list[str]) -> None:
+    recorded: list[Entry] = []
+    clock = VirtualClock()
+    brain, keys = _built(clock, recorded.append)
+    await _untaken(brain, "hello")
+    await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path(TRANSCRIPT))))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(Prompted(SessionId("b1"), clock.now(), "default", PromptId("n1"), NOTICE))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(1000)), clock.now()))  # pyright: ignore[reportPrivateUsage]
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    # A halt holds the input, waiting on the brain's clock for Claude Code to stop.
+    assert brain.interrupt(notified) is True
+    await until(lambda: "escape" in keys.pressed)
+    await clock.sleeping(clock.now() + INTERRUPT_SECONDS)
+    # A second halt, and a late stop of the untaken words, wait behind it for the input, and are cancelled there.
+    holding = set(brain._own_work)  # pyright: ignore[reportPrivateUsage]
+    assert brain.interrupt(notified) is True
+    _took(brain, "p1", "hello")
+    waiting = set(brain._own_work) - holding  # pyright: ignore[reportPrivateUsage]
+    assert sorted(task.get_name() for task in waiting) == ["Brain._halt", "Brain._late"]
+    # Cancelled only once both wait on the input: one cancelled before its first step never begins its event.
+    await until(lambda: len(brain._input._waiters or ()) == 2)  # pyright: ignore[reportPrivateUsage]
+    for task in waiting:
+        task.cancel()
+    await asyncio.wait(waiting)
+    assert (keys.pressed, [(entry.event, entry.outcome) for entry in events(recorded, "brain.halt") + events(recorded, "brain.late")]) == ([" hello", "escape"], [("brain.halt", "cancelled"), ("brain.late", "cancelled")])
+    clock.advance_to(clock.now() + INTERRUPT_SECONDS)
+    await brain.drained()
+    assert errors == []
+
+
+async def test_a_ctrl_c_whose_stop_is_cancelled_as_it_goes_spaces_the_next_stops_ctrl_c_from_it(errors: list[str]) -> None:
+    clock = VirtualClock()
+    brain, keys = _built(clock)
+    cleared: list[float] = []
+    gate = threading.Event()
+
+    def press() -> None:
+        cleared.append(clock.now())
+        if len(cleared) == 1:
+            gate.wait()
+
+    keys.before["ctrl_c"] = press
+    try:
+        first = await _typed_turn(brain, "hello")
+        _took(brain, "p1", "hello")
+        assert brain.interrupt(brain.answering()) is True
+        await until(lambda: cleared != [])
+        # The first stop is cancelled as its Ctrl-C goes; the key goes all the same.
+        (stopping,) = (task for task in brain._own_work if task.get_name() == "Brain._stop")  # pyright: ignore[reportPrivateUsage]
+        stopping.cancel()
+        await asyncio.wait({first.answered})
+    finally:
+        gate.set()
+    await until(lambda: keys.pressed.count("ctrl_c") == 1)
+    second = await _typed_turn(brain, "and now?")
+    _took(brain, "p2", "and now?")
+    assert brain.interrupt(brain.answering()) is True
+    # The second stop waits out the exit window on the brain's clock: it answers its turn only once the clock is moved.
+    spacing = asyncio.ensure_future(clock.sleeping(cleared[0] + EXIT_SECONDS))
+    await asyncio.wait({spacing, second.answered}, return_when=asyncio.FIRST_COMPLETED)
+    assert (spacing.done(), second.answered.done()) == (True, False)
+    clock.advance_to(cleared[0] + EXIT_SECONDS)
+    await asyncio.wait({second.answered})
+    await brain.drained()
+    assert (second.answered.result(), errors) == (BrainStopped(), [])
+    assert cleared[1] - cleared[0] > CLAUDE_CODE_EXIT_WINDOW
+
+
 async def _stopping_late(recorded: list[Entry]) -> tuple[Brain, _Keys, VirtualClock]:
     """A brain whose untaken turn's words Claude Code took late as p1, which runs, and whose stop has pressed its Escape."""
     clock = VirtualClock()
