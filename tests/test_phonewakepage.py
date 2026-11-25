@@ -377,7 +377,13 @@ async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_th
     await expect(page.locator("#wake-note")).to_have_text("")
     await expect(page.locator("#state")).to_have_text(LOADING)
     models_come_in.set()
-    await expect(page.locator("#state")).to_have_text(LISTENING)
+    try:
+        await expect(page.locator("#state")).to_have_text(LISTENING)
+    except AssertionError as error:
+        # docs/flakes.md: what the detector said is kept in the failure, for its flake is found from it
+        # (promptctl-testing-c3u.sm9).
+        error.add_note(f"the page's detector told hands: {[(event.facts['state'], event.error) for event in events(hands.recorded, 'phone.detector')]}")
+        raise
     assert len(refused) == 1
     # hands' record has the wait as its own fact, and its end, ahead of the load: a detector waiting is not one that never ran,
     # and one that hands answered is not waiting still.

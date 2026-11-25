@@ -119,8 +119,8 @@ async def answered(phone: Phone, offer: Offer, remote: str) -> RTCSessionDescrip
     match await phone.answer(offer, remote, begun(SYSTEM)):
         case RTCSessionDescription() as answer:
             return answer
-        case declined:
-            pytest.fail(f"hands declined the offer: {declined}")
+        case untaken:
+            pytest.fail(f"hands did not take the offer: {untaken}")
 
 
 def calls(recorded: list[Entry]) -> list[WideEvent]:
@@ -787,6 +787,25 @@ async def test_an_offer_that_is_no_offer_is_refused_and_is_one_event_saying_why(
 
 
 @pytest.mark.outside
+async def test_an_offer_with_no_data_channel_is_refused_and_holds_the_phone_from_no_other_page(page_server: Served) -> None:
+    client, _, _, recorded = page_server
+    # Audio, and no channel for anything the page says to reach hands over.
+    page = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+    page.addTransceiver("audio", direction="recvonly")
+    await page.setLocalDescription(await page.createOffer())
+    refused = await client.post("/offer", data=offered(Offer(page.localDescription.sdp, "offer", PAGE_RATE, FIRST)), headers={"Authorization": f"Bearer {KEY}"})
+    assert (refused.status, await refused.text()) == (400, "its offer has no data channel to carry the call")
+    [event] = calls(recorded)
+    assert (event.outcome, event.error, event.facts["ended"]) == ("failed", await refused.text(), CallRefused(await refused.text()))
+    # Refused, it is no offer held: another page calling again on its own is answered.
+    other, offer = await a_page(Asked("another page", "resume"))
+    taken = await client.post("/offer", data=offered(offer), headers={"Authorization": f"Bearer {KEY}"})
+    assert taken.status == 200
+    await other.peer.close()
+    await page.close()
+
+
+@pytest.mark.outside
 @pytest.mark.parametrize(
     "body",
     [
@@ -900,10 +919,10 @@ async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_
     await call.until(lambda: any(np.abs(frame.to_ndarray()).max() > 1000 for frame in call.page.played))
 
 
-async def vanished(page: RTCPeerConnection) -> None:
+async def vanished(page: RTCPeerConnection, channel: RTCDataChannel) -> None:
     """The page's browser killed outright, or its phone gone from the network: every socket it reached hands on shuts with
     nothing sent over it, so hands is told of no channel closed and no alert, and its consent checks go unanswered."""
-    for dtls in carried(page):
+    for dtls in carried(page, channel.transport):
         await dtls.transport.stop()
 
 
@@ -932,7 +951,7 @@ async def test_a_page_that_sends_nothing_outlasts_consent_and_one_gone_without_a
         # There, and sending nothing, through twice the checks each end makes before it gives up on one gone: still up.
         await up.until(lambda: answered() >= 4 * aioice.ice.CONSENT_FAILURES)
         assert (up.key.gate.place, calls(up.recorded)) == ("phone", [])
-        await vanished(up.page.peer)
+        await vanished(up.page.peer, up.page.channel)
         await up.until(lambda: up.key.gate.place == "desk")
         [event] = calls(up.recorded)
         ended = left(event)
@@ -951,13 +970,13 @@ async def test_an_offer_whose_page_is_gone_before_its_channel_opens_is_let_go_an
     # one, connected and never arrived, as a page gone between its connection and its channel leaves it.
     page = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     page.addTransceiver("audio", direction="recvonly")
-    page.createDataChannel("talk", negotiated=True, id=0)
+    channel = page.createDataChannel("talk", negotiated=True, id=0)
     await page.setLocalDescription(await page.createOffer())
     await page.setRemoteDescription(await answered(phone, Offer(page.localDescription.sdp, "offer", PAGE_RATE, FIRST), "192.168.7.20"))
     async with asyncio.timeout(10):
         while page.connectionState != "connected":
             await asyncio.sleep(0.01)
-    await vanished(page)
+    await vanished(page, channel)
     async with asyncio.timeout(10):
         while not calls(recorded):
             await asyncio.sleep(0.01)

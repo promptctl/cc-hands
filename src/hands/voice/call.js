@@ -256,6 +256,8 @@ function sayIdle() {
 // The wake word's own state, which no turn's line says: why it is not listening, or that hands has not answered it, why the
 // screen may go to sleep, and that the choice is not kept.
 let lockWhy = null;
+// Why the microphone sleeps still, as its last waking failed: null once it runs.
+let unwokenWhy = null;
 function drawNote() {
   const listening = call?.listening;
   const notes = [];
@@ -263,6 +265,7 @@ function drawNote() {
   else if (listening?.phase === "loading" && listening.waiting !== null) notes.push(`The wake word is waiting on hands: ${listening.waiting}.`);
   if (lockWhy !== null) notes.push(`The screen may go to sleep, which stops the wake word: ${lockWhy}.`);
   if (keptWhy !== null) notes.push(`This browser will not keep the wake word's choice: ${keptWhy}.`);
+  if (unwokenWhy !== null) notes.push(`The microphone is asleep, so hands hears nothing from this phone: ${unwokenWhy}. A press of the button wakes it.`);
   wakeNote.textContent = notes.join(" ");
   wakeNote.classList.toggle("bad", listening?.phase === "failed");
 }
@@ -345,15 +348,41 @@ async function open() {
   audio.createMediaStreamSource(stream).connect(tap).connect(mute).connect(audio.destination);
   // A microphone taken away (unplugged, or by another app) sends nothing again: no call made over it would be heard.
   stream.getAudioTracks().forEach((track) => { track.onended = () => end("The microphone was taken away. Press Connect to open it again."); });
+  // [LAW:single-enforcer] the browser's word on whether the microphone runs is heard here, from the audio it runs on: told to
+  // the call that is up, and a microphone fallen asleep woken at once.
+  audio.onstatechange = () => {
+    if (audio.state === "running") { unwokenWhy = null; drawNote(); }
+    call?.tell(microphone(audio));
+    wake();
+  };
   return {stream, audio, tap};
+}
+
+// What the page tells hands of its microphone: the state of the audio it runs on, running or asleep as the browser has it.
+function microphone(audio) { return {kind: "microphone", state: audio.state}; }
+
+// [LAW:single-enforcer] the one waking of the microphone. A browser may put it to sleep, sending the page to the background or
+// lending the phone's audio to a call, Siri or an alarm, and one asleep sends nothing: it is woken as it falls asleep, as a
+// call is made over it, as the page comes back to the front, and at a press, the gesture a browser may ask for. One that will
+// not wake is told to hands and noted, while its call stays up for the next of those to wake it.
+function wake() {
+  const audio = media?.audio;
+  if (audio === undefined || audio.state === "running") return;
+  audio.resume().catch((error) => {
+    // A microphone let go of meanwhile is nothing to tell of.
+    if (media?.audio !== audio) return;
+    unwokenWhy = wording(error);
+    call?.tell({kind: "microphone", state: "unwoken", why: unwokenWhy});
+    drawNote();
+  });
 }
 
 async function connect(claim) {
   talk.disabled = true;
   if (!media) media = await open();
   const {audio, tap} = media;
-  // A microphone asleep sends nothing: a call is made only over one awake.
-  await audio.resume();
+  // Not waited on: a browser may hold a waking until a press, and the call that is made meanwhile says the microphone sleeps.
+  wake();
   const pc = new RTCPeerConnection();
   pc.addTransceiver("audio", {direction: "recvonly"});
   pc.ontrack = (event) => { out.srcObject = new MediaStream([event.track]); out.play(); };
@@ -500,6 +529,7 @@ async function connect(claim) {
   channel.onopen = () => {
     wanted = true; tries = 0;
     talk.disabled = false; talk.textContent = "Hold to talk"; sayIdle();
+    tell(microphone(audio));
     syncLock();
     if (wakeOn) made.listen();
   };
@@ -564,14 +594,21 @@ function dropped(made, why) {
 function end(why) {
   wanted = false; tries = 0;
   hangUp();
-  if (media) { media.stream.getTracks().forEach((t) => t.stop()); media.audio.close(); media = null; }
+  if (media) {
+    media.stream.getTracks().forEach((t) => t.stop());
+    // Let go of, the microphone is heard of no more.
+    media.audio.onstatechange = null;
+    media.audio.close();
+    media = null;
+    unwokenWhy = null;
+  }
   talk.disabled = false; talk.textContent = "Connect";
   say(why, true);
 }
 
 function place(claim) {
   say(claim === "take" ? "Connecting…" : "Calling hands again…");
-  // What fails here failed before there was a call to make again: the microphone could not be opened or woken.
+  // What fails here failed before there was a call to make again: the microphone could not be opened.
   connect(claim).catch((error) => end(`Could not connect: ${error.message}`));
 }
 
@@ -580,6 +617,8 @@ function down(event) {
   // A page whose address carries no key never takes the microphone for a call hands would refuse; whether a key it
   // carries is the phone's is hands' to say.
   if (!carriesKey) { say("Open this page from the address `hands phone` prints.", true); return; }
+  // A press is the gesture a browser may ask for before it wakes the microphone.
+  wake();
   if (!call && !retry) { place("take"); return; }
   if (!call || call.channel.readyState !== "open" || held) return;
   talk.setPointerCapture(event.pointerId);
@@ -606,9 +645,7 @@ talk.addEventListener("contextmenu", (event) => event.preventDefault());
 document.addEventListener("visibilitychange", () => {
   syncLock();
   if (document.hidden) { up(); return; }
-  // A page brought back from the background may find its microphone asleep with its call still up: woken here, or the
-  // call would carry nothing while hands stays at the phone.
-  media?.audio.resume().catch((error) => end(`The microphone could not be woken: ${error.message}`));
+  wake();
   if (retry) { clearTimeout(retry); retry = null; place("resume"); }
 });
 wakeButton.addEventListener("click", () => setWake(!wakeOn));

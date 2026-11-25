@@ -132,6 +132,8 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
         match await phone.answer(offer, remote, began):
             case CallDeclined():
                 return web.Response(status=409, text="another page has hands' phone; press Connect to take it")
+            case CallRefused(why=why):
+                return web.Response(status=400, text=why)
             case answer:
                 return web.json_response({"sdp": answer.sdp, "type": answer.type})
 

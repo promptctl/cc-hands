@@ -14,14 +14,14 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
-from conftest import patiently
+from conftest import events, patiently
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
 from hands.clock import SYSTEM
 from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed
 from hands.sessions.home import Home
 from hands.sessions.summaries import Summaries
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import Fact, WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice.modelswitch import Switches
 from hands.voice.clips import KEPT_SECONDS, Clip
@@ -246,7 +246,8 @@ async def test_a_second_page_takes_the_phone_and_the_first_says_so(browser: Open
 # A microphone that is never silent, and a record, in the order the page lived it, of the buttons it sent and the messages
 # of its microphone. Each block the tap posts reaches the page as one number, its own, so a message of audio says which
 # blocks it holds, and a mark says how many the tap had posted before it. While `holding`, what the tap posts waits in the
-# order it came, as it does for a main thread that is busy, until `drain` hands it to the page.
+# order it came, as it does for a main thread that is busy, until `drain` hands it to the page. The audio the tap runs on is
+# `tapped`, where a test can put it to sleep as a browser does.
 NEVER_SILENT = """
 if (window.isSecureContext) {
   window.timeline = [];
@@ -268,6 +269,7 @@ if (window.isSecureContext) {
   window.AudioWorkletNode = class extends NativeNode {
     constructor(...made) {
       super(...made);
+      window.tapped = made[0];
       let handler = null;
       deliver = (data) => handler({ data });
       Object.defineProperty(this.port, "onmessage", { set(each) { handler = each; } });
@@ -344,6 +346,8 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
             case {"audio": _}:
                 assert inside, "microphone audio was sent outside a turn"
                 carried.append(each)
+            case {"microphone": _}:
+                pass  # the state of its microphone, told as the call opens
             case unknown:
                 pytest.fail(f"the page sent what this test does not know: {unknown}")
     assert [each["button"] for each in timeline if "button" in each] == ["press", "release"] * 2
@@ -362,30 +366,56 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
     assert isinstance(ended, CallLeft) and ended.rejected == 0 and ended.held_back > 0
 
 
-# The page's own audio, the one its tap runs on, kept where a test can put it to sleep as a phone does a page it moves to the
-# background. Added after NEVER_SILENT, whose tap it wraps.
-TAPPED = """
-if (window.isSecureContext) {
-  const TapNode = AudioWorkletNode;
-  window.AudioWorkletNode = class extends TapNode {
-    constructor(context, ...made) { super(context, ...made); window.tapped = context; }
-  };
-}
-"""
+async def microphone_told(hands: Hands, count: int) -> list[Fact]:
+    """The states the page has told hands of its microphone, once it has told `count` of them."""
+
+    def told() -> list[Fact]:
+        return [event.facts["state"] for event in events(hands.recorded, "phone.microphone")]
+
+    await patiently(lambda: len(told()) >= count, told)
+    return told()
 
 
-async def test_a_page_brought_back_to_the_front_wakes_its_microphone_and_its_call_carries_it_again(browser: Opened, hands: Hands) -> None:
+async def test_a_microphone_put_to_sleep_with_the_page_in_front_is_woken_and_its_call_carries_it_again(browser: Opened, hands: Hands) -> None:
     await browser.context.add_init_script(NEVER_SILENT)
-    await browser.context.add_init_script(TAPPED)
     page = await on_the_call(browser, hands)
     await until_sent(page, "quiet", 3)
-    # Put away, the page's microphone sleeps and sends nothing, while its call stays up.
+    # Put to sleep as a browser may with the page in front (the phone lending its audio to a call), it sends nothing.
     await page.evaluate("tapped.suspend()")
-    # And brought back to the front, as the browser says it, the page sends again on the call it had.
-    await page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    # hands is told it slept, and that it woke: the page woke it, with nothing else changed.
+    assert await microphone_told(hands, 3) == ["running", "suspended", "running"]
+    # And the call it had carries it again.
     await until_sent(page, "quiet", 3)
     assert hands.requests.count("/offer") == 1
     assert hands.gate.gate.place == "phone"
+
+
+async def test_a_microphone_that_will_not_wake_is_told_to_hands_and_said_and_a_press_wakes_it(browser: Opened, hands: Hands) -> None:
+    await browser.context.add_init_script(NEVER_SILENT)
+    page = await on_the_call(browser, hands)
+    # The browser will not wake the microphone, as one may until a press.
+    await page.evaluate("""() => {
+      const resume = AudioContext.prototype.resume;
+      window.letWake = () => { AudioContext.prototype.resume = resume; };
+      AudioContext.prototype.resume = () => Promise.reject(new Error("the browser waits on a press"));
+    }""")
+    await page.evaluate("tapped.suspend()")
+    assert await microphone_told(hands, 3) == ["running", "suspended", "unwoken"]
+    [*_, unwoken] = events(hands.recorded, "phone.microphone")
+    assert (unwoken.outcome, unwoken.error) == ("failed", "the browser waits on a press")
+    await expect(page.locator("#wake-note")).to_have_text("The microphone is asleep, so hands hears nothing from this phone: the browser waits on a press. A press of the button wakes it.")
+    # The call stays up, hands at the phone, for a press to wake it.
+    assert hands.requests.count("/offer") == 1
+    assert hands.gate.gate.place == "phone"
+    await page.evaluate("letWake()")
+    talk = (await page.locator("#talk").bounding_box()) or {}
+    await page.mouse.move(talk["x"] + talk["width"] / 2, talk["y"] + talk["height"] / 2)
+    await page.mouse.down()
+    # Woken by the press, the microphone runs, the note goes, and the turn the press opened carries what it hears.
+    assert await microphone_told(hands, 4) == ["running", "suspended", "unwoken", "running"]
+    await expect(page.locator("#wake-note")).to_have_text("")
+    await until_sent(page, "audio", 3)
+    await page.mouse.up()
 
 
 async def test_the_page_says_it_heard_nothing_from_a_press_hands_opened_no_clip_for_and_from_a_clip_hands_threw_away(browser: Opened, hands: Hands) -> None:
