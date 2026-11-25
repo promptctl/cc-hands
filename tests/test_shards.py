@@ -3,12 +3,14 @@ once, a module's setup is paid by the shards that hold it, and the costs the pac
 prints."""
 
 import argparse
+import re
 from itertools import chain
+from pathlib import Path
 
 import pytest
 
 from costs import Cost, row
-from shards import COSTS, Costs, Shard, Sharding, costs_from, packed, partition, pieces
+from shards import COSTS, Costs, Shard, Sharding, costs_from, packed, partition, pieces, unpriced
 
 TESTS = [f"tests/test_{each}.py::test_{n}" for each in ("a", "b", "c", "d") for n in range(10)]
 COSTS_OF_THESE = Costs({"tests/test_a.py::test_0": 40.0, "tests/test_b.py::test_0": 30.0, "tests/test_c.py::test_0": 20.0}, {"tests/test_d.py": 25.0}, 1.0)
@@ -211,9 +213,33 @@ def test_a_test_a_run_finished_costs_what_that_run_says_not_what_one_stopped_ins
     assert costs.tests["tests/test_page.py::test_waits"] == 61.0
 
 
+def test_a_test_a_run_finished_quickly_costs_what_that_run_says_not_what_one_stopped_inside_it_spent() -> None:
+    quick = table(Cost("tests/test_page.py::test_waits", 0.0, 0.1, 0.0))
+    costs = costs_from({"one": cancelled_in("tests/test_page.py::test_waits", 1.0), "two": quick})
+    assert "tests/test_page.py::test_waits" not in costs.tests
+
+
+def test_a_test_a_run_was_stopped_inside_that_nothing_prices_is_named() -> None:
+    # No collection line to say how long the run had: the stopped test packs at the fallback, and the file's regenerator says so.
+    unstamped = table(Cost("tests/test_page.py::test_quick", 0.0, 2.0, 0.0), Cost("tests/test_page.py::test_waits", 1.0, 0.0, 0.0, stopped=True))
+    logs = {"one": unstamped}
+    assert unpriced(logs, costs_from(logs)) == ["tests/test_page.py::test_waits"]
+
+
 def test_a_log_with_no_cost_rows_is_refused_by_name() -> None:
     with pytest.raises(ValueError, match="check-pair-log-3.txt holds no cost report rows"):
         costs_from({"one": SHARD_ONE, "check-pair-log-3.txt": "no report log at .pytest_cache/check-pair-log.jsonl: the run wrote none\n"})
+
+
+def test_every_test_the_cost_file_names_is_a_function_of_a_module_the_suite_has() -> None:
+    # A test moved to another module, or a key a log's marking left a suffix on, is packed at the fallback and not at its cost.
+    root = Path(__file__).parents[1]
+    held = Costs.load(COSTS)
+    # Anywhere under tests/: a class's tests may be inherited from the module that holds the contract (tests/terminalcontract.py).
+    defined = "\n".join(path.read_text() for path in (root / "tests").glob("*.py"))
+    gone = [test for test in held.tests if not re.fullmatch(r"tests/\w+\.py::(\w+::)?\w+(\[.*\])?", test) or f"def {test.rpartition('::')[2].partition('[')[0]}(" not in defined or not (root / test.partition("::")[0]).is_file()]
+    assert gone == []
+    assert [each for each in held.setups if not (root / each).is_file()] == []
 
 
 def test_the_costs_the_repository_holds_are_the_ones_the_run_reads() -> None:

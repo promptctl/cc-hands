@@ -1,0 +1,12 @@
+# Go at the version fritter's go.mod names, for a job that runs nothing else of the toolchain: fritter's Go tests. The mock of
+# Anthropic's API the brain's end-to-end tests build asks a newer Go than fritter's; go's default GOTOOLCHAIN=auto fetches that
+# one for its build.
+name: go
+description: Go at the version fritter's go.mod names, with its modules kept
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: fritter/go.mod
+        cache-dependency-path: fritter/go.sum

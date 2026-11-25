@@ -6,10 +6,10 @@ description: The caches of what the outside tests fetch, for a job that runs the
 runs:
   using: composite
   steps:
-    # [LAW:one-source-of-truth] the versions the suite fetches are tests/fetches.py's: the pinned Claude Code, the mock's
-    # release, and the speech weights the run fetches (a weight added to the fetch is a new key, never a hit on a cache saved
-    # without it; an edit to the rest of any file still finds them). Python writes the outputs itself: whatever an import prints
-    # on stdout cannot become part of a key.
+    # [LAW:one-source-of-truth] the versions the suite fetches are the ones it pins, which tests/fetches.py reads: the pinned
+    # Claude Code (src/hands/brain/pinned.py), the mock's release, and the speech weights the run fetches (a weight added to
+    # the fetch is a new key, never a hit on a cache saved without it; an edit to the rest of any file still finds them).
+    # Python writes the outputs itself: whatever an import prints on stdout cannot become part of a key.
     - name: The fetched caches' keys
       id: keys
       shell: bash

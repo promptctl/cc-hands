@@ -32,7 +32,10 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
       shell: bash
-      run: echo "tag=$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+      # [LAW:no-silent-failure] assigned apart from the echo: an echo of a failed lookup exits 0 and keys the cache on nothing.
+      run: |
+        tag="$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
     - uses: actions/cache@v4
       id: kept
       with:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from costs import REPORT_LOG, Cost, costs_in, report
+from costs import REPORT_LOG, Cost, costs_in, ran_for, report
 
 ROOT = Path(__file__).parents[1]
 
@@ -58,6 +58,14 @@ def test_the_rows_of_a_report_read_back_as_the_costs_they_were_printed_from_thro
         Cost("tests/test_b.py::test_cut_off", 3.0, 0.0, 0.0, stopped=True),
         Cost("tests/test_a.py::test_quick", 0.5, 0.25, 0.25),
     ]
+
+
+def test_a_cancelled_jobs_log_says_how_long_its_tests_had_from_pytests_collection_to_the_reports_first_line() -> None:
+    # [LAW:one-source-of-truth] ran_for reads the first line of the report as report() writes it: a header reworded there ends every floor here.
+    first = report(STARTED + spent("tests/test_a.py::test_finished", 1, 1, 1)).splitlines()[0]
+    log = f"2026-11-25T01:00:00.0000000Z collected 4 items / 3 deselected / 1 selected\n2026-11-25T01:01:40.5000000Z {first}\n"
+    assert ran_for(log) == 100.5
+    assert ran_for(f"2026-11-25T01:01:40.5000000Z {first}\n") is None
 
 
 def test_a_failed_run_says_how_it_ended() -> None:

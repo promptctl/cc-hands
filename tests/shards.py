@@ -175,10 +175,12 @@ def costs_from(logs: Mapping[str, str]) -> Costs:
     spent in setup in one log, and the most any log has it spend: a module cut across shards is in several logs, each having
     paid it once. A test's cost is its call and teardown, a fixture the module shares being charged to the first test that
     asks for it, and the most any log has it cost: a shard packed on the slowest runner seen holds on a slow one (one test
-    cost 52 s in one job and 117 s in another). A test too quick to list costs what the quick ones did on average. A test the run stopped inside (a job
-    cancelled at its limit) was not finished, so it costs what the run spent in it, a floor, until a run that finished it says
-    what it costs; the run's seconds are only known of a log that stopped inside the one test."""
+    cost 52 s in one job and 117 s in another). A test too quick to list costs what the quick ones did on average. A test
+    the run stopped inside (a job cancelled at its limit) was not finished, so it costs what the run spent in it, a floor,
+    until a run that finished it, in any log, says what it costs; the run's seconds are only known of a log that stopped
+    inside the one test, and `unpriced` names the stopped tests that have neither."""
     tests: dict[str, float] = {}
+    finished: set[str] = set()
     floors: dict[str, float] = {}
     setups: dict[str, float] = {}
     unlisted: list[float] = []
@@ -192,19 +194,27 @@ def costs_from(logs: Mapping[str, str]) -> Costs:
         in_log: dict[str, float] = defaultdict(float)
         for cost in (each for each in rows if not each.stopped):
             in_log[cost.module] += cost.setup
+            finished.add(cost.test)
             if cost.call + cost.teardown >= LISTED:
                 tests[cost.test] = max(tests.get(cost.test, 0.0), round(cost.call + cost.teardown, 1))
             else:
                 unlisted.append(cost.call + cost.teardown)
         setups |= {each: max(seconds, setups.get(each, 0.0)) for each, seconds in in_log.items()}
-    # A run that finished a test, in whichever log, says more of it than one cancelled inside it.
-    tests |= {test: round(floor, 1) for test, floor in floors.items() if floor >= LISTED and test not in tests}
+    # A run that finished a test, in whichever log and however quickly, says more of it than one cancelled inside it.
+    tests |= {test: round(floor, 1) for test, floor in floors.items() if floor >= LISTED and test not in finished}
     return Costs(dict(sorted(tests.items())), {each: round(seconds, 1) for each, seconds in sorted(setups.items()) if seconds >= LISTED}, round(statistics.fmean(unlisted or [LISTED]), 3))
+
+
+def unpriced(logs: Mapping[str, str], costs: Costs) -> list[str]:
+    """The tests a run was stopped inside, that no log finished and `costs` has no floor for: they pack at the fallback, as a
+    test the file does not know does, and the next run is as likely to be stopped inside them."""
+    rows = [cost for text in logs.values() for cost in costs_in(text)]
+    done = {cost.test for cost in rows if not cost.stopped}
+    return sorted({cost.test for cost in rows if cost.stopped and cost.test not in done and cost.test not in costs.tests})
 
 
 if __name__ == "__main__":
     logs = {each: Path(each).read_text(errors="replace") for each in sys.argv[1:]}
     costs = costs_from(logs)
-    stopped = [cost.test for text in logs.values() for cost in costs_in(text) if cost.stopped]
-    print(f"{len(stopped)} tests were stopped inside by their run, and cost no more than the run's seconds in them: {', '.join(stopped)}", file=sys.stderr)
+    print(f"tests a run was stopped inside, and nothing says what they cost, so they pack at {costs.fallback} s: {', '.join(unpriced(logs, costs)) or 'none'}", file=sys.stderr)
     print(json.dumps({"fallback": costs.fallback, "setups": costs.setups, "tests": costs.tests}, indent=1))

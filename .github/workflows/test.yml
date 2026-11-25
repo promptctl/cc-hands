@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 5
     strategy:
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,8 +48,8 @@ jobs:
       # What each test cost, into this job's log, so a cancelled or failed run keeps its numbers: `gh run view --log` reads
       # them, and tests/shards.py reads them into tests/shard-costs.json. A log and nothing beyond it: a store that refused an
       # upload would fail a suite that passed.
-      # [LAW:no-silent-failure] exception: continue-on-error, as a report that cannot be read shows red on its own step and
-      # does not gate the suite's verdict.
+      # [LAW:no-silent-failure] exception: continue-on-error. What a run cost is a record and not its verdict: a report that
+      # fails must not turn a passing suite red. A run that wrote no log says so in this step's output (tests/costs.py).
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true
