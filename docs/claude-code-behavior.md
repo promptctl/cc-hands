@@ -234,6 +234,7 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **brain:** a scheduled prompt opens a turn of its own when it fires, as a background task's notification does (measured on 2.1.288)
 - **brain:** loaded claude.ai connectors joined every request after the first: turn 2 grew from 8.7 KB to 112 KB (hands-wire-6ic.eph) (measured on 2.1.284)
 - **brain:** settings.json is the only place Claude Code reads syncClaudeAiSkills and syncClaudeAiPlugins from, not --settings and not the environment (measured on 2.1.288)
+- **entrypoint:** Claude Code reads CLAUDE_CODE_ENTRYPOINT from its process environment as it starts and, finding none, sets cli for an interactive run and sdk-cli for a non-interactive one; sdk-cli goes out on every request as cc_entrypoint in x-anthropic-billing-header, under the client name claude_code_sdk, and marks its transcript as an SDK session's. Read in the release's code, not seen in a run (measured on 2.1.308)
 - **brain:** Claude Code prefers the credentials and provider switches in FOREIGN_LOGINS to its own login (measured on 2.1.289)
 - **brain:** a permission dialog nobody can see holds its turn open forever, with no hook to say so (measured on 2.1.288)
 - **brain:** Escape ends a turn posting none of the brain's hooks (measured on 2.1.285)

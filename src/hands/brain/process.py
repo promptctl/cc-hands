@@ -64,6 +64,7 @@ from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, 
 from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
 from hands.tasks import cancel_and_wait
+from hands.sessions.startsession import as_from_a_terminal
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
@@ -108,10 +109,9 @@ PLUGIN_SKILLS = tuple(
 # What Claude Code prefers to its own login: credentials, and the switches that send it to a provider other than
 # Anthropic's API. The brain's login is its config directory's, whichever Claude Code takes, a key in its
 # settings.json among them; inherited from hands' environment, any of these would put the brain on another account or
-# provider without a word, so none is passed on. hands' Hugging Face token is none of the brain's either: a command the
-# brain runs could print it.
+# provider without a word, so none is passed on.
 FOREIGN_LOGINS = (
-    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "HF_TOKEN",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
     *(f"CLAUDE_CODE_USE_{provider}" for provider in ("BEDROCK", "VERTEX", "FOUNDRY", "ANTHROPIC_AWS", "ANTHROPIC_GOOGLE_CLOUD", "MANTLE", "GATEWAY")),
 )
 
@@ -321,15 +321,18 @@ def command(launch: Launch, hooks: str) -> list[str]:
     ]
 
 
-def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str], account: Account | None) -> dict[str, str]:
-    """A slim Claude Code's environment: hands' own, less anything that would stand in for the login in `config_dir`, reaching
-    the API at `base_url`, and started as the login `account` is run: None for one run before any login is read."""
+def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
+    """A slim Claude Code's environment: hands' own, less anything that would stand in for the login in `config_dir`, reaching the API at `base_url`."""
     # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped
-    # session does not hand the brain that session's tap, nor one started by another program its entrypoint.
-    kept = {name: value for name, value in untapped(inherited).items() if name not in (*FOREIGN_LOGINS, ENTRYPOINT)}
-    # A brain on a Console key runs as the Agent SDK's CLI does; on any other login, as Claude Code's own (promptctl-brain-ny8p.e8i).
-    started = {ENTRYPOINT: "sdk-cli"} if account is not None and account.method == AUTH_METHODS["console"] else {}
-    return {**kept, **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url, **started}
+    # session, or inside any Claude Code's, hands the brain nothing of that session (`as_from_a_terminal`).
+    kept = {name: value for name, value in as_from_a_terminal(inherited).items() if name not in FOREIGN_LOGINS}
+    return {**kept, **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url}
+
+
+def entrypoint(account: Account) -> dict[str, str]:
+    """What the brain on `account` is told started it, which its requests are billed under: on a Console key, the Agent SDK's
+    CLI (promptctl-brain-ny8p.e8i); on any other login nothing, so Claude Code names itself, as it does in a terminal."""
+    return {ENTRYPOINT: "sdk-cli"} if account.method == AUTH_METHODS["console"] else {}
 
 
 def workdir(config_dir: Path) -> Path:
@@ -465,9 +468,9 @@ class InTmux:
                 pass
 
 
-async def in_tmux(children: Children, station: Station, env: Mapping[str, str], argv: Sequence[str], workspace: Path) -> InTmux:
-    """Run a slim Claude Code's command in the brain's tmux session on the user's default tmux server, the one `tmux
-    attach` reaches, so a person can watch it and type into it, in `env` (`environment`).
+async def in_tmux(children: Children, station: Station, account: Account, argv: Sequence[str], workspace: Path) -> InTmux:
+    """Run a slim Claude Code's command on `account` in the brain's tmux session on the user's default tmux server, the one
+    `tmux attach` reaches, so a person can watch it and type into it.
 
     `workspace` is a private directory, new to each start, for the two scripts, the pane's pid, and fritter's status: a
     pane's command goes through tmux, which caps one near 16 KB, and the brain's instruction rides its argv."""
@@ -494,11 +497,11 @@ async def in_tmux(children: Children, station: Station, env: Mapping[str, str], 
     status, pid = workspace / "status", workspace / "pane"
     # env -i: a pane is otherwise given the tmux server's own environment, which would carry what environment() keeps
     # out. Its own TMUX and TMUX_PANE name the brain's pane, never the one hands was started in.
-    paned = {name: value for name, value in env.items() if name not in ("TMUX", "TMUX_PANE", "TERM")}
+    env = {name: value for name, value in {**environment(station.config_dir, station.proxy_url, station.inherited), **entrypoint(account)}.items() if name not in ("TMUX", "TMUX_PANE", "TERM")}
     # Read from a file only hands can read, never put on a command line, which anyone on the machine can read with ps;
     # and set as it is, by hands' own Python, whatever a name holds, which a shell would refuse as no identifier.
     (workspace / "env").touch(mode=0o600)
-    (workspace / "env").write_text(json.dumps(paned))
+    (workspace / "env").write_text(json.dumps(env))
     # A command that cannot be run is said and exits as a shell's exec does: 127 for one not there, 126 for any other.
     # [LAW:single-enforcer] exception: the pane's own process, replaced with the brain's command, inside tmux's pane.
     launch = (
@@ -612,7 +615,7 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, base_url: str, 
     # keyboard the person logging in types at; a session of its own, as the runner starts each child in, has no terminal.
     import subprocess
 
-    signed = subprocess.run([claude, *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited, None))
+    signed = subprocess.run([claude, *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
@@ -649,7 +652,7 @@ def logged_in(children: Children, claude: Path, config_dir: Path, base_url: str,
     Asked as hands starts and by `hands check`, before any brain runs to say it; never by a weigh of an edit, which starts
     no Claude Code (hands.daemon.preflight). A login lost since the start is the brain's own API answers' to say
     (promptctl-phone-app-9d9y.h4s)."""
-    asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, base_url, inherited, None), limit=AUTH_STATUS_SECONDS)
+    asked = children.run_blocking(str(claude), "auth", "status", env=environment(config_dir, base_url, inherited), limit=AUTH_STATUS_SECONDS)
     match asked:
         case Ran(ending=Exited(), out=out):
             return _account(config_dir, asked, out.data)
@@ -2033,8 +2036,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's own start is applied, or what failed it.
     with unit("brain.launch", record, begun(clock)):
         annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
-        env = environment(station.config_dir, station.proxy_url, station.inherited, launch.account)
-        annotate(entrypoint=env.get(ENTRYPOINT))
+        annotate(entrypoint=entrypoint(launch.account).get(ENTRYPOINT))
         match launch.conversation:
             case Fresh(untranscribed=untranscribed):
                 annotate(conversation="fresh", untranscribed=untranscribed)
@@ -2065,7 +2067,7 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
         by = clock.now() + START_SECONDS
         try:
-            running = await in_tmux(Children(clock, record), station, env, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
+            running = await in_tmux(Children(clock, record), station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper, shell = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)
