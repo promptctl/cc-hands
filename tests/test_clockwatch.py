@@ -202,6 +202,14 @@ def clocked():
     thread = threading.Thread(target=SYSTEM.now)
     thread.start()
     thread.join()
+
+def listens():
+    queue = asyncio.Queue()
+
+    async def heard():
+        await queue.get()
+        time.sleep(0.001)
+    return queue, asyncio.Task(heard(), loop=asyncio.get_running_loop(), eager_start=True)
 """
 
 # A pool and a SerialThread another module makes, shared by the tests that hand them work.
@@ -247,6 +255,10 @@ def test_a_wait_handed_to_a_thread_a_job_or_a_serial_thread_is_charged_to_the_te
         "test_offloaded": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.offload()\n    asyncio.run(main())\n", []),
         # A thread the library starts for the test's sake reads the clock for hands, which is the test's read.
         "test_clocked": ("import library\n\ndef test_runs():\n    library.clocked()\n", ["SystemClock.now"]),
+        # A task asyncio's eager factory makes.
+        "test_factory": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)\n        await asyncio.create_task(library.dozes())\n    asyncio.run(main())\n", ["time.sleep"]),
+        # A library's eager task, woken by the test.
+        "test_woken": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        queue, task = library.listens()\n        queue.put_nowait(1)\n        await task\n    asyncio.run(main())\n", []),
         "test_snoozed": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.snooze()\n    asyncio.run(main())\n", []),
     }  # fmt: skip
     result = run(pytester, monkeypatch, hooks=SHARED, **{name: source for name, (source, _) in handed.items()})
@@ -307,18 +319,22 @@ def test_a_fixture_of_the_tests_scope_is_the_tests_however_it_is_decorated_or_it
     pytester.makepyfile(swap="import functools\n\ndef wrapped(fixture):\n    @functools.wraps(fixture)\n    def run():\n        yield from fixture()\n    return run\n")
     helper = "import time\n\ndef stamp():\n    time.strftime('%H')\n\ndef fails():\n    stamp()\n    raise ValueError\n"
     hooks = (
-        "\nimport helper, pytest\nfrom swap import wrapped\n\n"
+        "\nimport helper, pytest\nfrom retry import retried\nfrom swap import wrapped\n\n"
         "@pytest.fixture(scope='module')\n@wrapped\ndef wide():\n    yield\n\n"
         "@pytest.fixture\n@wrapped\ndef narrow():\n    helper.stamp()\n    yield\n\n"
+        "@pytest.fixture\n@retried\ndef retrying():\n    pass\n\n"
         "@pytest.fixture\ndef finalized(request):\n    request.addfinalizer(helper.stamp)\n\n"
         # A plugin's own fixture is no one's, set up inside the setup of a fixture of tests/ that asks for it.
         "@pytest.fixture\ndef plugged(request):\n    request.getfixturevalue('stamped')\n\n"
         "import plugin\n\ndef pytest_configure(config):\n    config.pluginmanager.register(plugin, 'plugin')\n    clockwatch.register(config, frozenset())\n"
     )
     pytester.makepyfile(plugin="import pytest, time\n\n@pytest.fixture\ndef stamped():\n    time.strftime('%H')\n")
+    # A decorator from outside tests/ on a fixture of the test's scope, as on a test, is the test's.
+    pytester.makepyfile(retry="import functools, time\n\ndef retried(fixture):\n    @functools.wraps(fixture)\n    def run():\n        time.strftime('%H')\n        return fixture()\n    return run\n")
     modules = {
         "test_narrow": "def test_uses(wide, narrow):\n    pass\n",
         "test_finalized": "def test_uses(finalized):\n    pass\n",
+        "test_retrying": "def test_uses(retrying):\n    pass\n",
         "test_requested": "import helper\n\ndef test_uses(request):\n    request.addfinalizer(helper.stamp)\n",
         # pytest's own API, called by the test, calls the helper: the test's call all the same.
         "test_raises": "import helper, pytest\n\ndef test_raises():\n    pytest.raises(ValueError, helper.fails)\n",
@@ -345,6 +361,30 @@ def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pyte
     assert "test_retried.py: ['time.strftime']" in lines
     assert "test_awaited.py: ['time.strftime']" in lines
     assert not any(line.startswith(("helper.py", "test_timed.py")) for line in lines)
+
+
+@pytest.mark.outside
+def test_an_eager_task_is_its_makers_and_pytests_code_in_a_fixtures_task_the_fixtures_whoever_wakes_them_or_runs_now(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Each reaches its own facility, so neither charge can stand in for the other.
+    helper = "import time\n\ndef nap():\n    time.sleep(0.001)\n\ndef fails():\n    time.strftime('%H')\n    raise ValueError\n"
+    hooks = (
+        "\nimport asyncio\nimport helper, pytest, pytest_asyncio\n\n"
+        "@pytest_asyncio.fixture(scope='session', loop_scope='session')\nasync def opened():\n"
+        "    asked, gate = asyncio.Event(), asyncio.Event()\n\n"
+        "    async def open():\n        await asked.wait()\n        pytest.raises(ValueError, helper.fails)\n        gate.set()\n\n"
+        "    task = asyncio.create_task(open())\n    yield asked, gate\n    await task\n"
+    )
+    # The eager task's first step suspends, and the fixture's task, run while the test does, wakes it.
+    user = (
+        "import asyncio, helper, pytest\n\n@pytest.mark.asyncio(loop_scope='session')\nasync def test_uses(opened):\n"
+        "    asked, gate = opened\n\n    async def eager():\n        await gate.wait()\n        helper.nap()\n\n"
+        "    task = asyncio.Task(eager(), loop=asyncio.get_running_loop(), eager_start=True)\n    asked.set()\n    await task\n"
+    )
+    result = run(pytester, monkeypatch, hooks=hooks, helper=helper, test_user=user)
+    result.assert_outcomes(passed=1)
+    assert "conftest.py: ['time.strftime']" in result.outlines
+    assert "test_user.py: ['time.sleep']" in result.outlines
+    assert not any(line.startswith("helper.py") for line in result.outlines)
 
 
 @pytest.mark.outside

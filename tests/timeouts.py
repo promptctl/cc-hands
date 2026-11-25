@@ -176,10 +176,10 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[object], request: pytest.
     config, fixture = request.config, fixturedef.argname
     # Finalizers run last-added first, so these two bracket the teardown the fixture's own setup registers. The second
     # is added before the test's timer is re-armed, which a bound with next to nothing left fires at once.
-    # Each is entered from pytest through a frame of this module, so the watch charges the clock they read to the harness
-    # (tests/clockwatch.py), not to whichever test the fixture is torn down in: a bound method of contextlib's is no such frame.
+    # Each is registered by this hook, so the watch charges the clock they read to this module (tests/clockwatch.py), not
+    # to whichever test the fixture is torn down in.
     teardown = ExitStack()
-    fixturedef.addfinalizer(lambda: teardown.close())
+    fixturedef.addfinalizer(teardown.close)
     with shared(config, "setup", fixture):
         value = yield
         fixturedef.addfinalizer(lambda: teardown.enter_context(shared(config, "teardown", fixture)))
