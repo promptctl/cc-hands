@@ -26,7 +26,7 @@ from hands.voice.latency import LatencyObserver
 from hands.voice.ptt import Ending
 from hands.voice.trigger import PHONE_WAKE
 
-pytestmark = pytest.mark.outside
+pytestmark = [pytest.mark.outside, pytest.mark.quarantined("promptctl-phone-app-9d9y.e58", until="2026-11-29")]
 
 LISTENING = 'Connected. Say "Hey Jarvis", or hold the button.'
 LOADING = "Connected. Hold the button and speak."
