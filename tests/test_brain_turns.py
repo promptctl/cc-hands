@@ -1292,7 +1292,7 @@ async def test_a_launch_that_fails_says_hands_reading_of_it_failed_too(tmp_path:
     starting, _, keys = _starting(VirtualClock(), tmp_path, _broken_reading)
     keys.exit.set_result(1)
     await until(starting.done)
-    with pytest.raises(Unstartable, match=re.escape("no start of its session, and hands' reading of it had failed: [Errno 5] Input/output error;")):
+    with pytest.raises(Unstartable, match=re.escape(f"{process.exited(1)} while hands' reading of the brain had failed (OSError: [Errno 5] Input/output error), and the brain's Claude Code had posted no start of its session;")):
         starting.result()
 
 

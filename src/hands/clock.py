@@ -177,8 +177,9 @@ async def _waited(clock: Clock, futures: Collection[asyncio.Future[Any]], timeou
         raise
     # Both over before this returns, so nothing of the wait outlives it.
     await cancel_and_wait(every, timer)
-    # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait on the
-    # futures that raised (on none at all, as `asyncio.wait` does) is that mistake, never the wait over.
+    # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait that raised
+    # (on no futures at all, as `asyncio.wait` does) is that mistake, never the wait over. A future that ended in failure is
+    # done, as `asyncio.wait` counts it: what it raised is its reader's.
     for side in (every, timer):
         if not side.cancelled():
             side.result()

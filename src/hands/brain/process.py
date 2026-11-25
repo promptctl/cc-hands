@@ -1616,9 +1616,13 @@ class Brain:
             raise Unstartable(str(self._adrift.exception()))
         if self._launch_started.done():
             return
-        read = self._reading
-        unread = f", and hands' reading of it had failed: {read.exception()}" if read.done() and not read.cancelled() and read.exception() else ""
-        raise _unstarted(self._exit, self._claude.shown(), f"the brain's Claude Code had posted no start of its session{unread}")
+        unread = "" if (failed := self._read_failure()) is None else f"hands' reading of the brain had failed ({type(failed).__name__}: {failed}), and "
+        raise _unstarted(self._exit, self._claude.shown(), f"{unread}the brain's Claude Code had posted no start of its session")
+
+    def _read_failure(self) -> BaseException | None:
+        """What stopped hands reading the brain, if it has stopped: the one reading of it, for `exited` and `started`."""
+        reading = self._reading
+        return reading.exception() if reading.done() and not reading.cancelled() else None
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many
@@ -1627,8 +1631,8 @@ class Brain:
         await asyncio.wait({asyncio.shield(self._exit), self._reading, asyncio.shield(self._adrift)}, return_when=asyncio.FIRST_COMPLETED)
         if self._adrift.done():
             self._adrift.result()
-        if self._reading.done() and not self._reading.cancelled() and not self._exit.done():
-            self._reading.result()
+        if (failed := self._read_failure()) is not None and not self._exit.done():
+            raise failed
         return await asyncio.shield(self._exit)
 
     async def stop(self) -> None:
