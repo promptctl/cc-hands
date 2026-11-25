@@ -34,8 +34,9 @@ SESSION_GIVEN = (
     "CLAUDE_CODE_TMUX_TRUECOLOR",
 )
 
-# What a terminal outside any session is not handed: SESSION_GIVEN, and hands' own Hugging Face token, which the daemon's
-# environment holds for the voice library's fetches. The brain types into and reads these windows, so the token stays out.
+# What a terminal outside any session is not handed, nor the brain: SESSION_GIVEN, and hands' own Hugging Face token, which
+# the daemon's environment holds for the voice library's fetches. The brain types into and reads these windows, and a
+# command it runs could print it, so the token stays out of both.
 TERMINAL_WITHHELD = (*SESSION_GIVEN, "HF_TOKEN")
 
 # The settings a started session is launched with. Claude Code's dialog for a project's new MCP servers holds the session
