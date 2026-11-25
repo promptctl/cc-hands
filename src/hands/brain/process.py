@@ -1605,8 +1605,9 @@ class Brain:
     async def started(self, by: float) -> None:
         """Returns once the launch's own start is applied, the conversation it launched in held. Raises Unstartable,
         saying which, when the brain is adrift or its Claude Code ends first, or no start comes by `by`, the launch's
-        deadline. hands' own reading of the brain failing is no reason the conversation cannot come up: it is said as the
-        brain is waited on (`exited`), and a launch it failed would let the conversation go."""
+        deadline. [LAW:no-silent-failure] hands' own reading of the brain failing is no reason the conversation cannot come
+        up, as a launch it failed would let the conversation go: it is said as the brain is waited on (`exited`), and by a
+        launch that fails for its own reason."""
         # [LAW:no-ambient-temporal-coupling] the first of them ends the wait, so a start is up the moment it is applied and
         # a launch that cannot come up fails the moment hands knows it.
         await wait_first(self._clock, (self._launch_started, self._adrift, self._exit), by - self._clock.now())
@@ -1615,8 +1616,9 @@ class Brain:
             raise Unstartable(str(self._adrift.exception()))
         if self._launch_started.done():
             return
-        ended = f", {exited(self._exit.result())}" if self._exit.done() else f" within {START_SECONDS:.0f}s"
-        raise Unstartable(f"the brain's Claude Code posted no start of its session{ended}; it showed:\n{self._claude.shown()}")
+        read = self._reading
+        unread = f", and hands' reading of it had failed: {read.exception()}" if read.done() and not read.cancelled() and read.exception() else ""
+        raise _unstarted(self._exit, self._claude.shown(), f"the brain's Claude Code had posted no start of its session{unread}")
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many
@@ -2163,7 +2165,7 @@ async def _until[T](clock: Clock, running: InTmux, by: float, ready: Callable[[]
         except _NotYet as still:
             waiting = str(still)
         await clock.sleep(0.05)
-    raise _unstarted(running, waiting)
+    raise _unstarted(running.exit, running.shown(), waiting)
 
 
 async def _typist(running: InTmux, sockets: Path) -> tuple[Typist, int, int]:
@@ -2189,11 +2191,13 @@ async def _input_up(typist: Typist) -> None:
         raise _NotYet(f"the brain had not turned its input on ({error})") from error
 
 
-def _unstarted(running: InTmux, waiting: str) -> Unstartable:
-    # What fritter's terminal showed says why: a fritter that could not be run at all fails there, in the shell it was run by.
-    if running.exit.done():
-        return Unstartable(f"{exited(running.exit.result())} while {waiting}; it showed:\n{running.shown()}")
-    return Unstartable(f"{waiting} after {START_SECONDS:.0f}s; it showed:\n{running.shown()}")
+def _unstarted(exit: asyncio.Future[int], shown: str, waiting: str) -> Unstartable:
+    """[LAW:one-source-of-truth] a launch that did not come up, ended by the brain's end or by its deadline, as every wait
+    of the launch says it. What the brain's terminal showed says why: a fritter that could not be run at all fails there,
+    in the shell it was run by."""
+    if exit.done():
+        return Unstartable(f"{exited(exit.result())} while {waiting}; it showed:\n{shown}")
+    return Unstartable(f"{waiting} after {START_SECONDS:.0f}s; it showed:\n{shown}")
 
 
 def _alive(pid: int) -> bool:

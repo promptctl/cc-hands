@@ -157,7 +157,6 @@ async def wait_first(clock: Clock, futures: Collection[asyncio.Future[Any]], tim
 
 
 async def _waited(clock: Clock, futures: Collection[asyncio.Future[Any]], timeout: float, until: Literal["ALL_COMPLETED", "FIRST_COMPLETED"]) -> None:
-    # Of any result: neither wait reads what the futures hold.
     # [LAW:one-source-of-truth] the two waits differ only in when `asyncio.wait` returns; how either ends is said here.
     import asyncio
 
@@ -178,11 +177,12 @@ async def _waited(clock: Clock, futures: Collection[asyncio.Future[Any]], timeou
         raise
     # Both over before this returns, so nothing of the wait outlives it.
     await cancel_and_wait(every, timer)
-    # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait that raised
-    # (on no futures at all, as `asyncio.wait` does) is never one of them done.
+    # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait on the
+    # futures that raised (on none at all, as `asyncio.wait` does) is that mistake, never the wait over.
     for side in (every, timer):
         if not side.cancelled():
             side.result()
+
 
 def _wake(woken: asyncio.Future[None]) -> None:
     # A sleep cancelled in the step its timer fires in is over already; its timer is not cancelled until the next.

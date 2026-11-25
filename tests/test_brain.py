@@ -2095,7 +2095,7 @@ async def test_a_launch_whose_claude_code_posts_no_start_fails_naming_it(tmp_pat
     monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
     monkeypatch.setenv("FAILING_HOOK", "SessionStart")
     recorded: list[Entry] = []
-    with pytest.raises(Unstartable, match="posted no start of its session within 1s"):
+    with pytest.raises(Unstartable, match="posted no start of its session after 1s"):
         await launched_brain(SYSTEM, launch(tmp_path), recorded.append)
     [launched] = events(recorded, "brain.launch")
     assert launched.outcome == "failed" and "let_go" in launched.facts

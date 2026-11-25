@@ -16,7 +16,7 @@ from typing import Protocol
 import numpy as np
 from loguru import logger
 
-from hands.clock import Clock, wait_first
+from hands.clock import Clock
 from hands.sessions.audit import Cued, Played, Record
 from hands.voice.desk import Leveled
 from hands.voice.shortcut import TURN_LIMIT_SECONDS, Move
@@ -161,13 +161,17 @@ class QuietCues:
         if not self._owed.empty() or seconds <= 0:
             return self._drained()
         owed = asyncio.ensure_future(self._owed.get())
+        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._clock.sleep(seconds))}
         try:
-            # No cue held is no spacing to wait out, and no sleep on the clock. A pause that failed says so, and is not
-            # taken for the spacing being up (`wait_first`).
-            await (asyncio.wait({owed}) if math.isinf(seconds) else wait_first(self._clock, (owed,), seconds))
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         finally:
             # A get cancelled after a cue was put leaves the cue in the queue, where the next drain finds it.
-            owed.cancel()
+            for wait in waits:
+                wait.cancel()
+        # [LAW:no-silent-failure] a pause that failed says so, and is not taken for the spacing being up.
+        for wait in waits - {owed}:
+            if wait.done() and not wait.cancelled():
+                wait.result()
         return [owed.result(), *self._drained()] if owed.done() else self._drained()
 
     def _drained(self) -> list[tuple[QuietCue, float]]:

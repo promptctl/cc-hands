@@ -3,13 +3,16 @@
 import asyncio
 import queue
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Coroutine
+from typing import Any
 
 import pytest
 
 from conftest import BrokenClock, VirtualClock
 from fixtures.clocks import Interrupting
 from hands.clock import SYSTEM, Clock, dashed, wait_all, wait_first
+
+type Wait = Callable[[Clock, Collection[asyncio.Future[Any]], float], Coroutine[Any, Any, None]]
 
 
 async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_time_has_passed() -> None:
@@ -25,10 +28,14 @@ async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_ti
     assert clock.waking == ()
 
 
-async def test_a_wait_whose_time_is_up_leaves_what_it_waited_on_running() -> None:
+EITHER_WAIT = pytest.mark.parametrize("wait", [wait_all, wait_first])
+
+
+@EITHER_WAIT
+async def test_a_wait_whose_time_is_up_leaves_what_it_waited_on_running(wait: Wait) -> None:
     clock = VirtualClock()
     reading = asyncio.get_running_loop().create_future()
-    waiting = asyncio.create_task(wait_all(clock, (reading,), 5.0))
+    waiting = asyncio.create_task(wait(clock, (reading,), 5.0))
     await clock.sleeping(5.0)
     clock.advance(4.9)
     assert clock.waking == (5.0,)
@@ -37,6 +44,18 @@ async def test_a_wait_whose_time_is_up_leaves_what_it_waited_on_running() -> Non
     assert not reading.done()
     reading.set_result("still read, for whoever comes for it")
 
+
+@EITHER_WAIT
+async def test_a_wait_cancelled_is_cancelled_and_leaves_neither_its_timer_nor_what_it_waited_on_ended(wait: Wait) -> None:
+    clock = VirtualClock()
+    reading = asyncio.get_running_loop().create_future()
+    waiting = asyncio.create_task(wait(clock, (reading,), 5.0))
+    await clock.sleeping(5.0)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert (clock.waking, reading.done()) == ((), False)
+    reading.set_result("still read, for whoever comes for it")
 
 
 async def test_a_wait_for_the_first_ends_once_any_one_is_done_and_leaves_the_rest_running() -> None:
@@ -50,19 +69,10 @@ async def test_a_wait_for_the_first_ends_once_any_one_is_done_and_leaves_the_res
     first.set_result("one, for whoever comes for it")
 
 
-async def test_a_wait_for_the_first_whose_time_is_up_ends_with_none_of_them_done() -> None:
-    clock = VirtualClock()
-    first = asyncio.get_running_loop().create_future()
-    waiting = asyncio.create_task(wait_first(clock, (first,), 5.0))
-    await clock.sleeping(5.0)
-    clock.advance(5.0)
-    await waiting
-    assert not first.done()
-    first.set_result("still read, for whoever comes for it")
-
-async def test_a_clock_that_fails_is_a_failure_and_not_the_time_running_out() -> None:
+@EITHER_WAIT
+async def test_a_clock_that_fails_is_a_failure_and_not_the_time_running_out(wait: Wait) -> None:
     with pytest.raises(RuntimeError, match="no timer"):
-        await wait_all(BrokenClock(), (asyncio.get_running_loop().create_future(),), 5.0)
+        await wait(BrokenClock(), (asyncio.get_running_loop().create_future(),), 5.0)
 
 
 async def test_a_wait_on_nothing_is_a_mistake_and_not_everything_done() -> None:
