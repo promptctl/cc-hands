@@ -44,6 +44,21 @@ def counted(many: int, thing: str) -> str:
     """
     return f"{spoken_count(many)} {thing}{'' if many == 1 else 's'}"
 
+# A Claude model's id as Anthropic writes it: claude, the family, the version's numbers, then the date of a snapshot, and
+# a variant Claude Code marks in brackets after them ("claude-opus-5-5[1m]").
+_MODEL = re.compile(r"claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:-(?P<minor>\d{1,2}))?(?:-\d{8})?(?:\[[^\]]*\])?")
+
+
+def spoken_model(model: str) -> str:
+    """A Claude model said by its name, "Opus 5.5" for claude-opus-5-5, for a caller whose type already knows it is one.
+    An id of any other form is said as it is written: it is still the model's name."""
+    found = _MODEL.fullmatch(model)
+    if found is None:
+        return model
+    version = found["major"] if found["minor"] is None else f"{found['major']}.{found['minor']}"
+    return f"{found['family'].capitalize()} {version}"
+
+
 # Each rule asks for a tell that ordinary English does not have, because a rule that mangles a sentence
 # costs more than the code name it fixes [LAW:carrying-cost]. That is why a diff must announce itself, a
 # table must be two rows rather than one line with a pipe in it, and a hash must carry a digit and a letter

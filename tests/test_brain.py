@@ -33,7 +33,7 @@ from hands.sessions.files import Unread
 from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
-from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, entrypoint, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainUp, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Untaken, _child_of, brain_session, command, in_tmux, conversation, entrypoint, environment, logged_in, start, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.brain.configdir import Unstartable
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
@@ -357,7 +357,7 @@ def launch(tmp: Path) -> Launch:
 
 async def launched_brain(clock: Clock, launch: Launch, record: Record) -> Brain:
     """The brain `start` launches, in the conversation it launches in, as `mind` hands it that conversation."""
-    return await start(clock, launch, BrainSession(launch.session), record)
+    return (await start(clock, launch, BrainSession(launch.session), record)).brain
 
 
 def untimed(facts: Mapping[str, Fact]) -> dict[str, Fact]:
@@ -441,7 +441,8 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     # hands' tools are offered to the model directly, never deferred behind ToolSearch: set where neither the brain's
     # settings.json env nor hands' environment outranks it. So are stellar drift, off, and a subagent's five-minute cache
     # ttl, which the side questions hands forks follow (above).
-    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false", "CLAUDE_CODE_STELLAR_DRIFT": "0", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "5m"}
+    # And hands' plugin is told where to post its report of the model and context used, beside the hooks' own posts.
+    assert settings["env"] == {"ENABLE_TOOL_SEARCH": "false", "CLAUDE_CODE_PLUGIN_DIR_WATCH": "0", "CLAUDE_CODE_STELLAR_DRIFT": "0", "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "5m", "HANDS_SESSION_START": "http://127.0.0.1:7/session.start"}
     assert "permissions" not in settings
     hooks = settings["hooks"]
     # The order of the brain's turns rests on its prompt hook and its Stop being waited on: a prompt's as long as a typed
@@ -567,7 +568,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert launched.facts == {
         "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
         "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
-        "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
+        "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid, "running_on": "claude-sonnet-5", "context_used": None,
     }
     # Held once the brain is up, for the next start to resume, as Claude Code keeps the transcript of its turns.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Resumed(SessionId("b1"))
@@ -1438,7 +1439,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
 # How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter, and the pane's
 # shell, which outlives fritter to write its status and what the pane showed into the brain's socket dir.
 BRAIN = """
-brain = await start(SYSTEM, launch, BrainSession(launch.session), lambda _entry: None)
+brain = (await start(SYSTEM, launch, BrainSession(launch.session), lambda _entry: None)).brain
 print(brain.shell, brain.pid, _child_of(brain.pid), flush=True)
 """
 @pytest.mark.outside
@@ -1496,7 +1497,7 @@ class Ended(Exception):
     pass
 
 async def run() -> None:
-    brain = await start(SYSTEM, launch, BrainSession(launch.session), lambda _entry: None)
+    brain = (await start(SYSTEM, launch, BrainSession(launch.session), lambda _entry: None)).brain
     await brain.stop()
 
 async def ends(ticks: int, seconds: float) -> None:
@@ -1872,7 +1873,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 
     launched: list[Launch] = []
 
-    async def starting(_clock: object, launch: Launch, _session: object, _record: object) -> Brain:
+    async def starting(_clock: object, launch: Launch, _session: object, _record: object) -> BrainUp:
         launched.append(launch)
         raise Unstartable("seen")
 

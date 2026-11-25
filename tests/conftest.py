@@ -944,6 +944,12 @@ stated("idle")
 # Claude Code starts its session before it takes a prompt, the start answered first.
 if "SessionStart" in hooks:
     post("SessionStart", source="resume" if "--resume" in sys.argv else "startup")
+# Then it raises its session.start, which hands' plugin answers with the model and the context Claude Code has counted
+# (src/hands/brain/plugin/hooks/report.js): none, as before any reply, so the report has no tokens.
+report = json.loads(sys.argv[sys.argv.index("--settings") + 1])["env"].get("HANDS_SESSION_START") if "--settings" in sys.argv else None
+if report:
+    reported = {{"model": sys.argv[sys.argv.index("--model") + 1]}}
+    urllib.request.urlopen(urllib.request.Request(report, json.dumps(reported).encode(), {{"Content-Type": "application/json"}}), timeout=30).read()
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h")
 pending, box, turn, turn_text, prompts = b"", "", None, "", 0

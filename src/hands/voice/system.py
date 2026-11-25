@@ -17,6 +17,8 @@ from pipecat.utils.errors import ErrorCategory
 
 from hands.clock import Clock
 from hands.core.playback import hands_says
+from hands.core.runningon import RunningOn
+from hands.core.spoken import counted, spoken_model
 from hands.sessions.audit import Announced, Record
 from hands.voice.devicechoice import HeardOn, Instead, Missing, Off, PlayedOn
 from hands.voice.microphone import Devices
@@ -30,9 +32,11 @@ from hands.voice.shortcut import TURN_LIMIT_SECONDS, Move
 
 @dataclass(frozen=True)
 class Started:
-    """The pipeline is running on these devices; after_crash when the run before this one ended without being stopped."""
+    """The pipeline is running on these devices, with the brain on the model its start found; after_crash when the run
+    before this one ended without being stopped."""
 
     after_crash: bool
+    running_on: RunningOn
     devices: Devices
 
 
@@ -71,9 +75,9 @@ SystemFact = ModelFact | Started | TranscriptionFailed | NoMicrophone | Micropho
 
 def system_text(fact: SystemFact) -> str:
     match fact:
-        case Started(after_crash=after_crash, devices=Devices(input=heard, output=played)):
-            up = "hands is back after a crash" if after_crash else "hands is up"
-            return f"{up}{_started_hearing(heard)}{_started_playing(played)}."
+        case Started(after_crash=after_crash, running_on=RunningOn(model=model, context_used=used), devices=Devices(input=heard, output=played)):
+            up = f"hands is back on {spoken_model(model)} after a crash" if after_crash else f"hands is up on {spoken_model(model)}"
+            return f"{up}, {_context_used(used)}{_started_hearing(heard)}{_started_playing(played)}."
         case ModelUnreachable():
             return "The language model is unreachable."
         case ModelFailed(category=category):
@@ -119,6 +123,16 @@ def _moved(heard: HeardOn, played: PlayedOn) -> str:
 
 def _sentence(text: str) -> str:
     return text[:1].upper() + text[1:]
+
+
+def _context_used(used: int | None) -> str:
+    """What a start says of the context used, after the model: the count Claude Code reported, zero included, and no
+    other."""
+    match used:
+        case int():
+            return f"with {counted(used, 'token')} of context used"
+        case None:
+            return "its context used not known"
 
 
 def _started_hearing(heard: HeardOn) -> str:
@@ -363,13 +377,13 @@ def told(move: Move, devices: Devices) -> tuple[NoMicrophone | MicrophoneOff | T
             return ()
 
 
-def listen(voice: Voice, channel: SystemChannel, after_crash: bool) -> None:
-    """Connect the pipeline's own reports to the channel: its start and its errors."""
+def listen(voice: Voice, channel: SystemChannel, after_crash: bool, running_on: RunningOn) -> None:
+    """Connect the pipeline's own reports to the channel: its start, on the model the brain runs on, and its errors."""
 
     @voice.worker.event_handler("on_pipeline_started")
     async def announce(_worker: PipelineWorker, _frame: Frame) -> None:  # pyright: ignore[reportUnusedFunction]
         # The devices are read once the pipeline has opened its streams on them.
-        await channel.say(Started(after_crash, voice.audio.devices))
+        await channel.say(Started(after_crash, running_on, voice.audio.devices))
 
     @voice.worker.event_handler("on_pipeline_error")
     async def failed(_worker: PipelineWorker, error: ErrorFrame) -> None:  # pyright: ignore[reportUnusedFunction]

@@ -7,6 +7,8 @@ from collections import Counter
 
 import pytest
 
+from hands.core.runningon import RunningOn
+
 from pinnedbrain import TURN, Hands, MockApi
 from pinnedbrain import claude_code, hands, mock_api, mock_binary  # pyright: ignore[reportUnusedImport]
 from hands.core.wire import MainTurn
@@ -16,6 +18,10 @@ pytestmark = pytest.mark.outside
 
 
 async def test_a_turn_said_to_hands_goes_through_its_proxy_to_the_mock_and_the_reply_is_spoken(mock_api: MockApi, hands: Hands) -> None:
+    # The brain came up with its Claude Code's own report of its model and context used, by hands' plugin in it: Claude Code
+    # ran the plugin's hooks module, answered it the session's model, and no count of context before any reply had used
+    # some, never its window in that count's place.
+    assert hands.running_on == RunningOn("claude-sonnet-5", None), hands.running_on
     mock_api.script("1-hello", {"lastUserContains": ["say hello"], "bodyContains": [TURN]}, {"type": "text", "text": "Hello."})
     await hands.connected()
     await hands.say("say hello")

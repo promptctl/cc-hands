@@ -23,6 +23,7 @@ from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
 from hands.voice.player import LineFrame, Lines, Player
+from hands.core.runningon import RunningOn
 from hands.core.spoken import spoken
 from hands.core.stopfailure import LoginExpired
 from hands.voice.system import (
@@ -64,25 +65,32 @@ BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers"
 DEAF = Devices(input=None, output="Mac mini Speakers")
 # The devices config.toml names are missing, so each side is on the default instead.
 STAND_INS = Devices(input=Instead("MacBook Pro Microphone", "AirPods"), output=Instead("MacBook Pro Speakers", "AirPods"))
+OPUS = RunningOn("claude-opus-5-5", 45_231)
 
 
 @pytest.mark.parametrize(
     ("fact", "said"),
     [
-        (Started(after_crash=False, devices=BUILT_IN), "hands is up."),
-        (Started(after_crash=True, devices=BUILT_IN), "hands is back after a crash."),
-        (Started(after_crash=False, devices=DEAF), "hands is up, but there is no microphone, so it cannot hear you."),
-        (Started(after_crash=True, devices=DEAF), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
+        (Started(after_crash=False, running_on=OPUS, devices=BUILT_IN), "hands is up on Opus 5.5, with 45231 tokens of context used."),
+        (Started(after_crash=True, running_on=OPUS, devices=BUILT_IN), "hands is back on Opus 5.5 after a crash, with 45231 tokens of context used."),
+        # A count of zero is said as one, and of one as one.
+        (Started(after_crash=False, running_on=RunningOn("claude-opus-5-5", 0), devices=BUILT_IN), "hands is up on Opus 5.5, with no tokens of context used."),
+        (Started(after_crash=False, running_on=RunningOn("claude-opus-5-5", 1), devices=BUILT_IN), "hands is up on Opus 5.5, with one token of context used."),
+        # Where Claude Code reported no count, none is said.
+        (Started(after_crash=False, running_on=RunningOn("claude-sonnet-5-5", None), devices=BUILT_IN), "hands is up on Sonnet 5.5, its context used not known."),
+        (Started(after_crash=False, running_on=RunningOn("claude-sonnet-5-5", None), devices=DEAF), "hands is up on Sonnet 5.5, its context used not known, but there is no microphone, so it cannot hear you."),
+        (Started(after_crash=False, running_on=OPUS, devices=DEAF), "hands is up on Opus 5.5, with 45231 tokens of context used, but there is no microphone, so it cannot hear you."),
+        (Started(after_crash=True, running_on=OPUS, devices=DEAF), "hands is back on Opus 5.5 after a crash, with 45231 tokens of context used, but there is no microphone, so it cannot hear you."),
         (AudioMoved(DEAF), "No microphone: hands cannot hear you. Speaking on Mac mini Speakers."),
-        (Started(after_crash=False, devices=STAND_INS), "hands is up, listening on AirPods in place of the missing MacBook Pro Microphone, speaking on AirPods in place of the missing MacBook Pro Speakers."),
-        (Started(after_crash=False, devices=Devices(input="MacBook Pro Microphone", output=Instead("MacBook Pro Speakers", "AirPods"))), "hands is up, speaking on AirPods in place of the missing MacBook Pro Speakers."),
-        (Started(after_crash=False, devices=Devices(input=Missing("MacBook Pro Microphone"), output="Mac mini Speakers")), "hands is up, but MacBook Pro Microphone is missing and there is no other microphone, so it cannot hear you."),
+        (Started(after_crash=False, running_on=OPUS, devices=STAND_INS), "hands is up on Opus 5.5, with 45231 tokens of context used, listening on AirPods in place of the missing MacBook Pro Microphone, speaking on AirPods in place of the missing MacBook Pro Speakers."),
+        (Started(after_crash=False, running_on=OPUS, devices=Devices(input="MacBook Pro Microphone", output=Instead("MacBook Pro Speakers", "AirPods"))), "hands is up on Opus 5.5, with 45231 tokens of context used, speaking on AirPods in place of the missing MacBook Pro Speakers."),
+        (Started(after_crash=False, running_on=OPUS, devices=Devices(input=Missing("MacBook Pro Microphone"), output="Mac mini Speakers")), "hands is up on Opus 5.5, with 45231 tokens of context used, but MacBook Pro Microphone is missing and there is no other microphone, so it cannot hear you."),
         (AudioMoved(Devices(input="MacBook Pro Microphone", output=Instead("MacBook Pro Speakers", "AirPods"))), "Audio moved: listening on MacBook Pro Microphone, speaking on AirPods in place of the missing MacBook Pro Speakers."),
         (AudioMoved(Devices(input=Missing("MacBook Pro Microphone"), output="Mac mini Speakers")), "No microphone: MacBook Pro Microphone is missing, so hands cannot hear you. Speaking on Mac mini Speakers."),
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
         (MicrophoneOff(), "The microphone is off in config.toml, so hands cannot hear you."),
-        (Started(after_crash=False, devices=Devices(input=Off(), output="Mac mini Speakers")), "hands is up, but the microphone is off in config.toml, so it cannot hear you."),
-        (Started(after_crash=False, devices=Devices(input="MacBook Pro Microphone", output=Off())), "hands is up, the speaker is off in config.toml."),
+        (Started(after_crash=False, running_on=OPUS, devices=Devices(input=Off(), output="Mac mini Speakers")), "hands is up on Opus 5.5, with 45231 tokens of context used, but the microphone is off in config.toml, so it cannot hear you."),
+        (Started(after_crash=False, running_on=OPUS, devices=Devices(input="MacBook Pro Microphone", output=Off())), "hands is up on Opus 5.5, with 45231 tokens of context used, the speaker is off in config.toml."),
         (AudioMoved(Devices(input=Off(), output="Mac mini Speakers")), "The microphone is off in config.toml, so hands cannot hear you. Speaking on Mac mini Speakers."),
         (AudioMoved(Devices(input=None, output=Off())), "No microphone: hands cannot hear you. The speaker is off in config.toml."),
         (AudioMoved(Devices(input="MacBook Pro Microphone", output=Off())), "Audio moved: listening on MacBook Pro Microphone, the speaker is off in config.toml."),

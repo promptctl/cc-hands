@@ -22,6 +22,7 @@ from hands.sessions.reader import Reader
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, EXIT_SECONDS, INTERRUPT_SECONDS, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Untaken, _listen, _Turn  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, HookReply, Submitted, Summarise, ToldByRecord, ToldByStop, TurnEnding
+from hands.core.runningon import RunningOn
 from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
@@ -1312,6 +1313,63 @@ async def test_a_launch_that_hears_nothing_fails_at_its_deadline(tmp_path: Path)
     clock.advance_to(process.START_SECONDS)
     with pytest.raises(Unstartable, match=f"posted no start of its session after {process.START_SECONDS:.0f}s"):
         await starting
+
+
+def _report(**fields: object) -> bytes:
+    """The report hands' plugin posts as the brain's session starts (plugin/hooks/report.js)."""
+    return json.dumps(fields).encode()
+
+
+async def _reporting(clock: VirtualClock, config_dir: Path) -> tuple[asyncio.Future[RunningOn | None], Brain, "_Keys"]:
+    """A brain whose start is applied, waiting on its plugin's report for START_SECONDS from now on `clock`."""
+    starting, brain, keys = _starting(clock, config_dir)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
+    await starting
+    return asyncio.ensure_future(brain.reported(clock.now() + process.START_SECONDS)), brain, keys
+
+
+# The count is the session's own, whatever window its model has, and a count of zero is a count.
+@pytest.mark.parametrize(("tokens", "used"), [(45_231, 45_231), (0, 0)])
+async def test_the_context_used_is_the_count_claude_code_reported_never_the_window(tmp_path: Path, tokens: int, used: int) -> None:
+    clock = VirtualClock()
+    reporting, brain, _ = await _reporting(clock, tmp_path)
+    assert await brain.posted(process.SESSION_START, _report(model="claude-opus-5-5", tokens=tokens, window=1_000_000)) == {}
+    assert await reporting == RunningOn("claude-opus-5-5", used) and clock.now() == 0.0
+
+
+async def test_a_report_with_no_count_is_the_model_with_its_context_used_not_known(tmp_path: Path) -> None:
+    # Claude Code counts no context before a reply has used any, and answers the window alone.
+    reporting, brain, _ = await _reporting(VirtualClock(), tmp_path)
+    await brain.posted(process.SESSION_START, _report(model="claude-opus-5-5"))
+    assert await reporting == RunningOn("claude-opus-5-5", None)
+
+
+async def test_a_brain_whose_plugin_reports_nothing_has_no_report_at_its_deadline(tmp_path: Path, errors: list[str]) -> None:
+    clock = VirtualClock()
+    reporting, _, _ = await _reporting(clock, tmp_path)
+    await clock.sleeping(process.START_SECONDS)
+    assert not reporting.done()
+    clock.advance_to(process.START_SECONDS)
+    assert await reporting is None
+    assert taken(errors) == ["the brain's Claude Code reported no model or context used by its launch's deadline: hands' plugin posted no session.start"]
+
+
+async def test_a_brain_whose_claude_code_ends_before_it_reports_has_no_report_at_once(tmp_path: Path, errors: list[str]) -> None:
+    clock = VirtualClock()
+    reporting, _, keys = await _reporting(clock, tmp_path)
+    keys.exit.set_result(1)
+    assert await reporting is None and clock.now() == 0.0
+    assert len(taken(errors)) == 1
+
+
+async def test_a_report_that_does_not_parse_is_no_report_and_a_later_one_changes_nothing(tmp_path: Path, errors: list[str]) -> None:
+    clock = VirtualClock()
+    reporting, brain, _ = await _reporting(clock, tmp_path)
+    assert await brain.posted(process.SESSION_START, _report(tokens=45_231)) == {}
+    # A report again, as a respawn of the plugin's worker raises one, changes nothing of what the start found.
+    await brain.posted(process.SESSION_START, _report(model="claude-opus-5-5", tokens=45_231))
+    assert await reporting is None and clock.now() == 0.0
+    assert taken(errors) == ["the brain's report of its model and context used does not parse: missing field 'model'"]
 
 
 async def test_a_start_from_a_source_hands_does_not_know_still_moves_the_brain(tmp_path: Path, errors: list[str]) -> None:
