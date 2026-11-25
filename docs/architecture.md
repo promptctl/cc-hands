@@ -2251,6 +2251,22 @@ work waits until it changes, by the conversation page's loop in `hands.voice.lon
 a digest of what the stage holds in memory. Each read is one `brain.read` event, with what the brain was doing, how many calls
 it ran, and the wait's facts; each Stop one `brain.stop`, with the turn it named and what came of it.
 
+**The phone is one app: one document holds the call, and the views are mounted under it**
+(`src/hands/voice/app.html`, `app.js`, `call.js`, `views/`; design-docs/phone-sessions/design.md, "The one app"). The
+call is `call.js`, loaded once with the document and never mounted or unmounted; the strip (talk button, state line,
+count) is the document's, with a row of views under it. `ROW` in `hands.voice.phonepage` is the one place that says which
+views there are: hands draws the row from it into `app.html`, answers each path of an in-app view with the document
+(`no-store`), and serves the scripts the app is made of, so `app.js` mounts the module each link names. `app.js` mounts
+the view of `location.pathname` as `mount(root, route, signal)`; a tap on a view is `history.pushState` with the phone's key
+kept in the fragment, and the back gesture is `popstate`, so neither unloads the document or touches the call. A reload
+ends the call (`pagehide`) and comes back at the same view with Connect. A page the row does not yet hold as a view (at
+present the conversation and the gallery) is served at its own path and opened in a tab, as before. A view's reads run on its
+`signal`: leaving the view aborts it, which ends the read in flight; hands sees the connection close at its next look
+(`hands.voice.longpoll.waited`, the one place a read ends with its connection), answers nothing, and records that
+`brain.read` with `page_left`; no other read starts. Every other handler runs to its end whether or not the phone is still
+there. The Call view's brain panel is drawn into its `root` from a template as it mounts and is gone with it; the
+transcript the call writes, and its toggle, are the document's, shown while the view is.
+
 **Every phone page asks hands through one module, `/hands.js`** (`src/hands/voice/hands.js`, served
 by `hands.voice.phonepage`), which each page imports: a request whose outcome is hands' answer, its
 refusal, or no answer and why; and a read for as long as the page is open. Every read is answered
@@ -2258,7 +2274,9 @@ as `hands.voice.longpoll.Read`, `{seen, waits, now, shown}`, built by `waited` a
 what it shows, how long the page's next read waits at hands, which bounds that read on the page,
 the Mac's clock as hands answered, by which the phone's page times the brain's work, and what it
 shows. A read refused with a 4xx ends the page's reading; any other failure reads again with
-nothing seen. `tests/test_handsjs.py` runs the module in QuickJS.
+nothing seen. A read and a request take the signal of whoever makes them, a view's or `PAGE_OPEN`'s, as their first
+argument: aborted, a read ends with nothing said and a request's outcome is `left`, neither a failure of hands' nor of the
+way to it. `tests/test_handsjs.py` runs the module in QuickJS.
 
 **The conversation page is the log's conversation, with a box to type in**
 (`hands.voice.conversationpage`). It is served beside the phone's page, on its port and

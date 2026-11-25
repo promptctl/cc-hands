@@ -5,6 +5,7 @@ import datetime
 import itertools
 import json
 import ssl
+from html.parser import HTMLParser
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -45,7 +46,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.core.bearer import bearer
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, not_after, own_certificate, phone_key, server_context
-from hands.voice.phonepage import phone_pages
+from hands.voice.phonepage import APP_PATHS, APP_SCRIPTS, ROW, InApp, app_page, phone_pages
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
@@ -53,7 +54,7 @@ from hands.voice.pinnedfile import Release
 from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from hands.voice.synthesis import Ended, Synthesis
-from conftest import events, running
+from conftest import events, patiently, running
 from test_clipowner import Scripted
 
 
@@ -359,20 +360,20 @@ def test_a_press_is_answered_with_the_clip_its_turn_opened_or_with_why_it_opened
 
 def test_the_page_knows_every_milestone_hands_tells_it() -> None:
     """The page says what each milestone means by name, and names one it does not know as an error on its face."""
-    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    page = resources.files("hands.voice").joinpath("call.js").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
     assert [milestone for milestone in ("released", "discarded", *get_args(Milestone)) if f'"{milestone}": ' not in table] == []
 
 
 def test_the_page_knows_every_reason_hands_opens_no_turn_for() -> None:
-    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    page = resources.files("hands.voice").joinpath("call.js").read_text()
     table = page[page.index("const UNOPENED = {") : page.index("};", page.index("const UNOPENED = {"))]
     reasons = [reason for member in get_args(UnopenedReason) for reason in get_args(member)]
     assert reasons != [] and [reason for reason in reasons if f'"{reason}": ' not in table] == []
 
 
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
-    page = resources.files("hands.voice").joinpath("phone.html").read_text()
+    page = resources.files("hands.voice").joinpath("call.js").read_text()
     table = page[page.index("const LINES = {") : page.index("\n};", page.index("const LINES = {"))]
     assert [kind(line) for line in get_args(Line) if f'"{kind(line)}": ' not in table] == []
 
@@ -696,10 +697,55 @@ async def page_server(tmp_path: Path) -> AsyncGenerator[Served, None]:
 
 
 @pytest.mark.outside
-async def test_the_page_is_served_to_anyone(page_server: Served) -> None:
+async def test_the_app_is_served_to_anyone_at_every_path_of_its_views_and_never_kept(page_server: Served) -> None:
     client, _, _, _ = page_server
-    shown = await client.get("/")
-    assert shown.status == 200 and "Hold to talk" in await shown.text()
+    app = app_page()
+    for path in APP_PATHS:
+        shown = await client.get(path)
+        assert (shown.status, shown.content_type, shown.headers["Cache-Control"], await shown.text()) == (200, "text/html", "no-store", app)
+
+
+class _Links(HTMLParser):
+    """The links of a document: each one's attributes, and the text it says."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[dict[str, str | None], str]] = []
+        self._inside = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "a":
+            self.links.append((dict(attrs), ""))
+            self._inside = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._inside = False
+
+    def handle_data(self, data: str) -> None:
+        if self._inside:
+            attrs, said = self.links[-1]
+            self.links[-1] = (attrs, said + data)
+
+
+def test_the_row_of_views_is_drawn_as_the_row_says_and_the_pages_not_in_the_app_open_in_a_tab() -> None:
+    parsed = _Links()
+    parsed.feed(app_page())
+    assert [said for _, said in parsed.links] == [entry.label for entry in ROW]
+    for (attrs, _), entry in zip(parsed.links, ROW, strict=True):
+        assert attrs["href"] == entry.path
+        # A view of the app is mounted by the router, and any other page is opened in a tab of its own.
+        assert (attrs.get("data-view"), attrs.get("target")) == ((entry.view, None) if isinstance(entry, InApp) else (None, "_blank"))
+    assert [name for name in APP_SCRIPTS if name.startswith("views/")] == [f"views/{entry.view}.js" for entry in ROW if isinstance(entry, InApp)]
+
+
+@pytest.mark.outside
+async def test_every_script_the_app_is_made_of_is_served_to_anyone_and_never_kept(page_server: Served) -> None:
+    client, _, _, _ = page_server
+    for name in APP_SCRIPTS:
+        served = await client.get(f"/{name}")
+        assert (served.status, served.content_type, served.headers["Cache-Control"]) == (200, "text/javascript", "no-store")
+        assert await served.text() == resources.files("hands.voice").joinpath(name).read_text()
 
 
 @pytest.mark.outside
@@ -871,9 +917,13 @@ async def nobody_types(text: str) -> None:
 
 
 class IdleBrain:
-    """A brain with no turn in flight, as the page reads and stops it."""
+    """A brain with no turn in flight, as the page reads and stops it, counting the looks taken of it."""
+
+    def __init__(self) -> None:
+        self.looks = 0
 
     def work(self) -> BrainWork:
+        self.looks += 1
         return Idle()
 
     def stop(self, turn: str) -> StopOutcome:
@@ -1051,6 +1101,96 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     # Nothing on the page reaches a working session.
     async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/sessions/s1/interrupt", headers=keyed, ssl=unverified) as gone:
         assert gone.status == 404
+    serving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await serving
+    await phone.stop()
+
+
+@pytest.mark.outside
+async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_saying_the_page_left_and_no_long_poll_goes_on_for_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def asked() -> Untailed:
+        return Untailed("the tailscale command is not on the PATH")
+
+    monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
+    monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
+    recorded: list[Entry] = []
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
+    home = Home(tmp_path)
+    key = phone_key(SYSTEM, home)
+    brain = IdleBrain()
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, brain, nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    await patiently(lambda: events(recorded, "phone.served") != [], lambda: len(recorded))
+    [served] = events(recorded, "phone.served")
+    unverified = ssl.create_default_context()
+    unverified.check_hostname, unverified.verify_mode = False, ssl.CERT_NONE
+    keyed = {"Authorization": bearer(key)}
+    address = f"https://127.0.0.1:{served.facts['port']}/brain"
+    async with ClientSession() as session:
+        async with session.get(address, headers=keyed, ssl=unverified) as first:
+            seen = (await first.json())["seen"]
+        async def second() -> None:
+            async with session.get(f"{address}?seen={seen}", headers=keyed, ssl=unverified) as read:
+                await read.read()
+
+        # The second read waits at hands for the brain to change: it has looked twice, the first look and one more. The
+        # page goes away while it waits.
+        waiting = asyncio.create_task(second())
+        await patiently(lambda: brain.looks >= 3, lambda: brain.looks)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    await patiently(lambda: len(events(recorded, "brain.read")) == 2, lambda: len(recorded))
+    answered, left = events(recorded, "brain.read")
+    # The wait ended with the page, long before the 25 s it would have run.
+    waited = left.facts["waited_ms"]
+    assert isinstance(waited, float) and waited < 5_000
+    assert (answered.facts["page_left"], left.facts["page_left"]) == (False, True)
+    serving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await serving
+    await phone.stop()
+
+
+@pytest.mark.outside
+async def test_a_deed_whose_phone_goes_away_before_it_is_answered_runs_to_its_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def asked() -> Untailed:
+        return Untailed("the tailscale command is not on the PATH")
+
+    monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
+    monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
+    recorded: list[Entry] = []
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
+    typed: list[str] = []
+    typing_begun, typing_may_end = asyncio.Event(), asyncio.Event()
+
+    async def typing(text: str) -> None:
+        typing_begun.set()
+        await typing_may_end.wait()
+        typed.append(text)
+
+    home = Home(tmp_path)
+    key = phone_key(SYSTEM, home)
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    await patiently(lambda: events(recorded, "phone.served") != [], lambda: len(recorded))
+    [served] = events(recorded, "phone.served")
+    unverified = ssl.create_default_context()
+    unverified.check_hostname, unverified.verify_mode = False, ssl.CERT_NONE
+    async with ClientSession() as session:
+        async def sending() -> None:
+            async with session.post(f"https://127.0.0.1:{served.facts['port']}/conversation/typed", json={"text": "hello"}, headers={"Authorization": bearer(key)}, ssl=unverified):
+                pass
+
+        # The phone goes away while hands is still typing what it sent, and hands finishes it.
+        posting = asyncio.create_task(sending())
+        await typing_begun.wait()
+        posting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await posting
+    typing_may_end.set()
+    await patiently(lambda: events(recorded, "conversation.typed") != [], lambda: len(recorded))
+    [event] = events(recorded, "conversation.typed")
+    assert (typed, event.outcome) == (["hello"], "ok")
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await serving

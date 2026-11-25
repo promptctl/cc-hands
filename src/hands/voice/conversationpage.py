@@ -14,6 +14,7 @@ pipeline (`hands.voice.turnstop.Typed`), so they reach hands as words said do, a
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from functools import partial
 from importlib import resources
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.recall import Moment, Moments, Reading
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
-from hands.voice.longpoll import waited
+from hands.voice.longpoll import page_left, waited
 
 # How many of the newest moments a page is given: an hour's talk and more, never the whole log.
 NEWEST = 200
@@ -116,7 +117,7 @@ def conversation_routes(clock: Clock, conversation: Conversation, typed: Callabl
         except Rejected as error:
             fail(str(error))
             return web.Response(status=400, text=str(error))
-        read = await waited(clock, look, seen)
+        read = await waited(clock, look, seen, partial(page_left, request))
         annotate(changes=read["seen"])
         count(moments=len(read["shown"]["moments"]))
         return web.json_response(read)

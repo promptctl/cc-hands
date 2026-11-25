@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
+from conftest import patiently
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
 from hands.clock import SYSTEM
@@ -29,10 +30,11 @@ from hands.voice.keyed import UNKEYED, Handler
 from hands.voice.milestone import ClipDiscarded, ClipOpened, TurnUnopened
 from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
-from hands.voice.phonepage import phone_pages
+from hands.voice.phonepage import APP_PATHS, ROW, phone_pages
 from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
+from hands.voice.transcript import Heard
 from hands.voice.tool import audited, tool
 from hands.voice.voicechoice import VOICES, Voice
 from hands.voice.wake import WakeWord
@@ -75,6 +77,8 @@ class Hands:
     voices: Voicing
     # The path of every request hands took, in the order it took them.
     requests: list[str]
+    # The path of every request hands has finished with, however it ended, in the order they ended.
+    ended: list[str]
     # What the phone recorded, as its calls end.
     recorded: list[Entry]
     # The gate the phone moves, which a test moves as the desk's key or the pipeline would.
@@ -108,16 +112,19 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(VirtualClock())), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
     pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
-    requests = list[str]()
+    requests, ended = list[str](), list[str]()
 
     @web.middleware
     async def taken(request: web.Request, handler: Handler) -> web.StreamResponse:
         requests.append(request.path)
-        return await handler(request)
+        try:
+            return await handler(request)
+        finally:
+            ended.append(request.path)
 
     pages.middlewares.append(taken)
     async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, recorded, gate)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, ended, recorded, gate)
         await phone.stop()
 
 
@@ -403,6 +410,9 @@ async def test_stop_stops_the_turn_the_page_shows_and_says_what_came_of_it(brows
 async def test_words_typed_on_the_conversation_page_are_sent_to_hands(browser: Opened, hands: Hands) -> None:
     phone = await browser.open(hands.address("/"))
     page = await browser.followed(phone, "Conversation")
+    # [LAW:no-ambient-temporal-coupling] the page's script has attached its Return key before it first reads hands: until
+    # then Return is a new line in the box.
+    await patiently(lambda: "/conversation/moments" in hands.requests, lambda: len(hands.requests))
     await page.get_by_label("Type to hands").fill("what is on the backlog")
     await page.get_by_label("Type to hands").press("Enter")
     # Emptied once hands has the words.
@@ -580,3 +590,115 @@ async def test_a_page_opened_without_the_phones_key_is_told_so_by_hands_and_says
     page = await browser.open(keyed_address(str(hands.server.make_url("/")), "not-the-phones-key"))
     await detecting(page)
     assert await page.evaluate("events") == [{"kind": "failed", "why": UNKEYED}]
+
+
+# The phone as one app: a tap on a view, or the back gesture, moves between the app's views and never unloads the document
+# that holds the call; a reload does, and ends the call; a view's read of hands ends as the view is left.
+CONNECTED = "Connected. Hold the button and speak."
+
+
+async def on_the_call(browser: Opened, hands: Hands, path: str = "/") -> Page:
+    """The app opened at `path`, and Connect pressed: with the call up."""
+    await browser.context.add_init_script(WAKE_OFF)
+    page = await browser.open(hands.address(path))
+    await page.get_by_role("button", name="Connect").click()
+    await expect(page.locator("#state")).to_have_text(CONNECTED)
+    await expect(page.locator("#talk")).to_have_text("Hold to talk")
+    return page
+
+
+async def the_strip_and_the_row_are_there(page: Page) -> None:
+    """The talk button, the state line and the count are on screen, with the row of views beneath them."""
+    for each in ("#talk", "#views"):
+        await expect(page.locator(each)).to_be_visible()
+    # The lines under the button take the room of what they say, which is nothing until the call says something.
+    for each in ("#state", "#count"):
+        await expect(page.locator(each)).to_be_attached()
+    told, views = await page.locator("#told").bounding_box(), await page.locator("#views").bounding_box()
+    assert told is not None and views is not None and views["y"] >= told["y"] + told["height"]
+    assert await page.locator("#views a").all_inner_texts() == [entry.label for entry in ROW]
+
+
+async def test_a_tap_on_a_view_and_the_back_gesture_move_between_the_views_with_the_call_still_up(browser: Opened, hands: Hands) -> None:
+    page = await on_the_call(browser, hands)
+    # Only the document that holds the call keeps this.
+    await page.evaluate("window.theDocument = 'the same one'")
+    await the_strip_and_the_row_are_there(page)
+
+    await page.get_by_role("link", name="Sessions").click()
+    await expect(page).to_have_url(hands.address("/sessions"))
+    await expect(page.locator("#sessions-note")).to_be_visible()
+    await expect(page.locator("#views a[aria-current=page]")).to_have_text("Sessions")
+    # The Call view's own are the document's, shown while it is: nothing of them is on screen here.
+    await expect(page.locator("#brain")).to_be_hidden()
+    await the_strip_and_the_row_are_there(page)
+    await expect(page.locator("#state")).to_be_visible()
+    # What hands tells the call while another view is shown reaches the Call view, which is shown again.
+    hands.phone.tell(Heard("said while the Call view was away"))
+
+    await page.get_by_role("link", name="Call").click()
+    await expect(page).to_have_url(hands.address("/"))
+    await expect(page.locator("#views a[aria-current=page]")).to_have_text("Call")
+    await expect(page.locator("#brain")).to_be_visible()
+    await page.get_by_role("button", name="Show transcript").click()
+    await expect(page.locator("#transcript")).to_contain_text("said while the Call view was away")
+    await the_strip_and_the_row_are_there(page)
+
+    # The back gesture moves back along the views visited: Sessions, then the Call as it opened.
+    await page.go_back()
+    await expect(page).to_have_url(hands.address("/sessions"))
+    await expect(page.locator("#sessions-note")).to_be_visible()
+    await page.go_back()
+    await expect(page).to_have_url(hands.address("/"))
+    await expect(page.locator("#transcript")).to_contain_text("said while the Call view was away")
+    await page.go_forward()
+    await expect(page).to_have_url(hands.address("/sessions"))
+
+    # The call was never made again, and never dropped: the one document, one offer, the line it was on.
+    await expect(page.locator("#talk")).to_have_text("Hold to talk")
+    await expect(page.locator("#state")).to_have_text(CONNECTED)
+    assert await page.evaluate("window.theDocument") == "the same one"
+    assert hands.requests.count("/offer") == 1
+    hands.phone.tell(Heard("said at the end"))
+    await page.go_back()
+    await expect(page.locator("#transcript")).to_contain_text("said at the end")
+
+
+async def test_a_page_not_yet_moved_into_the_app_opens_in_a_tab_with_the_key_and_the_call_goes_on(browser: Opened, hands: Hands) -> None:
+    page = await on_the_call(browser, hands)
+    for name, path in (("Conversation", "/conversation"), ("Voices and options", "/gallery")):
+        tab = await browser.followed(page, name)
+        assert tab.url == hands.address(path)
+        assert page.url == hands.address("/")
+    await expect(page.locator("#talk")).to_have_text("Hold to talk")
+    assert hands.requests.count("/offer") == 1
+
+
+@pytest.mark.parametrize("path", APP_PATHS)
+async def test_every_path_of_the_app_opened_is_the_app_and_a_reload_ends_the_call_and_comes_back_to_the_same_view(browser: Opened, hands: Hands, path: str) -> None:
+    page = await on_the_call(browser, hands, path)
+    await the_strip_and_the_row_are_there(page)
+    await page.reload()
+    await expect(page).to_have_url(hands.address(path))
+    await expect(page.locator("#talk")).to_have_text("Connect")
+    await the_strip_and_the_row_are_there(page)
+    await expect(page.locator("#views a[aria-current=page]")).to_have_text(next(entry.label for entry in ROW if entry.path == path))
+    # hands saw the page hang up as it unloaded.
+    await patiently(lambda: any(isinstance(entry, WideEvent) and entry.event == "phone.call" for entry in hands.recorded), lambda: len(hands.recorded))
+    [event] = [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "phone.call"]
+    ended = event.facts["ended"]
+    assert isinstance(ended, CallLeft) and ended.reason == "hung up"
+
+
+async def test_the_brain_read_waiting_at_hands_ends_as_the_call_view_is_left_and_is_started_again_as_it_is_shown(browser: Opened, hands: Hands) -> None:
+    page = await browser.open(hands.address("/"))
+    # The first read is answered at once, and the second waits at hands for the brain to do something else.
+    await patiently(lambda: hands.requests.count("/brain") == 2, lambda: len(hands.requests))
+    assert hands.ended.count("/brain") == 1
+    await page.get_by_role("link", name="Sessions").click()
+    await expect(page.locator("#sessions-note")).to_be_visible()
+    # hands sees the page close the connection of the read it was holding, which ends, and no read follows it.
+    await patiently(lambda: hands.ended.count("/brain") == 2, lambda: len(hands.ended))
+    assert hands.requests.count("/brain") == 2
+    await page.get_by_role("link", name="Call").click()
+    await patiently(lambda: hands.requests.count("/brain") == 3, lambda: len(hands.requests))

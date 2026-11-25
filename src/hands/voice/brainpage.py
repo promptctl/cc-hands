@@ -6,6 +6,7 @@ here reaches a working session.
 """
 
 import json
+from functools import partial
 from typing import Literal, Protocol, TypedDict
 
 from aiohttp import web
@@ -17,7 +18,7 @@ from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
-from hands.voice.longpoll import version_of, waited
+from hands.voice.longpoll import page_left, version_of, waited
 
 
 class Watched(Protocol):
@@ -99,7 +100,7 @@ def brain_routes(clock: Clock, brain: Watched, key: str, record: Record) -> list
 
     @keyed(clock, "brain.read", record, key, counts=("calls",))
     async def read(request: web.Request) -> web.Response:
-        read = await waited(clock, look, request.query.get("seen"))
+        read = await waited(clock, look, request.query.get("seen"), partial(page_left, request))
         annotate(doing=read["shown"]["doing"])
         count(calls=len(read["shown"]["calls"]))
         return web.json_response(read)

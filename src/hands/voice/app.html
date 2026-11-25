@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>hands</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --fg: #1d1c1a; --muted: #6b6862; --ring: #d9d5cd;
+    --idle: #2f2d2a; --live: #c2410c; --bad: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141312; --fg: #eeebe6; --muted: #9a958d; --ring: #2c2a27; --idle: #e9e5de; --live: #f97316; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; }
+  /* The body grows past the screen with the brain's calls listed, so the top of it is never centred out of reach. */
+  html { height: 100%; }
+  body { min-height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
+    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
+  #talk {
+    width: min(68vw, 300px); aspect-ratio: 1; border-radius: 50%;
+    border: 10px solid var(--ring); background: var(--idle); color: var(--bg);
+    font: inherit; font-weight: 600; font-size: 22px; line-height: 1.2; letter-spacing: .02em;
+    touch-action: none; cursor: pointer; transition: transform .08s, background .08s;
+  }
+  #talk:disabled { opacity: .35; cursor: default; }
+  #talk.held { background: var(--live); transform: scale(.96); }
+  #told { color: var(--muted); text-align: center; max-width: 30ch; }
+  #told p { margin: 0; min-height: 1.4em; }
+  #state.bad, #wake-note.bad { color: var(--bad); }
+  #count { font-variant-numeric: tabular-nums; }
+  /* One small toggle in the corner: the dot is filled while the wake word is on. */
+  #wake {
+    position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: 12px; display: flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 13px; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  #wake .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); }
+  #wake[aria-pressed="true"] .dot { background: var(--live); border-color: var(--live); }
+  #wake-note:empty { display: none; }
+  #shown { font: inherit; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px; padding: 6px 16px; cursor: pointer; }
+  /* The strip is the call: the one button and what is said of it, on every view; the row of views is under it. */
+  #strip, #view, #call-view { display: flex; flex-direction: column; align-items: center; gap: 28px; }
+  #view, #call-view { width: 100%; }
+  #call-view[hidden] { display: none; }
+  /* The row is the router's from the moment it is on screen: hidden, in its place, until app.js has wired it. */
+  #views:not([data-ready]) { visibility: hidden; }
+  #views { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 2px; font-size: 15px; }
+  #views a { color: var(--muted); text-decoration: none; padding: 6px 9px; border: 1px solid transparent; border-radius: 999px; }
+  #views a[aria-current="page"] { color: var(--fg); border-color: var(--ring); }
+  #sessions-note { color: var(--muted); text-align: center; max-width: 30ch; margin: 0; }
+  #transcript {
+    width: min(100%, 36rem); max-height: 38vh; overflow-y: auto; margin: 0; padding: 0 4px;
+    user-select: text; -webkit-user-select: text;
+  }
+  #transcript p { margin: 0 0 10px; }
+  #transcript:empty::before { content: "Nothing said yet."; color: var(--muted); }
+  #transcript .user { color: var(--muted); text-align: right; }
+  /* hands' words not yet reached are faint; the one being said is marked; those cut off are struck through. */
+  #transcript .ahead { opacity: .45; }
+  #transcript .now { background: var(--ring); border-radius: 3px; }
+  #transcript .unheard { opacity: .45; text-decoration: line-through; }
+  #brain { width: min(100%, 36rem); border-top: 1px solid var(--ring); padding-top: 10px; }
+  #brain-head { display: flex; align-items: center; justify-content: space-between; column-gap: 12px; }
+  #doing { margin: 0; font-weight: 600; }
+  #doing .for { color: var(--muted); font-weight: 400; }
+  #calls { list-style: none; margin: 4px 0 0; padding: 0; }
+  #calls li { margin: 6px 0 0; }
+  #calls .tool { font-size: 15px; font-weight: 600; margin: 0; }
+  /* An input runs as long as the call made it: three lines of it, so the Stop never scrolls away. */
+  #calls .input { margin: 0; color: var(--muted); font: 13px/1.35 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+  #calls .input.bad, #brain-said.bad { color: var(--bad); }
+  #stop { font: inherit; font-weight: 600; font-size: 16px; line-height: 1; color: var(--bg); background: var(--bad); border: 0; border-radius: 999px; padding: 12px 20px; cursor: pointer; }
+  #stop:disabled { opacity: .45; cursor: default; }
+  #brain-said { color: var(--muted); font-size: 15px; margin: 6px 0 0; }
+  #brain-said:empty { display: none; }
+</style>
+</head>
+<body>
+<header id="strip">
+<!-- Whether the wake word may open a turn: on unless the user turned it off, before Connect or after. -->
+<button id="wake" type="button" aria-pressed="true"><span class="dot" aria-hidden="true"></span>Phone wake word</button>
+<button id="talk" type="button">Connect</button>
+<!-- The count changes ten times a second, so it sits outside the live region: a screen reader says each line once. -->
+<div id="told">
+  <p id="state" role="status" aria-live="polite"></p>
+  <p id="wake-note" role="status" aria-live="polite"></p>
+  <p id="count" aria-hidden="true"></p>
+</div>
+</header>
+<!-- The row of views, drawn by hands (hands.voice.phonepage) and mounted by app.js: a view of the app in this document, a page not
+     yet moved into it in a tab of its own, under the same key. A call goes on through a tap on any of them. -->
+<nav id="views" aria-label="Views"><!--row--></nav>
+<!-- The Call view: the call writes the transcript whether it is shown or not, so these are the document's, shown while the Call
+     view is (views/call.js). -->
+<div id="call-view" hidden>
+<button id="shown" type="button" aria-controls="transcript" aria-expanded="false">Show transcript</button>
+<!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
+<section id="transcript" aria-label="Transcript" hidden></section>
+</div>
+<main id="view"></main>
+<!-- The brain's panel, drawn into the Call view as it mounts (views/call.js). -->
+<template id="brain-panel">
+<!-- What the brain is doing now, as hands hears it on the wire: idle, thinking, or the calls it is running, each with
+     its input, and how long; and one Stop that ends the brain's turn, as Escape at its keyboard does. Nothing here
+     reaches a working session. -->
+<section id="brain" aria-label="The brain">
+  <div id="brain-head"><p id="doing" role="status" aria-live="polite"></p><button id="stop" type="button" disabled>Stop</button></div>
+  <ul id="calls"></ul>
+  <p id="brain-said" role="status" aria-live="polite"></p>
+</section>
+</template>
+<audio id="out" autoplay playsinline></audio>
+<!-- The call is the document's own, and the router mounts the views under it. -->
+<script type="module" src="/app.js"></script>
+</body>
+</html>

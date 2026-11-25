@@ -13,14 +13,42 @@ from jsmodule import JsModule
 from hands.voice.longpoll import WAIT_SECONDS, Read
 
 # The browser as the module meets it: an address whose fragment is the key, a page's clock that stands still, a fetch
-# hands answers when the test says, a timer that fires when the test says, and the bound each request was given.
+# hands answers when the test says, a timer that fires when the test says, the bound each request was given, and signals
+# that end a fetch as the browser's do: a request ended by its signal is no longer asked of hands.
 BROWSER = """
-var console = {error() {}};
+var faults = [], requests = [], timers = [], drawn = [], unread = [];
+var console = {error: (...said) => faults.push(said.join(" "))};
 Date.now = () => 1000000;
-var requests = [], timers = [], drawn = [], unread = [];
-function fetch(path, init) { return new Promise((resolve, reject) => requests.push({path, init, resolve, reject})); }
-function setTimeout(fire, ms) { timers.push({fire, ms}); }
-var AbortSignal = {timeout: ms => ({bound: ms})};
+function ended() { return Object.assign(new Error("aborted"), {name: "AbortError"}); }
+class Signal {
+  constructor(bound) { this.bound = bound; this.aborted = false; this.reason = undefined; this.listeners = []; }
+  addEventListener(_kind, listen) { this.listeners.push(listen); }
+  removeEventListener(_kind, listen) { this.listeners = this.listeners.filter(each => each !== listen); }
+  throwIfAborted() { if (this.aborted) throw this.reason; }
+  end(reason) { if (this.aborted) return; this.aborted = true; this.reason = reason; [...this.listeners].forEach(listen => listen()); }
+}
+class AbortController {
+  constructor() { this.signal = new Signal(); }
+  abort() { this.signal.end(ended()); }
+}
+var AbortSignal = {
+  timeout: ms => new Signal(ms),
+  any: signals => {
+    const joined = new Signal(signals.find(signal => signal.bound !== undefined)?.bound);
+    for (const signal of signals) signal.aborted ? joined.end(signal.reason) : signal.addEventListener("abort", () => joined.end(signal.reason));
+    return joined;
+  },
+};
+function fetch(path, init) {
+  return new Promise((resolve, reject) => {
+    if (init.signal.aborted) { reject(init.signal.reason); return; }
+    const request = {path, init, resolve, reject};
+    requests.push(request);
+    init.signal.addEventListener("abort", () => { requests = requests.filter(each => each !== request); reject(init.signal.reason); });
+  });
+}
+function setTimeout(fire, ms) { const timer = {fire, ms}; timers.push(timer); return timer; }
+function clearTimeout(timer) { timers = timers.filter(each => each !== timer); }
 function answer(status, text) {
   requests.shift().resolve({ok: status >= 200 && status < 300, status, text: async () => text});
 }
@@ -55,7 +83,7 @@ class Page:
 
     def __init__(self, fragment: str = "#the%20key") -> None:
         self._js = JsModule(
-            "hands.js", "asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
+            "hands.js", "PAGE_OPEN, asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
         )
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
         self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
@@ -90,12 +118,12 @@ def page() -> Page:
 
 @pytest.fixture
 def reading(page: Page) -> Page:
-    page.run('reading("/state", shown => drawn.push(shown), why => unread.push(why))')
+    page.run('reading(PAGE_OPEN, "/state", shown => drawn.push(shown), why => unread.push(why))')
     return page
 
 
 def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: Page) -> None:
-    page.run('var outcome; asked("POST", "/choose", {voice: "mary"}).then(said => { outcome = said; })')
+    page.run('var outcome; asked(PAGE_OPEN, "POST", "/choose", {voice: "mary"}).then(said => { outcome = said; })')
     assert page.asking() == [Asked("POST", "/choose", "Bearer the key", '{"voice":"mary"}', page.answer_ms)]
     page.answer(200, '{"said": "Mary it is."}')
     assert page.seen("outcome") == {"kind": "answered", "body": {"said": "Mary it is."}}
@@ -109,14 +137,14 @@ def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: P
     ('lose("TimeoutError")', {"kind": "lost", "why": "hands did not answer within 60 s"}),
     ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
 ])
-def test_what_came_of_a_request_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
-    page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
+def test_what_came_of_a_request_hands_took_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
+    page.run('var outcome; asked(PAGE_OPEN, "GET", "/state").then(said => { outcome = said; })')
     page.run(settled)
     assert page.seen("outcome") == outcome
 
 
 def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) -> None:
-    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
+    page.run('var outcome; askedForBytes(PAGE_OPEN, "/wake/models/word.onnx").then(said => { outcome = said; })')
     assert page.asking() == [Asked("GET", "/wake/models/word.onnx", "Bearer the key", None, page.answer_ms)]
     page.run("answerBytes(200, [1, 2, 255])")
     page.run("outcome.body = Array.from(outcome.body)")
@@ -129,13 +157,13 @@ def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) 
     ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
 ])
 def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
-    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
+    page.run('var outcome; askedForBytes(PAGE_OPEN, "/wake/models/word.onnx").then(said => { outcome = said; })')
     page.run(settled)
     assert page.seen("outcome") == outcome
 
 
 def test_an_answer_that_is_not_json_is_lost_with_why(page: Page) -> None:
-    page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
+    page.run('var outcome; asked(PAGE_OPEN, "GET", "/state").then(said => { outcome = said; })')
     page.answer(200, "<html>")
     outcome = cast(dict[str, str], page.seen("outcome"))
     # The rest of why is the browser's own words for what it could not parse.
@@ -191,14 +219,14 @@ def test_a_read_refused_as_the_pages_own_mistake_stops_with_hands_words(reading:
 ])
 def test_an_answer_that_is_not_a_read_stops_the_reading_and_says_so(reading: Page, answer: object) -> None:
     reading.answer(200, json.dumps(answer))
-    assert reading.seen("unread") == ["This page stopped reading hands: hands' answer is not a read. Reload it to read again."]
+    assert reading.seen("unread") == ["This page stopped reading hands: hands' answer is not a read. Open it again to read again."]
     assert (reading.seen("drawn"), reading.asking(), reading.timers()) == ([], [], [])
 
 
 def test_a_read_the_page_cannot_draw_stops_the_reading_and_says_why(page: Page) -> None:
-    page.run('reading("/state", () => { throw new Error("no such row"); }, why => unread.push(why))')
+    page.run('reading(PAGE_OPEN, "/state", () => { throw new Error("no such row"); }, why => unread.push(why))')
     page.read("v1", {})
-    assert (page.seen("unread"), page.asking()) == (["This page stopped reading hands: no such row. Reload it to read again."], [])
+    assert (page.seen("unread"), page.asking()) == (["This page stopped reading hands: no such row. Open it again to read again."], [])
 
 
 def test_hands_clock_is_as_every_read_last_said_it_changed_or_not(reading: Page) -> None:
@@ -211,3 +239,39 @@ def test_hands_clock_is_as_every_read_last_said_it_changed_or_not(reading: Page)
 @pytest.mark.parametrize(("fragment", "carries"), [("#the%20key", True), ("", False), ("#", False)])
 def test_a_page_knows_whether_its_address_carries_a_key(fragment: str, carries: bool) -> None:
     assert Page(fragment).seen("carriesKey") is carries
+
+
+LEAVING = "var leaving = new AbortController();"
+READ = 'reading(leaving.signal, "/state", shown => drawn.push(shown), why => unread.push(why))'
+
+
+def test_a_view_leaving_ends_the_read_waiting_at_hands_and_asks_for_no_other(page: Page) -> None:
+    page.run(f"{LEAVING} {READ}")
+    page.read("v1", {"voice": "mary"})
+    # The second read is at hands, waiting for what is shown to change.
+    assert [asked.path for asked in page.asking()] == ["/state?seen=v1"]
+    page.run("leaving.abort()")
+    assert (page.asking(), page.timers()) == ([], [])
+    # Leaving is no failure to read: nothing is said of it, and nothing is drawn after it.
+    assert (page.seen("unread"), page.seen("faults"), page.seen("drawn")) == ([], [], [{"voice": "mary"}])
+
+
+def test_a_view_leaving_in_the_pause_after_a_lost_read_asks_for_no_other(page: Page) -> None:
+    page.run(f"{LEAVING} {READ}")
+    page.run('lose("TypeError")')
+    assert page.timers() == [2000]
+    page.run("leaving.abort()")
+    assert (page.asking(), page.timers()) == ([], [])
+    assert (page.seen("unread"), page.seen("faults")) == (["hands is out of reach: lost; reading it again…"], [])
+
+
+def test_a_view_already_left_starts_no_read(page: Page) -> None:
+    page.run(f"{LEAVING} leaving.abort(); {READ}")
+    assert (page.asking(), page.timers(), page.seen("unread"), page.seen("faults")) == ([], [], [], [])
+
+
+def test_a_request_its_asker_leaves_is_left_and_never_answered_as_hands_lost_it(page: Page) -> None:
+    page.run(f'{LEAVING} var outcome = "pending"; asked(leaving.signal, "GET", "/state").then(said => {{ outcome = said; }})')
+    assert [asked.path for asked in page.asking()] == ["/state"]
+    page.run("leaving.abort()")
+    assert (page.asking(), page.seen("outcome")) == ([], {"kind": "left"})
