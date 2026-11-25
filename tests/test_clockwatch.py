@@ -271,6 +271,10 @@ def test_a_wait_handed_to_a_thread_a_job_or_a_serial_thread_is_charged_to_the_te
         # and by asyncio's eager factory.
         "test_ticked": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.ticking()\n    asyncio.run(main())\n", []),
         "test_made": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)\n        await library.made()\n    asyncio.run(main())\n", []),
+        # A facility that is itself the work handed to the loop, or a pytest finalizer, through a C partial.
+        "test_called": ("import asyncio, time\n\ndef test_runs():\n    async def main():\n        asyncio.get_running_loop().call_soon(time.sleep, 0.001)\n        await asyncio.sleep(0)\n    asyncio.run(main())\n", ["time.sleep"]),
+        "test_called_async": ("import asyncio, pytest, time\n\n@pytest.mark.asyncio\nasync def test_runs():\n    asyncio.get_running_loop().call_soon(time.sleep, 0.001)\n    await asyncio.sleep(0)\n", ["time.sleep"]),
+        "test_finally":("import functools, time\n\ndef test_runs(request):\n    request.addfinalizer(functools.partial(time.sleep, 0.001))\n", ["time.sleep"]),
         # A library's eager task, woken by the test.
         "test_woken": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        queue, task = library.listens()\n        queue.put_nowait(1)\n        await task\n    asyncio.run(main())\n", []),
         "test_snoozed": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        await library.snooze()\n    asyncio.run(main())\n", []),

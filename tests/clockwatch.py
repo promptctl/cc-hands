@@ -19,7 +19,8 @@ test is charged for what its helpers wait on. With none, it is charged to the un
 `SystemClock`'s or the unit was handed its work, as `asyncio.to_thread(time.sleep, 1)` is; a thread or a task a library
 starts for itself, as tqdm's monitor, is no one's. Nothing reads which test runs now, so a thread that outlives its test
 is charged to that test and not to the next. A done callback on an asyncio future, whose C type takes no wrapper, runs
-as the unit that resolves the future, not the one that added it.
+as the unit that resolves the future, not the one that added it. A facility a test hands straight to pytest to call, as
+`pytest.raises(E, time.sleep, ...)`, is called by the harness as its own reads are, and is no one's.
 
 The event loop's clock and timers are charged as the unit that asks the loop for them: a test's `loop.time()`, its
 `asyncio.sleep` or `asyncio.timeout`, but not the loop's own reads of its clock as it runs, nor the timers of
@@ -196,7 +197,7 @@ TIMED: dict[str, tuple[type, str, int, str]] = {
 # The event loop's clock and timers, each with whether a call reaches: the loop's clock read by asyncio as it runs is its
 # own, and a timer due now or before, or after no delay, is a poll.
 LOOP: dict[str, tuple[str, Callable[[asyncio.BaseEventLoop, tuple[Any, ...], dict[str, Any]], bool]]] = {
-    "time.monotonic": ("time", lambda _loop, _args, _kwargs: not asking().f_code.co_filename.startswith(ASYNCIO)),
+    "time.monotonic": ("time", lambda _loop, _args, _kwargs: (frame := asking()) is None or not frame.f_code.co_filename.startswith(ASYNCIO)),
     "asyncio.BaseEventLoop.call_later": ("call_later", lambda _loop, args, kwargs: argument(args, kwargs, 0, "delay") > 0),
     "asyncio.BaseEventLoop.call_at": ("call_at", lambda loop, args, kwargs: argument(args, kwargs, 0, "when") > loop.time()),
 }  # fmt: skip
@@ -218,7 +219,7 @@ CALLS = frozenset({
     _pytest.fixtures.call_fixture_func.__code__,  # pyright: ignore[reportUnknownMemberType]
     _pytest.fixtures._teardown_yield_fixture.__code__,  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
 })  # fmt: skip
-# asyncio's own task, whose instances the watch's replaces.
+# asyncio's own task, which every task is, the watch's among them.
 TASK = asyncio.Task
 
 class Unit(NamedTuple):
@@ -372,7 +373,8 @@ class Watch:
 
     def _charged(self, carried: bool) -> str | None:
         """The module a reach made now is charged to: no one, for a read the harness or pluggy makes itself."""
-        return None if self._module((frame := asking()).f_code.co_filename) is None else self._charge(frame, carried)
+        frame = asking()
+        return None if frame is not None and self._module(frame.f_code.co_filename) is None else self._charge(frame, carried)
 
     def wrap(self, facility: str, function: Callable[..., object], carried: bool) -> Callable[..., object]:
         """`function`, recording each call as a reach of `facility`, by a test frame or a unit handed its work, or,
@@ -441,7 +443,10 @@ class Watch:
         patch.setattr(asyncio.events.Handle, "__init__", scheduled)
         watch = self
 
-        class Task(TASK):  # pyright: ignore[reportGeneralTypeIssues, reportUntypedBaseClass]
+        # The task asyncio makes now, another watch's within a run of pytest inside a test, so each records the task.
+        base: type[asyncio.Task[Any]] = asyncio.Task
+
+        class Task(base):  # pyright: ignore[reportGeneralTypeIssues, reportUntypedBaseClass]
             """asyncio's task, recorded as it is made: before its first step, which an eager task takes inline."""
 
             def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -598,11 +603,12 @@ def argument(args: tuple[Any, ...], kwargs: dict[str, Any], at: int, keyword: st
     return args[at] if len(args) > at else kwargs.get(keyword)
 
 
-def asking() -> FrameType:
-    """The frame that called into the watch now: the innermost outside this module."""
-    depth = 1
-    while (frame := sys._getframe(depth)).f_code.co_filename == __file__:  # pyright: ignore[reportPrivateUsage]
-        depth += 1
+def asking() -> FrameType | None:
+    """The frame that called into the watch now: the innermost outside this module, or the frame that runs a unit, whose
+    work a facility itself is; None at the bottom of a thread a facility is the first code of."""
+    frame = sys._getframe(1).f_back  # pyright: ignore[reportPrivateUsage]
+    while frame is not None and frame.f_code.co_filename == __file__ and frame.f_code is not RUNS:
+        frame = frame.f_back
     return frame
 
 
