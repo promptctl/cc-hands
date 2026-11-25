@@ -13,9 +13,11 @@ runs:
         go-version-file: fritter/go.mod
         cache-dependency-path: fritter/go.sum
     # Without a pin uv takes the newest Python on the runner; 3.12 is the oldest hands supports.
+    # fritter's job runs no uv, so on a cache miss it has nothing to save, and the action's save step fails the job for it.
     - uses: astral-sh/setup-uv@v6
       with:
         python-version: "3.12"
+        ignore-nothing-to-cache: true
     # PyAudio ships wheels only for Windows, so on a Mac it builds against Homebrew's PortAudio.
     - name: PortAudio
       shell: bash
