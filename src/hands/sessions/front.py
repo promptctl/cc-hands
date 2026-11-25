@@ -20,7 +20,7 @@ from hands.core.tmux import Unanswered
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions import tmux
-from hands.sessions.terminals import Process, ancestor_terminals, process_table
+from hands.sessions.processes import Process, Processes, ancestor_terminals
 from hands.threads import SerialThread
 
 # Each app that says by AppleScript which terminal its front tab shows, by bundle id. Only the app in front is asked:
@@ -51,15 +51,15 @@ class _App:
     name: str
 
 
-async def read_front(children: Children, sessions: Mapping[SessionId, tuple[int, str]], environment: Mapping[str, str]) -> InFront:
+async def read_front(children: Children, processes: Processes, sessions: Mapping[SessionId, tuple[int, str]], environment: Mapping[str, str]) -> InFront:
     """What is in front now, among `sessions`, each a session's pid and its name as it is spoken; `environment` is the
     run's, which says where tmux keeps its sockets and where tmux is."""
     try:
         app = await _front_app(children)
-        processes = process_table()
-        screen = await _screen(app, processes)
+        table = processes.table()
+        screen = await _screen(app, table)
         # A tmux client is on screen only in a terminal the app in front shows.
-        panes = dict(await _panes(children, environment, [pid for pid, _ in sessions.values()], processes)) if screen.shown else {}
+        panes = dict(await _panes(children, processes, environment, [pid for pid, _ in sessions.values()], table)) if screen.shown else {}
     except _Unread as unread:
         return FrontUnread(str(unread))
     except (OSError, TimeoutError) as error:
@@ -70,7 +70,7 @@ async def read_front(children: Children, sessions: Mapping[SessionId, tuple[int,
         # screen is a fact the turn can go without, never one that ends the brain's turns.
         logger.opt(exception=error).error("reading what is in front broke")
         return FrontUnread(f"{type(error).__name__}: {error}")
-    candidates = [Candidate(session, name, frozenset(ancestor_terminals(pid, processes))) for session, (pid, name) in sessions.items()]
+    candidates = [Candidate(session, name, frozenset(ancestor_terminals(pid, table))) for session, (pid, name) in sessions.items()]
     return in_front(screen, panes, candidates)
 
 
@@ -97,12 +97,12 @@ async def _ran(children: Children, *argv: str) -> str:
             raise _Unread(f"{' '.join(argv)} {child.said(ran)}")
 
 
-async def _screen(app: _App, processes: Mapping[int, Process]) -> Screen:
+async def _screen(app: _App, table: Mapping[int, Process]) -> Screen:
     match _FRONT_TAB.get(app.bundle or ""):
         case str() as source:
             return Screen(app.name, frozenset({_device(await _applescript.run(lambda: _asked(app.name, source)))}))
         case None:
-            return Screen(app.name, frozenset(process.tty for process in _under(app.pid, processes) if process.tty is not None))
+            return Screen(app.name, frozenset(process.terminal.device for process in _under(app.pid, table) if process.terminal is not None))
 
 
 def _asked(app: str, source: str) -> str:
@@ -113,10 +113,10 @@ def _asked(app: str, source: str) -> str:
     return str(answer.stringValue())
 
 
-def _under(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
+def _under(pid: int, table: Mapping[int, Process]) -> Iterator[Process]:
     """Every process descended from pid."""
     children: dict[int, list[Process]] = {}
-    for process in processes.values():
+    for process in table.values():
         children.setdefault(process.parent, []).append(process)
     stack = list(children.get(pid, ()))
     while stack:
@@ -125,10 +125,10 @@ def _under(pid: int, processes: Mapping[int, Process]) -> Iterator[Process]:
         stack.extend(children.get(process.pid, ()))
 
 
-async def _panes(children: Children, environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[tuple[int, int]]:
+async def _panes(children: Children, processes: Processes, environment: Mapping[str, str], pids: Sequence[int], table: Mapping[int, Process]) -> list[tuple[int, int]]:
     """Each tmux client's terminal, and the terminal of the pane it shows, from each server that may hold a pane of one
     of `pids`."""
-    answers = await tmux.asked(children, environment, pids, processes, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
+    answers = await tmux.asked(children, processes, environment, pids, table, "list-clients", "-F", "#{client_tty}\t#{pane_tty}")
     if unanswered := [answer.reason for answer in answers if isinstance(answer, Unanswered)]:
         raise _Unread("; ".join(unanswered))
     # A client with no terminal, as one in control mode over a pipe, is on no screen; nor is one gone since it was listed.

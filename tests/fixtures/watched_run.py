@@ -27,6 +27,8 @@ from hands.daemon.config import Config, Settings
 from hands.daemon.starting import CannotStart, Handover, Start
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
+from hands.sessions.kernel import KERNEL
+from hands.sessions.processes import Processes
 
 # How often `beats` kicks: a twentieth of the deadline, so only a stall of nearly all of it ends the run.
 KICKS_PER_DEADLINE = 20
@@ -43,7 +45,7 @@ def stuck() -> NoReturn:
         time.sleep(0.05)
 
 
-def hung(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
+def hung(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
     heart.beat("starting", None, 0, listening=False, degraded=())
     stuck()
 
@@ -68,14 +70,14 @@ def main() -> None:
         case "hangs":
             replace(cli.door, opened)
             replace(cli.run_here, hung)
-            sys.exit(cli.main(["--home", str(home.root), "run"]))
+            sys.exit(cli.main(["--home", str(home.root), "run"], processes=KERNEL))
         case "stalls":
             replace(cli.door, stalled_at_the_door)
-            sys.exit(cli.main(["--home", str(home.root), "run"]))
+            sys.exit(cli.main(["--home", str(home.root), "run"], processes=KERNEL))
         case "returns":
             # A restart's run holds the heartbeat from the outset, so its refusal beats, and kicks the watchdog.
             replace(cli.door, refused)
-            code = cli.main(["--home", str(home.root), "run", "--restarted", "0"])
+            code = cli.main(["--home", str(home.root), "run", "--restarted", "0"], processes=KERNEL)
             time.sleep(deadline.total_seconds() * 2)
             sys.exit(10 + code)
         case "beats":

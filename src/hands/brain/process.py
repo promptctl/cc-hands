@@ -57,6 +57,7 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_hook
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.processes import parse_pid
 from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
@@ -349,9 +350,11 @@ _UNHELD = re.compile(rb"can't find session|no server running on |error connectin
 
 def _pid(path: Path) -> int | None:
     try:
-        return int(path.read_text())
+        number = int(path.read_text())
     except (FileNotFoundError, ValueError):
         return None
+    # [LAW:parse-dont-validate] the pane's shell is signalled as a group: 0 or a negative pid would be another group.
+    return parse_pid(number)
 
 
 class InTmux:
@@ -414,6 +417,8 @@ class InTmux:
         # The client exits once the pane has written fritter's status, or the session is gone without it.
         await asyncio.shield(self._client.exit)
         # The client lets go as the session ends, which may be before the pane's shell has written fritter's status.
+        # [LAW:effects-at-boundaries] exception: the pane's shell is asked after through the machine, not Processes,
+        # and by kill(pid, 0) alone, which a reused pid passes, until promptctl-testing-c3u.fhu.
         while not (self._workspace / "status").exists() and (shell := self.shell) is not None and _alive(shell):
             await self._children.clock.sleep(0.02)
         try:
@@ -437,6 +442,8 @@ class InTmux:
                 await asyncio.shield(self.exit)
         except TimeoutError:
             if (shell := self.shell) is not None:
+                # [LAW:effects-at-boundaries] exception: the pane's group is signalled through the machine, not
+                # Processes, until promptctl-testing-c3u.fhu.
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(shell, signal.SIGKILL)
                 logger.info(f"killed the brain's pane ({shell}): it had not ended {STOP_SECONDS:.0f}s after its session was")
@@ -462,7 +469,9 @@ async def in_tmux(children: Children, station: Station, argv: Sequence[str], wor
     tmux = shutil.which("tmux", path=inherited.get("PATH"))
     if tmux is None:
         raise Unstartable("no tmux is on the PATH to run the brain in")
-    socket = socket_directory(inherited) / "default"
+    # [LAW:effects-at-boundaries] exception: the brain's terminal reads the user from the machine until it is reached
+    # through Terminals (promptctl-testing-c3u.fhu).
+    socket = socket_directory(inherited, os.getuid()) / "default"
     socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     session = brain_session(station.config_dir)
     # Two brains on one config directory would share one conversation: one left by a hands that ended while a person
@@ -2157,6 +2166,7 @@ def _unstarted(running: InTmux, waiting: str) -> Unstartable:
 
 def _alive(pid: int) -> bool:
     try:
+        # [LAW:effects-at-boundaries] exception: asked of the machine, not Processes, until promptctl-testing-c3u.fhu.
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
@@ -2176,6 +2186,8 @@ def _child_of(pid: int) -> int | None:
 
     [LAW:no-silent-failure] one that has started several cannot say which is the brain: typed into the wrong one, the
     brain's turns would go nowhere, so it is refused, naming each."""
+    # [LAW:effects-at-boundaries] exception: read through the machine, not Processes, whose table says each process's
+    # parent, until promptctl-testing-c3u.fhu.
     match child_pids(pid):
         case ():
             return None

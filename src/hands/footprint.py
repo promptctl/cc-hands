@@ -5,10 +5,9 @@ in that sense, and a Whisper load that grows the footprint by 2.4 GB grows the r
 """
 
 import ctypes
-import os
 from collections.abc import Callable
 
-from hands.darwin import libproc, raise_errno
+from hands.darwin import own_rusage
 from hands.sessions.wide import Fact
 
 # `proc_pid_rusage`'s flavor for `rusage_info_v0`, as <sys/resource.h> numbers it.
@@ -37,8 +36,7 @@ class _RusageInfoV0(ctypes.Structure):
 def footprint() -> int:
     """The process's physical footprint, in bytes. [LAW:no-silent-failure] a call the kernel refuses raises with its errno."""
     info = _RusageInfoV0()
-    if libproc.proc_pid_rusage(os.getpid(), _RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
-        raise_errno("proc_pid_rusage")
+    own_rusage(_RUSAGE_INFO_V0, info)
     return info.ri_phys_footprint
 
 

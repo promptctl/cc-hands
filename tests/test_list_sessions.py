@@ -22,6 +22,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.transcript import Titles, session_name
 from hands.voice.tools import list_sessions_tool
 from conftest import new_sessions
+from fakeprocesses import processes
 
 
 def membership(tmp_path: Path, name: str) -> Membership:
@@ -42,8 +43,8 @@ def named(path: Path, *names: str) -> None:
 
 
 async def call(sessions: Sessions, tmp_path: Path) -> object:
-    # No tmux server of the test's own runs: every session is in none.
-    return await list_sessions_tool(sessions, Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), {"TMUX_TMPDIR": str(tmp_path)}).body()
+    # No tmux server runs: every session is in none.
+    return await list_sessions_tool(sessions, processes(), Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), {"TMUX_TMPDIR": str(tmp_path)}).body()
 
 
 async def test_live_sessions_are_named_by_their_project_then_their_newest_name(tmp_path: Path) -> None:
@@ -182,7 +183,7 @@ async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_p
 
 
 async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why_its_pane_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def broken(_clock: object, _environment: object, _pids: object, _processes: object) -> NoReturn:
+    async def broken(_children: object, _processes: object, _environment: object, _pids: object, _table: object) -> NoReturn:
         raise ValueError("not enough values to unpack")
 
     monkeypatch.setattr(tmux, "servers", broken)
@@ -193,6 +194,6 @@ async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    tool = list_sessions_tool(new_sessions(clock=VirtualClock()), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
+    tool = list_sessions_tool(new_sessions(clock=VirtualClock()), processes(), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description

@@ -21,6 +21,7 @@ from hands.core.session import Membership, Opened, PromptId, Session, SessionId,
 from hands.sessions import heartbeat
 from hands.sessions.shim import OVERVIEW
 from hands.sessions.home import Home
+from fakeprocesses import Running, processes
 from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
@@ -304,7 +305,8 @@ async def test_a_hook_that_lands_after_its_session_ended_does_not_bring_it_back(
     await shim(home, START)
     await shim(home, END)
     assert await shim(home, PROMPT) == (0, "", "")
-    await sweep(home, sessions, frozenset())
+    # The claude the hooks named, this test's own process, still running: its session ended by its hook alone.
+    await sweep(processes(Running(os.getpid())), home, sessions, frozenset())
     assert sessions.live() == []
     assert sessions.live_session(SID) is None
 

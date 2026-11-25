@@ -28,8 +28,10 @@ from hands.core.session import Membership
 from hands.sessions import heartbeat
 from hands.sessions.home import Home, default_home
 from hands.sessions.hookconfig import post_timeout
+from hands.sessions.kernel import KERNEL
 from hands.sessions.membership import holder, remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
+from hands.sessions.processes import Processes
 from hands.sessions.untap import tapped, untap_script
 
 # [LAW:no-silent-failure] Claude Code shows a hook's stderr for exit 1 and carries
@@ -67,7 +69,7 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock = connection
 
 
-def record(home: Home, payload: Payload) -> None:
+def record(processes: Processes, home: Home, payload: Payload) -> None:
     match payload.text("hook_event_name"):
         case "SessionStart":
             write_membership(home, _membership(payload))
@@ -76,7 +78,7 @@ def record(home: Home, payload: Payload) -> None:
             remove_membership(home, payload.session_id())
         case _:
             heard = _membership(payload)
-            match holder(home, heard.pid):
+            match holder(processes, home, heard.pid):
                 case None:
                     # A session running before the plugin was installed, or before `/reload-plugins`, never fires its
                     # start hook, so its first hook of any kind is where it joins. The daemon reads this file for every
@@ -159,11 +161,11 @@ def post(home: Home, body: bytes, timeout: float) -> str:
     return detail
 
 
-def unreached(home: Home, clock: Clock, error: Unreached) -> int:
+def unreached(processes: Processes, home: Home, clock: Clock, error: Unreached) -> int:
     """The exit for a hook no daemon answered: silent when hands is off or starting, loud when it is broken."""
     now = clock.wall()
     try:
-        verdict = heartbeat.look(home.status, now)
+        verdict = heartbeat.look(processes, home.status, now)
     except OSError as judging:
         # [LAW:no-silent-failure] the kernel would not say whether the heartbeat's pid still runs: nothing is known.
         print(f"hands: {error}; and whether hands is running could not be judged: {judging}", file=sys.stderr)
@@ -181,7 +183,7 @@ def unreached(home: Home, clock: Clock, error: Unreached) -> int:
             return FAILED
 
 
-def main(argv: Sequence[str], clock: Clock) -> int:
+def main(argv: Sequence[str], clock: Clock, processes: Processes) -> int:
     match argv:
         case [_]:
             pass  # everything the shim is told comes on stdin and in HANDS_HOME
@@ -196,11 +198,11 @@ def main(argv: Sequence[str], clock: Clock) -> int:
         return FAILED
     try:
         payload = Payload.parse(body)
-        record(home, payload)
+        record(processes, home, payload)
         sys.stdout.write(told(payload))
         reply = post(home, body, post_timeout(payload.text("hook_event_name")))
     except Unreached as error:
-        return unreached(home, clock, error)
+        return unreached(processes, home, clock, error)
     except (Rejected, Refused) as error:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED
@@ -210,8 +212,8 @@ def main(argv: Sequence[str], clock: Clock) -> int:
 
 
 def entry() -> int:
-    """The `hands-shim` console script: main on this process's arguments and clock."""
-    return main(sys.argv, SYSTEM)
+    """The `hands-shim` console script: main on this process's arguments, clock and processes."""
+    return main(sys.argv, SYSTEM, KERNEL)
 
 
 if __name__ == "__main__":

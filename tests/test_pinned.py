@@ -19,6 +19,7 @@ from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
 from fixtures import pins
+from fakeprocesses import processes
 
 RELEASE = b"#!/bin/sh\necho 'the pinned release'\n"
 OTHER = b"#!/bin/sh\necho 'another release'\n"
@@ -298,16 +299,16 @@ def test_install_brain_says_what_it_did_and_is_one_event_each_time(tmp_path: Pat
     built = PIN.build(platform.machine()).name
     home = Home(tmp_path / "home")
     target = copied(PIN.claude(home.brain), RELEASE)
-    assert main(["--home", str(home.root), "install-brain"], pin=PIN, release=serving(OTHER)) == 0
+    assert main(["--home", str(home.root), "install-brain"], pin=PIN, release=serving(OTHER), processes=processes()) == 0
     assert capsys.readouterr().out == f"already there: Claude Code {VERSION}, the brain's, at {target}\n"
     # A release that cannot be fetched fails the install, saying why.
     target.unlink()
-    assert main(["--home", str(home.root), "install-brain"], pin=PIN, release=serving(ConnectionRefusedError(61, "Connection refused"))) == 1
+    assert main(["--home", str(home.root), "install-brain"], pin=PIN, release=serving(ConnectionRefusedError(61, "Connection refused")), processes=processes()) == 1
     unfetched = capsys.readouterr().err
     assert unfetched == f"hands install-brain: could not fetch elsewhere:{built}: ConnectionRefusedError(61, 'Connection refused')\n"
     # One that fetches says so, and its event why the copy there was not the pin.
     unpinned = f"Claude Code {VERSION}, the brain's, is not installed at {target}: run `hands install-brain`"
-    assert main(["--home", str(home.root), "install-brain"], pin=PIN, release=serving(RELEASE)) == 0
+    assert main(["--home", str(home.root), "install-brain"], pin=PIN, release=serving(RELEASE), processes=processes()) == 0
     assert capsys.readouterr().out == f"fetched: Claude Code {VERSION}, the brain's, at {target}\n"
     # [LAW:nothing-unseen] each install's event: the release it pins, the build of it this Mac runs, where it put it,
     # whether it fetched it, and why.

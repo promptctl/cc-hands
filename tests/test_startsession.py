@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakeprocesses import Running, processes
 
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
@@ -17,7 +18,6 @@ from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
 from hands.sessions.membership import parse_membership
 from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends
-from hands.sessions.terminals import Process
 from hands.voice.tool import Result
 from hands.voice.tools import start_session_tool
 
@@ -36,7 +36,7 @@ def members(home: Home) -> list[Membership]:
 
 def start(home: Home, folder: Path, model: str = "", environment: Mapping[str, str] = os.environ) -> dict[str, Any]:
     """The tool called as the model calls it, in the environment hands was started in."""
-    start_session = start_session_tool(SYSTEM, home, AuditLog(home.audit, clock=datetime.now).record, environment, lambda: members(home))
+    start_session = start_session_tool(SYSTEM, processes(), home, AuditLog(home.audit, clock=datetime.now).record, environment, lambda: members(home))
 
     async def called() -> Result:
         return await start_session.body(folder=str(folder), model=model)
@@ -49,7 +49,7 @@ def started(home: Home) -> list[dict[str, Any]]:
 
 
 def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling() -> None:
-    table = {pid: Process(pid, parent, 501, None, None) for pid, parent in {10: 1, 11: 10, 12: 11, 20: 1, 1: 0}.items()}
+    table = processes(*(Running(pid, parent) for pid, parent in {10: 1, 11: 10, 12: 11, 20: 1}.items())).table()
     assert [descends(pid, 10, table) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
 
 

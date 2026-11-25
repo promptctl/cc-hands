@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import threading
 from collections.abc import Callable, Mapping
@@ -17,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
+from fakeprocesses import processes
 from fixtures.pins import LAID_OUT
 from hands.brain import pinned, process
 from hands.core.session import PinnedClaude, Runnable
@@ -33,6 +33,7 @@ from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.hookconfig import DISPLAY_PATH
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.sessions.processes import Processes
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
@@ -228,7 +229,7 @@ def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_fil
 
 def test_a_blank_model_flag_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exited:
-        cli.main(["--home", str(tmp_path), "run", "--model", "  "])
+        cli.main(["--home", str(tmp_path), "run", "--model", "  "], processes=processes())
     assert exited.value.code == 2
     assert f"argument --model: a model's id, such as {ANTHROPIC_MODEL}, not '  '" in capsys.readouterr().err
 
@@ -240,7 +241,7 @@ def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_sett
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: None)
     for given in ((), ("--model", " claude-opus-5-5 ")):
-        assert cli.main(["--home", str(home.root), "run", *given]) == 1
+        assert cli.main(["--home", str(home.root), "run", *given], processes=processes()) == 1
     capsys.readouterr()
     starts = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert [(start["outcome"], start["facts"]["model_flag"]) for start in starts] == [("failed", None), ("failed", "claude-opus-5-5")]
@@ -279,7 +280,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
-    def loaded(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, _processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
         loaded_on.append(settings.model)
         started.append((listening.level, driving.last_chosen))
 
@@ -309,13 +310,13 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     monkeypatch.setattr(cli, "retire", retired)
     monkeypatch.setattr(cli, "execv", execv)
     with pytest.raises(Execed) as first:
-        cli.main(["--home", str(home.root), "run", *given])
+        cli.main(["--home", str(home.root), "run", *given], processes=processes())
     again = first.value.args[0][-3 - len(carried):]
     assert again == ["--restarted", "42", "--level=engaged", *carried]
     # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all, its desk to
     # start at the level the run before's desk was at; restarted before it steps it, it carries that level on again.
     with pytest.raises(Execed) as second:
-        cli.main(["--home", str(home.root), "run", *again])
+        cli.main(["--home", str(home.root), "run", *again], processes=processes())
     assert second.value.args[0][-3 - len(carried):] == again
     assert (loaded_on, started) == ([loads, loads], [("off", "off"), ("off", "engaged")])
     lines = list(map(json.loads, audit.tail(home.audit, 100)[0]))
@@ -328,7 +329,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
 def test_a_level_given_to_a_start_that_is_no_restart_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     for given, refused in ((("--level=engaged",), "--level is a restart's"), (("--restarted", "42", "--level=loud"), "argument --level: hands listens at off, wake word, engaged, not 'loud'")):
         with pytest.raises(SystemExit) as exited:
-            cli.main(["--home", str(tmp_path), "run", *given])
+            cli.main(["--home", str(tmp_path), "run", *given], processes=processes())
         assert exited.value.code == 2
         assert refused in capsys.readouterr().err
 
@@ -391,7 +392,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path) -
     run_start = Start(restarted=False, clock=SYSTEM)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
     exporting_down = heartbeat.Degradation("export", "can't export traces", "the collector has not taken all of its traces")
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, LAID_OUT, {}, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, processes(), home, LAID_OUT, {}, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -431,7 +432,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     stop = Stop()
     stop.tell(QuitKey())
-    assert await start(lambda: run.configured(prompted, lambda _: None, home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
+    assert await start(lambda: run.configured(prompted, lambda _: None, processes(), home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
     never.set()
 
 
@@ -444,7 +445,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     surveyed: list[run.Configured | CannotStart] = []
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+        asyncio.run(start(lambda: run.configured(refused, surveyed.append, processes(), home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     # Every other step is still said: the readiness check is given the refusal, as the backend's step.
     [refusal] = surveyed
     assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
@@ -462,7 +463,7 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
         return run.Configured(config, run.Settings(b"", Config()))
 
     monkeypatch.setattr(run, "sweep", swept)
-    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), processes(), home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     assert order == ["sweep", "configure", "survey"]
 
 
@@ -483,7 +484,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     levels = Levels("off")
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, {}, _NO_FILE), SYSTEM, levels, levels)
+            await run.run(refused, lambda _: None, processes(), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, {}, _NO_FILE), SYSTEM, levels, levels)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -520,25 +521,25 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     # Exported in the process, so the refusal is of what `main` hands down to the run, not of an environment the test makes up.
     monkeypatch.setenv("HANDS_LLM", "claude")
 
-    def loaded(clock: Clock, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:
             configure = partial(run.configured_from, children_on(clock), home, settings)
-            await start(lambda: run.configured(configure, lambda _: None, home, pin, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
+            await start(lambda: run.configured(configure, lambda _: None, processes, home, pin, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
 
     monkeypatch.setattr(cli, "loaded", loaded)
-    assert cli.main(["--home", str(home.root), "run"], pin=LAID_OUT) == 1
+    assert cli.main(["--home", str(home.root), "run"], pin=LAID_OUT, processes=processes()) == 1
     reason = f"HANDS_LLM set, and hands reads no setting from the environment: unset HANDS_LLM, and put the setting in {home.config}; then run hands again"
     assert capsys.readouterr().err == f"hands: {reason}\n"
     # The start's one event is failed with the reason, and says which run it was.
     [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert (refused["level"], refused["outcome"], refused["error"]) == ("error", "failed", f"CannotStart: {reason}")
     assert (refused["facts"]["pid"], refused["facts"]["restarted"], refused["facts"]["after_crash"]) == (os.getpid(), False, False)
-    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert cli.main(["--home", str(home.root), "status"], processes=processes()) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
@@ -566,9 +567,9 @@ def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tm
 
     monkeypatch.setattr(cli, "loaded", loaded)
     with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
-        cli.main(["--home", str(home.root), "run"])
+        cli.main(["--home", str(home.root), "run"], processes=processes())
     assert capsys.readouterr().err == "hands: no key\n"
-    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert cli.main(["--home", str(home.root), "status"], processes=processes()) == 1
     assert capsys.readouterr().out == "hands refused to start 0s ago: no key\n"
 
 
@@ -584,7 +585,7 @@ def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path,
 
     monkeypatch.setattr(cli, "start_indicator", unshown)
     with pytest.raises(OSError, match="no indicator"):
-        cli.main(["--home", str(home.root), "run"])
+        cli.main(["--home", str(home.root), "run"], processes=processes())
     [failed] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert (failed["outcome"], failed["error"]) == ("failed", "OSError: no indicator")
 
@@ -597,20 +598,20 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     home = Home(tmp_path)
     home.config.write_text('[llm]\nbackend = "nonesuch"\n')
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    gone = subprocess.Popen(["true"])
-    gone.wait()
-    crashed = heartbeat.Heart(home.status, gone.pid, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
+    # The crashed run's pid, which no process holds now.
+    gone, table = 4343, processes()
+    crashed = heartbeat.Heart(home.status, gone, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     crashed.beat("running", None, 0, listening=False, degraded=())
-    assert cli.main(["--home", str(home.root), "run"]) == 1
+    assert cli.main(["--home", str(home.root), "run"], processes=table) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
     assert str(home.config) in reason
     # Refused at the door, before the settings name a collector: the hold's event and the start's are on the log alone.
     assert [(line["event"], line["error"]) for line in map(json.loads, audit.tail(home.audit, 10)[0])] == [("hands.hold", None), ("hands.start", f"CannotStart: {reason}")]
-    assert cli.crashed_before(SYSTEM, home)
+    assert cli.crashed_before(SYSTEM, table, home)
     # A restart's run holds the heartbeat from the outset, the run before it having beat starting under its pid.
-    assert cli.main(["--home", str(home.root), "run", "--restarted", "0"]) == 1
+    assert cli.main(["--home", str(home.root), "run", "--restarted", "0"], processes=table) == 1
     capsys.readouterr()
-    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert cli.main(["--home", str(home.root), "status"], processes=table) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 

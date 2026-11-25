@@ -20,7 +20,7 @@ from hands.sessions import audit, wide
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions.home import HOME_VARIABLE, Home
-from hands.sessions.terminals import Process, process_table
+from hands.sessions.processes import Process, Processes, ancestors
 from hands.sessions.tmux import TmuxExit, ran_at, shown
 from hands.sessions.untap import untap_script, untapped
 
@@ -95,14 +95,10 @@ def joined(members: Iterable[Membership], root: int, table: Mapping[int, Process
 
 def descends(pid: int, root: int, table: Mapping[int, Process]) -> bool:
     """Whether process `pid` is `root` or one of the processes it started, by each process's parent in `table`."""
-    while pid != root:
-        if pid not in table:
-            return False
-        pid = table[pid].parent
-    return True
+    return any(process.pid == root for process in ancestors(pid, table))
 
 
-async def start(home: Home, children: Children, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:
+async def start(home: Home, children: Children, processes: Processes, record: audit.Record, folder: Path, model: str | None, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Started:
     """Start hands' `claude` in `folder` on `model`, or on its own default with none, and wait until it is among the
     `members` of hands."""
     # [LAW:nothing-unseen] a start is one unit of work: where, on what, in which tmux session and pane, which session
@@ -123,7 +119,7 @@ async def start(home: Home, children: Children, record: audit.Record, folder: Pa
         claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", "--settings", SETTINGS, *(() if model is None else (f"--model={model}",))]
         made, window = await _opened(children, tmux, terminal, name, where, ("-e", f"{HOME_VARIABLE}={home.root}", "--", *claude))
         wide.annotate(tmux_session=name, made_tmux_session=made, pane=window.pane, tmux_socket=window.socket)
-        member = await _joined(children, members, where, tmux, terminal, window)
+        member = await _joined(children, processes, members, where, tmux, terminal, window)
         wide.annotate(session=member.id, under_fritter=member.fritter is not None)
         if member.fritter is None:
             raise NotStarted(f"session {member.id} joined hands in tmux pane {window.pane}, but not under fritter, so hands cannot type into it: {home.bin / 'claude'} did not wrap it")
@@ -174,11 +170,11 @@ def _window(opened: TmuxExit) -> _Window:
     return _Window(pane, int(pid), Path(socket))
 
 
-async def _joined(children: Children, members: Callable[[], Iterable[Membership]], folder: Path, tmux: str, terminal: Mapping[str, str], window: _Window) -> Membership:
+async def _joined(children: Children, processes: Processes, members: Callable[[], Iterable[Membership]], folder: Path, tmux: str, terminal: Mapping[str, str], window: _Window) -> Membership:
     pane = window.pane
     clock = children.clock
     deadline = clock.now() + JOIN_SECONDS
-    while (member := joined(members(), window.pid, _processes())) is None:
+    while (member := joined(members(), window.pid, _table(processes))) is None:
         # list-panes, since display-message answers for a pane that is gone as though it were there (tmux 3.6); asked of
         # the server that opened the pane, the one its id names a pane of.
         match await ran_at(children, tmux, window.socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")):
@@ -220,8 +216,8 @@ async def _tmux(children: Children, tmux: str, terminal: Mapping[str, str], *arg
             raise NotStarted(f"tmux {arguments[0]} {child.said(ran)}")
 
 
-def _processes() -> dict[int, Process]:
+def _table(processes: Processes) -> dict[int, Process]:
     try:
-        return process_table()
+        return processes.table()
     except OSError as error:
         raise NotStarted(f"the processes could not be read to tell which session is the one started: {error}") from error

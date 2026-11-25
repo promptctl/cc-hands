@@ -9,7 +9,7 @@ import json
 import os
 from aiortc import RTCPeerConnection
 from aiortc.exceptions import InvalidStateError
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,17 +23,25 @@ from hands.core.trace import Span
 from hands.daemon.cli import main
 from hands.sessions.startsession import joined
 from hands.sessions.liveness import live
-from hands.sessions.terminals import process_table
 from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
 from hands.sessions.audit import ClipHeard, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
 from hands.voice import transcription
 from hands.sessions.wide import Fact, Outcome, WideEvent
+from fakeprocesses import FakeProcesses, Running, processes
 
 SESSION = SessionId("5086f176-e3cf-4222-bdb9-d7993c507d33")
 OTHER = SessionId("33a1f45e-fc95-41ca-98d0-a9310ab422fe")
 SPAN = "e5fe41d042769d03"
+# The running hands a heartbeat here names, and a claude left open as a session of it.
+HANDS, CLAUDE = 4242, 4343
+
+
+def up(now: datetime) -> FakeProcesses:
+    """The Mac's processes with HANDS and CLAUDE among them, both started an hour before `now`."""
+    started = (now - timedelta(hours=1)).timestamp()
+    return processes(Running(HANDS, start=started), Running(CLAUDE, start=started))
 
 
 def as_logged(record: object) -> Line:
@@ -169,19 +177,20 @@ async def test_a_call_that_drops_stops_the_stage_being_said_and_says_why() -> No
 def test_the_smoke_session_is_the_one_that_joined_under_its_process(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
     home.memberships.mkdir(parents=True)
-    # The test's own process stands for the `claude` the smoke run started.
-    started = os.getpid()
+    # The `claude` the smoke run started, and another process's.
+    started, other = 4242, 4343
+    table = processes(Running(started), Running(other))
 
     def member(session: SessionId, pid: int) -> None:
         record = {"pid": pid, "cwd": str(tmp_path), "transcript_path": f"/t/{session}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
         home.membership(session).write_text(json.dumps(record))
 
     # A session of another process's in the same folder, and one being written.
-    member(OTHER, 1)
+    member(OTHER, other)
     home.membership(SessionId("0998fa11-3723-4c9a-bb7a-b454ae05dfca")).write_text('{"pid": ')
-    assert joined(live(home)[0], started, process_table()) is None
+    assert joined(live(table, home)[0], started, table.table()) is None
     member(SESSION, started)
-    found = joined(live(home)[0], started, process_table())
+    found = joined(live(table, home)[0], started, table.table())
     assert found is not None and (found.id, found.fritter) == (SESSION, Path("/tmp/f/session.sock"))
 
 
@@ -191,7 +200,7 @@ def events(home: Home) -> list[dict[str, Any]]:
 
 def test_with_hands_not_running_the_run_stops_at_up_and_its_event_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
-    assert main(["--home", str(home.root), "smoke"]) == 1
+    assert main(["--home", str(home.root), "smoke"], processes=processes()) == 1
     assert capsys.readouterr().out == f"FAILED up: hands has not run: there is no heartbeat at {home.status}; start it with `hands run`\n"
     [command] = events(home)
     assert (command["event"], command["outcome"], command["facts"]["command"], command["facts"]["failed_at"]) == ("hands.command", "failed", "smoke", "up")
@@ -206,9 +215,9 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
     home.root.mkdir()
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
+    heartbeat.write(home.status, heartbeat.Status(HANDS, now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-    assert main(["--home", str(home.root), "smoke"]) == 1
+    assert main(["--home", str(home.root), "smoke"], processes=up(now)) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"
     [command] = events(home)
     facts = command["facts"]
@@ -216,20 +225,20 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     assert facts["model"] == transcription.MODEL
     assert (facts["reached"], facts["failed_at"], facts["daemon_errors"]) == ("up", "joined", [])
     assert command["error"] == "exited 1: joined: there is no `claude` on PATH"
-    assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts
+    assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {HANDS}") and "joined_ms" not in facts
 
 
 def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, cwd: Path, written_at: float) -> tuple[str, list[dict[str, str]]]:
-    """A smoke run against a hands that is up, whose claude is a stand-in that stops it at joined, with the test's own
-    process a session of hands in `cwd`, its membership file written at `written_at`. The run's last line, and the
+    """A smoke run against a hands that is up, whose claude is a stand-in that stops it at joined, with CLAUDE a session
+    of hands in `cwd`, its membership file written at `written_at`. The run's last line, and the
     environment of each claude it started."""
     from hands.daemon import smoke
 
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
     home.memberships.mkdir(parents=True)
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
-    record = {"pid": os.getpid(), "cwd": str(cwd), "transcript_path": f"/t/{OTHER}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
+    heartbeat.write(home.status, heartbeat.Status(HANDS, now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
+    record = {"pid": CLAUDE, "cwd": str(cwd), "transcript_path": f"/t/{OTHER}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
     home.membership(OTHER).write_text(json.dumps(record))
     os.utime(home.membership(OTHER), (written_at, written_at))
     real = tmp_path / "real" / "claude"
@@ -250,7 +259,7 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
 
     monkeypatch.setattr(smoke, "_synthesized", synthesized)
     monkeypatch.setattr(smoke, "on_terminal", on_terminal)
-    assert main(["--home", str(home.root), "smoke"]) == 1
+    assert main(["--home", str(home.root), "smoke"], processes=up(now)) == 1
     return capsys.readouterr().out.splitlines()[-1], started
 
 
@@ -270,15 +279,15 @@ def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path
 def test_a_live_session_in_a_folder_hands_also_calls_smoke_stops_the_run_before_it_empties_its_folder_and_is_named(
     folder: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The test's own process stands for a claude left open in the smoke folder, or in any folder hands speaks of as smoke.
+    # CLAUDE is a claude left open in the smoke folder, or in any folder hands speaks of as smoke.
     cwd = tmp_path / folder
     smoke_folder = tmp_path / "home" / FOLDER
     smoke_folder.mkdir(parents=True)
     (smoke_folder / "kept.txt").write_text("")
     last, started = stand_in_run(tmp_path, capsys, monkeypatch, cwd, datetime.now(UTC).timestamp())
     assert last == (
-        f"FAILED joined: already open: session {OTHER} (pid {os.getpid()}) in {cwd}, which hands calls {cwd.name!r}; the brain"
-        f" could take one for the session the test starts, which hands calls 'smoke': close each, or end them with `kill {os.getpid()}`,"
+        f"FAILED joined: already open: session {OTHER} (pid {CLAUDE}) in {cwd}, which hands calls {cwd.name!r}; the brain"
+        f" could take one for the session the test starts, which hands calls 'smoke': close each, or end them with `kill {CLAUDE}`,"
         " then run `hands smoke` again"
     )
     # Refused before the smoke folder was emptied and before a claude was started.
@@ -289,7 +298,7 @@ def test_a_live_session_in_a_folder_hands_also_calls_smoke_stops_the_run_before_
 def test_a_session_hands_does_not_call_smoke_does_not_stop_the_run(
     folder: str, ago: float, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A file written before the test's process started names a claude that has exited and whose pid was handed out
+    # A file written before CLAUDE started names a claude that has exited and whose pid was handed out
     # again; a live session in a folder of another name is called by that name.
     last, _ = stand_in_run(tmp_path, capsys, monkeypatch, tmp_path / folder, datetime.now(UTC).timestamp() - ago)
     assert last == STOPPED_BY_THE_STAND_IN

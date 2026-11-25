@@ -19,6 +19,7 @@ from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
 from loguru import logger
 from PyObjCTools import AppHelper, MachSignals
 
+from hands.sessions.processes import Processes
 from hands.sessions.child import Children
 from hands.daemon import indicator
 from hands.sessions import heartbeat
@@ -35,7 +36,7 @@ WAKE = AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_window
 )
 
 
-def show(children: Children, home: Home, run: int) -> Literal[0]:
+def show(children: Children, processes: Processes, home: Home, run: int) -> Literal[0]:
     """Run the status item until `run`, the process that started this one, is gone and the heartbeat has said so; then
     0, the indicator's exit code. What made it stop looking at the heartbeat first is raised."""
     app = AppKit.NSApplication.sharedApplication()
@@ -67,7 +68,7 @@ def show(children: Children, home: Home, run: int) -> Literal[0]:
         nonlocal before
         try:
             now = children.clock.wall()
-            verdict = heartbeat.look(home.status, now)
+            verdict = heartbeat.look(processes, home.status, now)
             seen = indicator.show(before, verdict, now)
             before = seen
             item.button().setTitle_(seen.title)
