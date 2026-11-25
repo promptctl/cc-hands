@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from typing import cast, get_args
 
+import aioice.ice
+import aioice.stun
 import numpy as np
 import pytest
 from aiohttp import ClientSession, web
@@ -31,7 +33,6 @@ from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
-from hands.voice import phone as phone_module
 from hands.voice.clips import Clip
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
@@ -157,7 +158,7 @@ class Call:
 
 @asynccontextmanager
 async def calling(clock: Clock = SYSTEM) -> AsyncGenerator[Call, None]:
-    """A call up, hands at the phone, ended as the block ends, its watch on `clock`."""
+    """A call up, hands at the phone, ended as the block ends, its time on `clock`."""
     recorded = list[Entry]()
     # [LAW:one-source-of-truth] the gate and the phone write one record, as the daemon runs them.
     key = PushToTalk(SYSTEM, recorded.append)
@@ -379,11 +380,20 @@ def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
 
 
 @pytest.mark.outside
-async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call) -> None:
+@pytest.mark.parametrize("closed", ["channel", "channel and connection", "connection"])
+async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call, closed: str) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
     playing = call.phone.play(bytes(24000 * 2 * 60))  # a minute that will never be heard
-    call.page.channel.close()
+    # As call.js hangs up, its channel and then its connection; or either alone, as a browser tearing a page down does.
+    match closed:
+        case "channel":
+            call.page.channel.close()
+        case "channel and connection":
+            call.page.channel.close()
+            await call.page.peer.close()
+        case _:
+            await call.page.peer.close()
     await call.until(lambda: call.key.gate.place == "desk")
     # The clip open at the phone is sent as it stands.
     assert (call.key.gate.key, call.key.gate.ended) == ("up", ("sent",))
@@ -560,23 +570,16 @@ async def test_a_quiet_is_heard_as_the_zero_audio_it_counts_and_a_turn_around_it
 
 
 @pytest.mark.outside
-async def test_a_call_that_sends_only_quiet_messages_is_not_hung_up_for_sending_nothing() -> None:
+async def test_a_call_whose_page_sends_nothing_for_a_minute_is_up_still_and_carries_its_button() -> None:
     clock = VirtualClock()
     async with calling(clock) as up:
-        due = phone_module.QUIET_SECS
-        await clock.scheduled(due)
-        # Each quiet comes a little before the call would be let go, four times the span in all.
-        for _ in range(4):
-            clock.advance(phone_module.QUIET_SECS - 0.5)
-            up.page.send(quiet_message(1024))
-            due = clock.now() + phone_module.QUIET_SECS
-            await clock.scheduled(due)
+        clock.advance(60)
+        # The channel is ordered: a call let go of in the minute would never take this press.
+        up.page.send("press")
+        await up.until(lambda: up.phone.moves.qsize() == 1)
+        assert up.phone.moves.get_nowait() == "start"
         assert up.key.gate.place == "phone"
         assert calls(up.recorded) == []
-        # And the same call, sent nothing for the span, is let go: the watch above was running.
-        clock.advance(phone_module.QUIET_SECS)
-        await up.until(lambda: up.key.gate.place == "desk")
-        assert left(calls(up.recorded)[0]).reason == "went quiet"
 
 
 # What one message of the page's may hold, or count in a `quiet`, at a call's rate: 100 ms.
@@ -631,18 +634,6 @@ async def test_what_hands_cannot_read_is_said_makes_no_silence_and_is_counted_on
     await call.phone.stop()
     [event] = calls(call.recorded)
     assert (left(event).rejected, left(event).held_back) == (1, 0)
-
-
-@pytest.mark.outside
-async def test_a_page_that_sends_only_what_hands_cannot_read_is_hung_up_as_one_that_sends_nothing() -> None:
-    clock = VirtualClock()
-    async with calling(clock) as up:
-        await clock.scheduled(phone_module.QUIET_SECS)
-        up.page.send(quiet_message(0))
-        await up.until(lambda: up.phone._call is not None and up.phone._call.rejected == 1)  # pyright: ignore[reportPrivateUsage]
-        clock.advance(phone_module.QUIET_SECS)
-        await up.until(lambda: up.key.gate.place == "desk")
-        assert left(calls(up.recorded)[0]).rejected == 1
 
 
 @pytest.mark.outside
@@ -902,14 +893,26 @@ async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_
     await call.until(lambda: any(np.abs(frame.to_ndarray()).max() > 1000 for frame in call.page.played))
 
 
+async def vanished(page: Page) -> None:
+    """The page's browser killed outright, or its phone gone from the network: every socket it reached hands on shuts with
+    nothing sent over it, so hands is told of no channel closed and no alert, and its consent checks go unanswered."""
+    sctp = page.peer.sctp
+    assert sctp is not None
+    for ice in {sctp.transport.transport, *(each.receiver.transport.transport for each in page.peer.getTransceivers())}:
+        await ice.stop()
+
+
 @pytest.mark.outside
-async def test_a_page_that_goes_quiet_is_hung_up_and_hands_is_at_the_desk_again(call: Call, monkeypatch: pytest.MonkeyPatch) -> None:
-    # A browser closed outright says nothing; its microphone simply stops arriving.
-    monkeypatch.setattr(phone_module, "QUIET_SECS", 0.2)
-    call.page.send(LOUD)
-    await call.until(lambda: call.key.gate.place == "desk")
-    [event] = calls(call.recorded)
-    assert left(event).reason == "went quiet"
+async def test_a_page_gone_without_a_word_fails_its_call_and_hands_is_at_the_desk_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    # aiortc's own ICE, its timers shortened and its six unanswered consent checks kept: the end is the connection's.
+    monkeypatch.setattr(aioice.ice, "CONSENT_INTERVAL", 0.05)
+    monkeypatch.setattr(aioice.stun, "RETRY_RTO", 0.05)
+    async with calling() as up:
+        up.page.send(LOUD)
+        await vanished(up.page)
+        await up.until(lambda: up.key.gate.place == "desk")
+        [event] = calls(up.recorded)
+        assert left(event).reason == "failed"
 
 
 async def nobody_types(text: str) -> None:

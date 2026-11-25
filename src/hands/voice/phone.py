@@ -56,15 +56,12 @@ from hands.voice.wakeword import THRESHOLD
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
 FRAME_SECS = 0.02
-# How long the page may send nothing before its call is taken to be over. The page sends a message every 20 ms, audio or
-# a `quiet`, for as long as it is open, so a channel this quiet is a page closed, a phone put to sleep, or a network gone: measured
-# 2026-10-03, a browser closed outright leaves aiortc's connection "connected" for good.
-QUIET_SECS = 3.0
 
 
-# Why a call ended: a newer call took its place, the page hung up, the connection failed, the page stopped sending
-# (closed outright, or the phone asleep), or hands stopped.
-PhoneGone = Literal["replaced", "hung up", "failed", "went quiet", "stopped"]
+# Why a call ended: a newer call took its place, the page hung up, the connection failed, or hands stopped.
+# [LAW:no-ambient-temporal-coupling] each is an event, never a silence timed out: a page gone without a word (closed
+# outright, the phone asleep, the network gone) is a connection failed, once ICE's consent checks (RFC 7675) go unanswered.
+PhoneGone = Literal["replaced", "hung up", "failed", "stopped"]
 
 # What an offer asks of the phone: to take it from whatever page has it, as a press of the page's Connect asks, or to
 # resume it, as a page whose call dropped asks on its own, which no other page's call or offer gives way to.
@@ -492,11 +489,8 @@ class Call:
     remote: str
     asked: Asked
     began: Begun
-    # Set by every message the page sends that hands reads; the watch hangs up a call that goes QUIET_SECS without one.
-    heard: asyncio.Event
-    # Set as it arrives: its channel, its watch, and how long after its offer it came.
+    # Set as it arrives: its channel, and how long after its offer it came.
     channel: RTCDataChannel | None = None
-    watch: asyncio.Task[None] | None = None
     arrived_ms: float = 0.0
     # How many presses the page has sent, as it numbers them, and the gate's turn each opened, until hands answers the press:
     # with the clip it opened, or that it opened none.
@@ -563,7 +557,7 @@ class Phone:
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         outbound = Outbound(self._clock, self._played_rate)
         resampler = AudioResampler(format="s16", layout="mono", rate=self._heard_rate)
-        call = Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began, asyncio.Event())
+        call = Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began)
         peer.addTrack(outbound)
 
         @peer.on("datachannel")
@@ -574,6 +568,16 @@ class Phone:
                 if self._call is call:
                     await self.hang_up("hung up")
 
+            # A connection that fails closes DTLS under the channel, and aiortc then closes the channel itself; a page that
+            # hangs up closes the channel over a DTLS still up. So whichever closes first is how the call ended, and its
+            # handler, scheduled first, runs first.
+            dtls = channel.transport.transport
+
+            @dtls.on("statechange")
+            async def lost() -> None:  # pyright: ignore[reportUnusedFunction]
+                if dtls.state == "closed" and self._call is call:
+                    await self.hang_up("failed")
+
             @channel.on("message")
             def said(message: object) -> None:  # pyright: ignore[reportUnusedFunction]
                 if self._call is not call:
@@ -582,13 +586,10 @@ class Phone:
                 try:
                     said = parse_said(message, call.rate)
                 except Rejected as error:
-                    # [LAW:no-silent-failure] the page and hands disagree about what it sends: said, not guessed at. It is
-                    # no sign the page is alive: a page that sends only what hands cannot read is hung up as one that
-                    # sends nothing.
+                    # [LAW:no-silent-failure] the page and hands disagree about what it sends: said, not guessed at.
                     call.rejected += 1
                     logger.error(str(error))
                     return
-                call.heard.set()
                 self.hear(call, said)
 
             if self._offered is call:
@@ -630,8 +631,6 @@ class Phone:
         # [LAW:nothing-unseen] the move a call makes is part of that call, in its trace, wherever the call's end is noticed.
         with continuing(call.began.span):
             self._key.go("phone")
-        # Watched from the channel's opening: the page sends nothing before it.
-        call.watch = asyncio.create_task(self._watch(call), name="the phone's call watch")
         match gone:
             case None:
                 pass
@@ -646,17 +645,6 @@ class Phone:
             case Call():
                 call_ended(self._record, offered.began, offered.remote, offered.asked, CallUnreached(reason))
                 await offered.peer.close()
-
-    async def _watch(self, call: Call) -> None:
-        while True:
-            try:
-                async with self._clock.timeout(QUIET_SECS):
-                    await call.heard.wait()
-            except TimeoutError:
-                if self._call is call:
-                    await self.hang_up("went quiet")
-                return
-            call.heard.clear()
 
     def hear(self, call: Call, said: Said) -> None:
         """Act on one message `call`'s page sent, as the channel brings it, in order."""
@@ -784,8 +772,6 @@ class Phone:
                 with continuing(call.began.span):
                     self._key.go("desk")
                 call.outbound.stop()
-                if call.watch is not None and call.watch is not asyncio.current_task():
-                    call.watch.cancel()
                 call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told, call.lines, call.held_back, call.rejected))
                 return call
 

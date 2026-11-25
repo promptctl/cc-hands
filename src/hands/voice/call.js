@@ -5,9 +5,6 @@ import {PAGE_OPEN, asked, carriesKey, wording} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
-// hands sends its voice every 20 ms, silence and all, for as long as the call is up: a call it has sent nothing over
-// for this long is gone, as hands takes a page gone that sends nothing for its QUIET_SECS.
-const QUIET_MS = 3000;
 // The waits between calls made again, doubling from the first to the last, which repeats while hands stays out of reach.
 const FIRST_RETRY_MS = 1000, LAST_RETRY_MS = 8000;
 // hands answers an offer within a second or two: one unanswered for this long went to an address the phone can no longer
@@ -367,7 +364,7 @@ async function connect(claim) {
   let pending = [], count = 0, marked = null;
   // No sample leaves the phone outside a turn. Inside one, what is gathered goes as audio; outside one, only how many
   // samples were gathered goes, as a `quiet`, which hands hears as that much silence: a message every 20 ms either way is
-  // what hands' clock and its watch on this call run on (hands.voice.phone). The turn's edges end the message being
+  // what hands' clock on this call runs on (hands.voice.phone). The turn's edges end the message being
   // gathered, in the order the button's messages go out, so no sample of one side rides in a message of the other.
   const tag = ++tags;
   tap.port.onmessage = ({data}) => {
@@ -503,12 +500,13 @@ async function connect(claim) {
   channel.onopen = () => {
     wanted = true; tries = 0;
     talk.disabled = false; talk.textContent = "Hold to talk"; sayIdle();
-    watch(made);
     syncLock();
     if (wakeOn) made.listen();
   };
   channel.onmessage = ({data}) => told(made, JSON.parse(data));
   channel.onclose = () => dropped(made, "hands hung up.");
+  // [LAW:no-ambient-temporal-coupling] a call ends on an event, never on a silence timed out: a phone that slept through
+  // hands hanging up, or a hands gone without a word, stops being answered on ICE's consent checks (RFC 7675), and fails.
   pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") dropped(made, "The connection to hands failed."); };
 
   // From here on, what fails is this call, settled against it: never another call made since, as this one ended.
@@ -534,22 +532,6 @@ async function connect(claim) {
     }
   } catch (error) {
     dropped(made, `Could not reach hands: ${error.message}.`);
-  }
-}
-
-// A call is gone once hands has sent nothing over it for QUIET_MS: a page woken from sleep finds its call still
-// "connected", hands having hung it up while the phone could not hear it say so.
-async function watch(made) {
-  let received = null, heard = performance.now();
-  while (!made.ended) {
-    await new Promise((done) => setTimeout(done, 1000));
-    if (made.ended) return;
-    let now = 0, stats;
-    // Closed while the wait ran: the call is over, and so is its watch.
-    try { stats = await made.pc.getStats(); } catch { return; }
-    stats.forEach((report) => { if (report.type === "inbound-rtp" && report.kind === "audio") now = report.packetsReceived; });
-    if (now !== received) { received = now; heard = performance.now(); }
-    else if (performance.now() - heard > QUIET_MS) dropped(made, "hands went quiet.");
   }
 }
 
