@@ -110,7 +110,7 @@ HEARD: list[SessionEvent] = [
     Continued(ONE.id, was=TURN, now=NEXT),
     PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None),
     ToolFinished(ONE.id, at=5.0, call=BASH, mode=None),
-    Progressed(ONE.id, (TURN,), (progress.Doing(progress.RUNNING, "run the test suite"),), at=5.0),
+    Progressed(ONE.id, (TURN,), (progress.Doing(progress.RUNNING, progress.Words("run the test suite")),), at=5.0),
 ]
 
 
@@ -1183,7 +1183,7 @@ def test_a_turn_set_going_again_is_open_again_gathers_what_it_does_and_says_so()
     going, effects = reduce(waiting, said(Busy(), 2048))
     assert (live(going).turn, effects) == (Opened(TURN, resumed=True), [Audit(Resumed(ONE.id, TURN))])
     assert told([Read(ONE.id, Stamp(9000))], going)[1] == []
-    tests = progress.Doing(progress.RUNNING, "run the test suite")
+    tests = progress.Doing(progress.RUNNING, progress.Words("run the test suite"))
     gathered, _ = reduce(going, Progressed(ONE.id, (TURN,), (tests,), at=30.0))
     assert live(gathered).turn == Opened(TURN, resumed=True, gathering=progress.Gathering((tests,), "", 30.0, 30.0), latest=tests)
     # At the prompt again, it is told as from any idle.

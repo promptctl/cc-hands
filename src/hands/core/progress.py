@@ -89,16 +89,26 @@ class Pattern:
 
 @dataclass(frozen=True)
 class Command:
-    """A command's first line: the page shows it, and the voice never reads code out."""
+    """A command: the page shows its first line, and the voice never reads code out."""
 
-    first_line: str
+    text: str
 
 
 @dataclass(frozen=True)
 class Site:
-    """A page by its site: a whole address read out is noise."""
+    """A page by its address. The voice and the page say its host, since a whole address read out is noise; the host is
+    the address's, so it is no part of what makes two pages the same."""
 
-    host: str
+    url: str
+    host: str = field(compare=False)
+
+
+@dataclass(frozen=True)
+class Task:
+    """A task by its id, and the status it was set to: one task is the same task whatever it was set to."""
+
+    id: str
+    status: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -132,31 +142,13 @@ class Message:
 
 @dataclass(frozen=True)
 class ToolInput:
-    """A tool no row knows, and its input as JSON, kept to what the page shows of it: the voice says only the tool. Two
-    calls of one tool are one thing to a listener, whatever their inputs, so the input is no part of what makes them equal."""
+    """A tool no row knows, and its input as JSON: the voice says only the tool, and the page shows the input."""
 
     tool: str
-    json: str = field(compare=False)
+    json: str
 
 
-Part = Path | Words | Pattern | Command | Site | Skill | Message | ToolInput
-
-
-@dataclass(frozen=True)
-class Doing:
-    """One call as it is made: its kind of work, what it is said as when it is the only one of its kind, and what it was
-    done to; `alone` is None where the voice has nothing to say of it, and `of` where its input does not say.
-
-    `of` is what makes two calls one thing done: an edit of one file twice is that file, and two files of one name in two
-    directories are two. Where it is None, `alone` stands for it, and a call that has neither is its own thing."""
-
-    work: Work
-    alone: str | None
-    of: Part | None = None
-
-    def same(self, at: int) -> Hashable:
-        """What this call is the same thing done as, `at` being where it stands among the calls said together."""
-        return at if self.of is None and self.alone is None else self.alone if self.of is None else self.of
+Part = Path | Words | Pattern | Command | Site | Task | Skill | Message | ToolInput
 
 
 # How much of one call the page shows on its line.
@@ -164,40 +156,41 @@ LINE = 120
 
 
 @dataclass(frozen=True)
-class Intent:
+class Doing:
     """What a call sets out to do, as the voice and the page each tell it: its kind of work, which holds its act, and what
-    it is done to. [LAW:one-source-of-truth] the one value per call; `heard` and `line` word it from the same two things,
-    each rendering a part as its medium needs and the voice leaving out the parts a listener cannot follow. A call whose
-    input says nothing of what it was done to is its kind of work, one."""
+    it is done to. [LAW:one-source-of-truth] the one value per call, and the only one kept: `alone` and `line` are worded
+    from it when they are asked for, each rendering a part as its medium needs and the voice leaving out the parts a
+    listener cannot follow. A call whose input says nothing of what it was done to is its kind of work, one.
+
+    What it is done to is also what makes two calls one thing done: an edit of one file twice is that file, and two files
+    of one name in two directories are two."""
 
     work: Work
     of: Part | None
 
-    def heard(self) -> Doing | None:
-        """What the voice says of it; None for a call that asks the user, which is spoken as it is asked."""
-        if self.work.hooked:
+    @property
+    def alone(self) -> str | None:
+        """What the voice says of it when it is the only one of its kind; None where it has nothing to say of it."""
+        if self.of is None:
             return None
-        match self.of:
-            case None:
-                return Doing(self.work, None)
-            case part:
-                said_of = _voiced(part)
-                return Doing(self.work, None if said_of is None else _joined(self.work.act, said_of), part)
+        said_of = _voiced(self.of)
+        return None if said_of is None else _joined(self.work.act, said_of)
 
     def line(self, cwd: PurePath) -> str:
         """The one line the page shows of it, `cwd` taken off the front of a path under it, and cut to LINE."""
         return _cut(_first_line(self.work.one if self.of is None else _joined(self.work.act, _shown(self.of, cwd))), LINE)
 
 
-def intent(tool: str, input: Mapping[str, object]) -> Intent:
+def intent(tool: str, input: Mapping[str, object]) -> Doing:
     """What a call of `tool` with this input sets out to do, for every tool Claude Code calls."""
     return _SAID.get(tool, _used)(tool, input)
 
 
 def doing(tool: str, input: Mapping[str, object]) -> Doing | None:
-    """What the voice says of a call; None for a call that asks the user, which is spoken as it is asked and needs no
-    progress besides."""
-    return intent(tool, input).heard()
+    """What a call sets out to do, for the voice; None for a call that asks the user, which is spoken as it is asked and
+    needs no progress besides."""
+    made = intent(tool, input)
+    return None if made.work.hooked else made
 
 
 def said(doings: Sequence[Doing]) -> str:
@@ -207,100 +200,98 @@ def said(doings: Sequence[Doing]) -> str:
     # what they were done to are eight, each its own by where it stands.
     grouped: dict[Work, dict[Hashable, str]] = {}
     for at, each in enumerate(doings):
-        grouped.setdefault(each.work, {})[each.same(at)] = each.work.one if each.alone is None else each.alone
+        grouped.setdefault(each.work, {})[at if each.of is None else each.of] = each.work.one if each.alone is None else each.alone
     return ", then ".join(
         next(iter(things.values())) if len(things) == 1 else work.several.format(count=spoken_count(len(things))) for work, things in grouped.items()
     )
 
 
-def _ran(_tool: str, input: Mapping[str, object]) -> Intent:
+def _ran(_tool: str, input: Mapping[str, object]) -> Doing:
     # Claude Code asks for a description of every command, in the imperative ("Run the test suite"), which is what
     # this sentence is made of; the command itself is code, and never read aloud.
     description = _text(input, "description")
     if description is not None:
-        return Intent(RUNNING, Words(lowered(description)))
+        return Doing(RUNNING, Words(lowered(description)))
     command = _text(input, "command")
-    return Intent(RUNNING, None if command is None else Command(_first_line(command)))
+    return Doing(RUNNING, None if command is None else Command(command))
 
 
-def _on_file(work: Work) -> Callable[[str, Mapping[str, object]], Intent]:
-    def row(_tool: str, input: Mapping[str, object]) -> Intent:
+def _on_file(work: Work) -> Callable[[str, Mapping[str, object]], Doing]:
+    def row(_tool: str, input: Mapping[str, object]) -> Doing:
         file = _file(input)
-        return Intent(work, None if file is None else Path(file))
+        return Doing(work, None if file is None else Path(file))
 
     return row
 
 
-def _searched(_tool: str, input: Mapping[str, object]) -> Intent:
+def _searched(_tool: str, input: Mapping[str, object]) -> Doing:
     pattern = _text(input, "pattern")
-    return Intent(SEARCHING, None if pattern is None else Pattern(pattern, _text(input, "path")))
+    return Doing(SEARCHING, None if pattern is None else Pattern(pattern, _text(input, "path")))
 
 
-def _looked_up(_tool: str, input: Mapping[str, object]) -> Intent:
+def _looked_up(_tool: str, input: Mapping[str, object]) -> Doing:
     query = _text(input, "query")
-    return Intent(LOOKING_UP, None if query is None else Words(query))
+    return Doing(LOOKING_UP, None if query is None else Words(query))
 
 
-def _fetched(_tool: str, input: Mapping[str, object]) -> Intent:
-    host = _host(_text(input, "url"))
-    return Intent(FETCHING, None if host is None else Site(host))
+def _fetched(_tool: str, input: Mapping[str, object]) -> Doing:
+    url = _text(input, "url")
+    host = _host(url)
+    return Doing(FETCHING, None if url is None or host is None else Site(url, host))
 
 
-def _dispatched(_tool: str, input: Mapping[str, object]) -> Intent:
+def _dispatched(_tool: str, input: Mapping[str, object]) -> Doing:
     description = _text(input, "description")
-    return Intent(DELEGATING, None if description is None else Words(lowered(description), aside=_text(input, "subagent_type")))
+    return Doing(DELEGATING, None if description is None else Words(lowered(description), aside=_text(input, "subagent_type")))
 
 
-def _skilled(_tool: str, input: Mapping[str, object]) -> Intent:
+def _skilled(_tool: str, input: Mapping[str, object]) -> Doing:
     name = _text(input, "skill")
-    return Intent(SKILLS, None if name is None else Skill.of(name, input.get("args")))
+    return Doing(SKILLS, None if name is None else Skill.of(name, input.get("args")))
 
 
-def _messaged(_tool: str, input: Mapping[str, object]) -> Intent:
+def _messaged(_tool: str, input: Mapping[str, object]) -> Doing:
     # `to` is a name or an agent's id; `summary` is the sender's own line for it, absent on some calls.
     to = _text(input, "to")
     message = _text(input, "message")
     text = _text(input, "summary") or (None if message is None else _first_line(message))
-    return Intent(MESSAGING, None if to is None else Message(recipient(to), text))
+    return Doing(MESSAGING, None if to is None else Message(recipient(to), text))
 
 
-def _task_added(_tool: str, input: Mapping[str, object]) -> Intent:
+def _task_added(_tool: str, input: Mapping[str, object]) -> Doing:
     subject = _text(input, "subject")
-    return Intent(ADDING_TASKS, None if subject is None else Words(subject))
+    return Doing(ADDING_TASKS, None if subject is None else Words(subject))
 
 
-def _task_updated(_tool: str, input: Mapping[str, object]) -> Intent:
+def _task_updated(_tool: str, input: Mapping[str, object]) -> Doing:
     task = _text(input, "taskId")
-    # Its status as Claude Code names it, "in_progress" said as words.
-    status = _text(input, "status")
-    return Intent(UPDATING_TASKS, None if task is None else Words(task if status is None else f"{task}: {status.replace('_', ' ')}"))
+    return Doing(UPDATING_TASKS, None if task is None else Task(task, _text(input, "status")))
 
 
-def _planned(_tool: str, _input: Mapping[str, object]) -> Intent:
-    return Intent(PLANNING, None)
+def _planned(_tool: str, _input: Mapping[str, object]) -> Doing:
+    return Doing(PLANNING, None)
 
 
-def _asked(_tool: str, input: Mapping[str, object]) -> Intent:
+def _asked(_tool: str, input: Mapping[str, object]) -> Doing:
     # The first question that has its text, as the turn's record of the dialog reads them.
     questions = input.get("questions")
     blocks = cast(list[object], questions) if isinstance(questions, list) else []
     asked = (_text(cast(Mapping[str, object], each), "question") for each in blocks if isinstance(each, dict))
     question = next((text for text in asked if text is not None), None)
-    return Intent(ASKING, None if question is None else Words(question))
+    return Doing(ASKING, None if question is None else Words(question))
 
 
-def _approval(_tool: str, _input: Mapping[str, object]) -> Intent:
-    return Intent(APPROVING, None)
+def _approval(_tool: str, _input: Mapping[str, object]) -> Doing:
+    return Doing(APPROVING, None)
 
 
-def _used(tool: str, input: Mapping[str, object]) -> Intent:
-    # An MCP tool is named mcp__<server>__<tool>: the tool's own name is the part a listener can follow. The page cuts
-    # its input to a line, so no more of it is kept.
-    return Intent(USING, ToolInput(tool.rsplit("__", 1)[-1].replace("_", " "), _cut(json.dumps(dict(input), ensure_ascii=False), LINE)))
+def _used(tool: str, input: Mapping[str, object]) -> Doing:
+    # An MCP tool is named mcp__<server>__<tool>: the tool's own name is the part a listener can follow.
+    return Doing(USING, ToolInput(tool.rsplit("__", 1)[-1].replace("_", " "), json.dumps(dict(input), ensure_ascii=False)))
 
 
 # [LAW:one-type-per-behavior] one table keyed by tool name, as the step recognisers are; a tool not in it is used.
-_SAID: Mapping[str, Callable[[str, Mapping[str, object]], Intent]] = {
+_SAID: Mapping[str, Callable[[str, Mapping[str, object]], Doing]] = {
     "Bash": _ran,
     "Edit": _on_file(EDITING),
     "MultiEdit": _on_file(EDITING),
@@ -340,6 +331,8 @@ def _voiced(part: Part) -> str | None:
             return None
         case Site(host=host):
             return host
+        case Task() as task:
+            return _status(task)
         case Skill(name=name):
             return f"use the {name.rsplit(':', 1)[-1].replace('-', ' ').replace('_', ' ')} skill"
         case Message(to=Named(name=name), text=str() as text):
@@ -366,10 +359,12 @@ def _shown(part: Part, cwd: PurePath) -> str:
             return f"{value} in {_relative(within, cwd)}"
         case Pattern(value=value):
             return value
-        case Command(first_line=first_line):
-            return first_line
+        case Command(text=text):
+            return text
         case Site(host=host):
             return host
+        case Task() as task:
+            return _status(task)
         case Skill() as skill:
             return skill.typed
         case Message(to=to, text=str() as text):
@@ -378,6 +373,11 @@ def _shown(part: Part, cwd: PurePath) -> str:
             return f"to {_called(to)}"
         case ToolInput(tool=tool, json=json_text):
             return f"{tool} {json_text}"
+
+
+def _status(task: Task) -> str:
+    """A task by its id, and its status as Claude Code names it, "in_progress" said as words."""
+    return task.id if task.status is None else f"{task.id}: {task.status.replace('_', ' ')}"
 
 
 def _called(to: Recipient) -> str:
@@ -428,7 +428,7 @@ def _text(input: Mapping[str, object], key: str) -> str | None:
 
 def explained(summary: str) -> Doing:
     """Text Claude wrote, said as its summary: a phrase in the imperative, as the middle of a sentence."""
-    return Doing(EXPLAINING, lowered(summary.strip().rstrip(".!")))
+    return Doing(EXPLAINING, Words(lowered(summary.strip().rstrip(".!"))))
 
 
 def lowered(phrase: str) -> str:

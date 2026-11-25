@@ -41,7 +41,7 @@ TURN = PromptId("p1")
 IN_TURN = frozenset({TURN})
 IN_NEXT = frozenset({PromptId("p2")})
 MEMBER = Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
-TESTS = Doing(RUNNING, "run the test suite", Words("run the test suite"))
+TESTS = Doing(RUNNING, Words("run the test suite"))
 
 
 def burst(*calls: tuple[str, Mapping[str, object]]) -> tuple[Doing, ...]:
@@ -49,7 +49,7 @@ def burst(*calls: tuple[str, Mapping[str, object]]) -> tuple[Doing, ...]:
 
 
 def edit(name: str) -> Doing:
-    return Doing(EDITING, f"edit {name}", Filed(f"/a/{name}"))
+    return Doing(EDITING, Filed(f"/a/{name}"))
 
 
 @pytest.mark.parametrize("tool", ["AskUserQuestion", "ExitPlanMode"])
@@ -152,7 +152,11 @@ def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(
         pytest.param(burst(("Grep", {"pattern": "a.*b"}), ("Grep", {"pattern": "a.*b"})), "search the code", id="one regular expression twice is one search, though the voice does not read it"),
         pytest.param(burst(("Bash", {"command": "ls"}), ("Bash", {"command": "ls"}), ("Bash", {"command": "pwd"})), "run two commands", id="a command twice is one command"),
         pytest.param(burst(("WebSearch", {"query": "example.com"}), ("WebFetch", {"url": "https://example.com"})), "search the web for example.com, then read a page on example.com", id="a search and a fetch of one text are two things"),
-        pytest.param(burst(("mcp__s__firecrawl_search", {"query": "a"}), ("mcp__s__firecrawl_search", {"query": "b"})), "use firecrawl search", id="one tool twice is that tool"),
+        pytest.param(burst(("mcp__s__firecrawl_search", {"query": "a"}), ("mcp__s__firecrawl_search", {"query": "a"})), "use firecrawl search", id="one call twice is one call"),
+        pytest.param(burst(("mcp__s__firecrawl_search", {"query": "a"}), ("mcp__s__firecrawl_search", {"query": "b"})), "use two tools", id="one tool with two inputs is two calls"),
+        pytest.param(burst(("Bash", {"command": "set -e\nmake check"}), ("Bash", {"command": "set -e\nmake lint"})), "run two commands", id="commands that share a first line are two commands"),
+        pytest.param(burst(("TaskUpdate", {"taskId": "3", "status": "in_progress"}), ("TaskUpdate", {"taskId": "3", "status": "completed"})), "update task 3: completed", id="one task set twice is one task"),
+        pytest.param(burst(("WebFetch", {"url": "https://docs.python.org/3/a"}), ("WebFetch", {"url": "https://docs.python.org/3/b"})), "read two pages", id="two pages of one site are two pages"),
         pytest.param(burst(("Edit", {"file_path": "/c/a/a.py"}), ("Read", {"file_path": "/c/a/b.py"}), ("Write", {"file_path": "/c/a/a.py"})), "edit a.py, then read b.py, then write a.py", id="each kind says its own act whichever call comes last"),
     ],
 )
@@ -410,7 +414,7 @@ def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
         "type": "Progressed",
         "session": SID,
         "of": ["p1"],
-        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command", "act": "", "hooked": False}, "alone": "run the test suite", "of": {"type": "Words", "text": "run the test suite", "aside": None}}],
+        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command", "act": "", "hooked": False}, "of": {"type": "Words", "text": "run the test suite", "aside": None}}],
         "at": 7.0,
     }
 
@@ -603,7 +607,7 @@ async def test_a_burst_is_not_kept_waiting_on_the_summary_of_the_one_ahead_of_it
 
 AGENT = AgentId("a0eea659e39132f84")
 REVIEW = AgentTask(AGENT, "Review the parser change")
-READ_TAIL = Doing(READING, "read tail.py", Filed("/a/tail.py"))
+READ_TAIL = Doing(READING, Filed("/a/tail.py"))
 
 # The job a subagent is given is the record its transcript starts from, and no call of its own.
 JOB = '{"type":"user","parentUuid":null,"uuid":"u0","message":{"role":"user","content":"Review the diff."}}'
@@ -820,13 +824,13 @@ def test_a_subagent_s_burst_and_its_parent_s_are_told_apart() -> None:
     session = idle().sessions[SID]
     assert isinstance(session, Session)
     registry = Registry(sessions={SID: Session(session.membership, session.state, None, turn=Opened(TURN))}, drafts={})
-    registry, _ = reduce(registry, Progressed(SID, (TURN,), (Doing(EDITING, "edit a.py"),), at=10.0))
+    registry, _ = reduce(registry, Progressed(SID, (TURN,), (edit("a.py"),), at=10.0))
     registry, _ = reduce(registry, Progressed(SID, REVIEW, (TESTS,), at=10.0))
-    assert reduce(registry, Tick(10.0 + SETTLE))[1] == [Progress(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),), ""), Progress(SID, REVIEW, (TESTS,), "")]
+    assert reduce(registry, Tick(10.0 + SETTLE))[1] == [Progress(SID, frozenset({TURN}), (edit("a.py"),), ""), Progress(SID, REVIEW, (TESTS,), "")]
 
 
 def test_a_subagent_s_work_folds_only_with_its_own_and_gives_way_to_the_result_it_reports_back_to() -> None:
-    own = Working(SID, frozenset({TURN}), (Doing(EDITING, "edit a.py"),))
+    own = Working(SID, frozenset({TURN}), (edit("a.py"),))
     reported = Finished(SID, (News(PromptId("p2"), "Done.", "", "", (), frozenset({AGENT})),), "full")
     assert tuple(each.pending for each in coalesce((Working(SID, REVIEW, (READ_TAIL,)), own, Working(SID, REVIEW, (TESTS,))), LIVE)) == (Working(SID, REVIEW, (READ_TAIL, TESTS)), own)
     # The turn it reports back to tells its work better, wherever its last burst settled.
