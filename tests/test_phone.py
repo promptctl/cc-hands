@@ -1104,7 +1104,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
 
 
 @pytest.mark.outside
-async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_as_cancelled_and_no_long_poll_goes_on_for_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_saying_the_page_left_and_no_long_poll_goes_on_for_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def asked() -> Untailed:
         return Untailed("the tailscale command is not on the PATH")
 
@@ -1130,7 +1130,10 @@ async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_as_cancelled_a
                 await asyncio.Event().wait()
     await patiently(lambda: len(events(recorded, "brain.read")) == 2, lambda: len(recorded))
     answered, left = events(recorded, "brain.read")
-    assert (answered.outcome, left.outcome) == ("ok", "cancelled")
+    # The wait ended with the page, long before the 25 s it would have run.
+    waited = left.facts["waited_ms"]
+    assert isinstance(waited, float) and waited < 5_000
+    assert (answered.facts["page_left"], left.facts["page_left"]) == (False, True)
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await serving

@@ -1,15 +1,13 @@
 // The Call view: what the phone shows under the call's strip, the transcript with its toggle and the brain's panel. The call
-// itself is call.js's: it writes the transcript whether this view is shown or not, so the view's elements are the document's
-// from the start and the view shows them, hiding them as it is left; the brain's panel is the view's own, read while shown.
+// itself is call.js's: it writes the transcript whether this view is shown or not, so the transcript and its toggle are the
+// document's from the start and the view shows them, hiding them as it is left. The brain's panel is the view's own: drawn
+// into `root` from its template as the view mounts, read while the view is shown, and gone with it.
 import {PAGE_OPEN, asked, handsNow, reading, unanswered} from "/hands.js";
 
 const content = document.getElementById("call-view");
 const toggle = document.getElementById("shown");
 const transcript = document.getElementById("transcript");
-const doing = document.getElementById("doing");
-const calls = document.getElementById("calls");
-const stopButton = document.getElementById("stop");
-const brainSaid = document.getElementById("brain-said");
+const panel = document.getElementById("brain-panel");
 // hands answers a Stop at once: one unanswered for this long went to an address the phone can no longer reach. What a Stop
 // said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the brain stands
 // from then on.
@@ -28,26 +26,7 @@ toggle.addEventListener("click", () => {
   try { localStorage.setItem("transcript", transcript.hidden ? "hidden" : "shown"); } catch { /* kept for this page only */ }
 });
 
-// The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
-// the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again.
 const IDLE = {doing: "idle", calls: []};
-let work = IDLE;
-let stopping = false;
-let said = null;
-let unread = null;
-
-function sayOfBrain(text, bad = false) { brainSaid.textContent = text; brainSaid.classList.toggle("bad", bad); }
-
-// The line that says what the brain is doing, and for how long: redrawn each second, as the time is.
-function drawDoing() {
-  const now = handsNow();
-  const [first, ...rest] = work.calls;
-  const [what, since] = work.doing !== "working" ? ["Idle", null]
-    : first === undefined ? ["Thinking", work.since]
-    : [rest.length ? `Running ${rest.length + 1} calls` : `Running ${first.tool}`, first.since];
-  doing.textContent = what;
-  if (since !== null) doing.append(Object.assign(document.createElement("span"), {className: "for", textContent: ` · ${Math.max(0, Math.round(now - since))} s`}));
-}
 
 // A call's input as a glance reads it: its values, each a line, as the call gave them.
 function inputOf(call) {
@@ -55,54 +34,80 @@ function inputOf(call) {
     : Object.values(call.input).map((value) => typeof value === "string" ? value : JSON.stringify(value)).join("\n");
 }
 
-// [LAW:dataflow-not-control-flow] the whole section is drawn the same way whatever the brain is doing: its calls are
-// whatever it is running, none at all while it is idle or thinking.
-function drawBrain() {
-  drawDoing();
-  calls.replaceChildren(...work.calls.map((call) => {
-    const item = document.createElement("li");
-    item.append(
-      Object.assign(document.createElement("p"), {className: "tool", textContent: call.tool}),
-      Object.assign(document.createElement("p"), {className: `input${"unreadable" in call ? " bad" : ""}`, textContent: inputOf(call)}),
-    );
-    return item;
-  }));
-  stopButton.disabled = stopping || work.doing !== "working";
-  const told = said ?? unread ?? {text: "", bad: false};
-  sayOfBrain(told.text, told.bad);
-}
-
-// Stop ends the turn the page shows, and that turn alone: one the brain went on to after it is never stopped by it. It is a
-// deed, done whichever view is shown, so leaving the view does not take it back.
-stopButton.addEventListener("click", async () => {
-  stopping = true;
-  drawBrain();
-  try {
-    const outcome = await asked(PAGE_OPEN, "POST", "/brain/stop", {turn: work.turn}, STOP_MS);
-    sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
-  } catch (error) {
-    sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
-  } finally {
-    stopping = false;
-    drawBrain();
-  }
-});
-
-// What a Stop said, taken away SAID_MS later unless a later Stop has said something since.
-function sayOfStop(stopSaid) {
-  said = stopSaid;
-  setTimeout(() => { if (said === stopSaid) { said = null; drawBrain(); } }, SAID_MS);
-}
-
-export function mount(_root, _route, signal) {
+export function mount(root, _route, signal) {
   content.hidden = false;
   // Lines were written while the view was away, and a transcript is read from its end.
   transcript.scrollTop = transcript.scrollHeight;
+  root.append(panel.content.cloneNode(true));
+  const within = id => root.querySelector(`#${id}`);
+  const doing = within("doing"), calls = within("calls"), stopButton = within("stop"), brainSaid = within("brain-said");
+
+  // The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
+  // the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again. They are
+  // this mount's, so a view shown again draws what a load draws until its first read answers.
+  let work = IDLE;
+  let stopping = false;
+  let said = null;
+  let unread = null;
+  let sayTimer = null;
+
+  function sayOfBrain(text, bad = false) { brainSaid.textContent = text; brainSaid.classList.toggle("bad", bad); }
+
+  // The line that says what the brain is doing, and for how long: redrawn each second, as the time is.
+  function drawDoing() {
+    const now = handsNow();
+    const [first, ...rest] = work.calls;
+    const [what, since] = work.doing !== "working" ? ["Idle", null]
+      : first === undefined ? ["Thinking", work.since]
+      : [rest.length ? `Running ${rest.length + 1} calls` : `Running ${first.tool}`, first.since];
+    doing.textContent = what;
+    if (since !== null) doing.append(Object.assign(document.createElement("span"), {className: "for", textContent: ` · ${Math.max(0, Math.round(now - since))} s`}));
+  }
+
+  // [LAW:dataflow-not-control-flow] the whole section is drawn the same way whatever the brain is doing: its calls are
+  // whatever it is running, none at all while it is idle or thinking.
+  function drawBrain() {
+    drawDoing();
+    calls.replaceChildren(...work.calls.map((call) => {
+      const item = document.createElement("li");
+      item.append(
+        Object.assign(document.createElement("p"), {className: "tool", textContent: call.tool}),
+        Object.assign(document.createElement("p"), {className: `input${"unreadable" in call ? " bad" : ""}`, textContent: inputOf(call)}),
+      );
+      return item;
+    }));
+    stopButton.disabled = stopping || work.doing !== "working";
+    const told = said ?? unread ?? {text: "", bad: false};
+    sayOfBrain(told.text, told.bad);
+  }
+
+  // What a Stop said, taken away SAID_MS later unless a later Stop has said something since; said of nothing once the view
+  // is gone.
+  function sayOfStop(stopSaid) {
+    if (signal.aborted) return;
+    said = stopSaid;
+    clearTimeout(sayTimer);
+    sayTimer = setTimeout(() => { said = null; drawBrain(); }, SAID_MS);
+  }
+
+  // Stop ends the turn the page shows, and that turn alone: one the brain went on to after it is never stopped by it. It is a
+  // deed, done whichever view is shown, so leaving the view does not take it back.
+  stopButton.addEventListener("click", async () => {
+    stopping = true;
+    drawBrain();
+    try {
+      const outcome = await asked(PAGE_OPEN, "POST", "/brain/stop", {turn: work.turn}, STOP_MS);
+      sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
+    } catch (error) {
+      sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
+    } finally {
+      stopping = false;
+      drawBrain();
+    }
+  });
+
   const redrawing = setInterval(drawDoing, 1000);
-  signal.addEventListener("abort", () => { clearInterval(redrawing); content.hidden = true; }, { once: true });
-  // What the brain was when this view was last left is not what it is: it is drawn as at a load, until the first read answers.
-  work = IDLE;
-  unread = null;
+  signal.addEventListener("abort", () => { clearInterval(redrawing); clearTimeout(sayTimer); content.hidden = true; }, { once: true });
   drawBrain();
   // The brain is read for as long as the view is shown: its signal ends the read, the one in flight at hands included.
   reading(signal, "/brain", shown => {

@@ -11,7 +11,6 @@ The page is open to anyone who can reach the port; a call is not. The page sends
 an offer without it is refused.
 """
 
-import asyncio
 import datetime
 import html
 import json
@@ -35,7 +34,6 @@ from hands.sessions.wide import annotate, begun, continuing, fail, unit
 from hands.voice.backlogpage import backlog_routes
 from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.gallerypage import Gallery, gallery_routes
-from hands.voice.keyed import Handler
 from hands.voice.pinnedfile import Release
 from hands.voice.pagescript import script_route
 from hands.voice.phone import PAGE_RATES, Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
@@ -140,27 +138,6 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
     return [*(web.get(path, shown) for path in APP_PATHS), *(script_route(name) for name in APP_SCRIPTS), web.post("/offer", offered)]
 
 
-# The methods HTTP defines as safe (RFC 9110, 9.2.1): a request that only reads, which asks nothing to be done.
-_READS = frozenset({"GET", "HEAD", "OPTIONS"})
-
-
-@web.middleware
-async def deeds_run_to_their_end(request: web.Request, handler: Handler) -> web.StreamResponse:
-    """A request that reads ends with its connection, as the server's runner ends it; one that does something, a choice
-    taken, a write, a call answered, runs to its end whether or not the phone is still there to be told.
-
-    [LAW:single-enforcer] the one place a deed is kept from the cancellation the runner delivers when a phone's connection
-    drops: a deed cut partway leaves what it was changing half changed, and the wait for a page that has gone is all a
-    cancellation is for. What the deed did is its own unit's event, as it was before; only the answer is lost.
-    """
-    if request.method in _READS:
-        return await handler(request)
-    deed = asyncio.ensure_future(handler(request))
-    # A deed that fails after the phone has gone has no one to be raised to: its unit has already said how it failed.
-    deed.add_done_callback(lambda done: done.cancelled() or done.exception())
-    return await asyncio.shield(deed)
-
-
 def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: WakeModels, runtime: Release) -> web.Application:
     """Every page the phone opens, under the phone's `key`. The phone's page reads and stops `brain`. The conversation
     page reads the audit log at `audit` and hands `typed` what is typed into it; the backlog page reads its summaries
@@ -171,7 +148,7 @@ def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str
     [LAW:one-source-of-truth] the one composition of the phone's routes: hands serves it, and so do the tests of the phone's
     route and of the pages in a browser.
     """
-    app = web.Application(middlewares=[deeds_run_to_their_end])
+    app = web.Application()
     app.add_routes(phone_routes(clock, phone, key, record))
     app.add_routes(brain_routes(clock, brain, key, record))
     app.add_routes(conversation_routes(clock, Conversation(audit), typed, key, record))
@@ -189,10 +166,7 @@ async def serve_phone(clock: Clock, pages: web.Application, home: Home, asked: C
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`, and each renewal after it one of its own,
     `phone.renewed`, the root of a trace of its own: each says the port or what Tailscale answered, as `_Served` says it.
     """
-    # [LAW:nothing-unseen] a page that closes its connection ends the handler it was waiting on, so a read it left is a
-    # `cancelled` event, and no long-poll goes on at hands for a view the phone has left. Only reads end with their
-    # connection: `deeds_run_to_their_end` is what keeps a deed from ending with it.
-    runner = web.AppRunner(pages, access_log=None, handler_cancellation=True)
+    runner = web.AppRunner(pages, access_log=None)
     await runner.setup()
     try:
         with unit("phone.served", record, begun(clock)):

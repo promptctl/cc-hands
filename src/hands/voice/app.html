@@ -105,6 +105,10 @@
 <button id="shown" type="button" aria-controls="transcript" aria-expanded="false">Show transcript</button>
 <!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
 <section id="transcript" aria-label="Transcript" hidden></section>
+</div>
+<main id="view"></main>
+<!-- The brain's panel, drawn into the Call view as it mounts (views/call.js). -->
+<template id="brain-panel">
 <!-- What the brain is doing now, as hands hears it on the wire: idle, thinking, or the calls it is running, each with
      its input, and how long; and one Stop that ends the brain's turn, as Escape at its keyboard does. Nothing here
      reaches a working session. -->
@@ -113,8 +117,7 @@
   <ul id="calls"></ul>
   <p id="brain-said" role="status" aria-live="polite"></p>
 </section>
-</div>
-<main id="view"></main>
+</template>
 <audio id="out" autoplay playsinline></audio>
 <!-- The call is the document's own, and the router mounts the views under it. -->
 <script type="module" src="/app.js"></script>

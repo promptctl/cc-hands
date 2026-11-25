@@ -2248,8 +2248,11 @@ the view of `location.pathname` as `mount(root, route, signal)`; a tap on a view
 kept in the fragment, and the back gesture is `popstate`, so neither unloads the document or touches the call. A reload
 ends the call (`pagehide`) and comes back at the same view with Connect. A page the row does not yet hold as a view (at
 present the conversation and the gallery) is served at its own path and opened in a tab, as before. A view's reads run on its
-`signal`: leaving the view aborts it, which ends the read in flight, and hands, which cancels a handler whose connection
-closes, records that `brain.read` as `cancelled`; no other read starts.
+`signal`: leaving the view aborts it, which ends the read in flight; hands sees the connection close at its next look
+(`hands.voice.longpoll.waited`, the one place a read ends with its connection), answers nothing, and records that
+`brain.read` with `page_left`; no other read starts. Every other handler runs to its end whether or not the phone is still
+there. The Call view's brain panel is drawn into its `root` from a template as it mounts and is gone with it; the
+transcript the call writes, and its toggle, are the document's, shown while the view is.
 
 **Every phone page asks hands through one module, `/hands.js`** (`src/hands/voice/hands.js`, served
 by `hands.voice.phonepage`), which each page imports: a request whose outcome is hands' answer, its

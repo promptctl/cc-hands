@@ -77,8 +77,8 @@ class Hands:
     voices: Voicing
     # The path of every request hands took, in the order it took them.
     requests: list[str]
-    # The path of every request whose connection the page closed before hands answered it.
-    cut: list[str]
+    # The path of every request hands has finished with, however it ended, in the order they ended.
+    ended: list[str]
     # What the phone recorded, as its calls end.
     recorded: list[Entry]
     # The gate the phone moves, which a test moves as the desk's key or the pipeline would.
@@ -112,21 +112,19 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(VirtualClock())), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
     pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
-    requests, cut = list[str](), list[str]()
+    requests, ended = list[str](), list[str]()
 
     @web.middleware
     async def taken(request: web.Request, handler: Handler) -> web.StreamResponse:
         requests.append(request.path)
         try:
             return await handler(request)
-        except asyncio.CancelledError:
-            # The test server ends a handler whose connection closes under it.
-            cut.append(request.path)
-            raise
+        finally:
+            ended.append(request.path)
 
     pages.middlewares.append(taken)
     async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, cut, recorded, gate)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, ended, recorded, gate)
         await phone.stop()
 
 
@@ -412,6 +410,9 @@ async def test_stop_stops_the_turn_the_page_shows_and_says_what_came_of_it(brows
 async def test_words_typed_on_the_conversation_page_are_sent_to_hands(browser: Opened, hands: Hands) -> None:
     phone = await browser.open(hands.address("/"))
     page = await browser.followed(phone, "Conversation")
+    # [LAW:no-ambient-temporal-coupling] the page's script has attached its Return key before it first reads hands: until
+    # then Return is a new line in the box.
+    await patiently(lambda: "/conversation/moments" in hands.requests, lambda: len(hands.requests))
     await page.get_by_label("Type to hands").fill("what is on the backlog")
     await page.get_by_label("Type to hands").press("Enter")
     # Emptied once hands has the words.
@@ -689,15 +690,15 @@ async def test_every_path_of_the_app_opened_is_the_app_and_a_reload_ends_the_cal
     assert isinstance(ended, CallLeft) and ended.reason == "hung up"
 
 
-async def test_the_brain_read_waiting_at_hands_is_cut_as_the_call_view_is_left_and_started_again_as_it_is_shown(browser: Opened, hands: Hands) -> None:
+async def test_the_brain_read_waiting_at_hands_ends_as_the_call_view_is_left_and_is_started_again_as_it_is_shown(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
     # The first read is answered at once, and the second waits at hands for the brain to do something else.
     await patiently(lambda: hands.requests.count("/brain") == 2, lambda: len(hands.requests))
-    assert hands.cut == []
+    assert hands.ended.count("/brain") == 1
     await page.get_by_role("link", name="Sessions").click()
     await expect(page.locator("#sessions-note")).to_be_visible()
-    # hands sees the page close the connection of the read it was holding, and no read follows it.
-    await patiently(lambda: hands.cut == ["/brain"], lambda: len(hands.cut))
+    # hands sees the page close the connection of the read it was holding, which ends, and no read follows it.
+    await patiently(lambda: hands.ended.count("/brain") == 2, lambda: len(hands.ended))
     assert hands.requests.count("/brain") == 2
     await page.get_by_role("link", name="Call").click()
     await patiently(lambda: hands.requests.count("/brain") == 3, lambda: len(hands.requests))

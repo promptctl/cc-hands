@@ -138,6 +138,6 @@ export async function reading(signal, path, draw, unread) {
     // [LAW:no-silent-failure] an answer the page cannot read, or cannot draw, ends the reading and says why: the same
     // answer read again would fail the same way. The console keeps where it failed.
     console.error(error);
-    unread(`This page stopped reading hands: ${error.message}.`);
+    unread(`This page stopped reading hands: ${error.message}. Open it again to read again.`);
   }
 }
