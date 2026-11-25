@@ -193,7 +193,9 @@ class Held:
 # [LAW:one-source-of-truth] whether a session runs, waits at a dialog, or sits at its prompt is Claude Code's status, and
 # only a status read moves a session between these. Hooks and records say which turn it is and what it did (see Turn),
 # never whether it runs; only where Claude Code's busy covers a subagent in the background too do they say which of the
-# two it is (`delegating`). [LAW:types-are-the-program] each variant carries only what is true under it.
+# two it is (`delegating`). hands reads the status after the hooks that followed it, so what a session is said to be
+# doing is `hands.core.standing`'s, which lets a dialog hands holds and a turn a prompt opened decide ahead of the status.
+# [LAW:types-are-the-program] each variant carries only what is true under it.
 @dataclass(frozen=True)
 class Unreported:
     """Heard of, with no status read for it yet."""

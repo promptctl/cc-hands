@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from hands.core.effects import Command, Fritter, Key, MaybeTyped, NotTyped, Type, Typed
 from hands.core.reach import AtItsDialog, SessionEnded, UnknownSession, Unreached, Unwrapped, writer
-from hands.core.session import Gone, Idle, Registry, Running, Session, SessionId, delegating
-from hands.core.status import Waiting
+from hands.core.session import Gone, Registry, Session, SessionId
+from hands.core.standing import AtDialog, AtRest, Delegating, ShellRunning, standing_of
 from hands.core.tmux import Keyboard, Pane
 
 
@@ -54,21 +54,21 @@ def decide(registry: Registry, request: KeyboardRequest, pane: Keyboard) -> Keyb
             return UnknownSession(id)
         case Gone():
             return SessionEnded(id)
-        case Session(state=state, membership=member, background=background) as session:
-            match (request, state, writer(member, pane)):
+        case Session(membership=member) as session:
+            match (request, standing_of(session), writer(member, pane)):
                 case (_, _, Unwrapped() as unwrapped):
                     return unwrapped
-                case (SendCommand(), Running(status=Waiting()), _):
+                case (SendCommand(), AtDialog(), _):
                     # A dialog takes the command's characters and its Return as the answer to what it asked.
                     return AtItsDialog(id)
                 case (SendCommand(command=command), _, Fritter() | Pane() as by):
                     # A working session queues it, and runs it as a command once its turn ends; one at
                     # its prompt runs it at once, though a subagent works in the background.
                     return Type(id, by, command)
-                case (Interrupt(), Idle(), _):
+                case (Interrupt(), AtRest() | ShellRunning(), _):
                     return NothingRunning(id)
-                case (Interrupt(), _, _) if delegating(session):
-                    return InBackground(id, len(background))
+                case (Interrupt(), Delegating(agents=agents), _):
+                    return InBackground(id, agents)
                 case (Interrupt(), _, Fritter() | Pane() as by):
                     # [LAW:types-are-the-program] Escape is the one key a request can press, and at a dialog it is the
                     # dialog's own "no": it closes and the turn stops, which is what stop means.
