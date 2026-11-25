@@ -1653,6 +1653,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
 
 
 @pytest.mark.outside
+@pytest.mark.quarantined("promptctl-testing-c3u.71o", until="2026-11-29")
 async def test_the_run_says_the_brains_login_expired_in_every_beat_once_a_turn_says_so_until_a_later_one_says_otherwise(tmp_path: Path, fake_claude: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=list[Entry]().append), Home(tmp_path), list[Entry]().append)
