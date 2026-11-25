@@ -34,11 +34,11 @@ async def test_a_switch_asked_for_while_one_is_under_way_is_refused_before_it_is
     switches = Switches(hearing)
     first = await switches.announced(switch("claude-opus-5-5", kept))
     with pytest.raises(Rejected, match="hands is switching to claude-opus-5-5 already"):
-        await switches.announced(switch("claude-haiku-4-5", kept))
+        await switches.announced(switch("claude-fable-5-1", kept))
     await first.effect()
     # Kept, hands is restarting: a switch asked for now would be cut off by it.
     with pytest.raises(Rejected, match="hands is switching to claude-opus-5-5 already"):
-        await switches.announced(switch("claude-haiku-4-5", kept))
+        await switches.announced(switch("claude-fable-5-1", kept))
     assert (hearing.said, kept) == (["Switching to claude-opus-5-5. I'll be back in a few seconds."], ["claude-opus-5-5"])
 
 
@@ -50,11 +50,11 @@ async def test_a_switch_talked_over_or_whose_keep_fails_frees_the_way_for_the_ne
     failing = await switches.announced(switch("claude-opus-5-5", kept, refusal="config.toml was saved by hand"))
     with pytest.raises(Rejected):
         await failing.effect()
-    await (await switches.announced(switch("claude-haiku-4-5", kept))).effect()
-    assert kept == ["claude-haiku-4-5"]
+    await (await switches.announced(switch("claude-fable-5-1", kept))).effect()
+    assert kept == ["claude-fable-5-1"]
     assert hearing.said == [
         "Switching to claude-opus-5-5. I'll be back in a few seconds.",
         "Switching to claude-opus-5-5. I'll be back in a few seconds.",
         "The switch to claude-opus-5-5 did not happen: config.toml was saved by hand",
-        "Switching to claude-haiku-4-5. I'll be back in a few seconds.",
+        "Switching to claude-fable-5-1. I'll be back in a few seconds.",
     ]

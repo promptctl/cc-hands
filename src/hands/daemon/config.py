@@ -59,9 +59,9 @@ from hands.voice.wakeword import Pretrained, Trained, Word
 EDIT_SECONDS = 1.0
 
 ANTHROPIC_MODEL = "claude-sonnet-5-5"
-# The models hands runs on: one Haiku, Sonnet, Opus, and Fable each. A model outside them is refused where the file is
+# The models hands runs on: one Sonnet, Opus, and Fable each. A model outside them is refused where the file is
 # parsed, since by voice a turn that fails on it could never choose another.
-CLAUDE_MODELS = ("claude-haiku-4-5-20251001", ANTHROPIC_MODEL, "claude-opus-5-5", "claude-fable-5-1")
+CLAUDE_MODELS = (ANTHROPIC_MODEL, "claude-opus-5-5", "claude-fable-5-1")
 
 
 @dataclass(frozen=True)

@@ -205,9 +205,9 @@ def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, m
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
-    # A model by its spoken name, one that does not exist, and a real one hands does not offer: each is refused naming the
-    # four.
-    for model in ("opus", "claude-opus-9", "claude-sonnet-5"):
+    # A model by its spoken name, one that does not exist, and real ones hands does not offer: each is refused naming the
+    # ones it does.
+    for model in ("opus", "claude-opus-9", "claude-sonnet-5", "claude-haiku-4-5-20251001"):
         with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}$"):
             config.parse(f'[llm]\nbackend = "claude"\nmodel = "{model}"\n')
 
@@ -215,7 +215,7 @@ def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
 def test_a_model_flag_outranks_the_files_on_the_files_backend(tmp_path: Path) -> None:
     home = Home(tmp_path)
     assert config.load(home, "claude-opus-5-5") == config.Settings(None, Config(llm=Claude(model="claude-opus-5-5")), "claude-opus-5-5")
-    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[telemetry]\ncollector = "http://otel.example:4318"\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-fable-5-1"\n[telemetry]\ncollector = "http://otel.example:4318"\n')
     assert config.load(home, "claude-opus-5-5").config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
     # The file's model, outranked, is never read: one hands no longer offers is no reason to refuse the run.
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-sonnet-4"\n')
@@ -352,7 +352,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     running = config.load(home, "claude-opus-5-5")
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, running, SYSTEM, period=0.01), 0.3))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-fable-5-1"\n')
     await asyncio.sleep(0.05)
     # Nor is one to a model hands does not offer: outranked, it is never read, so nothing is refused.
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "opus"\n')
@@ -360,7 +360,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
         await watching
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, running, SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[talk]\npersonality = "Dry."\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-fable-5-1"\n[talk]\npersonality = "Dry."\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
@@ -693,7 +693,7 @@ async def test_an_edit_that_does_not_parse_is_said_and_outlived_until_one_that_d
     assert not watching.done()
     assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config}: [llm] backend 'local' is not one hands runs on: it runs on claude, the brain, a Claude Code of its own, never on a model API reached with a key")]
     assert audit.level(recorded[0]) == "error"
-    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
     assert len(recorded) == 1
 
@@ -738,7 +738,7 @@ async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_pat
     assert not watching.done()
     assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config} could not be read: [Errno 21] Is a directory: '{home.config}'")]
     home.config.rmdir()
-    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 
@@ -871,7 +871,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
         assert not watching.done(), watching.result()
         assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
         # And it is still watching: the next edit is the one it takes.
-        home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+        home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
         await patiently(watching.done, lambda: len(weighed))
         assert watching.result() == SettingsEdited(path=str(home.config), refused=None)
     finally:
@@ -881,7 +881,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
 async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
     laid_out(home)
-    edit, other = b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-haiku-4-5-20251001"\n'
+    edit, other = b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-fable-5-1"\n'
     # Seen, settled, saved over as its backend is checked, and back before the next poll.
     reads = iter([edit, edit, other, edit, edit])
 

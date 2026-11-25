@@ -71,10 +71,10 @@ def test_a_model_chosen_with_no_file_is_the_default_backend_on_that_model(tmp_pa
 
 def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
     own = _own(home)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
-    assert own.running() == "claude-haiku-4-5-20251001"
+    assert own.running() == "claude-fable-5-1"
 
 
 @pytest.mark.parametrize(
@@ -85,6 +85,8 @@ def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_
         ("claude-sonnet-5-5", "hands runs on claude-sonnet-5-5 already"),
         ("", "should be a non-empty string"),
         ("claude-opus-9", "hands runs Claude on .*, not claude-opus-9$"),
+        # A real model hands does not offer, as the brain names Haiku when the user asks for it.
+        ("claude-haiku-4-5-20251001", "hands runs Claude on .*, not claude-haiku-4-5-20251001$"),
     ],
 )
 def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_path: Path, model: str, said: str) -> None:
@@ -138,10 +140,10 @@ def test_of_two_choices_in_flight_the_one_kept_first_is_kept_and_the_other_refus
     home.config.write_text(SPOKEN_FILE)
     own = _own(home)
     # Both weighed before either is kept, as two switches heard at once are.
-    opus, haiku = own.weigh("claude-opus-5-5"), own.weigh("claude-haiku-4-5-20251001")
+    opus, fable = own.weigh("claude-opus-5-5"), own.weigh("claude-fable-5-1")
     opus.keep()
     with pytest.raises(Rejected, match="by another choice kept first"):
-        haiku.keep()
+        fable.keep()
     assert home.config.read_text() == SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-5-5")
 
 
@@ -217,9 +219,9 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
 def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    flagged = config.OwnModel(home, LAID_OUT, UNMANAGED, {}, config.load(home, "claude-haiku-4-5-20251001"))
-    assert flagged.running() == "claude-haiku-4-5-20251001"
-    with pytest.raises(Rejected, match=f"^hands was started with --model claude-haiku-4-5-20251001, which it keeps over {home.config} until it is started without it$"):
+    flagged = config.OwnModel(home, LAID_OUT, UNMANAGED, {}, config.load(home, "claude-fable-5-1"))
+    assert flagged.running() == "claude-fable-5-1"
+    with pytest.raises(Rejected, match=f"^hands was started with --model claude-fable-5-1, which it keeps over {home.config} until it is started without it$"):
         flagged.weigh("claude-opus-5-5")
     assert home.config.read_text() == SPOKEN_FILE
 

@@ -255,8 +255,7 @@ collector did not take them, why.
 
 hands talks through a harness it drives, never a model API called with a key: `claude`, the brain, is one long-lived
 Claude Code of hands' own, on any login Claude Code takes from Anthropic, on Claude Sonnet 5.5 unless `model` names
-another of the four hands offers: `claude-haiku-4-5-20251001`, `claude-sonnet-5-5`, `claude-opus-5-5`, or
-`claude-fable-5-1`. Its requests go through hands' proxy, and it reaches the sessions through hands' tools over MCP
+another of the three hands offers: `claude-sonnet-5-5`, `claude-opus-5-5`, or `claude-fable-5-1`. Its requests go through hands' proxy, and it reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, and it does not start without one.
 It runs one Claude Code release, the version `src/hands/brain/pinned.py` names, from hands' own copy in
 `~/.hands/brain/pinned-claude`, never the `claude` your sessions run, which your install updates; it moves only with a
