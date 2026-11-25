@@ -174,12 +174,12 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
                     # Its answer made before its ending is told: once told, nothing here can raise and tell another.
                     response = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
                     # The request as the client sent it: the client holds it, answered, as its conversation's newest.
-                    tell(Received(exchange, request.path_qs, tuple(headers.items()), body))
+                    tell(Received(exchange, request.path_qs, tuple(headers.items()), body, built=False))
                     tell(exchanged((), Synthetic(written, clock.wall().timestamp()), False))
                     return response
                 case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
-            tell(Received(exchange, request.path_qs, tuple(headers.items()), onward))
+            tell(Received(exchange, request.path_qs, tuple(headers.items()), onward, built))
             try:
                 reached = await client.request(request.method, upstream + request.path_qs, headers=headers, data=onward)
             except (aiohttp.ClientError, OSError) as error:

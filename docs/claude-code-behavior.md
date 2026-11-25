@@ -202,6 +202,7 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **wire:** the request class header is derived from querySource in Claude Code's services/api/client.ts (measured on 2.1.299).
 - **wire:** Claude Code names fork requests in the class header too, not only auxiliary requests (measured on 2.1.289).
 - **wire:** a side question asked before any turn has finished carries no cache marker at all (measured on 2.1.285; ticket hands-wire-6ic.l2o).
+- **wire:** an idle brain's Claude Code sends GET /api/oauth/organizations/<org>/skills/list-skills through the proxy every 10 minutes, each carrying its Authorization, and renews its token before building a request when it expires within 5 minutes; 27 of 27 were answered 200 on 2026-11-23, 14:50Z to 23:51Z (read from the audit log and from the binary, measured on 2.1.308; ticket promptctl-brain-uoz0.3od).
 - **wire:** Claude Code's list of request classes lives in its own code (measured on 2.1.299).
 - **wire:** Claude Code's es() names every request that is neither its loop's nor a subagent's auxiliary, side questions and prompt suggestions among them (measured on 2.1.289).
 - **wire:** Claude Code merges adjacent user messages, so a prompt of its own can follow a prompt just typed or a tool's result, and a message of its own can follow it (measured on 2.1.285).

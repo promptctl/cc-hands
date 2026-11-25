@@ -144,7 +144,7 @@ class Asides:
                             pass
                     turn = await self._newest.turn()
                     try:
-                        forked = fork(turn, question)
+                        forked = fork(turn, question, self._newest.credential())
                     except UnreadableRequest as unread:
                         raise AsideFailed(Unanswered.UNFORKABLE, f"the brain's newest main turn cannot be read: {unread}") from unread
                     return await self._answered(turn, forked)
@@ -155,7 +155,8 @@ class Asides:
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
     async def _answered(self, turn: Turn, forked: Forked) -> str:
-        annotate(forked=turn.exchange)
+        # [LAW:nothing-unseen] the exchange the login went out from: the turn's own when the brain had sent no other.
+        annotate(forked=turn.exchange, credential_from=forked.login_from)
         # [LAW:nothing-unseen] where its marker went, or why it has none: two facts, each of one type.
         match forked.marked:
             case Unmarked() as why:

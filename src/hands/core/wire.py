@@ -8,7 +8,7 @@ one change of rule: nothing it cannot read is defaulted into something it can. A
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal, cast, get_args
 
@@ -92,6 +92,11 @@ BILLING_OPENING = "x-anthropic-billing-header:"
 # The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
 # for every Claude Code it starts: derived from the request's querySource in its services/api/client.ts.
 CLASS_HEADER = "x-claude-code-request-class"
+# The headers Claude Code carries its login in: the OAuth token of a Claude plan, which it renews before each request it
+# builds, or the key of an Anthropic Console account. It sends one of them, never both.
+AUTHORIZATION_HEADER = "authorization"
+API_KEY_HEADER = "x-api-key"
+LOGIN_HEADERS = (AUTHORIZATION_HEADER, API_KEY_HEADER)
 
 
 _ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
@@ -495,9 +500,32 @@ def named_class(headers: Mapping[str, str]) -> str | None:
     return _header(headers, CLASS_HEADER)
 
 
+def login_of(headers: Iterable[tuple[str, str]]) -> tuple[str, str] | None:
+    """The login a request carries, as the lowercase name of the header it is in and its value; None from one that carries
+    none, an empty one included."""
+    pairs = tuple(headers)
+    return next(((name, value) for name in LOGIN_HEADERS if (value := _first(pairs, name))), None)
+
+
+def with_login(headers: tuple[tuple[str, str], ...], login: tuple[str, str]) -> tuple[tuple[str, str], ...]:
+    """`headers` carrying `login` and no other: the client's own, in whichever header, is replaced, so a request is never
+    sent with a login of each kind."""
+    return (*((given, value) for given, value in headers if given.lower() not in LOGIN_HEADERS), login)
+
+
+def with_header(headers: tuple[tuple[str, str], ...], name: str, value: str) -> tuple[tuple[str, str], ...]:
+    """`headers` with `name`, a lowercase name, set to `value`: the client's own header of it, whatever casing it named it
+    in, replaced, or one added where it sent none."""
+    return (*((given, current) for given, current in headers if given.lower() != name), (name, value))
+
+
 def _header(headers: Mapping[str, str], name: str) -> str | None:
     """A header's value by its lowercase name, since HTTP names are case-insensitive whatever mapping carried them."""
-    return next((value for given, value in headers.items() if given.lower() == name), None)
+    return _first(headers.items(), name)
+
+
+def _first(headers: Iterable[tuple[str, str]], name: str) -> str | None:
+    return next((value for given, value in headers if given.lower() == name), None)
 
 
 # ── The stream back ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1210,12 +1238,16 @@ class Sent:
 class Received:
     """A request the proxy received, whichever way it is answered: its path, its end-to-end headers, and the bytes its
     conversation goes on from, sent upstream with hands' changes made or, for one hands answers itself, as the client
-    sent them. Its headers carry the client's credentials, so it is heard and never recorded."""
+    sent them. Its headers carry the credentials it was sent with, the client's or, for a request hands built, the ones hands
+    gave it, so it is heard and never recorded."""
 
     exchange: str
     path: str
     headers: tuple[tuple[str, str], ...]
     body: bytes
+    # Whether hands wrote the whole request (a side question): its headers carry the credential hands gave it, never one
+    # the client sent. Named at every construction: a request left unnamed is taken for the client's.
+    built: bool
 
 
 @dataclass(frozen=True)
