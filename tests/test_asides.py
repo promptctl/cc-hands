@@ -4,6 +4,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -36,6 +37,7 @@ from hands.core.wire import (
     Received,
     Text,
     Thinking,
+    ThroughProxy,
     ToolUse,
     UnreadableRequest,
     Written,
@@ -52,6 +54,8 @@ BRAIN = SessionId("b1")
 # minutes the brain's subagent ttl is pinned to.
 MARK = {"type": "ephemeral", "ttl": "1h"}
 FORKED = {"type": "ephemeral"}
+# A proxy no question is sent to: nothing listens at its address.
+NOWHERE = ThroughProxy("127.0.0.1:9", "unused", Path("trusted.pem"))
 HEADERS = (("authorization", "Bearer the-brains-own"), ("x-claude-code-session-id", "b1"), (CLASS_HEADER, "main"), ("content-type", "application/json"))
 
 
@@ -221,7 +225,7 @@ async def test_a_turn_hands_cannot_read_fails_the_question_unforkable(sent: byte
     with pytest.raises(UnreadableRequest, match=why):
         fork(unreadable, "q", None)
     # Failed as a question fails, never past the asker that waits on its answer.
-    asides = Asides(VirtualClock(), "http://127.0.0.1:9", Unforkable(BrainSession(BRAIN)), lambda _entry: None)
+    asides = Asides(VirtualClock(), NOWHERE, Unforkable(BrainSession(BRAIN)), lambda _entry: None)
     try:
         with pytest.raises(AsideFailed, match=why) as failed:
             await asides.ask(AsideKind.LINE, "q", Deadline(10))
@@ -429,29 +433,34 @@ async def written(request: web.Request, chunks: list[bytes]) -> web.StreamRespon
 class Brain:
     """hands' proxy before a stand-in for the API, with Asides listening on its wire, and the brain's main turn sent through it."""
 
-    def __init__(self, clock: VirtualClock, proxy_url: str, asides: Asides, asked: list[tuple[dict[str, str], dict[str, object]]], answers: list[Answer], routed: list[Span]) -> None:
+    def __init__(self, clock: VirtualClock, through: ThroughProxy, asides: Asides, asked: list[tuple[dict[str, str], dict[str, object]]], answers: list[Answer], routed: list[Span]) -> None:
         # The one clock the proxy, its wire, and Asides run on, moved only by the test.
         self.clock = clock
-        self.url = proxy_url
+        self.through = through
         self.asides = asides
         self.asked = asked
         self.answers = answers
         self.routed = routed
 
     async def main_turn(self) -> None:
-        async with self.asides._client.post(self.url + "/v1/messages", headers=list(HEADERS), data=json.dumps(body(user(text("hi", cache_control=MARK))))) as response:  # pyright: ignore[reportPrivateUsage]
+        async with self.asides._client.post(self.through.origin + "/v1/messages", headers=self._admitted(HEADERS), data=json.dumps(body(user(text("hi", cache_control=MARK))))) as response:  # pyright: ignore[reportPrivateUsage]
             assert response.status == 200
             await response.read()
 
     async def idle_request(self, authorization: str) -> None:
         """What the idle brain's Claude Code sends on its own, renewing its token before it builds the request."""
-        async with self.asides._client.get(self.url + "/api/oauth/organizations/o/skills/list-skills", headers=list(logged_in(authorization))) as response:  # pyright: ignore[reportPrivateUsage]
+        async with self.asides._client.get(self.through.origin + "/api/oauth/organizations/o/skills/list-skills", headers=self._admitted(logged_in(authorization))) as response:  # pyright: ignore[reportPrivateUsage]
             assert response.status == 200
             await response.read()
 
+    def _admitted(self, headers: tuple[tuple[str, str], ...]) -> list[tuple[str, str]]:
+        """`headers` on the run's credential: the brain's requests reach the proxy inside the TLS of a CONNECT admitted on
+        it, and are posted to its origin here in their place."""
+        return [*headers, ("Proxy-Authorization", self.through.authorization)]
+
 
 @pytest.fixture
-async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
+async def brain(tmp_path: Path) -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
     cleanups: list[Callable[[], Awaitable[None]]] = []
 
     async def start(recorded: list[Entry]) -> Brain:
@@ -479,8 +488,8 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         await web.TCPSite(upstream, "127.0.0.1", 0).start()
         clock = VirtualClock(epoch=datetime.fromtimestamp(0, UTC))
         wire = Wire(clock, lambda _observed: None)
-        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=clock)
-        asides = Asides(clock, proxy.url, Newest(BrainSession(BRAIN)), recorded.append)
+        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock, {}, tmp_path / "trusted.pem", recorded.append)
+        asides = Asides(clock, proxy.through, Newest(BrainSession(BRAIN)), recorded.append)
 
         class Listening:
             def route(self, sent: Sent) -> Route:
@@ -501,7 +510,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
             joined.__exit__(None, None, None)
 
         cleanups.extend([asides.close, proxy.close, upstream.cleanup, leave])
-        return Brain(clock, proxy.url, asides, asked, answers, routed)
+        return Brain(clock, proxy.through, asides, asked, answers, routed)
 
     yield start
     for cleanup in cleanups:
@@ -519,9 +528,11 @@ async def test_a_side_question_is_the_brains_turn_forked_through_the_proxy_and_a
     await rig.main_turn()
     rig.answers.append(stream("It said four."))
     assert await rig.asides.ask(AsideKind.SUMMARY, "what did it say?", Deadline(10)) == "It said four."
-    # The API was asked the brain's turn, then the question: on the brain's credentials, as Claude Code's /btw.
+    # The API was asked the brain's turn, then the question: on the brain's credentials, as Claude Code's /btw, and never
+    # the run's, which the question presents to the proxy alone.
     [(_, turn), (headers, question)] = rig.asked
     assert headers["Authorization"] == "Bearer the-brains-own" and headers["x-claude-code-request-class"] == "auxiliary"
+    assert "Proxy-Authorization" not in headers
     messages = cast(list[dict[str, list[dict[str, object]]]], question["messages"])
     assert messages[-1]["content"][-2:] == ASKED[:1] + [text("what did it say?")]
     assert {key: value for key, value in question.items() if key != "messages"} == {key: value for key, value in turn.items() if key != "messages"}
@@ -533,6 +544,25 @@ async def test_a_side_question_is_the_brains_turn_forked_through_the_proxy_and_a
     assert isinstance(event.facts["forked"], str)
     # Which message carries the question's marker, read off the body it was sent as.
     assert marks(question) == [(event.facts["marked"], FORKED)]
+
+
+@pytest.mark.outside
+async def test_a_side_question_reaches_the_api_on_the_runs_credential_alone(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    # The same question, from the same newest turn, presenting another credential than the run's: the proxy refuses it,
+    # and the API is never asked it.
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    other = Asides(rig.clock, ThroughProxy(rig.through.address, "not-the-runs", rig.through.trust), rig.asides._newest, recorded.append)  # pyright: ignore[reportPrivateUsage]
+    try:
+        with pytest.raises(AsideFailed, match="answered 407") as failed:
+            await other.ask(AsideKind.SUMMARY, "what did it say?", Deadline(10))
+    finally:
+        await other.close()
+    assert failed.value.why == Unanswered.REFUSED and len(rig.asked) == 1
+    # The run's own credential gets it answered.
+    assert await rig.asides.ask(AsideKind.SUMMARY, "what did it say?", Deadline(10)) == "Hello."
+    assert len(rig.asked) == 2
 
 
 @pytest.mark.outside
@@ -754,7 +784,7 @@ async def test_a_timeout_that_is_not_its_askers_fails_the_question_broken_not_ti
         async def turn(self) -> Turn:
             raise TimeoutError("a wait of its own")
 
-    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(BrainSession(BRAIN)), lambda _entry: None)
+    asides = Asides(VirtualClock(), NOWHERE, TimesOut(BrainSession(BRAIN)), lambda _entry: None)
     try:
         with pytest.raises(AsideFailed, match="not its asker's time") as failed:
             await asides.ask(AsideKind.LINE, "q", Deadline(10))

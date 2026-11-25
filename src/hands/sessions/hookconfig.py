@@ -9,6 +9,8 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from hands.core import loopback
+
 # [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The hooks below declare
 # it, and the shim waits as long. It is hands' own choice, a day, so that no answer by voice is ever hurried: hands puts
 # no deadline of its own on a session's request, which waits on the user as its dialog on the screen does. Claude Code
@@ -52,7 +54,7 @@ PLUGIN_ID = "hands@cc-hands"
 # lines it displays, so it is an HTTP hook, with no process spawned per batch. Its URL takes no variables, so the port
 # is fixed here and the daemon serves it, on loopback alone: over TCP any local user can reach a
 # route, so this one takes MessageDisplay and nothing else, and permissions stay on the home's unix socket.
-DISPLAY_HOST = "127.0.0.1"
+DISPLAY_HOST = loopback.HOST
 DISPLAY_PORT = 47615
 DISPLAY_PATH = "/hands/display"
 DISPLAY_URL = f"http://{DISPLAY_HOST}:{DISPLAY_PORT}{DISPLAY_PATH}"

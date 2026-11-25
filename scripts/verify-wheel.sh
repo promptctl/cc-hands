@@ -1,6 +1,6 @@
 #!/bin/sh
 # verify-wheel.sh WHEEL CONSTRAINTS VERSION: install the wheel as a stranger would, within the locked versions
-# CONSTRAINTS names, with no Go and a fresh uv tool directory, and check that the hands it gives prints VERSION, the fritter inside its package runs a program, the brioche beside it runs, and install-fritter puts
+# CONSTRAINTS names, with no Go and a fresh uv tool directory, and check that the hands it gives prints VERSION, the fritter inside its package runs a program, and install-fritter puts
 # that fritter and its claude in the stranger's hands home, and the console scripts the plugin's hooks and skills run, hands-shim and
 # hands-attention, are on the stranger's PATH and run hands. The stranger has Homebrew's portaudio, which PyAudio builds against.
 set -eu
@@ -35,13 +35,6 @@ stranger script -q /dev/null "$fritter" -- /bin/sh -c 'test -S "$FRITTER_SOCKET"
 code=$?
 set -e
 [ "$code" = 7 ] || { echo "verify-wheel: the packaged fritter at $fritter exited $code, not the program's 7" >&2; exit 1; }
-# brioche, beside fritter in the package, runs: given no arguments, it says its usage and exits 64.
-brioche=$(dirname "$fritter")/brioche
-set +e
-refused=$(stranger "$brioche" </dev/null 2>&1)
-code=$?
-set -e
-case $code:$refused in "64:brioche: --intercept is needed"*) ;; *) echo "verify-wheel: the packaged brioche at $brioche exited $code saying '$refused', not 64 and its usage" >&2; exit 1;; esac
 # The home's bin first on PATH, as the README has the stranger put it, so install-fritter finds its claude and exits 0.
 # A later PATH= in env's arguments wins over stranger's own.
 stranger PATH="$fresh/home/.hands/bin:$fresh/bin:/usr/bin:/bin" hands install-fritter >/dev/null
@@ -52,4 +45,4 @@ shimmed=$(stranger hands-shim --usage 2>&1 || true)
 case $shimmed in "usage: hands-shim"*) ;; *) echo "verify-wheel: hands-shim said '$shimmed', not its usage line" >&2; exit 1;; esac
 attended=$(stranger HANDS_HOME="$fresh/home/.hands" hands-attention)
 case $attended in "Finished turns"*) ;; *) echo "verify-wheel: hands-attention said '$attended', not what is set" >&2; exit 1;; esac
-echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, its fritter and brioche run, install-fritter installs fritter, and the plugin's hands-shim and hands-attention run"
+echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, its fritter runs, install-fritter installs it, and the plugin's hands-shim and hands-attention run"

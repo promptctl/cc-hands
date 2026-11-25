@@ -72,11 +72,11 @@ def _fact(state: FritterState | ShimState) -> str:
             return state
 
 
-def preflight(home: Home, pin: pinned.Pin, environment: Mapping[str, str]) -> Preflight:
-    """Every refusal a start whose brain runs `pin` would make on `home`'s files and in `environment`, the one the run was
-    started in and a restart runs in. Hashes a pinned claude this process has not hashed since it changed, about 230 MB,
+def preflight(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str]) -> Preflight:
+    """Every refusal a start whose brain runs `pin` on `machine` would make on `home`'s files and in `environment`, the one
+    the run was started in and a restart runs in. Hashes a pinned claude this process has not hashed since it changed, about 230 MB,
     so it is called off the loop."""
-    config = configdir.read(home.brain, pin)
+    config = configdir.read(home.brain, pin, machine)
     fritter = _fritter(home)
     shim = _shim(home)
     brain = configdir.runnable(config)
@@ -89,6 +89,8 @@ def preflight(home: Home, pin: pinned.Pin, environment: Mapping[str, str]) -> Pr
         *_fritter_refusals(home, fritter),
         *_shim_refusals(home, shim),
         *(() if isinstance(brain, Runnable) else brain),
+        # The brain a start runs reaches the API through hands' proxy.
+        *configdir.around_proxy(config),
         *configdir.first_screens(config),
         *((voice.reason,) if isinstance(voice, Unread) else ()),
         *_environment_refusals(home, stray),

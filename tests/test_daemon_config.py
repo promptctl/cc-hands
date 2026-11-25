@@ -16,11 +16,12 @@ from pathlib import Path
 import pytest
 
 from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
+from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import processes
 from faketerminals import FakeFritters, FakeScreen, FakeTerminals
 from hands.core.front import FrontUnread
 from fixtures.pins import LAID_OUT
-from hands.brain import pinned, process
+from hands.brain import configdir, pinned, process
 from hands.core.session import PinnedClaude, Runnable
 from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, preflight, run
@@ -67,7 +68,7 @@ def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: P
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, shell_without_hands_settings())).voice.personality == "Dry and wry."
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -98,7 +99,7 @@ def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, shell_without_hands_settings())).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
 
 
 @pytest.mark.parametrize(
@@ -175,7 +176,7 @@ def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, shell_without_hands_settings()))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings()))
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
@@ -184,7 +185,7 @@ def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file
     laid_out(home)
     environment = {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}
     with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* put the setting in {home.config}"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, LAID_OUT, environment))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, LAID_OUT, UNMANAGED, environment))
 
 
 @pytest.mark.outside
@@ -231,7 +232,7 @@ def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_fil
 
 def test_a_blank_model_flag_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exited:
-        cli.main(["--home", str(tmp_path), "run", "--model", "  "], processes=processes())
+        cli.main(["--home", str(tmp_path), "run", "--model", "  "], machine=UNMANAGED, processes=processes())
     assert exited.value.code == 2
     assert f"argument --model: a model's id, such as {ANTHROPIC_MODEL}, not '  '" in capsys.readouterr().err
 
@@ -243,7 +244,7 @@ def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_sett
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: None)
     for given in ((), ("--model", " claude-opus-5-5 ")):
-        assert cli.main(["--home", str(home.root), "run", *given], processes=processes()) == 1
+        assert cli.main(["--home", str(home.root), "run", *given], machine=UNMANAGED, processes=processes()) == 1
     capsys.readouterr()
     starts = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert [(start["outcome"], start["facts"]["model_flag"]) for start in starts] == [("failed", None), ("failed", "claude-opus-5-5")]
@@ -254,9 +255,9 @@ def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path
 
     home = Home(tmp_path / ".hands")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    assert cli.door(home, LAID_OUT, {}, "claude-opus-5-5", Start(False, SYSTEM)) == config.load(home, "claude-opus-5-5")
+    assert cli.door(home, LAID_OUT, UNMANAGED, {}, "claude-opus-5-5", Start(False, SYSTEM)) == config.load(home, "claude-opus-5-5")
     with pytest.raises(CannotStart, match="^--model 'opus': "):
-        cli.door(home, LAID_OUT, {}, "opus", Start(False, SYSTEM))
+        cli.door(home, LAID_OUT, UNMANAGED, {}, "opus", Start(False, SYSTEM))
 
 
 @pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
@@ -269,7 +270,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     # The level each run's owner held as it loaded: what nothing listens at yet, and what a restart then would carry.
     started: list[tuple[Level, Level]] = []
 
-    def door(_home: Home, _pin: pinned.Pin, _environment: Mapping[str, str], model: str | None, _run_start: Start) -> config.Settings:
+    def door(_home: Home, _pin: pinned.Pin, _machine: configdir.Machine, _environment: Mapping[str, str], model: str | None, _run_start: Start) -> config.Settings:
         # Only what the restart is given is weighed here: an id that begins with a dash is no model hands offers.
         return config.Settings(None, Config(), model)
 
@@ -282,7 +283,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
-    def loaded(clock: Clock, _processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, _processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
         loaded_on.append(settings.model)
         started.append((listening.level, driving.last_chosen))
 
@@ -312,13 +313,13 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     monkeypatch.setattr(cli, "retire", retired)
     monkeypatch.setattr(cli, "execv", execv)
     with pytest.raises(Execed) as first:
-        cli.main(["--home", str(home.root), "run", *given], processes=processes())
+        cli.main(["--home", str(home.root), "run", *given], machine=UNMANAGED, processes=processes())
     again = first.value.args[0][-3 - len(carried):]
     assert again == ["--restarted", "42", "--level=engaged", *carried]
     # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all, its desk to
     # start at the level the run before's desk was at; restarted before it steps it, it carries that level on again.
     with pytest.raises(Execed) as second:
-        cli.main(["--home", str(home.root), "run", *again], processes=processes())
+        cli.main(["--home", str(home.root), "run", *again], machine=UNMANAGED, processes=processes())
     assert second.value.args[0][-3 - len(carried):] == again
     assert (loaded_on, started) == ([loads, loads], [("off", "off"), ("off", "engaged")])
     lines = list(map(json.loads, audit.tail(home.audit, 100)[0]))
@@ -331,7 +332,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
 def test_a_level_given_to_a_start_that_is_no_restart_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     for given, refused in ((("--level=engaged",), "--level is a restart's"), (("--restarted", "42", "--level=loud"), "argument --level: hands listens at off, wake word, engaged, not 'loud'")):
         with pytest.raises(SystemExit) as exited:
-            cli.main(["--home", str(tmp_path), "run", *given], processes=processes())
+            cli.main(["--home", str(tmp_path), "run", *given], machine=UNMANAGED, processes=processes())
         assert exited.value.code == 2
         assert refused in capsys.readouterr().err
 
@@ -349,7 +350,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     home.config.write_text('[llm]\nbackend = "claude"\n')
     recorded: list[Entry] = []
     running = config.load(home, "claude-opus-5-5")
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, {}, recorded.append, running, SYSTEM, period=0.01), 0.3))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, running, SYSTEM, period=0.01), 0.3))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n')
     await asyncio.sleep(0.05)
@@ -357,7 +358,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "opus"\n')
     with pytest.raises(TimeoutError):
         await watching
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, {}, recorded.append, running, SYSTEM, period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, running, SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[talk]\npersonality = "Dry."\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
@@ -394,7 +395,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path) -
     run_start = Start(restarted=False, clock=SYSTEM)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
     exporting_down = heartbeat.Degradation("export", "can't export traces", "the collector has not taken all of its traces")
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, processes(), home, LAID_OUT, {}, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, processes(), home, LAID_OUT, UNMANAGED, {}, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -434,7 +435,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     stop = Stop()
     stop.tell(QuitKey())
-    assert await start(lambda: run.configured(prompted, lambda _: None, processes(), home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
+    assert await start(lambda: run.configured(prompted, lambda _: None, processes(), home, LAID_OUT, UNMANAGED, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
     never.set()
 
 
@@ -447,7 +448,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     surveyed: list[run.Configured | CannotStart] = []
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, surveyed.append, processes(), home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+        asyncio.run(start(lambda: run.configured(refused, surveyed.append, processes(), home, LAID_OUT, UNMANAGED, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     # Every other step is still said: the readiness check is given the refusal, as the backend's step.
     [refusal] = surveyed
     assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
@@ -465,7 +466,7 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
         return run.Configured(config, run.Settings(b"", Config()))
 
     monkeypatch.setattr(run, "sweep", swept)
-    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), processes(), home, LAID_OUT, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
+    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), processes(), home, LAID_OUT, UNMANAGED, {}, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     assert order == ["sweep", "configure", "survey"]
 
 
@@ -486,7 +487,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     levels = Levels("off")
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, processes(), FakeTerminals(), FakeFritters(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, run_start, config.OwnModel(home, LAID_OUT, {}, _NO_FILE), SYSTEM, levels, levels)
+            await run.run(refused, lambda _: None, processes(), FakeTerminals(), FakeFritters(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, UNMANAGED, run_start, config.OwnModel(home, LAID_OUT, UNMANAGED, {}, _NO_FILE), SYSTEM, levels, levels)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -523,25 +524,25 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     # Exported in the process, so the refusal is of what `main` hands down to the run, not of an environment the test makes up.
     monkeypatch.setenv("HANDS_LLM", "claude")
 
-    def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:
             configure = partial(run.configured_from, children_on(clock), home, settings)
-            await start(lambda: run.configured(configure, lambda _: None, processes, home, pin, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
+            await start(lambda: run.configured(configure, lambda _: None, processes, home, pin, UNMANAGED, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
 
     monkeypatch.setattr(cli, "loaded", loaded)
-    assert cli.main(["--home", str(home.root), "run"], pin=LAID_OUT, processes=processes()) == 1
+    assert cli.main(["--home", str(home.root), "run"], pin=LAID_OUT, machine=UNMANAGED, processes=processes()) == 1
     reason = f"HANDS_LLM set, and hands reads no setting from the environment: unset HANDS_LLM, and put the setting in {home.config}; then run hands again"
     assert capsys.readouterr().err == f"hands: {reason}\n"
     # The start's one event is failed with the reason, and says which run it was.
     [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert (refused["level"], refused["outcome"], refused["error"]) == ("error", "failed", f"CannotStart: {reason}")
     assert (refused["facts"]["pid"], refused["facts"]["restarted"], refused["facts"]["after_crash"]) == (os.getpid(), False, False)
-    assert cli.main(["--home", str(home.root), "status"], processes=processes()) == 1
+    assert cli.main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes()) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
@@ -569,9 +570,9 @@ def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tm
 
     monkeypatch.setattr(cli, "loaded", loaded)
     with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
-        cli.main(["--home", str(home.root), "run"], processes=processes())
+        cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=processes())
     assert capsys.readouterr().err == "hands: no key\n"
-    assert cli.main(["--home", str(home.root), "status"], processes=processes()) == 1
+    assert cli.main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes()) == 1
     assert capsys.readouterr().out == "hands refused to start 0s ago: no key\n"
 
 
@@ -587,7 +588,7 @@ def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path,
 
     monkeypatch.setattr(cli, "start_indicator", unshown)
     with pytest.raises(OSError, match="no indicator"):
-        cli.main(["--home", str(home.root), "run"], processes=processes())
+        cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=processes())
     [failed] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert (failed["outcome"], failed["error"]) == ("failed", "OSError: no indicator")
 
@@ -604,16 +605,16 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     gone, table = 4343, processes()
     crashed = heartbeat.Heart(home.status, gone, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     crashed.beat("running", None, 0, listening=False, degraded=())
-    assert cli.main(["--home", str(home.root), "run"], processes=table) == 1
+    assert cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=table) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
     assert str(home.config) in reason
     # Refused at the door, before the settings name a collector: the hold's event and the start's are on the log alone.
     assert [(line["event"], line["error"]) for line in map(json.loads, audit.tail(home.audit, 10)[0])] == [("hands.hold", None), ("hands.start", f"CannotStart: {reason}")]
     assert cli.crashed_before(SYSTEM, table, home)
     # A restart's run holds the heartbeat from the outset, the run before it having beat starting under its pid.
-    assert cli.main(["--home", str(home.root), "run", "--restarted", "0"], processes=table) == 1
+    assert cli.main(["--home", str(home.root), "run", "--restarted", "0"], machine=UNMANAGED, processes=table) == 1
     capsys.readouterr()
-    assert cli.main(["--home", str(home.root), "status"], processes=table) == 1
+    assert cli.main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=table) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
@@ -632,19 +633,19 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in)).voice.voice == "charles"
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voicechoice.keep(home, voicechoice.parse_voice("Bill Boerst"))
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in)).voice.voice == "bill_boerst"
+    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, logged_in))
+        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
 
 
 # The settings of a run started with no file: every default.
@@ -653,7 +654,7 @@ _NO_FILE = config.Settings(None, Config())
 
 async def _edited_within(home: Home, recorded: list[Entry], seconds: float = 0.5) -> SettingsEdited | None:
     try:
-        return await asyncio.wait_for(config.edited(home, LAID_OUT, {}, recorded.append, config.load(home), SYSTEM, period=0.01), seconds)
+        return await asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, config.load(home), SYSTEM, period=0.01), seconds)
     except TimeoutError:
         return None
 
@@ -752,7 +753,7 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, LAID_OUT, {}, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
 
@@ -852,16 +853,16 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
     recorded: list[Entry] = []
     weighed: list[bytes] = []
 
-    def overwritten(weighing: Home, pin: pinned.Pin, environment: Mapping[str, str]) -> preflight.Preflight:
+    def overwritten(weighing: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str]) -> preflight.Preflight:
         weighed.append(weighing.config.read_bytes())
         # The first edit is saved over with a typo while the home is weighed for it.
         if weighed == [b'[llm]\nmodel = "claude-opus-5-5"\n']:
             home.config.write_text('[llm]\nbackend = "claud"\n')
-        return preflight.preflight(weighing, pin, environment)
+        return preflight.preflight(weighing, pin, machine, environment)
 
     monkeypatch.setattr(config, "preflight", overwritten)
     # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
-    watching = asyncio.create_task(config.edited(home, LAID_OUT, {}, recorded.append, config.load(home), SYSTEM, period=0.01))
+    watching = asyncio.create_task(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, config.load(home), SYSTEM, period=0.01))
     try:
         home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
         # Moved by each weigh, the hop to a thread that a loaded machine is slowest to take.
@@ -889,5 +890,5 @@ async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, LAID_OUT, {}, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []

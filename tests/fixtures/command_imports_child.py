@@ -1,4 +1,4 @@
-"""`hands <command>` in a fresh interpreter, writing which of Pipecat and torch it loaded to a file.
+"""`hands <command>` in a fresh interpreter, writing which of Pipecat, torch and cryptography it loaded to a file.
 
     python command_imports_child.py <home> <command> <out>
 
@@ -13,6 +13,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from clocks import Interrupting
+from fakemachine import UNMANAGED
 from standins import replace
 
 from hands.daemon import cli
@@ -23,8 +24,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from hands.brain import pinned, process
+    from hands.brain import configdir, pinned, process
     from hands.sessions.child import Children
+    from hands.core.wire import ApiRoute
     from hands.voice import phoneaddress
 
 
@@ -38,7 +40,7 @@ def lan_addresses() -> list[str]:
     return ["192.0.2.1"]
 
 
-def logged_in(children: Children, config_dir: Path, pin: pinned.Pin, base_url: str, inherited: Mapping[str, str], method: process.Method) -> process.Login:
+def logged_in(children: Children, config_dir: Path, pin: pinned.Pin, machine: configdir.Machine, route: ApiRoute, inherited: Mapping[str, str], method: process.Method) -> process.Login:
     from hands.brain.process import Login
     from hands.voice.backends import Account
 
@@ -61,9 +63,9 @@ def main() -> None:
             pass
     # [LAW:dataflow-not-control-flow] every command on the one clock, so `log`, which follows until Ctrl-C, ends where any
     # command that waits would.
-    code = cli.main(["--home", home, command], Interrupting(VirtualClock()), processes=cli.KERNEL)
+    code = cli.main(["--home", home, command], Interrupting(VirtualClock()), machine=UNMANAGED, processes=cli.KERNEL)
     with open(out, "w") as file:
-        json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch"})}, file)
+        json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch", "cryptography"})}, file)
 
 
 main()

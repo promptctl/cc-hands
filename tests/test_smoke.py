@@ -29,6 +29,7 @@ from hands.sessions.audit import ClipHeard, Typing, TypingConfirmed, TypingFaile
 from hands.sessions.home import Home
 from hands.voice import transcription
 from hands.sessions.wide import Fact, Outcome, WideEvent
+from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import FakeProcesses, Running, processes
 
 SESSION = SessionId("5086f176-e3cf-4222-bdb9-d7993c507d33")
@@ -213,7 +214,7 @@ def events(home: Home) -> list[dict[str, Any]]:
 
 def test_with_hands_not_running_the_run_stops_at_up_and_its_event_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
-    assert main(["--home", str(home.root), "smoke"], processes=processes()) == 1
+    assert main(["--home", str(home.root), "smoke"], machine=UNMANAGED, processes=processes()) == 1
     assert capsys.readouterr().out == f"FAILED up: hands has not run: there is no heartbeat at {home.status}; start it with `hands run`\n"
     [command] = events(home)
     assert (command["event"], command["outcome"], command["facts"]["command"], command["facts"]["failed_at"]) == ("hands.command", "failed", "smoke", "up")
@@ -230,7 +231,7 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     home.root.mkdir()
     heartbeat.write(home.status, heartbeat.Status(HANDS, now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-    assert main(["--home", str(home.root), "smoke"], processes=up(now)) == 1
+    assert main(["--home", str(home.root), "smoke"], machine=UNMANAGED, processes=up(now)) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"
     [command] = events(home)
     facts = command["facts"]
@@ -272,7 +273,7 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
 
     monkeypatch.setattr(smoke, "_synthesized", synthesized)
     monkeypatch.setattr(smoke, "on_terminal", on_terminal)
-    assert main(["--home", str(home.root), "smoke"], processes=up(now)) == 1
+    assert main(["--home", str(home.root), "smoke"], machine=UNMANAGED, processes=up(now)) == 1
     return capsys.readouterr().out.splitlines()[-1], started
 
 

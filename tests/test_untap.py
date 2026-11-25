@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.sessions.untap import KEPT, REPLACED, TRUST, tapped, untap_script, untapped
+from hands.sessions.untap import KEPT, REPLACED, TRUST, tap, tapped, untap_script, untapped
 
 TAP = "http://127.0.0.1:40000"
 # A session's environment as fritter left it, its proxy and trust both replaced, and what they were before kept.
@@ -27,8 +27,14 @@ SESSION = {
     "FRITTER_OUTER_NODE_EXTRA_CA_CERTS": "",
 }
 
+# hands' own environment, with an outer proxy, an empty NO_PROXY, and no certificates of its own named.
+HANDS = {"HOME": "/home/a", "HTTPS_PROXY": "http://corp:3128", "no_proxy": "", "PATH": "/usr/bin:/bin"}
+# The brain's, given hands' proxy in the tap's own mark.
+BRAIN = HANDS | tap(HANDS, "http://127.0.0.1:50000", "/tmp/hands/trusted.pem", "127.0.0.1,localhost")
+
 CASES = {
     "tapped": SESSION,
+    "given hands' proxy": BRAIN,
     "tapped with nothing replaced that was set": {name: value for name, value in SESSION.items() if not name.startswith("FRITTER_OUTER_")},
     "a proxy set again since": {**SESSION, "HTTPS_PROXY": "http://other:8080"},
     "not a session's": {"HOME": "/home/a", "HTTPS_PROXY": "http://corp:3128"},
@@ -58,6 +64,16 @@ def test_sh_gives_back_what_python_does(environ: dict[str, str]) -> None:
     after = dict(entry.split("=", 1) for entry in printed.split("\0") if entry)
     watched = {*environ, *REPLACED, *KEPT}
     assert {name: value for name, value in after.items() if name in watched} == untapped(environ)
+
+
+def test_what_a_client_given_hands_proxy_runs_is_given_hands_own_environment_back() -> None:
+    assert tapped(BRAIN)
+    assert {name: BRAIN[name] for name in REPLACED} == {
+        **dict.fromkeys(("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"), "http://127.0.0.1:50000"),
+        **dict.fromkeys(("NO_PROXY", "no_proxy"), "127.0.0.1,localhost"),
+        TRUST: "/tmp/hands/trusted.pem",
+    }
+    assert untapped(BRAIN) == HANDS
 
 
 def test_a_tap_s_leavings_are_gone_whether_or_not_its_session_is_still_tapped() -> None:

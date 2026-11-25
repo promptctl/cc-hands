@@ -26,6 +26,7 @@ dependencies = [
     "soxr>=1.0,<2",  # hands.voice.echo and hands.voice.recorder resample the speaker's output to the clips' rate
     "ai-edge-litert>=2.3,<3",  # hands.voice.dtln runs DTLN-aec's two TFLite parts with its Interpreter
     "mlx>=0.32.4,<0.33",  # hands.voice.memory bounds MLX's buffer cache and reads its allocator's counters, whose functions moved from mx.metal once already
+    "cryptography>=50,<51",  # hands.sessions.authority mints the authority and the certificate hands' proxy answers the API's host with
 ]
 
 [project.scripts]
@@ -56,7 +57,7 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hands"]
 
-# hatch_build.py: the package carries fritter and brioche, built for macOS arm64, in a wheel and in a checkout's editable install.
+# hatch_build.py: the package carries fritter, built for macOS arm64, in a wheel and in a checkout's editable install.
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pyright]

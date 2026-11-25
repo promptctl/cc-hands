@@ -42,7 +42,7 @@ from urllib.parse import urlsplit
 
 import tomlkit
 
-from hands.brain import pinned
+from hands.brain import configdir, pinned
 from hands.clock import Clock
 from hands.daemon.preflight import Refused, Startable, beside, preflight
 from hands.sessions.audit import Record, SettingsEdited
@@ -106,9 +106,9 @@ def load(home: Home, model: str | None = None) -> Settings:
     return Settings(held, _settings(home, held, model), model)
 
 
-async def edited(home: Home, pin: pinned.Pin, environment: Mapping[str, str], record: Record, running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
+async def edited(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], record: Record, running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
     """The edit, once the file holds settings other than `running`, the ones the run was started on: written, rewritten,
-    or removed, and a start on it, its brain on `pin`, in `environment`, would refuse none of the home's files nor the
+    or removed, and a start on it, its brain on `pin` on `machine`, in `environment`, would refuse none of the home's files nor the
     environment.
 
     [LAW:no-ambient-temporal-coupling] weighed against the bytes the run read, not a read of its own, so an edit is never
@@ -124,7 +124,7 @@ async def edited(home: Home, pin: pinned.Pin, environment: Mapping[str, str], re
     # The bytes whose verdict holds whatever the home holds: the run's own, or settings that are the run's.
     settled = seen
     said: tuple[str, ...] = ()
-    weigh = partial(preflight, home, pin, environment)
+    weigh = partial(preflight, home, pin, machine, environment)
     while True:
         await clock.sleep(period)
         if (now := _held(home)) != seen:
@@ -167,9 +167,10 @@ class OwnModel:
     starting again on it once `edited` has weighed it.
     """
 
-    def __init__(self, home: Home, pin: pinned.Pin, environment: Mapping[str, str], running: Settings) -> None:
+    def __init__(self, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], running: Settings) -> None:
         self._home = home
         self._pin = pin
+        self._machine = machine
         self._environment = environment
         self._running = running
 
@@ -197,7 +198,7 @@ class OwnModel:
             held = _readable(self._home, _held(self._home))
             on_file = _settings(self._home, held, self._running.model)
         except Rejected as error:
-            raise Rejected("; ".join(beside(preflight(self._home, self._pin, self._environment), error))) from error
+            raise Rejected("; ".join(beside(preflight(self._home, self._pin, self._machine, self._environment), error))) from error
         edited = _with_model(held, model)
         chosen = _settings(self._home, edited, self._running.model)
         if chosen == self._running.config:
@@ -207,7 +208,7 @@ class OwnModel:
             # same bytes written again would not change. Which of the two is not known here, so the reason names both.
             raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
         # [LAW:escape-local-minima] exception: a login lost since the start passes here, until promptctl-phone-app-9d9y.h4s.
-        match preflight(self._home, self._pin, self._environment).verdict:
+        match preflight(self._home, self._pin, self._machine, self._environment).verdict:
             case Refused(refusals=refusals):
                 raise Rejected("; ".join(refusals))
             case Startable():
