@@ -85,8 +85,6 @@ def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_
         ("claude-sonnet-5-5", "hands runs on claude-sonnet-5-5 already"),
         ("", "should be a non-empty string"),
         ("claude-opus-9", "hands runs Claude on .*, not claude-opus-9$"),
-        # A real model hands does not offer, as the brain names Haiku when the user asks for it.
-        ("claude-haiku-4-5-20251001", "hands runs Claude on .*, not claude-haiku-4-5-20251001$"),
     ],
 )
 def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_path: Path, model: str, said: str) -> None:

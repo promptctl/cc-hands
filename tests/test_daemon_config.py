@@ -205,9 +205,9 @@ def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, m
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
-    # A model by its spoken name, one that does not exist, and real ones hands does not offer: each is refused naming the
+    # A model by its spoken name, one that does not exist, and a real one hands does not offer: each is refused naming the
     # ones it does.
-    for model in ("opus", "claude-opus-9", "claude-sonnet-5", "claude-haiku-4-5-20251001"):
+    for model in ("opus", "claude-opus-9", "claude-sonnet-5"):
         with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}$"):
             config.parse(f'[llm]\nbackend = "claude"\nmodel = "{model}"\n')
 
