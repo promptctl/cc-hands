@@ -30,7 +30,8 @@ toggle.addEventListener("click", () => {
 
 // The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
 // the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again.
-let work = {doing: "idle", calls: []};
+const IDLE = {doing: "idle", calls: []};
+let work = IDLE;
 let stopping = false;
 let said = null;
 let unread = null;
@@ -99,6 +100,9 @@ export function mount(_root, _route, signal) {
   transcript.scrollTop = transcript.scrollHeight;
   const redrawing = setInterval(drawDoing, 1000);
   signal.addEventListener("abort", () => { clearInterval(redrawing); content.hidden = true; }, { once: true });
+  // What the brain was when this view was last left is not what it is: it is drawn as at a load, until the first read answers.
+  work = IDLE;
+  unread = null;
   drawBrain();
   // The brain is read for as long as the view is shown: its signal ends the read, the one in flight at hands included.
   reading(signal, "/brain", shown => {

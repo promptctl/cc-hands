@@ -12,8 +12,16 @@ const root = document.getElementById("view");
 // [LAW:one-source-of-truth] hands draws the row (hands.voice.phonepage), and this reads it: a link with a `data-view` is a
 // view of the app, mounted from the module of that name; one without is a page opened in a tab of its own.
 const links = [...row.querySelectorAll("a")];
-const mounts = new Map(await Promise.all(links.filter(link => link.dataset.view !== undefined)
-  .map(async link => [link.pathname, (await import(`/views/${link.dataset.view}.js`)).mount])));
+let mounts;
+try {
+  mounts = new Map(await Promise.all(links.filter(link => link.dataset.view !== undefined)
+    .map(async link => [link.pathname, (await import(`/views/${link.dataset.view}.js`)).mount])));
+} catch (error) {
+  // [LAW:no-silent-failure] the row stays hidden, so no tap unloads the call for a page that fails the same way, and the
+  // app says on its face that it has no views.
+  root.textContent = `The app could not load its views: ${error.message}`;
+  throw error;
+}
 
 // A path of the app, carrying the phone's key, which is in the fragment.
 const keyed = path => `${path}${location.hash}`;
@@ -53,3 +61,4 @@ for (const link of links) {
 
 addEventListener("popstate", show);
 show();
+row.dataset.ready = "";

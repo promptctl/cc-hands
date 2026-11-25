@@ -51,6 +51,8 @@
   #strip, #view, #call-view { display: flex; flex-direction: column; align-items: center; gap: 28px; }
   #view, #call-view { width: 100%; }
   #call-view[hidden] { display: none; }
+  /* The row is the router's from the moment it is on screen: hidden, in its place, until app.js has wired it. */
+  #views:not([data-ready]) { visibility: hidden; }
   #views { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 2px; font-size: 15px; }
   #views a { color: var(--muted); text-decoration: none; padding: 6px 9px; border: 1px solid transparent; border-radius: 999px; }
   #views a[aria-current="page"] { color: var(--fg); border-color: var(--ring); }

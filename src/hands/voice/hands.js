@@ -97,6 +97,7 @@ export const AGAIN_MS = 2000;
 
 // Waits `ms`, or until `signal` aborts.
 export const pause = (ms, signal) => new Promise(done => {
+  if (signal.aborted) return done();
   const over = () => { clearTimeout(timer); signal.removeEventListener("abort", over); done(); };
   const timer = setTimeout(over, ms);
   signal.addEventListener("abort", over);
@@ -137,6 +138,6 @@ export async function reading(signal, path, draw, unread) {
     // [LAW:no-silent-failure] an answer the page cannot read, or cannot draw, ends the reading and says why: the same
     // answer read again would fail the same way. The console keeps where it failed.
     console.error(error);
-    unread(`This page stopped reading hands: ${error.message}. Reload it to read again.`);
+    unread(`This page stopped reading hands: ${error.message}.`);
   }
 }

@@ -5,6 +5,7 @@ import datetime
 import itertools
 import json
 import ssl
+from html.parser import HTMLParser
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -704,12 +705,37 @@ async def test_the_app_is_served_to_anyone_at_every_path_of_its_views_and_never_
         assert (shown.status, shown.content_type, shown.headers["Cache-Control"], await shown.text()) == (200, "text/html", "no-store", app)
 
 
+class _Links(HTMLParser):
+    """The links of a document: each one's attributes, and the text it says."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[tuple[dict[str, str | None], str]] = []
+        self._inside = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "a":
+            self.links.append((dict(attrs), ""))
+            self._inside = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._inside = False
+
+    def handle_data(self, data: str) -> None:
+        if self._inside:
+            attrs, said = self.links[-1]
+            self.links[-1] = (attrs, said + data)
+
+
 def test_the_row_of_views_is_drawn_as_the_row_says_and_the_pages_not_in_the_app_open_in_a_tab() -> None:
-    drawn = app_page()
-    assert [entry.path for entry in ROW if isinstance(entry, InApp)] == list(APP_PATHS) != []
-    for entry in ROW:
-        link = f'<a href="{entry.path}" data-view="{entry.view}">{entry.label}</a>' if isinstance(entry, InApp) else f'<a href="{entry.path}" target="_blank" rel="noopener">{entry.label}</a>'
-        assert link in drawn
+    parsed = _Links()
+    parsed.feed(app_page())
+    assert [said for _, said in parsed.links] == [entry.label for entry in ROW]
+    for (attrs, _), entry in zip(parsed.links, ROW, strict=True):
+        assert attrs["href"] == entry.path
+        # A view of the app is mounted by the router, and any other page is opened in a tab of its own.
+        assert (attrs.get("data-view"), attrs.get("target")) == ((entry.view, None) if isinstance(entry, InApp) else (None, "_blank"))
     assert [name for name in APP_SCRIPTS if name.startswith("views/")] == [f"views/{entry.view}.js" for entry in ROW if isinstance(entry, InApp)]
 
 
@@ -1105,6 +1131,48 @@ async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_as_cancelled_a
     await patiently(lambda: len(events(recorded, "brain.read")) == 2, lambda: len(recorded))
     answered, left = events(recorded, "brain.read")
     assert (answered.outcome, left.outcome) == ("ok", "cancelled")
+    serving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await serving
+    await phone.stop()
+
+
+@pytest.mark.outside
+async def test_a_deed_whose_phone_goes_away_before_it_is_answered_runs_to_its_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def asked() -> Untailed:
+        return Untailed("the tailscale command is not on the PATH")
+
+    monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
+    monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
+    recorded: list[Entry] = []
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
+    typed: list[str] = []
+    typing_begun, typing_may_end = asyncio.Event(), asyncio.Event()
+
+    async def typing(text: str) -> None:
+        typing_begun.set()
+        await typing_may_end.wait()
+        typed.append(text)
+
+    home = Home(tmp_path)
+    key = phone_key(SYSTEM, home)
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    await patiently(lambda: events(recorded, "phone.served") != [], lambda: len(recorded))
+    [served] = events(recorded, "phone.served")
+    unverified = ssl.create_default_context()
+    unverified.check_hostname, unverified.verify_mode = False, ssl.CERT_NONE
+    async with ClientSession() as session:
+        # The phone goes away while hands is still typing what it sent, and hands finishes it.
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(1) as phone_leaves:
+                async with session.post(f"https://127.0.0.1:{served.facts['port']}/conversation/typed", json={"text": "hello"}, headers={"Authorization": bearer(key)}, ssl=unverified):
+                    await typing_begun.wait()
+                    phone_leaves.reschedule(asyncio.get_running_loop().time())
+                    await asyncio.Event().wait()
+    typing_may_end.set()
+    await patiently(lambda: events(recorded, "conversation.typed") != [], lambda: len(recorded))
+    [event] = events(recorded, "conversation.typed")
+    assert (typed, event.outcome) == (["hello"], "ok")
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await serving
