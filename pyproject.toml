@@ -56,7 +56,7 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hands"]
 
-# hatch_build.py: the package carries fritter, built for macOS arm64, in a wheel and in a checkout's editable install.
+# hatch_build.py: the package carries fritter and brioche, built for macOS arm64, in a wheel and in a checkout's editable install.
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pyright]
@@ -114,4 +114,4 @@ timeout_method = "signal"
 environments = ["sys_platform == 'darwin'"]
 # A new commit or tag rebuilds the checkout's own install, so `hands --version` there is the checkout's, and so does an
 # edit to fritter's source or its build, so the fritter in src/hands/bin is the checkout's.
-cache-keys = [{ file = "pyproject.toml" }, { file = "hatch_build.py" }, { file = "fritter/go.mod" }, { file = "fritter/go.sum" }, { file = "fritter/**/*.go" }, { git = { commit = true, tags = true } }]
+cache-keys = [{ file = "pyproject.toml" }, { file = "hatch_build.py" }, { file = "src/hands/packaged.py" }, { file = "fritter/go.mod" }, { file = "fritter/go.sum" }, { file = "fritter/**/*.go" }, { git = { commit = true, tags = true } }]
