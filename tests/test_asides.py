@@ -22,6 +22,7 @@ from hands.core.wire import (
     CONTINUATION_OPENING,
     Block,
     Ending,
+    Elsewhere,
     Exchanged,
     Fork,
     MainTurn,
@@ -256,6 +257,28 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     assert (await newest.turn()).reply == message
 
 
+async def test_a_question_is_sent_with_the_newest_credential_the_brain_sent_on_any_request_and_none_of_its_own() -> None:
+    newest = Newest(BrainSession(BRAIN))
+    main_turn(newest, "x1", OPENED, answered(reply(Text("Done."))))
+
+    def credentialed(authorization: str, named: str = "authorization") -> tuple[tuple[str, str], ...]:
+        return ((named, authorization), *HEADERS[1:])
+
+    # The idle brain's own request renews it, whatever the request is, the casing of its header included.
+    newest.hear(Sent("i1", None, Elsewhere("/api/oauth/organizations/o/skills/list-skills"), None, None))
+    newest.hear(Received("i1", "/api/oauth/organizations/o/skills/list-skills", credentialed("Bearer renewed", "Authorization"), b""))
+    turn = await newest.turn()
+    assert turn.headers == credentialed("Bearer renewed") and turn.exchange == "x1"
+    assert forked(turn, "what now?")[0]["authorization"] == "Bearer renewed"
+    # A question's own request carries the credential it was given: it renews nothing, or one refusal would outlive its cause.
+    newest.hear(Sent("f1", BRAIN, Fork(), "auxiliary", {}))
+    newest.hear(Received("f1", "/v1/messages", credentialed("Bearer stale"), b"{}"))
+    assert (await newest.turn()).headers == credentialed("Bearer renewed")
+    # A request that carries none leaves it.
+    newest.hear(Received("i2", "/api/hello", (("x-api-key", "k"),), b""))
+    assert (await newest.turn()).headers == credentialed("Bearer renewed")
+
+
 # The brain's held turn: its stay_silent call answered, and the proxy answering the request that carries the answer.
 SILENT_CALL = ToolUse("t1", "stay_silent", {})
 OPENED = body(user(text("hi")))
@@ -390,6 +413,13 @@ class Brain:
             await response.read()
 
 
+    async def idle_request(self, authorization: str) -> None:
+        """What the idle brain's Claude Code sends on its own, renewing its token before it builds the request."""
+        headers = [("authorization", authorization), *HEADERS[1:]]
+        async with self.asides._client.get(self.url + "/api/oauth/organizations/o/skills/list-skills", headers=headers) as response:  # pyright: ignore[reportPrivateUsage]
+            await response.read()
+
+
 @pytest.fixture
 async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
     cleanups: list[Callable[[], Awaitable[None]]] = []
@@ -470,6 +500,24 @@ async def test_a_side_question_is_the_brains_turn_forked_through_the_proxy_and_a
     assert isinstance(event.facts["forked"], str)
     # Which message carries the question's marker, read off the body it was sent as.
     assert marks(question) == [(event.facts["marked"], FORKED)]
+
+
+@pytest.mark.outside
+async def test_a_side_question_is_answered_on_the_brains_renewed_login_after_the_token_of_the_turn_it_forks_has_expired(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    await rig.idle_request("Bearer renewed")
+
+    async def accepts_the_renewed_login(request: web.Request) -> web.StreamResponse:
+        if request.headers["Authorization"] != "Bearer renewed":
+            return web.Response(status=401, text='{"type":"error","error":{"type":"authentication_error","message":"OAuth access token has expired"}}', headers={"Content-Type": "application/json"})
+        return await written(request, stream("Still here."))
+
+    rig.answers.append(accepts_the_renewed_login)
+    assert await rig.asides.ask(AsideKind.NAME, "who?", Deadline(10)) == "Still here."
+    [event] = events(recorded)
+    assert event.facts["status"] == 200
 
 
 @pytest.mark.outside

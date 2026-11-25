@@ -26,6 +26,7 @@ from hands.core.wire import (
     read_request,
     block_param,
     Exchanged,
+    Fork,
     MainTurn,
     Message,
     MessageParam,
@@ -64,6 +65,7 @@ Simply answer the question with the information you have.</system-reminder>
 RUNNING = "[No result yet — this call is still in progress in the main conversation (running, awaiting approval, or queued)]"
 # The class Claude Code names a side question in (es() of querySource "side_question").
 SIDE_QUESTION_CLASS = "auxiliary"
+AUTHORIZATION = "authorization"
 
 
 class Unmarked(StrEnum):
@@ -140,27 +142,41 @@ class Newest:
         self._main: dict[str, SessionId | None] = {}
         # [LAW:one-source-of-truth] the newest turn held of each conversation, so a /resume back forks from where it was left.
         self._turns: dict[SessionId | None, Turn] = {}
+        # [LAW:one-source-of-truth] the credential a question is sent with: the newest Authorization the brain sent on any
+        # request through the proxy. Its Claude Code renews its token before each request it builds, so an idle brain's
+        # request holds a live one when the turn a question forks carries one long expired. None while the brain has sent
+        # none, as one on an API key does.
+        self._authorization: str | None = None
+        # Exchanges hands built itself: a question's request carries the credential it was given, not one the brain sent.
+        self._own: set[str] = set()
         # [LAW:no-ambient-temporal-coupling] set, and replaced, as each turn is held and as the brain moves: a question
         # waits on it for a turn of the conversation the brain is in, which after a /clear is none until it sends its first.
         self._changed = asyncio.Event()
         session.watch(self._change)
 
     async def turn(self) -> Turn:
-        """The brain's newest main turn in the conversation it is in, once that conversation has sent one."""
+        """The brain's newest main turn in the conversation it is in, once that conversation has sent one, its Authorization
+        the newest the brain has sent on any request."""
         while (turn := self._turns.get(self._session.id())) is None:
             await self._changed.wait()
-        return turn
+        return replace(turn, headers=_credentialed(turn.headers, self._authorization))
 
     def hear(self, observed: Observed) -> None:
         match observed:
+            case Sent(exchange=exchange, kind=Fork()):
+                self._own.add(exchange)
             case Sent(exchange=exchange, session=session, kind=MainTurn()):
                 self._main[exchange] = session
-            case Received(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
-                self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
-                self._change()
+            case Received(exchange=exchange, path=path, headers=headers, body=body):
+                if exchange not in self._own:
+                    self._authorization = _authorization(headers) or self._authorization
+                if exchange in self._main:
+                    self._turns[self._main.pop(exchange)] = Turn(exchange, path, headers, body, None)
+                    self._change()
             case Exchanged(exchange=exchange, reply=reply):
                 # A main turn that ended before the proxy received it is never waited on again.
                 self._main.pop(exchange, None)
+                self._own.discard(exchange)
                 match reply:
                     # The model's answer, or the one hands gave in its place: either is the reply Claude Code holds.
                     case Reached(body=Written(message=message)) | Synthetic(written=Written(message=message)):
@@ -173,6 +189,15 @@ class Newest:
     def _change(self) -> None:
         changed, self._changed = self._changed, asyncio.Event()
         changed.set()
+
+
+def _authorization(headers: tuple[tuple[str, str], ...]) -> str | None:
+    return next((value for name, value in headers if name.lower() == AUTHORIZATION), None)
+
+
+def _credentialed(headers: tuple[tuple[str, str], ...], authorization: str | None) -> tuple[tuple[str, str], ...]:
+    """`headers` with the Authorization the brain sent last, if it has sent one."""
+    return headers if authorization is None else tuple((name, authorization if name.lower() == AUTHORIZATION else value) for name, value in headers)
 
 
 def _read(body: bytes) -> Request:
