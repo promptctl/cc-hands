@@ -56,7 +56,7 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hands"]
 
-# hatch_build.py: the package carries fritter, built for macOS arm64, in a wheel and in a checkout's editable install.
+# hatch_build.py: the package carries fritter and brioche, built for macOS arm64, in a wheel and in a checkout's editable install.
 [tool.hatch.build.targets.wheel.hooks.custom]
 
 [tool.pyright]

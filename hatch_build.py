@@ -9,8 +9,8 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 # Go 1.25's oldest supported macOS is 12, so that is the oldest a wheel with its binary in it installs on.
 TAG = "py3-none-macosx_12_0_arm64"
-# Where in the package each binary lands, by the package of fritter/'s module it is built from: fritter, which
-# hands.sessions.wrapper.PACKAGED reads, and brioche, the brain's HTTPS proxy. brioche is a package of its own, so
+# Where in the package each binary lands, by the package of fritter/'s module it is built from: fritter, where
+# hands.sessions.wrapper.PACKAGED looks for it, and brioche, the brain's HTTPS proxy. brioche is a package of its own, so
 # fritter's binary links none of it and a change to brioche restarts no session.
 PACKAGED = {".": "hands/bin/fritter", "./brioche": "hands/bin/brioche"}
 
@@ -30,10 +30,10 @@ class FritterHook(BuildHookInterface[Any]):
             # fritter's bytes, which hands.sessions.wrapper.carried compares, and call every session's fritter stale.
             # Without it, fritter's bytes are its sources' alone.
             subprocess.run(["go", "build", "-trimpath", "-buildvcs=false", "-o", str(built), package], cwd=root / "fritter", env=environ, check=True)
-            if version != "editable":
-                # The binary is ignored by git, which the wheel's file selection follows, so it is taken in by name.
-                build_data["force_include"][str(built)] = packaged
         if version == "editable":
             return
+        for packaged in PACKAGED.values():
+            # The binary is ignored by git, which the wheel's file selection follows, so it is taken in by name.
+            build_data["force_include"][str(root / "src" / packaged)] = packaged
         build_data["pure_python"] = False
         build_data["tag"] = TAG
