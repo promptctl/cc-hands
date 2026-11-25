@@ -180,10 +180,12 @@ def test_a_wait_handed_to_a_thread_or_an_executor_job_is_charged_to_the_test_tha
         test_offloads="import asyncio, threading\n\ndef test_runs():\n    asyncio.run(asyncio.to_thread(threading.Event().wait, 0.001))\n",
         test_slept="import asyncio, time\n\ndef test_runs():\n    asyncio.run(asyncio.to_thread(time.sleep, 0.001))\n",
         test_threaded="import threading, time\n\ndef test_runs():\n    thread = threading.Thread(target=time.sleep, args=(0.001,))\n    thread.start()\n    thread.join()\n",
+        test_off_loop="import asyncio, functools, time\nfrom hands.threads import off_loop\n\ndef test_runs():\n    asyncio.run(off_loop(functools.partial(time.sleep, 0.001), 'slow'))\n",
     )  # fmt: skip
     assert "test_offloads.py: ['threading.Event.wait']" in lines
     assert "test_slept.py: ['time.sleep']" in lines
     assert "test_threaded.py: ['time.sleep']" in lines
+    assert "test_off_loop.py: ['time.sleep']" in lines
     assert not any(line.startswith("test_monitored.py") for line in lines)
 
 

@@ -10,9 +10,11 @@ A reach made with a frame of a module under tests/ on the stack is charged to th
 module whose item was running when it, or the task, the thread, or the executor job that makes it, was started, so a
 test is charged for what its helpers wait on; the harness's own code, a hook or a finalizer, is charged to its module. A
 read the machine's clock makes for hands code, through `SystemClock`, is charged to that origin with no such frame, and
-so is all a thread or an executor job reaches that a test handed its work, as `asyncio.to_thread(time.sleep, 1)` does; a
-thread a library starts for itself, as tqdm's monitor, is not. Nothing reads which test runs now, so a thread that
-outlives its test is charged to that test and not to the next. A wider fixture's setup carries its own module, so a task
+so is all a thread or an executor job reaches that a test handed its work, as `asyncio.to_thread(time.sleep, 1)` or
+`hands.threads.off_loop` does. One started by code outside tests/, hands' or a library's, as tqdm's monitor, carries the
+origin for `SystemClock` alone: what a library reaches on it is no one's. A `multiprocessing.dummy` pool's jobs escape:
+its threads start with it. Nothing reads which test runs now, so a thread that outlives its test is charged to that test
+and not to the next. A wider fixture's setup carries its own module, so a task
 it starts is charged to the fixture and not to the test it was set up for.
 
 The event loop's clock and timers are charged to the code that asked the loop for them: a test's `loop.time()`, its
@@ -41,6 +43,7 @@ from typing import Any
 
 import pytest
 
+import hands.threads
 from hands.clock import SystemClock
 from test_clock_boundary import offenders, reached, written
 
@@ -189,9 +192,10 @@ LOOP: dict[str, tuple[str, Callable[[asyncio.BaseEventLoop, tuple[Any, ...], dic
 # a deadline. A coroutine of asyncio's a test hands the loop, as `asyncio.run(asyncio.sleep(1))` does, is the test's.
 BOUNDED: frozenset[CodeType] = frozenset({asyncio.BaseEventLoop.shutdown_default_executor.__code__})
 ASYNCIO = f"{Path(asyncio.__file__).parent}{os.sep}"
-# This module and the standard library's ways to hand work to a thread: the code that starts a thread or a job is the
-# first frame outside them.
-RELAYS = (__file__, threading.__file__, f"{Path(concurrent.futures.__file__).parent}{os.sep}", ASYNCIO)
+FUTURES = f"{Path(concurrent.futures.__file__).parent}{os.sep}"
+# This module and the ways to hand work to a thread, the standard library's and hands' own: the code that starts a
+# thread or a job is the first frame outside them.
+RELAYS = (__file__, threading.__file__, FUTURES, ASYNCIO, hands.threads.__file__)
 
 ORIGIN: contextvars.ContextVar[str | None] = contextvars.ContextVar("clockwatch.origin")
 
@@ -205,7 +209,7 @@ class Watch:
         self._patch = patch
         self._originals: dict[int, Callable[..., object]] = {}
         self._within = threading.local()
-        # The origin of the thread or executor job running on a thread now, if a test handed it its work: it charges
+        # The origin of the thread or executor job running on a thread now, if test code handed it its work: it charges
         # what the job reaches with no frame of tests/ on its stack, as a C function it was handed does. The thread's,
         # not the context's: asyncio.to_thread runs its function in the task's context. Never set on the thread pytest
         # runs on, where what reaches with no test frame is pytest's own.
@@ -308,22 +312,19 @@ class Watch:
 
         return asked
 
-    def carrying(self, run: Callable[..., object]) -> Callable[..., object]:
+    def carrying(self, run: Callable[..., object], handed: bool) -> Callable[..., object]:
         """`run`, made to carry the origin of the code that starts it, wherever it runs, and nothing else of its context:
-        a thread starts in an empty one, as it does unwatched."""
+        a thread starts in an empty one, as it does unwatched. `handed`, a test handed it its work."""
         context = contextvars.Context()
         if (origin := self._charged(carried=True)) is not None:
             context.run(ORIGIN.set, origin)
-        handed = origin if self._handed() else None
 
         def job(*args: object, **kwargs: object) -> object:
-            # An executor's thread runs its jobs inside its own run: each is its own starter's while it runs.
-            outer = getattr(self._job, "origin", None)
-            self._job.origin = handed
+            self._job.origin = origin if handed else None
             try:
                 return context.run(run, *args, **kwargs)
             finally:
-                self._job.origin = outer
+                self._job.origin = None
 
         return job
 
@@ -353,15 +354,17 @@ class Watch:
         start = threading.Thread.start
 
         def started(thread: threading.Thread) -> None:
-            # The instance's run, which a subclass's override is, made to carry the origin of the code starting it.
-            thread.run = self.carrying(thread.run)  # pyright: ignore[reportAttributeAccessIssue]
+            # The instance's run, which a subclass's override is, made to carry the origin of the code starting it. A
+            # thread an executor starts for its pool is no one's: each job it runs is handed, or not, on its own.
+            pooled = sys._getframe(1).f_code.co_filename.startswith(FUTURES)  # pyright: ignore[reportPrivateUsage]
+            thread.run = self.carrying(thread.run, not pooled and self._handed())  # pyright: ignore[reportAttributeAccessIssue]
             start(thread)
 
         patch.setattr(threading.Thread, "start", started)
         submit = ThreadPoolExecutor.submit
 
         def submitted(pool: ThreadPoolExecutor, fn: Callable[..., object], /, *args: object, **kwargs: object) -> Future[object]:
-            return submit(pool, self.carrying(fn), *args, **kwargs)
+            return submit(pool, self.carrying(fn, self._handed()), *args, **kwargs)
 
         patch.setattr(ThreadPoolExecutor, "submit", submitted)
 
