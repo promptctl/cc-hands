@@ -36,7 +36,7 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain import configdir, pinned
-from hands.brain.configdir import Unstartable
+from hands.brain.configdir import ConfigDir, Unstartable
 from hands.brain.pinned import ENV as PINNED
 from hands.brain.mcp import SERVER_NAME
 from hands.brain.session import BrainSession
@@ -64,7 +64,7 @@ from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, 
 from hands.sessions.tmux import TmuxExit, Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
 from hands.tasks import cancel_and_wait
-from hands.sessions.untap import marked, untapped
+from hands.sessions.untap import REPLACED, marked, untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
 from hands.voice.backends import Account
@@ -177,11 +177,15 @@ def kept(prompt: str) -> str:
 
 @dataclass(frozen=True)
 class Through:
-    """Anthropic's API reached through brioche, the brain's HTTPS proxy: the variables that point a client at it, one
-    each of those an interceptor sets (hands.sessions.untap.REPLACED), as brioche printed them. Made only by
-    hands.brain.brioche, of what a brioche that started printed."""
+    """Anthropic's API reached through brioche, the brain's HTTPS proxy: the variables that point a client at it, as
+    brioche printed them (hands.brain.brioche). [LAW:parse-dont-validate] one each of those an interceptor sets
+    (hands.sessions.untap.REPLACED), and no other: none is made of anything else."""
 
     variables: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if sorted(self.variables) != sorted(REPLACED):
+            raise ValueError(f"{sorted(self.variables)} is not one each of {', '.join(REPLACED)}")
 
 
 @dataclass(frozen=True)
@@ -201,8 +205,8 @@ class Station:
     config_dir: Path
     cwd: Path
     model: str
-    # Through brioche, for the brain.
-    route: Route
+    # The brain's is through brioche, always: a Claude Code that asks only of its login runs on no station.
+    route: Through
     # hands' own environment, which each is started in less what environment() keeps out; kept out of the repr, as it
     # holds keys, and out of the station's identity, which it is not part of.
     inherited: Mapping[str, str] = field(repr=False, compare=False)
@@ -357,8 +361,8 @@ def _reached(route: Route, passed: Mapping[str, str]) -> dict[str, str]:
     """The variables `route` sets over `passed`, the environment otherwise given."""
     match route:
         case Through(variables=variables):
-            # Marked as a tap's are, so whatever the brain runs, a hands or a claude among them, is given back what brioche
-            # replaced, and never reaches the API through the brain's brioche, or one that has ended.
+            # Marked as a tap's are, so a hands or a claude the brain runs is given back what brioche replaced (`untapped`,
+            # and the shim's untap script), and never reaches the API through the brain's brioche, or one that has ended.
             return marked(variables, passed)
         case Direct():
             return {}
@@ -611,15 +615,21 @@ type Method = Literal["claudeai", "console"]
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
-def login(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapping[str, str], method: Method) -> Account:
-    """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
-    account it holds after.
+def first_run(config: ConfigDir) -> str | None:
+    """Why a login on `config` takes Claude Code's first run, said: its first screens unanswered; None when they are not."""
+    return "; ".join(configdir.unanswered(config)) or None
 
-    A config directory whose first screens are unanswered gets Claude Code's first run, its screens, its login among
-    them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody is at its
-    keyboard. Its claude is `pin`'s, as the start's. `method` is the login asked for: `claude auth login` makes it, and on the first run's login screen, which
-    offers every login, it is the one to pick. Raises LoginFailed when the brain holds another after."""
-    before = configdir.read(config_dir, pin)
+
+def login(children: Children, before: ConfigDir, pin: pinned.Pin, inherited: Mapping[str, str], method: Method) -> Account:
+    """Log the config directory read as `before` in with Claude Code's own login, at this terminal, in the directory the
+    brain runs in; the account it holds after.
+
+    A config directory whose first screens are unanswered gets Claude Code's first run (`first_run`), its screens, its
+    login among them, answered once here: `claude auth login` alone leaves them for the brain's first start, where nobody
+    is at its keyboard. Its claude is `pin`'s, as the start's. `method` is the login asked for: `claude auth login` makes
+    it, and on the first run's login screen, which offers every login, it is the one to pick. Raises LoginFailed when the
+    brain holds another after."""
+    config_dir = before.path
     # [LAW:single-enforcer] what any run of hands' own Claude Code is refused on, the start's included, checked before
     # this one, which would sync what the brain's settings do not keep out. Its first screens are this run's to answer.
     match configdir.runnable(before):
@@ -627,14 +637,12 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapp
             pass
         case refused:
             raise Unstartable("; ".join(refused))
-    first_run = "; ".join(configdir.unanswered(before)) or None
-    # On the login's event as soon as it is known, so a login that fails says whether it took the first run too.
-    annotate(first_run=first_run)
+    taken = first_run(before)
     # [LAW:one-source-of-truth] the brain's own claude, environment, and settings sources, so the login lands in its config
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with. Its route is Direct, as no brioche runs for it:
     # a login asks Anthropic of the account, and has no turn of the brain's for hands to hear.
-    argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
+    argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if taken is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
     # [LAW:single-enforcer] exception: run in hands' own process group, the terminal's foreground job, so it reads the
     # keyboard the person logging in types at; a session of its own, as the runner starts each child in, has no terminal.
     import subprocess

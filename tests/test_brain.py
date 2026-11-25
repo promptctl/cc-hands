@@ -1643,7 +1643,9 @@ def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fa
         onboard(tmp_path / "brain")
     assert main(["--home", str(tmp_path), "login"], pin=brain_pin, processes=processes()) == 1
     assert capsys.readouterr().err == f"hands login: {said}\n"
-    assert logins(tmp_path) == [("failed", {"asked": "claudeai", "settings_written": not onboarded})]
+    # Whether it took Claude Code's first run, which is the run that failed when it did.
+    first_run = None if onboarded else f"no {tmp_path / 'brain' / '.claude.json'}"
+    assert logins(tmp_path) == [("failed", {"asked": "claudeai", "settings_written": not onboarded, "first_run": first_run})]
     # The command fails saying why, in the words it said it.
     [command] = [event for event in map(json.loads, segment(tmp_path / "audit", 0).read_text().splitlines()) if event.get("event") == "hands.command"]
     assert command["error"] == f"exited 1: {said}"

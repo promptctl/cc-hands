@@ -100,7 +100,8 @@ def _settings(path: Path) -> Settings | Unread:
         return Settings(KEPT_OUT, None, None, ())
     except (OSError, Rejected) as error:
         return Unread(str(error))
-    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(said), _routed(said))
+    env = _env(said)
+    return Settings(tuple(switch for switch in KEPT_OUT if said.fields.get(switch) is not False), _mode(said), _key(env), _routed(env))
 
 
 def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
@@ -113,22 +114,38 @@ def _mode(said: Payload) -> PermissionMode | UnknownMode | Unread | None:
     return SETTINGS_MODES.get(named) or UnknownMode(named)
 
 
-def _key(said: Payload) -> str | Unread | None:
-    """The API key settings.json puts in the brain's environment, where the brain's own is set: hands' never reaches it
-    (hands.brain.process.FOREIGN_LOGINS)."""
+def _env(said: Payload) -> Payload | Unread:
+    """settings.json's env, which Claude Code puts in the brain's environment over the one hands starts it in."""
     try:
-        key = Payload.of(said.fields.get("env", {}), "its env").optional_text("ANTHROPIC_API_KEY")
+        return Payload.of(said.fields.get("env", {}), "its env")
     except Rejected as error:
         return Unread(str(error))
+
+
+def _key(env: Payload | Unread) -> str | Unread | None:
+    """The API key settings.json's env puts in the brain's environment, where the brain's own is set: hands' never
+    reaches it (hands.brain.process.FOREIGN_LOGINS)."""
+    match env:
+        case Unread():
+            return env
+        case Payload():
+            try:
+                key = env.optional_text("ANTHROPIC_API_KEY")
+            except Rejected as error:
+                return Unread(str(error))
     # As Claude Code reads it (docs/claude-code-behavior.md): a blank key is no key, and it is answered by its last 20
     # characters once it is trimmed.
     return key.strip()[-20:] if key else None
 
 
-def _routed(said: Payload) -> tuple[str, ...]:
-    """The variables of ROUTING settings.json's env sets. An env hands cannot read is its key's to refuse (`_key`)."""
-    env = said.fields.get("env", {})
-    return tuple(name for name in ROUTING if isinstance(env, dict) and name in env)
+def _routed(env: Payload | Unread) -> tuple[str, ...]:
+    """The variables of ROUTING settings.json's env sets. An env hands cannot read sets none it can name, and is refused
+    as the key it may hold is (`_key`)."""
+    match env:
+        case Unread():
+            return ()
+        case Payload(fields=fields):
+            return tuple(name for name in ROUTING if name in fields)
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:

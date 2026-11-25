@@ -57,8 +57,8 @@ func unproxied(*http.Request) (*url.URL, error) { return nil, nil }
 func listening() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
 
 // said is what brioche says, read while it may still be saying more: each report, and the
-// reports in words, a "brioche: " line each, as a reader of them sees it. A line that is no
-// report is said as one of kind "unframed", which no test waits for.
+// lines as they were written, for a failure to show. A line that is no report is a report of
+// kind "unframed", which no test waits for.
 type said struct {
 	mu      sync.Mutex
 	more    *sync.Cond // broadcast at each write, and once the test is out of time
@@ -80,6 +80,7 @@ func (s *said) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.more.Broadcast()
+	s.lines.Write(p)
 	s.pending = append(s.pending, p...)
 	for {
 		line, rest, whole := bytes.Cut(s.pending, []byte("\n"))
@@ -92,7 +93,6 @@ func (s *said) Write(p []byte) (int, error) {
 			told = report{Kind: "unframed", Level: failure, Said: string(line)}
 		}
 		s.reports = append(s.reports, told)
-		fmt.Fprintf(&s.lines, "brioche: %s\n", told.Said)
 	}
 }
 
@@ -106,19 +106,30 @@ func (s *said) String() string {
 func (s *said) of(kind string) []report {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.reported(kind, "")
+}
+
+// has is whether brioche has made a report of `kind` saying `part`.
+func (s *said) has(kind, part string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.reported(kind, part)) != 0
+}
+
+func (s *said) reported(kind, part string) []report {
 	var found []report
 	for _, told := range s.reports {
-		if told.Kind == kind {
+		if told.Kind == kind && strings.Contains(told.Said, part) {
 			found = append(found, told)
 		}
 	}
 	return found
 }
 
-// until returns once brioche has said `line`: what the test waits for is the saying itself.
-// A test that runs out of time first fails saying what brioche did say, short of go test's
-// own timeout, whose dump would not.
-func (s *said) until(t *testing.T, line string) {
+// until returns once brioche has made a report of `kind` saying `part`: what the test waits
+// for is the saying itself. A test that runs out of time first fails saying what brioche did
+// say, short of go test's own timeout, whose dump would not.
+func (s *said) until(t *testing.T, kind, part string) {
 	t.Helper()
 	if deadline, ok := t.Deadline(); ok {
 		expire := time.AfterFunc(time.Until(deadline)-5*time.Second, func() {
@@ -131,11 +142,11 @@ func (s *said) until(t *testing.T, line string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for !strings.Contains(s.lines.String(), line) && !s.expired {
+	for len(s.reported(kind, part)) == 0 && !s.expired {
 		s.more.Wait()
 	}
 	if s.expired {
-		t.Fatalf("brioche never said %q; it said %q", line, s.lines.String())
+		t.Fatalf("brioche never reported %s saying %q; it said %q", kind, part, s.lines.String())
 	}
 }
 
@@ -295,7 +306,7 @@ func TestAClientTrustingBriochesFileReachesTheOriginWithTheRequestAsSentAndGetsI
 	if reached := <-got; reached != want {
 		t.Errorf("the origin was asked %+v, want %+v", reached, want)
 	}
-	brioche.said.until(t, "brioche: intercepted https://api.anthropic.com/v1/messages?beta=true&a=1;b=2: answered 200\n")
+	brioche.said.until(t, "answered", "intercepted https://api.anthropic.com/v1/messages?beta=true&a=1;b=2: answered 200")
 }
 
 func TestAConnectToAnyOtherHostIsTunnelled(t *testing.T) {
@@ -366,7 +377,7 @@ func TestWhatGoesAnywhereElseGoesThroughTheOuterProxyAndWhatGoesToTheOriginDoesN
 	if asked := <-connects; asked != "CONNECT elsewhere.example:8443" {
 		t.Errorf("the outer proxy was asked %q, want the tunnel to elsewhere", asked)
 	}
-	brioche.said.until(t, "brioche: could not tunnel to elsewhere.example:8443: ")
+	brioche.said.until(t, "unreached", "could not tunnel to elsewhere.example:8443: ")
 	// A plain request, which brioche forwards itself, goes through the outer proxy too: one
 	// that went around it would reach elsewhere, and be answered.
 	elsewhere := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -406,7 +417,7 @@ func TestAnOriginThatRefusesIsAnsweredAsA502NamingBriocheAndIsSaid(t *testing.T)
 	if response.StatusCode != http.StatusBadGateway || !strings.HasPrefix(string(body), "brioche could not reach "+down+"/v1/messages") {
 		t.Errorf("the client was answered %d %q, want a 502 naming brioche and where it could not reach", response.StatusCode, body)
 	}
-	if !strings.Contains(brioche.said.String(), "brioche: could not reach "+down+"/v1/messages: ") {
+	if !brioche.said.has("bad_gateway", "could not reach "+down+"/v1/messages: ") {
 		t.Errorf("brioche said %q, want the request it could not take to the origin", brioche.said)
 	}
 	// Hands' proxy unreached leaves every request of the brain's failing: an error, never traffic.
@@ -441,8 +452,8 @@ func TestAClientThatGivesUpBeforeTheOriginAnswersIsSaidToHaveGivenUp(t *testing.
 	if err := <-answered; err == nil {
 		t.Fatal("a request the client gave up on was answered")
 	}
-	brioche.said.until(t, "brioche: the client gave up on "+origin.URL+"/v1/messages before it was answered: ")
-	if strings.Contains(brioche.said.String(), "could not reach") {
+	brioche.said.until(t, "abandoned", "the client gave up on "+origin.URL+"/v1/messages before it was answered: ")
+	if len(brioche.said.of("bad_gateway")) != 0 {
 		t.Errorf("brioche said %q, want no word of an origin it reached", brioche.said)
 	}
 }
@@ -464,7 +475,7 @@ func TestAnAnswerTheOriginCutShortIsSaid(t *testing.T) {
 		t.Error("an answer the origin cut short reached the client whole")
 	}
 	response.Body.Close()
-	brioche.said.until(t, "brioche: httputil: ReverseProxy read error during body copy: ")
+	brioche.said.until(t, "proxy_logged", "httputil: ReverseProxy read error during body copy: ")
 }
 
 func TestTheClientIsGivenTheCertificatesItsVariableNamedBesideBriochesAuthority(t *testing.T) {
@@ -516,7 +527,7 @@ func TestARelativeTrustFileIsGivenTheClientAsTheFileBriocheWrote(t *testing.T) {
 
 // refused is how brioche ends for a client whose variable names `named`, told to stop
 // already: a brioche that took it would serve, and end 0.
-func refused(t *testing.T, file, named string) (int, string) {
+func refused(t *testing.T, file, named string) (int, *said) {
 	t.Helper()
 	_, printed, err := os.Pipe()
 	if err != nil {
@@ -526,12 +537,12 @@ func refused(t *testing.T, file, named string) (int, string) {
 	ended := stops()
 	ended.send(stop{"the test ended", nil})
 	code := run(arguments(refusing(t), file, nil), func(string) string { return named }, unproxied, listening, printed, says, ended)
-	return code, says.String()
+	return code, says
 }
 
 func TestAClientWhoseVariableNamesCertificatesRelativeToItsOwnDirectoryIsRefused(t *testing.T) {
 	code, says := refused(t, filepath.Join(t.TempDir(), "trusted.pem"), "corp.pem")
-	if want := `brioche: NODE_EXTRA_CA_CERTS names "corp.pem", relative to the client's directory, which brioche does not know`; code != failed || !strings.Contains(says, want) {
+	if want := `NODE_EXTRA_CA_CERTS names "corp.pem", relative to the client's directory, which brioche does not know`; code != failed || !says.has("unopened", want) {
 		t.Errorf("brioche ended %d saying %q, want %d saying %q", code, says, failed, want)
 	}
 }
@@ -547,7 +558,7 @@ func TestAClientWhoseVariableNamesBriochesOwnFileByAnotherNameIsRefused(t *testi
 		t.Fatal(err)
 	}
 	code, says := refused(t, file, link)
-	if want := "NODE_EXTRA_CA_CERTS names " + link + ", the file the client is given in its place"; code != failed || !strings.Contains(says, want) {
+	if want := "NODE_EXTRA_CA_CERTS names " + link + ", the file the client is given in its place"; code != failed || !says.has("unopened", want) {
 		t.Errorf("brioche ended %d saying %q, want %d saying %q", code, says, failed, want)
 	}
 }
@@ -559,7 +570,7 @@ func TestAClientThatRefusesBriochesCertificateIsSaidToHaveRefusedIt(t *testing.T
 	if _, err := trusting(t, brioche, x509.NewCertPool()).Get("https://api.anthropic.com/v1/messages"); err == nil {
 		t.Fatal("a client that trusts nothing of brioche's was answered")
 	}
-	brioche.said.until(t, "brioche: the client refused brioche's answer for api.anthropic.com:443: tls: bad certificate\n")
+	brioche.said.until(t, "handshake_refused", "the client refused brioche's answer for api.anthropic.com:443: tls: bad certificate")
 	// A client that distrusts brioche has every request of its own fail: an error, never traffic.
 	if told := brioche.said.of("handshake_refused"); len(told) != 1 || told[0].Level != failure || told[0].Target != "api.anthropic.com:443" {
 		t.Errorf("brioche reported %+v, want one error naming the target it was refused for", told)
@@ -581,7 +592,7 @@ func TestAClientThatHangsUpBeforeTLSIsSaidToHaveDoneSo(t *testing.T) {
 		t.Fatalf("the CONNECT was answered %v (%v), want 200", answer, err)
 	}
 	connection.Close()
-	brioche.said.until(t, "brioche: the client's TLS for api.anthropic.com:443 ended before it began: ")
+	brioche.said.until(t, "handshake_failed", "the client's TLS for api.anthropic.com:443 ended before it began: ")
 }
 
 func TestABriocheWhoseDoorStopsServingEndsAsFailedSayingWhy(t *testing.T) {
@@ -604,7 +615,7 @@ func TestABriocheWhoseDoorStopsServingEndsAsFailedSayingWhy(t *testing.T) {
 		t.Fatalf("brioche printed %q (%v), saying %q", environment, err, says)
 	}
 	listener.Close()
-	if code := <-exited; code != failed || !strings.Contains(says.String(), "brioche: stopping: it stopped taking the client's requests: ") {
+	if code := <-exited; code != failed || !says.has("stopping", "stopping: it stopped taking the client's requests: ") {
 		t.Errorf("brioche ended %d saying %q, want %d saying its door stopped", code, says, failed)
 	}
 }
@@ -646,7 +657,7 @@ func TestArgumentsBriocheCannotTakeAreRefusedSayingWhich(t *testing.T) {
 			t.Errorf("brioche %q printed %q (%v), want nothing", refused.args, environment, err)
 		}
 		read.Close()
-		if code != misuse || !strings.Contains(says.String(), refused.says) {
+		if code != misuse || !says.has("misused", refused.says) {
 			t.Errorf("brioche %q ended %d saying %q, want %d saying %q", refused.args, code, says, misuse, refused.says)
 		}
 	}
@@ -702,7 +713,7 @@ func TestABriocheWhoseInputEndsStopsSayingSo(t *testing.T) {
 	if err := brioche.child.Wait(); err != nil {
 		t.Fatalf("brioche ended %v once its input ended, saying %q", err, brioche.said)
 	}
-	if !strings.Contains(brioche.said.String(), "brioche: stopping: its input ended\n") {
+	if !brioche.said.has("stopping", "stopping: its input ended") {
 		t.Errorf("brioche said %q, want why it stopped", brioche.said)
 	}
 }
@@ -719,7 +730,7 @@ func TestABriocheWhoseInputFailsEndsAsFailedSayingWhy(t *testing.T) {
 	if err := brioche.child.Wait(); !errors.As(err, &exit) || exit.ExitCode() != failed {
 		t.Fatalf("brioche ended %v once its input failed, want %d, saying %q", err, failed, brioche.said)
 	}
-	if !strings.Contains(brioche.said.String(), "brioche: stopping: its input failed: ") {
+	if !brioche.said.has("stopping", "stopping: its input failed: ") {
 		t.Errorf("brioche said %q, want why it stopped", brioche.said)
 	}
 }
@@ -750,7 +761,7 @@ func TestABriocheReadsTheClientsTrustVariableFromItsOwnEnvironment(t *testing.T)
 	if err := child.Run(); !errors.As(err, &exit) || exit.ExitCode() != failed {
 		t.Fatalf("brioche ended %v, want %d, saying %q", err, failed, says)
 	}
-	if !strings.Contains(says.String(), `NODE_EXTRA_CA_CERTS names "corp.pem"`) {
+	if !says.has("unopened", `NODE_EXTRA_CA_CERTS names "corp.pem"`) {
 		t.Errorf("brioche said %q, want the variable its environment gave it", says)
 	}
 }
@@ -764,7 +775,7 @@ func TestABriocheToldToStopStopsSayingSo(t *testing.T) {
 	if err := brioche.child.Wait(); err != nil {
 		t.Fatalf("brioche ended %v once told to stop, saying %q", err, brioche.said)
 	}
-	if !strings.Contains(brioche.said.String(), "brioche: stopping: told to by terminated\n") {
+	if !brioche.said.has("stopping", "stopping: told to by terminated") {
 		t.Errorf("brioche said %q, want why it stopped", brioche.said)
 	}
 	// Every line its process wrote is a report: none is left for a reader to take as words.

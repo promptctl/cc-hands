@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from conftest import children_on
-from hands.brain.brioche import _Heard, _report, _through, proxied  # pyright: ignore[reportPrivateUsage]
+from hands.brain import brioche as briochemodule
+from hands.brain.brioche import START_SECONDS, _Heard, _report, _through, proxied  # pyright: ignore[reportPrivateUsage]
 from hands.brain.configdir import Unstartable
 from hands.virtualclock import VirtualClock
 from hands.sessions.audit import BriocheSaid, Entry
@@ -115,3 +116,29 @@ async def test_a_brioche_that_ends_while_hands_runs_says_how_and_the_last_it_sai
         os.kill(brioche.running.pid, signal.SIGTERM)
         with pytest.raises(RuntimeError, match=r"brioche, the brain's HTTPS proxy, ended while hands was running: exited 0: it said 'stopping: told to by terminated'$"):
             await brioche.outlived()
+
+
+@pytest.mark.outside
+async def test_a_brioche_that_prints_no_way_to_reach_it_in_time_is_refused_with_the_last_it_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # One that says it is starting, and hangs before it prints.
+    stalled = tmp_path / "brioche"
+    stalled.write_text("""#!/bin/sh\necho '{"kind": "untrusted", "level": "warning", "said": "writing its trust file"}' >&2\nexec sleep 1000\n""")
+    stalled.chmod(0o755)
+    monkeypatch.setattr(briochemodule, "BRIOCHE", stalled)
+    clock = VirtualClock()
+    heard = asyncio.Event()
+
+    def record(_entry: Entry) -> None:
+        heard.set()
+
+    async def start() -> None:
+        async with proxied(children_on(clock), PROXY, tmp_path / "trusted.pem", {"PATH": os.environ["PATH"]}, record):
+            pass
+
+    starting = asyncio.create_task(start())
+    # [LAW:no-ambient-temporal-coupling] the deadline is spent only once what brioche said is heard and its wait has begun.
+    await heard.wait()
+    await clock.scheduled(START_SECONDS)
+    clock.advance(START_SECONDS)
+    with pytest.raises(Unstartable, match=r"printed no way to reach it within 10s: it said 'writing its trust file'$"):
+        await starting

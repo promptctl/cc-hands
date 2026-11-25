@@ -28,7 +28,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal, assert_never, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, assert_never, cast, get_args
 
 from loguru import logger
 
@@ -247,7 +247,9 @@ class Rolled:
 
 # How bad a logged record is: loguru's WARNING, or its ERROR and above.
 Severity = Literal["warning", "error"]
-LEVELS: tuple[Severity | Literal["info"], ...] = ("info", "warning", "error")
+# How bad a line is, as `level` judges it: a severity, or none.
+Level = Literal[Severity, "info"]
+LEVELS: tuple[Level, ...] = get_args(Level)
 
 
 @dataclass(frozen=True)
@@ -259,7 +261,7 @@ class BriocheSaid:
     panic is, is the error of kind "unframed", said as it was written."""
 
     kind: str
-    level: Severity | Literal["info"]
+    level: Level
     said: str
     facts: Mapping[str, str | int]
 
@@ -301,7 +303,6 @@ Entry = (
     | BriocheSaid
 )
 Record = Callable[[Entry], None]
-Level = Literal[Severity, "info"]
 
 
 def level(entry: Entry) -> Level:

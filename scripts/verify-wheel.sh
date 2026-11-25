@@ -35,13 +35,14 @@ stranger script -q /dev/null "$fritter" -- /bin/sh -c 'test -S "$FRITTER_SOCKET"
 code=$?
 set -e
 [ "$code" = 7 ] || { echo "verify-wheel: the packaged fritter at $fritter exited $code, not the program's 7" >&2; exit 1; }
-# brioche, beside fritter in the package, runs: given no arguments, it says its usage and exits 64.
+# brioche, beside fritter in the package, runs: given no arguments, it reports its misuse, a JSON report a line, its
+# usage among what it said, and exits 64.
 brioche=$(dirname "$fritter")/brioche
 set +e
 refused=$(stranger "$brioche" </dev/null 2>&1)
 code=$?
 set -e
-case $code:$refused in "64:brioche: --intercept is needed"*) ;; *) echo "verify-wheel: the packaged brioche at $brioche exited $code saying '$refused', not 64 and its usage" >&2; exit 1;; esac
+case $code:$refused in '64:{"kind":"misused","level":"error","said":"--intercept is needed'*) ;; *) echo "verify-wheel: the packaged brioche at $brioche exited $code saying '$refused', not 64 and its usage" >&2; exit 1;; esac
 # The home's bin first on PATH, as the README has the stranger put it, so install-fritter finds its claude and exits 0.
 # A later PATH= in env's arguments wins over stranger's own.
 stranger PATH="$fresh/home/.hands/bin:$fresh/bin:/usr/bin:/bin" hands install-fritter >/dev/null

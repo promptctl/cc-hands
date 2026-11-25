@@ -4,7 +4,7 @@ an edit or a model chosen by voice, starting no Claude Code."""
 import json
 import platform
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 import pytest
@@ -13,7 +13,8 @@ from conftest import children_on, laid_out, new_sessions, shell_without_hands_se
 from fixtures import pins
 from fixtures.pins import LAID_OUT
 from fakeprocesses import processes
-from hands.brain import brioche, process
+from hands import packaged
+from hands.brain import process
 from hands.virtualclock import VirtualClock
 from hands.daemon import cli, config, readiness, run
 from hands.daemon.preflight import Preflight, Refused, Startable, preflight
@@ -76,12 +77,22 @@ def _unreadable_shim(home: Home) -> None:
     _unreadable(home.shim)
 
 
+def _unbuilt(home: Home, monkeypatch: pytest.MonkeyPatch, missing: PurePosixPath) -> None:
+    """A hands whose package was built without `missing`: it is installed where the home holds nothing."""
+    installed = packaged.installed
+
+    def unbuilt(at: PurePosixPath) -> Path:
+        return home.root / "package" / at if at == missing else installed(at)
+
+    monkeypatch.setattr(packaged, "installed", unbuilt)
+
+
 # One row a refusal: what breaks the home, and what the refusal says.
 FAULTS: list[tuple[str, Callable[[Home, pytest.MonkeyPatch], object], str]] = [
     ("pin missing", _unpinned, f"Claude Code {LAID_OUT.version}, the brain's, is not installed at "),
     ("pin wrong", lambda home, _: LAID_OUT.claude(home.brain).write_text("#!/bin/sh\nexit 0\n"), f"of Claude Code {LAID_OUT.version}, the brain's: run `hands install-brain` to fetch it again"),
-    ("hands built without its fritter", lambda home, monkeypatch: monkeypatch.setattr(wrapper, "PACKAGED", home.root / "package" / "bin" / "fritter"), "/package/bin/fritter: install hands again"),
-    ("hands built without its brioche", lambda home, monkeypatch: monkeypatch.setattr(brioche, "BRIOCHE", home.root / "package" / "bin" / "brioche"), "/package/bin/brioche: install hands again"),
+    ("hands built without its fritter", lambda home, monkeypatch: _unbuilt(home, monkeypatch, packaged.FRITTER), "/package/bin/fritter: install hands again"),
+    ("hands built without its brioche", lambda home, monkeypatch: _unbuilt(home, monkeypatch, packaged.BRIOCHE), "/package/bin/brioche: install hands again"),
     ("stale fritter copy", lambda home, _: (home.bin.mkdir(), home.fritter.write_bytes(b"#!/bin/sh\n")), "is not the fritter this hands carries"),
     ("fritter copy unreadable", lambda home, _: _dangling_fritter(home), "/fritter'): run `hands install-fritter` to copy it again"),
     ("stale shim", lambda home, _: _stale_shim(home), "is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: run `hands install-fritter`"),

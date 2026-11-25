@@ -963,8 +963,9 @@ def audit_log_of(clock: Clock, home: Home) -> audit.AuditLog:
 
 def login(children: Children, home: Home, pin: pinned.Pin, method: "Method", record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
+    from hands.brain import configdir
     from hands.brain.configdir import Unstartable
-    from hands.brain.process import LoginFailed, NotLoggedIn, starting_settings
+    from hands.brain.process import LoginFailed, NotLoggedIn, first_run, starting_settings
     from hands.brain.process import login as brain_login
 
     # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
@@ -974,7 +975,10 @@ def login(children: Children, home: Home, pin: pinned.Pin, method: "Method", rec
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(children, home.brain, pin, os.environ, method)
+            before = configdir.read(home.brain, pin)
+            # Before the login, so a login that fails says whether it took the first run too.
+            wide.annotate(first_run=first_run(before))
+            signed = brain_login(children, before, pin, os.environ, method)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             return refused("hands login", 1, str(error))

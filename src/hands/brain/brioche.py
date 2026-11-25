@@ -24,7 +24,7 @@ from hands.core.wire import UPSTREAM
 from hands.sessions.audit import LEVELS, BriocheSaid, Record
 from hands.sessions.child import Children, Ending, Lost, NeverStarted, Pipes, Running, Unreaped, said
 from hands.sessions.payload import Payload, Rejected, one_of
-from hands.sessions.untap import REPLACED, TRUST
+from hands.sessions.untap import TRUST
 from hands.tasks import cancel_and_wait
 
 # [LAW:one-source-of-truth] the brioche hands' own package carries.
@@ -96,25 +96,31 @@ async def proxied(children: Children, to: str, trust: Path, environment: Mapping
             raise Unstartable(f"brioche, the brain's HTTPS proxy, at {binary}, {said(started)}")
         heard = _Heard(saying, record)
         try:
-            try:
-                async with children.clock.timeout(START_SECONDS):
-                    environment_printed = await _whole(printing)
-            except TimeoutError:
-                raise Unstartable(f"brioche, the brain's HTTPS proxy, printed no way to reach it within {START_SECONDS:.0f}s: {_last(heard.last)}") from None
-            if not environment_printed:
-                # It ended its output with nothing printed, as it does only as it ends: how, and what it said.
-                ended = await started.ended
-                await asyncio.wait([heard.drained])
-                raise Unstartable(f"brioche, the brain's HTTPS proxy, did not start: {_ended(ended, heard.last)}")
-            yield Brioche(started, _through(environment_printed, trust), heard)
+            yield Brioche(started, await _started(children, started, heard, printing, trust), heard)
         finally:
             match await started.stopped(STOP_SECONDS):
                 case Unreaped():
-                    # Killed and never reaped, it may hold its stderr open for ever: what it said is heard to here.
+                    # Killed and never reaped, it may hold its stderr open for ever: what it said is heard to here, and
+                    # its child.run event says it was never reaped.
                     await cancel_and_wait(heard.drained)
                 case _:
-                    # Its stderr ends with it. A read of it that failed is the brioche watch's to raise (`outlived`).
-                    await asyncio.wait([heard.drained])
+                    # Its stderr ends with it; a read of it that failed raises here, as it raised to the brioche watch.
+                    await heard.drained
+
+
+async def _started(children: Children, started: Running, heard: "_Heard", printing: BinaryIO, trust: Path) -> Through:
+    """The way to reach brioche it printed, once it has: within START_SECONDS, ended or not, or Unstartable saying why."""
+    try:
+        async with children.clock.timeout(START_SECONDS):
+            printed = await _whole(printing)
+            if not printed:
+                # It ended its output with nothing printed, as it does only as it ends: how, and what it said.
+                ended = await started.ended
+                await heard.drained
+                raise Unstartable(f"brioche, the brain's HTTPS proxy, did not start: {_ended(ended, heard.last)}")
+    except TimeoutError:
+        raise Unstartable(f"brioche, the brain's HTTPS proxy, printed no way to reach it within {START_SECONDS:.0f}s: {_last(heard.last)}") from None
+    return _through(printed, trust)
 
 
 class _Heard:
@@ -129,11 +135,12 @@ class _Heard:
         reader, transport = await _reader(pipe)
         try:
             # Split on its own line breaks, as brioche ends each report with one: a StreamReader's lines are refused
-            # past a limit, and a report is as long as brioche makes it.
+            # past a limit, and a report is as long as brioche makes it. A blank line, as a panic's trace holds between
+            # its stanzas, is no report, and says nothing.
             pending = b""
             while chunk := await reader.read(READ_BYTES):
                 *lines, pending = (pending + chunk).split(b"\n")
-                for line in lines:
+                for line in filter(None, lines):
                     self._hear(line)
             if pending:
                 self._hear(pending)
@@ -179,9 +186,13 @@ def _through(printed: bytes, trust: Path) -> Through:
         if not equals or name in variables:
             raise Unstartable(f"brioche, the brain's HTTPS proxy, printed {line!r}, which is no NAME=VALUE line of a variable it has not printed")
         variables[name] = value
-    if end or set(variables) != set(REPLACED) or variables[TRUST] != os.path.abspath(trust):
-        raise Unstartable(f"brioche, the brain's HTTPS proxy, printed {text!r}, not a line each for {', '.join(REPLACED)}, its {TRUST} naming {os.path.abspath(trust)}")
-    return Through(MappingProxyType(variables))
+    try:
+        through = Through(MappingProxyType(variables))
+    except ValueError as error:
+        raise Unstartable(f"brioche, the brain's HTTPS proxy, printed {text!r}, not the way to reach it: {error}") from None
+    if end or variables[TRUST] != os.path.abspath(trust):
+        raise Unstartable(f"brioche, the brain's HTTPS proxy, printed {text!r}, its last line unended or its {TRUST} not {os.path.abspath(trust)}")
+    return through
 
 
 def _ended(ended: Ending | Lost | Unreaped, last: BriocheSaid | None) -> str:

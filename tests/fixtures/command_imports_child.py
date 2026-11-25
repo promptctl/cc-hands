@@ -21,9 +21,8 @@ from hands.virtualclock import VirtualClock
 # Only what each command loads itself is loaded here: a stand-in's module is imported where the stand-in is put in place.
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
 
-    from hands.brain import pinned, process
+    from hands.brain import configdir, pinned, process
     from hands.sessions.child import Children
     from hands.voice import phoneaddress
     from hands.voice.backends import Account
@@ -39,7 +38,7 @@ def lan_addresses() -> list[str]:
     return ["192.0.2.1"]
 
 
-def logged_in(children: Children, config_dir: Path, pin: pinned.Pin, inherited: Mapping[str, str], method: process.Method) -> Account:
+def logged_in(children: Children, before: configdir.ConfigDir, pin: pinned.Pin, inherited: Mapping[str, str], method: process.Method) -> Account:
     from hands.voice.backends import Account
 
     return Account("claude.ai", "someone@example.com")
