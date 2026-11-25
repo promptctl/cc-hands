@@ -234,6 +234,8 @@ def test_a_wait_handed_to_a_thread_a_job_or_a_serial_thread_is_charged_to_the_te
         "test_scheduled": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        asyncio.get_running_loop().call_soon(library.nap)\n        await asyncio.sleep(0)\n    asyncio.run(main())\n", ["time.sleep"]),
         "test_told": ("import asyncio, threading, library\n\ndef test_runs():\n    async def main():\n        thread = threading.Thread(target=asyncio.get_running_loop().call_soon_threadsafe, args=(library.nap,))\n        thread.start()\n        thread.join()\n        await asyncio.sleep(0)\n    asyncio.run(main())\n", ["time.sleep"]),
         "test_threadsafe": ("import asyncio, library\n\ndef test_runs():\n    async def main():\n        future = await asyncio.to_thread(asyncio.run_coroutine_threadsafe, library.dozes(), asyncio.get_running_loop())\n        await asyncio.wrap_future(future)\n    asyncio.run(main())\n", ["time.sleep"]),
+        # An eager task, as aiohttp makes, schedules its next step from inside its maker's frames.
+        "test_eager": ("import asyncio, library\n\ndef test_runs():\n    async def eager():\n        await asyncio.sleep(0)\n        library.nap()\n\n    async def main():\n        await asyncio.Task(eager(), loop=asyncio.get_running_loop(), eager_start=True)\n    asyncio.run(main())\n", ["time.sleep"]),
         "test_gathered": ("import asyncio, pytest, time\n\n@pytest.mark.asyncio\nasync def test_runs():\n    await asyncio.gather(asyncio.to_thread(time.sleep, 0.001))\n", ["time.sleep"]),
         # Work handed to a SerialThread and a pool conftest.py made, which charges conftest.py the pool's initializer.
         "test_given": ("import asyncio, functools, time\n\ndef test_runs(serial):\n    asyncio.run(serial.run(functools.partial(time.sleep, 0.001)))\n", ["time.sleep"]),
@@ -300,16 +302,49 @@ def test_what_a_wider_fixture_does_through_a_helper_is_charged_to_the_fixture_an
 
 
 @pytest.mark.outside
+def test_a_fixture_of_the_tests_scope_is_the_tests_however_it_is_decorated_or_its_teardown_registered(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # One decorator's code wraps a wider fixture and one of the test's scope, set up after it.
+    pytester.makepyfile(swap="import functools\n\ndef wrapped(fixture):\n    @functools.wraps(fixture)\n    def run():\n        yield from fixture()\n    return run\n")
+    helper = "import time\n\ndef stamp():\n    time.strftime('%H')\n\ndef fails():\n    stamp()\n    raise ValueError\n"
+    hooks = (
+        "\nimport helper, pytest\nfrom swap import wrapped\n\n"
+        "@pytest.fixture(scope='module')\n@wrapped\ndef wide():\n    yield\n\n"
+        "@pytest.fixture\n@wrapped\ndef narrow():\n    helper.stamp()\n    yield\n\n"
+        "@pytest.fixture\ndef finalized(request):\n    request.addfinalizer(helper.stamp)\n\n"
+        # A plugin's own fixture is no one's, set up inside the setup of a fixture of tests/ that asks for it.
+        "@pytest.fixture\ndef plugged(request):\n    request.getfixturevalue('stamped')\n\n"
+        "import plugin\n\ndef pytest_configure(config):\n    config.pluginmanager.register(plugin, 'plugin')\n    clockwatch.register(config, frozenset())\n"
+    )
+    pytester.makepyfile(plugin="import pytest, time\n\n@pytest.fixture\ndef stamped():\n    time.strftime('%H')\n")
+    modules = {
+        "test_narrow": "def test_uses(wide, narrow):\n    pass\n",
+        "test_finalized": "def test_uses(finalized):\n    pass\n",
+        "test_requested": "import helper\n\ndef test_uses(request):\n    request.addfinalizer(helper.stamp)\n",
+        # pytest's own API, called by the test, calls the helper: the test's call all the same.
+        "test_raises": "import helper, pytest\n\ndef test_raises():\n    pytest.raises(ValueError, helper.fails)\n",
+    }
+    result = run(pytester, monkeypatch, hooks=hooks, helper=helper, test_plugged="def test_uses(plugged):\n    pass\n", **modules)
+    result.assert_outcomes(passed=len(modules) + 1)
+    for name in modules:
+        assert f"{name}.py: ['time.strftime']" in result.outlines, name
+    assert not any(line.startswith(("conftest.py", "helper.py", "test_plugged.py")) for line in result.outlines)
+
+
+@pytest.mark.outside
 def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     helper = "import functools, time\n\ndef later():\n    time.strftime('%H')\n\ndef wrapped(test):\n    @functools.wraps(test)\n    def run():\n        test()\n    return run\n"
     user = "import threading\nfrom helper import later, wrapped\n\n@wrapped\ndef test_decorated():\n    later()\n\ndef test_polls():\n    threading.Timer(interval=0, function=lambda: None).cancel()\n"
     # A decorator from outside tests/ is the test's own layer: what it reaches, with no frame of tests/ under it, is the test's.
-    pytester.makepyfile(retry="import functools, threading, time\n\ndef retried(test):\n    @functools.wraps(test)\n    def run():\n        time.strftime('%H')\n        waited = threading.Thread(target=time.sleep, args=(0.001,))\n        waited.start()\n        waited.join()\n        test()\n    return run\n")
+    pytester.makepyfile(retry="import functools, time\n\ndef retried(test):\n    @functools.wraps(test)\n    def run():\n        time.strftime('%H')\n        test()\n    return run\n\ndef awaited(test):\n    @functools.wraps(test)\n    async def run():\n        time.strftime('%H')\n        await test()\n    return run\n")
     retried = "from retry import retried\n\n@retried\ndef test_retried():\n    pass\n"
-    lines = reached(pytester, monkeypatch, helper=helper, test_user=user, test_retried=retried)
+    awaited = "import pytest\nfrom retry import awaited\n\n@pytest.mark.asyncio\n@awaited\nasync def test_awaited():\n    pass\n"
+    # pytest's own code, called by the test, reads the clock for pytest: no one's.
+    timed = "from _pytest import timing\n\ndef test_timed():\n    timing.Instant()\n"
+    lines = reached(pytester, monkeypatch, helper=helper, test_user=user, test_retried=retried, test_awaited=awaited, test_timed=timed)
     assert "test_user.py: ['time.strftime']" in lines
-    assert "test_retried.py: ['time.sleep', 'time.strftime']" in lines
-    assert not any(line.startswith("helper.py") for line in lines)
+    assert "test_retried.py: ['time.strftime']" in lines
+    assert "test_awaited.py: ['time.strftime']" in lines
+    assert not any(line.startswith(("helper.py", "test_timed.py")) for line in lines)
 
 
 @pytest.mark.outside
