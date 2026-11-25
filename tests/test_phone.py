@@ -45,7 +45,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.core.bearer import bearer
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, not_after, own_certificate, phone_key, server_context
-from hands.voice.phonepage import APP_PATHS, APP_SCRIPTS, phone_pages
+from hands.voice.phonepage import APP_PATHS, APP_SCRIPTS, ROW, InApp, app_page, phone_pages
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
@@ -53,7 +53,7 @@ from hands.voice.pinnedfile import Release
 from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from hands.voice.synthesis import Ended, Synthesis
-from conftest import events, running
+from conftest import events, patiently, running
 from test_clipowner import Scripted
 
 
@@ -698,10 +698,19 @@ async def page_server(tmp_path: Path) -> AsyncGenerator[Served, None]:
 @pytest.mark.outside
 async def test_the_app_is_served_to_anyone_at_every_path_of_its_views_and_never_kept(page_server: Served) -> None:
     client, _, _, _ = page_server
-    app = resources.files("hands.voice").joinpath("app.html").read_text()
+    app = app_page()
     for path in APP_PATHS:
         shown = await client.get(path)
         assert (shown.status, shown.content_type, shown.headers["Cache-Control"], await shown.text()) == (200, "text/html", "no-store", app)
+
+
+def test_the_row_of_views_is_drawn_as_the_row_says_and_the_pages_not_in_the_app_open_in_a_tab() -> None:
+    drawn = app_page()
+    assert [entry.path for entry in ROW if isinstance(entry, InApp)] == list(APP_PATHS) != []
+    for entry in ROW:
+        link = f'<a href="{entry.path}" data-view="{entry.view}">{entry.label}</a>' if isinstance(entry, InApp) else f'<a href="{entry.path}" target="_blank" rel="noopener">{entry.label}</a>'
+        assert link in drawn
+    assert [name for name in APP_SCRIPTS if name.startswith("views/")] == [f"views/{entry.view}.js" for entry in ROW if isinstance(entry, InApp)]
 
 
 @pytest.mark.outside
@@ -1062,6 +1071,40 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     # Nothing on the page reaches a working session.
     async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/sessions/s1/interrupt", headers=keyed, ssl=unverified) as gone:
         assert gone.status == 404
+    serving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await serving
+    await phone.stop()
+
+
+@pytest.mark.outside
+async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_as_cancelled_and_no_long_poll_goes_on_for_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def asked() -> Untailed:
+        return Untailed("the tailscale command is not on the PATH")
+
+    monkeypatch.setattr(phonepage, "PHONE_HOST", "127.0.0.1")
+    monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
+    recorded: list[Entry] = []
+    phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
+    home = Home(tmp_path)
+    key = phone_key(SYSTEM, home)
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    await patiently(lambda: events(recorded, "phone.served") != [], lambda: len(recorded))
+    [served] = events(recorded, "phone.served")
+    unverified = ssl.create_default_context()
+    unverified.check_hostname, unverified.verify_mode = False, ssl.CERT_NONE
+    keyed = {"Authorization": bearer(key)}
+    address = f"https://127.0.0.1:{served.facts['port']}/brain"
+    async with ClientSession() as session:
+        async with session.get(address, headers=keyed, ssl=unverified) as first:
+            seen = (await first.json())["seen"]
+        # The second read waits at hands for the brain to change, and the page goes away while it waits.
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(1), session.get(f"{address}?seen={seen}", headers=keyed, ssl=unverified):
+                await asyncio.Event().wait()
+    await patiently(lambda: len(events(recorded, "brain.read")) == 2, lambda: len(recorded))
+    answered, left = events(recorded, "brain.read")
+    assert (answered.outcome, left.outcome) == ("ok", "cancelled")
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await serving

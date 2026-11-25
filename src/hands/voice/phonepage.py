@@ -1,9 +1,9 @@
 """The phone's app: served over HTTPS to the LAN and the tailnet, where a phone's browser opens it and calls hands, and
 sees what the brain is doing and stops it (`hands.voice.brainpage`); and the conversation page and the backlog page beside it
-(`hands.voice.conversationpage`, `hands.voice.backlogpage`), which are not yet views of it.
+(`hands.voice.conversationpage`, `hands.voice.backlogpage`), each served at its own path.
 
 The app is one document, `app.html`, that holds the call and mounts the app's views under it, so no move between views is a
-move of the call (design-docs/phone-sessions/design.md, "The one app").
+move of the call (design-docs/phone-sessions/design.md, "The one app"). `ROW` says which views there are.
 
 Where it is reached, and the certificate and key it is reached with, are `hands.voice.phoneaddress`'s.
 
@@ -12,9 +12,11 @@ an offer without it is refused.
 """
 
 import datetime
+import html
 import json
 import ssl
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Never
@@ -41,11 +43,38 @@ from hands.voice.phonewake import wake_routes
 from hands.voice.summaries import SummaryStore
 from hands.voice.wakemodels import WakeModels
 
-# The paths of the app's views, each answered with the app's one document, which mounts the view the path names (app.js).
-# A page not yet moved into the app is served at its own path, by its own module, until it is.
-APP_PATHS = ("/", "/sessions")
-# The scripts the app is made of: the router, the call, and the views it mounts.
-APP_SCRIPTS = ("app.js", "call.js", "views/call.js", "views/sessions.js")
+
+@dataclass(frozen=True)
+class InApp:
+    """A view of the app: shown in the app's document at `path`, mounted from `views/<view>.js`."""
+
+    label: str
+    path: str
+    view: str
+
+
+@dataclass(frozen=True)
+class InTab:
+    """A page served at its own `path`, opened from the app in a tab of its own."""
+
+    label: str
+    path: str
+
+
+# [LAW:one-source-of-truth] the row of views, in the order it is drawn: the one place that says which views there are, what
+# the row draws, which paths are answered with the app's document and which scripts it is made of. A page's move into the
+# app is its entry becoming an `InApp`.
+ROW: tuple[InApp | InTab, ...] = (
+    InApp("Call", "/", "call"),
+    InTab("Conversation", "/conversation"),
+    InApp("Sessions", "/sessions", "sessions"),
+    InTab("Voices and options", "/gallery"),
+)
+APP_PATHS = tuple(entry.path for entry in ROW if isinstance(entry, InApp))
+# The scripts the app is made of: the one every phone page asks hands through, the router, the call, and the views.
+APP_SCRIPTS = ("hands.js", "app.js", "call.js", *(f"views/{entry.view}.js" for entry in ROW if isinstance(entry, InApp)))
+
+_ROW_MARKER = "<!--row-->"
 
 # How often the page asks Tailscale for the tailnet's certificate again: Tailscale renews one a month before its 90
 # days are out, so a day is far inside the time a renewed one has before the old one ends.
@@ -64,10 +93,23 @@ def parse_offer(body: object) -> Offer:
             raise Rejected(f"an offer is {{sdp, type: offer, rate: a whole number from {PAGE_RATES.start} to {PAGE_RATES.stop - 1}, page, claim: take or resume}}")
 
 
+def app_page() -> str:
+    """The app's one document, with the row of views drawn into it as `ROW` says."""
+    document = resources.files("hands.voice").joinpath("app.html").read_text()
+    before, marker, after = document.partition(_ROW_MARKER)
+    if not marker:
+        raise LookupError(f"app.html has no {_ROW_MARKER} to draw the row of views at")
+    links = "".join(
+        f'<a href="{entry.path}" data-view="{entry.view}">{html.escape(entry.label)}</a>' if isinstance(entry, InApp)
+        else f'<a href="{entry.path}" target="_blank" rel="noopener">{html.escape(entry.label)}</a>'
+        for entry in ROW
+    )
+    return f"{before}{links}{after}"
+
+
 def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[web.RouteDef]:
-    """The app at every path of its views, the scripts it is made of and the one every phone page asks hands through, and the
-    one route that takes its calls."""
-    page = resources.files("hands.voice").joinpath("app.html").read_text()
+    """The app at every path of its views, the scripts it is made of, and the one route that takes its calls."""
+    page = app_page()
 
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
@@ -93,7 +135,7 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
             case answer:
                 return web.json_response({"sdp": answer.sdp, "type": answer.type})
 
-    return [*(web.get(path, shown) for path in APP_PATHS), script_route("hands.js"), *(script_route(name) for name in APP_SCRIPTS), web.post("/offer", offered)]
+    return [*(web.get(path, shown) for path in APP_PATHS), *(script_route(name) for name in APP_SCRIPTS), web.post("/offer", offered)]
 
 
 def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: WakeModels, runtime: Release) -> web.Application:
@@ -124,7 +166,9 @@ async def serve_phone(clock: Clock, pages: web.Application, home: Home, asked: C
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`, and each renewal after it one of its own,
     `phone.renewed`, the root of a trace of its own: each says the port or what Tailscale answered, as `_Served` says it.
     """
-    runner = web.AppRunner(pages, access_log=None)
+    # [LAW:nothing-unseen] a page that closes its connection ends the handler it was waiting on, so a read it left is a
+    # `cancelled` event, and no long-poll goes on at hands for a view the phone has left.
+    runner = web.AppRunner(pages, access_log=None, handler_cancellation=True)
     await runner.setup()
     try:
         with unit("phone.served", record, begun(clock)):

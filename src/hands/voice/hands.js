@@ -15,16 +15,17 @@ export const carriesKey = key !== "";
 // so soon after.
 const ANSWER_MS = 60000, CROSSING_MS = 15000;
 
-// The signal of a request nobody cuts: a page that is never left, and the worker's, ask with it.
-const UNCUT = new AbortController().signal;
+// The signal of a request nothing but the page's closing ends: what a page that is never left asks with, as the worker does,
+// and a deed that is done whichever view is shown.
+export const PAGE_OPEN = new AbortController().signal;
 
-// [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of three
+// [LAW:one-source-of-truth] every request a page makes of hands' routes crosses here, and what came of it is one of four
 // outcomes. The browser's own loads, a script's import and the runtime's fetch of its WebAssembly among them, carry no
 // key and fail in the browser's words. `readBody` reads an answer's body as the request wants it: its text, or its bytes.
-// `cut` is the caller's own to end the request with, the fetch in flight and the connection to hands with it: that is
-// no outcome of hands', so it is thrown as the signal's reason, never answered as one of the three.
-async function crossed(method, path, body, within, readBody, cut) {
-  const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(within), cut]) };
+// `signal` is the lifetime of whoever asks, a view's or the page's: aborted, it ends the fetch in flight and the connection
+// to hands with it, and what came of the request is `left`, no failure of hands' nor of the way to it.
+async function crossed(signal, method, path, body, within, readBody) {
+  const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.any([AbortSignal.timeout(within), signal]) };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
@@ -35,24 +36,26 @@ async function crossed(method, path, body, within, readBody, cut) {
   try {
     response = await fetch(path, init);
   } catch (error) {
-    cut.throwIfAborted();
-    return { kind: "lost", why: error.name === "TimeoutError" ? `hands did not answer within ${Math.round(within / 1000)} s` : `hands is out of reach: ${error.message}` };
+    return lost(signal, error.name === "TimeoutError" ? `hands did not answer within ${Math.round(within / 1000)} s` : `hands is out of reach: ${error.message}`);
   }
   // A refusal is always words, whatever the request wanted.
   let answer;
   try {
     answer = response.ok ? await readBody(response) : await response.text();
   } catch (error) {
-    cut.throwIfAborted();
-    return { kind: "lost", why: `hands' answer was cut off: ${error.message}` };
+    return lost(signal, `hands' answer was cut off: ${error.message}`);
   }
   if (!response.ok) return { kind: "refused", status: response.status, text: answer || `hands refused with ${response.status}` };
   return { kind: "answered", body: answer };
 }
 
-// A request whose answer is JSON, or nothing.
-export async function asked(method, path, body, within = ANSWER_MS, cut = UNCUT) {
-  const outcome = await crossed(method, path, body, within, response => response.text(), cut);
+// [LAW:single-enforcer] the one place a failure of the crossing is told from the asker's leaving: whatever failed a fetch
+// whose signal has aborted, the asker is gone and nothing is lost to it.
+const lost = (signal, why) => signal.aborted ? { kind: "left" } : { kind: "lost", why };
+
+// A request whose answer is JSON, or nothing, for as long as `signal` is not aborted.
+export async function asked(signal, method, path, body, within = ANSWER_MS) {
+  const outcome = await crossed(signal, method, path, body, within, response => response.text());
   if (outcome.kind !== "answered") return outcome;
   // A choice hands took with nothing to say back answers with no body at all.
   if (outcome.body === "") return { kind: "answered", body: null };
@@ -64,10 +67,10 @@ export async function asked(method, path, body, within = ANSWER_MS, cut = UNCUT)
 }
 
 // A request whose answer is a file: its bytes, as a Uint8Array.
-export const askedForBytes = (path, within = ANSWER_MS) => crossed("GET", path, undefined, within, async response => new Uint8Array(await response.arrayBuffer()), UNCUT);
+export const askedForBytes = (signal, path, within = ANSWER_MS) => crossed(signal, "GET", path, undefined, within, async response => new Uint8Array(await response.arrayBuffer()));
 
-// What a request hands did not answer says: its refusal, or why no answer came.
-export const unanswered = outcome => outcome.kind === "refused" ? outcome.text : outcome.why;
+// What a request hands did not answer says: its refusal, why no answer came, or that its asker was gone.
+export const unanswered = outcome => outcome.kind === "refused" ? outcome.text : outcome.kind === "left" ? "the view that asked was left" : outcome.why;
 
 // What a thrown value says: a promise can be rejected with any value, and a thing with no message says what it is.
 export const wording = error => error?.message || String(error);
@@ -92,30 +95,29 @@ export const handsNow = () => Date.now() / 1000 + ahead;
 // How long a page, or its worker, waits to ask hands again after an ask that got no answer.
 export const AGAIN_MS = 2000;
 
-// Waits `ms`, or until `cut` ends the wait.
-const pause = (ms, cut) => new Promise(done => {
-  const over = () => { clearTimeout(timer); cut.removeEventListener("abort", over); done(); };
+// Waits `ms`, or until `signal` aborts.
+export const pause = (ms, signal) => new Promise(done => {
+  const over = () => { clearTimeout(timer); signal.removeEventListener("abort", over); done(); };
   const timer = setTimeout(over, ms);
-  cut.addEventListener("abort", over);
+  signal.addEventListener("abort", over);
 });
 
-// Read `path` for as long as the page is open, or until `cut` ends it: each read says what it last saw and waits at hands
-// until what it shows changes from it (hands.voice.longpoll), bounded by the wait hands said; a read that has seen nothing
-// is answered at once.
+// Read `path` until `signal` aborts: each read says what it last saw and waits at hands until what it shows changes from it
+// (hands.voice.longpoll), bounded by the wait hands said; a read that has seen nothing is answered at once.
 // `draw` is given what hands shows each time it changes, and `unread` why the page cannot show it, until it is drawn again.
-// `cut` is the signal of the view that reads: it ends the read in flight, the connection to hands with it, and starts no
-// other, with nothing said to `unread`, as leaving the view is no failure to read.
+// `signal` is the lifetime of the view that reads, or the page's: aborted, it ends the read in flight, the connection to
+// hands with it, and starts no other, with nothing said to `unread`, as leaving the view is no failure to read.
 // A read hands refuses as the page's own mistake (a 4xx: its key, its path) ends the reading, as every read after it would
 // be refused the same way; one hands could not answer, or that never reached it, reads again after a pause, saying nothing
 // was seen, so hands answers it at once and the page is drawn as soon as hands is back, whether a new run answers or the
 // one that was there all along.
-export async function reading(path, draw, unread, cut = UNCUT) {
+export async function reading(signal, path, draw, unread) {
   try {
     let last = null;
     for (;;) {
-      cut.throwIfAborted();
-      const outcome = await (last === null ? asked("GET", path, undefined, ANSWER_MS, cut)
-        : asked("GET", `${path}?seen=${encodeURIComponent(last.seen)}`, undefined, last.waits * 1000 + CROSSING_MS, cut));
+      const outcome = await (last === null ? asked(signal, "GET", path, undefined, ANSWER_MS)
+        : asked(signal, "GET", `${path}?seen=${encodeURIComponent(last.seen)}`, undefined, last.waits * 1000 + CROSSING_MS));
+      if (outcome.kind === "left") return;
       if (outcome.kind === "answered") {
         const read = readOf(outcome.body);
         ahead = read.now - Date.now() / 1000;
@@ -128,11 +130,10 @@ export async function reading(path, draw, unread, cut = UNCUT) {
       } else {
         unread(`${unanswered(outcome)}; reading it again…`);
         last = null;
-        await pause(AGAIN_MS, cut);
+        await pause(AGAIN_MS, signal);
       }
     }
   } catch (error) {
-    if (cut.aborted) return;
     // [LAW:no-silent-failure] an answer the page cannot read, or cannot draw, ends the reading and says why: the same
     // answer read again would fail the same way. The console keeps where it failed.
     console.error(error);

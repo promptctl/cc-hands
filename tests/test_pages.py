@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
+from conftest import patiently
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, Page, async_playwright, expect
 
 from hands.clock import SYSTEM
@@ -29,7 +30,7 @@ from hands.voice.keyed import UNKEYED, Handler
 from hands.voice.milestone import ClipDiscarded, ClipOpened, TurnUnopened
 from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
-from hands.voice.phonepage import APP_PATHS, phone_pages
+from hands.voice.phonepage import APP_PATHS, ROW, phone_pages
 from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
@@ -595,13 +596,6 @@ async def test_a_page_opened_without_the_phones_key_is_told_so_by_hands_and_says
 CONNECTED = "Connected. Hold the button and speak."
 
 
-async def until(check: Callable[[], bool]) -> None:
-    """Until `check` holds of what hands has taken, which the page makes happen by its own pace."""
-    async with asyncio.timeout(10):
-        while not check():
-            await asyncio.sleep(0.01)
-
-
 async def on_the_call(browser: Opened, hands: Hands, path: str = "/") -> Page:
     """The app opened at `path`, and Connect pressed: with the call up."""
     await browser.context.add_init_script(WAKE_OFF)
@@ -621,7 +615,7 @@ async def the_strip_and_the_row_are_there(page: Page) -> None:
         await expect(page.locator(each)).to_be_attached()
     told, views = await page.locator("#told").bounding_box(), await page.locator("#views").bounding_box()
     assert told is not None and views is not None and views["y"] >= told["y"] + told["height"]
-    assert await page.locator("#views a").all_inner_texts() == ["Call", "Conversation", "Sessions", "Voices and options"]
+    assert await page.locator("#views a").all_inner_texts() == [entry.label for entry in ROW]
 
 
 async def test_a_tap_on_a_view_and_the_back_gesture_move_between_the_views_with_the_call_still_up(browser: Opened, hands: Hands) -> None:
@@ -634,6 +628,8 @@ async def test_a_tap_on_a_view_and_the_back_gesture_move_between_the_views_with_
     await expect(page).to_have_url(hands.address("/sessions"))
     await expect(page.locator("#sessions-note")).to_be_visible()
     await expect(page.locator("#views a[aria-current=page]")).to_have_text("Sessions")
+    # The Call view's own are the document's, shown while it is: nothing of them is on screen here.
+    await expect(page.locator("#brain")).to_be_hidden()
     await the_strip_and_the_row_are_there(page)
     await expect(page.locator("#state")).to_be_visible()
     # What hands tells the call while another view is shown reaches the Call view, which is shown again.
@@ -642,6 +638,7 @@ async def test_a_tap_on_a_view_and_the_back_gesture_move_between_the_views_with_
     await page.get_by_role("link", name="Call").click()
     await expect(page).to_have_url(hands.address("/"))
     await expect(page.locator("#views a[aria-current=page]")).to_have_text("Call")
+    await expect(page.locator("#brain")).to_be_visible()
     await page.get_by_role("button", name="Show transcript").click()
     await expect(page.locator("#transcript")).to_contain_text("said while the Call view was away")
     await the_strip_and_the_row_are_there(page)
@@ -684,9 +681,9 @@ async def test_every_path_of_the_app_opened_is_the_app_and_a_reload_ends_the_cal
     await expect(page).to_have_url(hands.address(path))
     await expect(page.locator("#talk")).to_have_text("Connect")
     await the_strip_and_the_row_are_there(page)
-    await expect(page.locator("#views a[aria-current=page]")).to_have_text({"/": "Call", "/sessions": "Sessions"}[path])
+    await expect(page.locator("#views a[aria-current=page]")).to_have_text(next(entry.label for entry in ROW if entry.path == path))
     # hands saw the page hang up as it unloaded.
-    await until(lambda: any(isinstance(entry, WideEvent) and entry.event == "phone.call" for entry in hands.recorded))
+    await patiently(lambda: any(isinstance(entry, WideEvent) and entry.event == "phone.call" for entry in hands.recorded), lambda: len(hands.recorded))
     [event] = [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "phone.call"]
     ended = event.facts["ended"]
     assert isinstance(ended, CallLeft) and ended.reason == "hung up"
@@ -695,12 +692,12 @@ async def test_every_path_of_the_app_opened_is_the_app_and_a_reload_ends_the_cal
 async def test_the_brain_read_waiting_at_hands_is_cut_as_the_call_view_is_left_and_started_again_as_it_is_shown(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
     # The first read is answered at once, and the second waits at hands for the brain to do something else.
-    await until(lambda: hands.requests.count("/brain") == 2)
+    await patiently(lambda: hands.requests.count("/brain") == 2, lambda: len(hands.requests))
     assert hands.cut == []
     await page.get_by_role("link", name="Sessions").click()
     await expect(page.locator("#sessions-note")).to_be_visible()
     # hands sees the page close the connection of the read it was holding, and no read follows it.
-    await until(lambda: hands.cut == ["/brain"])
+    await patiently(lambda: hands.cut == ["/brain"], lambda: len(hands.cut))
     assert hands.requests.count("/brain") == 2
     await page.get_by_role("link", name="Call").click()
-    await until(lambda: hands.requests.count("/brain") == 3)
+    await patiently(lambda: hands.requests.count("/brain") == 3, lambda: len(hands.requests))

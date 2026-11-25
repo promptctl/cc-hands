@@ -1,7 +1,7 @@
 // The call: the shell's own (app.html), run once as the document loads and never mounted or unmounted, so a move between
-// the app's views is no move of the call's. It takes the elements of the shell's strip and of the Call view by id; the
-// Call view's (views/call.js) are held in the document while another view is shown, so what is drawn on them is kept.
-import {asked, carriesKey, handsNow, reading, unanswered, wording} from "/hands.js";
+// the app's views is no move of the call's. It takes the elements of the shell's strip by id, and the transcript the Call view
+// (views/call.js) shows: the call writes it whether that view is shown or not.
+import {PAGE_OPEN, asked, carriesKey, unanswered, wording} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
@@ -19,16 +19,7 @@ const wakeButton = document.getElementById("wake");
 const wakeNote = document.getElementById("wake-note");
 const count = document.getElementById("count");
 const out = document.getElementById("out");
-const shown = document.getElementById("shown");
 const transcript = document.getElementById("transcript");
-const doing = document.getElementById("doing");
-const calls = document.getElementById("calls");
-const stopButton = document.getElementById("stop");
-const brainSaid = document.getElementById("brain-said");
-// hands answers a Stop at once: one unanswered for this long went to an address the phone can no longer reach. What a
-// Stop said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the brain
-// stands from then on.
-const STOP_MS = 10000, SAID_MS = 30000;
 
 // Every render quantum of the microphone goes to the page as it is captured; whatever is sent in comes back out after
 // every block captured before it, which is how a release is sent only once the words said before it have been.
@@ -528,7 +519,7 @@ async function connect(claim) {
       if (pc.iceGatheringState === "complete") return done();
       pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && done());
     });
-    const outcome = await asked("POST", "/offer", {sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}, OFFER_MS);
+    const outcome = await asked(PAGE_OPEN, "POST", "/offer", {sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}, OFFER_MS);
     if (made.ended) return;
     // hands declines a call made again while another page has the phone: that page is the one in the user's hand. A
     // server error may pass, as hands is restarted; a refusal of the page's key or its offer never does.
@@ -624,19 +615,6 @@ function up() {
   call.release();
 }
 
-// The transcript is hidden until asked for, and stays as this phone last left it.
-function showTranscript(open) {
-  transcript.hidden = !open;
-  shown.setAttribute("aria-expanded", String(open));
-  shown.textContent = open ? "Hide transcript" : "Show transcript";
-  if (open) transcript.scrollTop = transcript.scrollHeight;
-}
-try { showTranscript(localStorage.getItem("transcript") === "shown"); } catch { showTranscript(false); }
-shown.addEventListener("click", () => {
-  showTranscript(transcript.hidden);
-  try { localStorage.setItem("transcript", transcript.hidden ? "hidden" : "shown"); } catch { /* kept for this page only */ }
-});
-
 talk.addEventListener("pointerdown", down);
 talk.addEventListener("pointerup", up);
 talk.addEventListener("pointercancel", up);
@@ -653,76 +631,3 @@ drawWake();
 drawNote();
 // One closed hangs up.
 addEventListener("pagehide", () => end("This page hung up."));
-
-// The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
-// the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again.
-let work = {doing: "idle", calls: []};
-let stopping = false;
-let said = null;
-let unread = null;
-
-function sayOfBrain(text, bad = false) { brainSaid.textContent = text; brainSaid.classList.toggle("bad", bad); }
-
-// The line that says what the brain is doing, and for how long: redrawn each second, as the time is.
-function drawDoing() {
-  const now = handsNow();
-  const [first, ...rest] = work.calls;
-  const [what, since] = work.doing !== "working" ? ["Idle", null]
-    : first === undefined ? ["Thinking", work.since]
-    : [rest.length ? `Running ${rest.length + 1} calls` : `Running ${first.tool}`, first.since];
-  doing.textContent = what;
-  if (since !== null) doing.append(Object.assign(document.createElement("span"), {className: "for", textContent: ` · ${Math.max(0, Math.round(now - since))} s`}));
-}
-
-// A call's input as a glance reads it: its values, each a line, as the call gave them.
-function inputOf(call) {
-  return "unreadable" in call ? `input could not be read: ${call.unreadable}`
-    : Object.values(call.input).map((value) => typeof value === "string" ? value : JSON.stringify(value)).join("\n");
-}
-
-// [LAW:dataflow-not-control-flow] the whole section is drawn the same way whatever the brain is doing: its calls are
-// whatever it is running, none at all while it is idle or thinking.
-function drawBrain() {
-  drawDoing();
-  calls.replaceChildren(...work.calls.map((call) => {
-    const item = document.createElement("li");
-    item.append(
-      Object.assign(document.createElement("p"), {className: "tool", textContent: call.tool}),
-      Object.assign(document.createElement("p"), {className: `input${"unreadable" in call ? " bad" : ""}`, textContent: inputOf(call)}),
-    );
-    return item;
-  }));
-  stopButton.disabled = stopping || work.doing !== "working";
-  const told = said ?? unread ?? {text: "", bad: false};
-  sayOfBrain(told.text, told.bad);
-}
-
-// Stop ends the turn the page shows, and that turn alone: one the brain went on to after it is never stopped by it.
-stopButton.addEventListener("click", async () => {
-  stopping = true;
-  drawBrain();
-  try {
-    const outcome = await asked("POST", "/brain/stop", {turn: work.turn}, STOP_MS);
-    sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
-  } catch (error) {
-    sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
-  } finally {
-    stopping = false;
-    drawBrain();
-  }
-});
-
-// What a Stop said, taken away SAID_MS later unless a later Stop has said something since.
-function sayOfStop(stopSaid) {
-  said = stopSaid;
-  setTimeout(() => { if (said === stopSaid) { said = null; drawBrain(); } }, SAID_MS);
-}
-
-drawBrain();
-setInterval(drawDoing, 1000);
-// The brain is read for as long as the Call view is shown: its signal ends the read, the one in flight at hands included.
-export const readBrain = (signal) => reading("/brain", shown => {
-  work = shown;
-  unread = null;
-  drawBrain();
-}, why => { unread = {text: `Could not read the brain: ${why}`, bad: true}; drawBrain(); }, signal);

@@ -41,6 +41,7 @@ var AbortSignal = {
 };
 function fetch(path, init) {
   return new Promise((resolve, reject) => {
+    if (init.signal.aborted) { reject(init.signal.reason); return; }
     const request = {path, init, resolve, reject};
     requests.push(request);
     init.signal.addEventListener("abort", () => { requests = requests.filter(each => each !== request); reject(init.signal.reason); });
@@ -82,7 +83,7 @@ class Page:
 
     def __init__(self, fragment: str = "#the%20key") -> None:
         self._js = JsModule(
-            "hands.js", "asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
+            "hands.js", "PAGE_OPEN, asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
         )
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
         self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
@@ -117,12 +118,12 @@ def page() -> Page:
 
 @pytest.fixture
 def reading(page: Page) -> Page:
-    page.run('reading("/state", shown => drawn.push(shown), why => unread.push(why))')
+    page.run('reading(PAGE_OPEN, "/state", shown => drawn.push(shown), why => unread.push(why))')
     return page
 
 
 def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: Page) -> None:
-    page.run('var outcome; asked("POST", "/choose", {voice: "mary"}).then(said => { outcome = said; })')
+    page.run('var outcome; asked(PAGE_OPEN, "POST", "/choose", {voice: "mary"}).then(said => { outcome = said; })')
     assert page.asking() == [Asked("POST", "/choose", "Bearer the key", '{"voice":"mary"}', page.answer_ms)]
     page.answer(200, '{"said": "Mary it is."}')
     assert page.seen("outcome") == {"kind": "answered", "body": {"said": "Mary it is."}}
@@ -136,14 +137,14 @@ def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: P
     ('lose("TimeoutError")', {"kind": "lost", "why": "hands did not answer within 60 s"}),
     ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
 ])
-def test_what_came_of_a_request_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
-    page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
+def test_what_came_of_a_request_hands_took_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
+    page.run('var outcome; asked(PAGE_OPEN, "GET", "/state").then(said => { outcome = said; })')
     page.run(settled)
     assert page.seen("outcome") == outcome
 
 
 def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) -> None:
-    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
+    page.run('var outcome; askedForBytes(PAGE_OPEN, "/wake/models/word.onnx").then(said => { outcome = said; })')
     assert page.asking() == [Asked("GET", "/wake/models/word.onnx", "Bearer the key", None, page.answer_ms)]
     page.run("answerBytes(200, [1, 2, 255])")
     page.run("outcome.body = Array.from(outcome.body)")
@@ -156,13 +157,13 @@ def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) 
     ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
 ])
 def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
-    page.run('var outcome; askedForBytes("/wake/models/word.onnx").then(said => { outcome = said; })')
+    page.run('var outcome; askedForBytes(PAGE_OPEN, "/wake/models/word.onnx").then(said => { outcome = said; })')
     page.run(settled)
     assert page.seen("outcome") == outcome
 
 
 def test_an_answer_that_is_not_json_is_lost_with_why(page: Page) -> None:
-    page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
+    page.run('var outcome; asked(PAGE_OPEN, "GET", "/state").then(said => { outcome = said; })')
     page.answer(200, "<html>")
     outcome = cast(dict[str, str], page.seen("outcome"))
     # The rest of why is the browser's own words for what it could not parse.
@@ -223,7 +224,7 @@ def test_an_answer_that_is_not_a_read_stops_the_reading_and_says_so(reading: Pag
 
 
 def test_a_read_the_page_cannot_draw_stops_the_reading_and_says_why(page: Page) -> None:
-    page.run('reading("/state", () => { throw new Error("no such row"); }, why => unread.push(why))')
+    page.run('reading(PAGE_OPEN, "/state", () => { throw new Error("no such row"); }, why => unread.push(why))')
     page.read("v1", {})
     assert (page.seen("unread"), page.asking()) == (["This page stopped reading hands: no such row. Reload it to read again."], [])
 
@@ -241,7 +242,7 @@ def test_a_page_knows_whether_its_address_carries_a_key(fragment: str, carries: 
 
 
 LEAVING = "var leaving = new AbortController();"
-READ = 'reading("/state", shown => drawn.push(shown), why => unread.push(why), leaving.signal)'
+READ = 'reading(leaving.signal, "/state", shown => drawn.push(shown), why => unread.push(why))'
 
 
 def test_a_view_leaving_ends_the_read_waiting_at_hands_and_asks_for_no_other(page: Page) -> None:
@@ -269,8 +270,8 @@ def test_a_view_already_left_starts_no_read(page: Page) -> None:
     assert (page.asking(), page.timers(), page.seen("unread"), page.seen("faults")) == ([], [], [], [])
 
 
-def test_a_request_its_caller_cuts_is_thrown_as_the_cut_and_never_answered_as_hands_lost_it(page: Page) -> None:
-    page.run('var leaving = new AbortController(), outcome = "pending", thrown = null; asked("GET", "/state", undefined, 60000, leaving.signal).then(said => { outcome = said; }, error => { thrown = error.name; })')
+def test_a_request_its_asker_leaves_is_left_and_never_answered_as_hands_lost_it(page: Page) -> None:
+    page.run(f'{LEAVING} var outcome = "pending"; asked(leaving.signal, "GET", "/state").then(said => {{ outcome = said; }})')
     assert [asked.path for asked in page.asking()] == ["/state"]
     page.run("leaving.abort()")
-    assert (page.asking(), page.seen("outcome"), page.seen("thrown")) == ([], "pending", "AbortError")
+    assert (page.asking(), page.seen("outcome")) == ([], {"kind": "left"})

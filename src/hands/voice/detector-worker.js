@@ -6,7 +6,7 @@
 //
 // The phone's key reaches it in its address's fragment, as it reaches a page, so it asks hands through hands.js as a page does.
 
-import { AGAIN_MS, asked, askedForBytes, unanswered, wording } from "/hands.js";
+import { AGAIN_MS, PAGE_OPEN, asked, askedForBytes, pause, unanswered, wording } from "/hands.js";
 import { BANDS, EMBEDDING_SIZE, MEL_WINDOW, RATE, resampler, wakeStream } from "/wakestream.js";
 
 // The models by the role each plays in wakeStream's steps, which is the name hands serves each by.
@@ -40,18 +40,18 @@ async function patiently(ask) {
     }
     waited = true;
     postMessage({ kind: "waiting", why: outcome.why });
-    await new Promise(resolve => setTimeout(resolve, AGAIN_MS));
+    await pause(AGAIN_MS, PAGE_OPEN);
   }
 }
 
 async function fileOf(path) {
-  const outcome = await patiently(() => askedForBytes(path));
+  const outcome = await patiently(() => askedForBytes(PAGE_OPEN, path));
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   return outcome.body;
 }
 
 async function load() {
-  const outcome = await patiently(() => asked("GET", "/wake/settings"));
+  const outcome = await patiently(() => asked(PAGE_OPEN, "GET", "/wake/settings"));
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   const settings = settingsOf(outcome.body);
   const ort = await import(settings.runtime);

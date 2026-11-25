@@ -60,7 +60,7 @@
 </fieldset>
 
 <script type="module">
-import {asked, reading, unanswered} from "/hands.js";
+import {PAGE_OPEN, asked, reading, unanswered} from "/hands.js";
 
 // The name a voice, level, or modality is shown by: bill_boerst is Bill Boerst, audio-only is Audio Only.
 const label = text => text.replace(/[_-]/g, " ").replace(/\b\w/g, letter => letter.toUpperCase());
@@ -88,7 +88,7 @@ const controls = document.getElementById("controls");
 async function act(path, body, readback) {
   controls.disabled = true;
   try {
-    const outcome = await asked("POST", path, body);
+    const outcome = await asked(PAGE_OPEN, "POST", path, body);
     switch (outcome.kind) {
       case "answered": say("status", readback(outcome.body)); break;
       case "refused": say("status", outcome.text, true); break;
@@ -132,7 +132,7 @@ function voiceRow(voice, shown) {
     shut(true);
   }
   async function open() {
-    const outcome = await asked("GET", `/gallery/line?voice=${encodeURIComponent(voice)}`);
+    const outcome = await asked(PAGE_OPEN, "GET", `/gallery/line?voice=${encodeURIComponent(voice)}`);
     if (outcome.kind !== "answered") {
       say("status", unanswered(outcome), true);
       return;
@@ -190,14 +190,14 @@ function renderLibrary(found) {
 document.getElementById("library-form").addEventListener("submit", async event => {
   event.preventDefault();
   const query = document.getElementById("library-query").value;
-  const outcome = await asked("GET", `/gallery/library?q=${encodeURIComponent(query)}&limit=25`);
+  const outcome = await asked(PAGE_OPEN, "GET", `/gallery/library?q=${encodeURIComponent(query)}&limit=25`);
   if (outcome.kind === "answered") renderLibrary(outcome.body);
   else say("status", unanswered(outcome), true);
 });
 
 // [LAW:one-source-of-truth] the page draws what hands answers and nothing else, so a restart, and the run after it, reach
 // the page as reads that fail and then a read that answers.
-reading("/gallery/state", state => { render(state); say("reading", ""); }, why => say("reading", why, true));
+reading(PAGE_OPEN, "/gallery/state", state => { render(state); say("reading", ""); }, why => say("reading", why, true));
 </script>
 </body>
 </html>

@@ -50,6 +50,7 @@
   /* The strip is the call: the one button and what is said of it, on every view; the row of views is under it. */
   #strip, #view, #call-view { display: flex; flex-direction: column; align-items: center; gap: 28px; }
   #view, #call-view { width: 100%; }
+  #call-view[hidden] { display: none; }
   #views { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 2px; font-size: 15px; }
   #views a { color: var(--muted); text-decoration: none; padding: 6px 9px; border: 1px solid transparent; border-radius: 999px; }
   #views a[aria-current="page"] { color: var(--fg); border-color: var(--ring); }
@@ -93,13 +94,12 @@
   <p id="count" aria-hidden="true"></p>
 </div>
 </header>
-<!-- The views, drawn by app.js: the app's own in this document, the pages not yet moved into it each in a tab of its own, under the
-     same key. A call goes on through a tap on any of them. -->
-<nav id="views" aria-label="Views"></nav>
-<main id="view"></main>
-<!-- Where the Call view is while another view is shown: the call draws on it whether it is shown or not (views/call.js). -->
-<div id="held" hidden>
-<div id="call-view">
+<!-- The row of views, drawn by hands (hands.voice.phonepage) and mounted by app.js: a view of the app in this document, a page not
+     yet moved into it in a tab of its own, under the same key. A call goes on through a tap on any of them. -->
+<nav id="views" aria-label="Views"><!--row--></nav>
+<!-- The Call view: the call writes the transcript whether it is shown or not, so these are the document's, shown while the Call
+     view is (views/call.js). -->
+<div id="call-view" hidden>
 <button id="shown" type="button" aria-controls="transcript" aria-expanded="false">Show transcript</button>
 <!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
 <section id="transcript" aria-label="Transcript" hidden></section>
@@ -112,7 +112,7 @@
   <p id="brain-said" role="status" aria-live="polite"></p>
 </section>
 </div>
-</div>
+<main id="view"></main>
 <audio id="out" autoplay playsinline></audio>
 <!-- The call is the document's own, and the router mounts the views under it. -->
 <script type="module" src="/app.js"></script>
