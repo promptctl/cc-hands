@@ -96,7 +96,7 @@ CALLED = pytest.StashKey[pytest.TestReport]()
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--layer", choices=LAYERS, help="hold the run to the unit layer (tests/offline.py): `unit` runs the tests not marked outside, `audit` those that are, each expected to be refused")
-    parser.addoption("--shard", type=shards.Shard.parse, default=shards.Shard(0, 1), metavar="K/N", help="run the Kth of N shards of the tests the rest of the command line selects, packed by tests/shard-costs.json (tests/shards.py); every shard of one commit takes the same partition")
+    parser.addoption("--shard", type=shards.Shard.parse, default=shards.WHOLE, metavar="K/N", help="run the Kth of N shards of the tests the rest of the command line selects, packed by tests/shard-costs.json (tests/shards.py); every shard of one commit takes the same partition")
     parser.addoption("--record-decodes", action="store_true", help="a test that passes on the real pair writes the recording of the run it made (tests/recordings.py)")
 
 
@@ -593,7 +593,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("layer", None) == "audit":
         config.option.timeout = AUDIT_TIMEOUT
     config.pluginmanager.register(timeouts, "timeouts")
-    config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard")),shards.Costs.load(shards.COSTS)), "shards")
+    config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard", shards.WHOLE)), shards.Costs.load(shards.COSTS)), "shards")
     clockwatch.register(config, clockwatch.UNMOVED)
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")

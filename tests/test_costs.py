@@ -51,9 +51,13 @@ def test_a_report_gives_the_run_then_each_module_then_each_test_slowest_first() 
 
 
 def test_the_rows_of_a_report_read_back_as_the_costs_they_were_printed_from_through_a_jobs_log_stamps() -> None:
-    log = STARTED + spent("tests/test_a.py::test_quick", 0.5, 0.25, 0.25) + spent("tests/test_b.py::test_slow[x y]", 2, 4, 1) + FINISHED
+    log = STARTED + spent("tests/test_a.py::test_quick", 0.5, 0.25, 0.25) + spent("tests/test_b.py::test_slow[x y]", 2, 4, 1) + phase("tests/test_b.py::test_cut_off", "setup", 3)
     stamped = "".join(f"2026-11-24T18:25:20.5Z {line}\n" for line in report(log).splitlines())
-    assert costs_in(stamped) == [Cost("tests/test_b.py::test_slow[x y]", 2.0, 4.0, 1.0), Cost("tests/test_a.py::test_quick", 0.5, 0.25, 0.25)]
+    assert costs_in(stamped) == [
+        Cost("tests/test_b.py::test_slow[x y]", 2.0, 4.0, 1.0),
+        Cost("tests/test_b.py::test_cut_off", 3.0, 0.0, 0.0, stopped=True),
+        Cost("tests/test_a.py::test_quick", 0.5, 0.25, 0.25),
+    ]
 
 
 def test_a_failed_run_says_how_it_ended() -> None:
@@ -64,7 +68,8 @@ def test_a_failed_run_says_how_it_ended() -> None:
 def test_a_log_with_no_end_says_it_stopped_and_gives_the_tests_it_holds() -> None:
     told = report(STARTED + spent("tests/test_a.py::test_finished", 1, 1, 1) + phase("tests/test_a.py::test_cancelled_in_its_body", "setup", 1))
     assert told.startswith("2 tests, 4.000 s: the log stops before the run ended\n")
-    assert "    1.000     1.000     0.000     0.000  tests/test_a.py::test_cancelled_in_its_body\n" in told
+    assert "    1.000     1.000     0.000     0.000  tests/test_a.py::test_cancelled_in_its_body  (the run stopped inside it)\n" in told
+    assert "tests/test_a.py::test_finished\n" in told
 
 
 def test_a_line_still_being_written_is_no_record() -> None:

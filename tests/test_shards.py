@@ -178,6 +178,14 @@ def test_a_module_cut_across_shards_costs_the_setup_one_shard_paid_not_the_sum_o
     assert costs.tests["tests/test_streaming.py::test_c"] == 8.0
 
 
+def test_a_test_the_run_stopped_inside_has_no_cost_and_does_not_weigh_on_the_quick_ones() -> None:
+    cut_off = table(Cost("tests/test_streaming.py::test_cut_off", 0.6, 0.0, 0.0, stopped=True), Cost("tests/test_streaming.py::test_quick", 0.0, 0.2, 0.0))
+    costs = costs_from({"one": cut_off})
+    assert "tests/test_streaming.py::test_cut_off" not in costs.tests
+    assert costs.setups == {}
+    assert costs.fallback == 0.2
+
+
 def test_a_log_with_no_cost_rows_is_refused_by_name() -> None:
     with pytest.raises(ValueError, match="check-pair-log-3.txt holds no cost report rows"):
         costs_from({"one": SHARD_ONE, "check-pair-log-3.txt": "no report log at .pytest_cache/check-pair-log.jsonl: the run wrote none\n"})

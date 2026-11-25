@@ -19,8 +19,10 @@ from typing import Any
 # [LAW:one-source-of-truth] where the suite writes its log. pyproject's addopts spells this path, and test_costs.py holds the two to each other.
 REPORT_LOG = Path(".pytest_cache/report-log.jsonl")
 
+# What `row` says after a test the run stopped inside.
+STOPPED = "  (the run stopped inside it)"
 # A test row of the report, as `row` prints it: total, setup, call and teardown seconds, then the test.
-ROW = re.compile(r"^\s*\d+\.\d{3}\s+(?P<setup>\d+\.\d{3})\s+(?P<call>\d+\.\d{3})\s+(?P<teardown>\d+\.\d{3})\s+(?P<test>tests/.+?)\s*$")
+ROW = re.compile(rf"^\s*\d+\.\d{{3}}\s+(?P<setup>\d+\.\d{{3}})\s+(?P<call>\d+\.\d{{3}})\s+(?P<teardown>\d+\.\d{{3}})\s+(?P<test>tests/.+?)(?P<stopped>{re.escape(STOPPED)})?\s*$")
 # What CI puts in front of each line of a job's log.
 STAMP = re.compile(r"^\S+Z ")
 
@@ -32,12 +34,14 @@ def module(test: str) -> str:
 @dataclass(frozen=True)
 class Cost:
     """One test's seconds by the phase it spent them in. Setup stands apart because a fixture shared by a module is charged
-    to the first test that asks for it, and a test the run stopped inside has only the phases it finished."""
+    to the first test that asks for it. A test the run stopped inside has only the phases it finished, so its seconds are a
+    floor and not what it costs: `stopped` says so."""
 
     test: str
     setup: float = 0.0
     call: float = 0.0
     teardown: float = 0.0
+    stopped: bool = False
 
     @property
     def total(self) -> float:
@@ -53,13 +57,13 @@ def seconds(costs: list[Cost]) -> float:
 
 
 def row(cost: Cost) -> str:
-    return f"{cost.total:9.3f} {cost.setup:9.3f} {cost.call:9.3f} {cost.teardown:9.3f}  {cost.test}"
+    return f"{cost.total:9.3f} {cost.setup:9.3f} {cost.call:9.3f} {cost.teardown:9.3f}  {cost.test}{STOPPED if cost.stopped else ''}"
 
 
 def costs_in(text: str) -> list[Cost]:
     """The tests of a report's rows in `text`, which may be a CI job's log: the one reader of what `row` prints."""
     rows = (ROW.match(STAMP.sub("", line)) for line in text.splitlines())
-    return [Cost(found["test"], float(found["setup"]), float(found["call"]), float(found["teardown"])) for found in rows if found]
+    return [Cost(found["test"], float(found["setup"]), float(found["call"]), float(found["teardown"]), found["stopped"] is not None) for found in rows if found]
 
 
 def report(log: str) -> str:
@@ -70,7 +74,7 @@ def report(log: str) -> str:
     for record in records:
         if record["$report_type"] == "TestReport":
             phases[record["nodeid"]][record["when"]] = record["duration"]
-    costs = sorted((Cost(test, **finished) for test, finished in phases.items()), key=lambda cost: cost.total, reverse=True)
+    costs = sorted((Cost(test, stopped="teardown" not in finished, **finished) for test, finished in phases.items()), key=lambda cost: cost.total, reverse=True)
     modules: dict[str, list[Cost]] = defaultdict(list)
     for cost in costs:
         modules[cost.module].append(cost)

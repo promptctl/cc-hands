@@ -57,6 +57,10 @@ class Shard:
         return f"{self.index + 1}/{self.count}"
 
 
+# The shard of a run that asks for none: all of its tests, the 1st of 1.
+WHOLE = Shard(0, 1)
+
+
 @dataclass(frozen=True)
 class Costs:
     """What running a test costs a shard, in seconds. A module's shared fixtures are charged once to the shard that holds any
@@ -170,7 +174,9 @@ def costs_from(logs: Mapping[str, str]) -> Costs:
     """The costs of the cost reports (tests/costs.py) in CI job logs, by file name. A module's setup is the seconds its tests
     spent in setup in one log, and the most any log has it spend: a module cut across shards is in several logs, each having
     paid it once. A test's cost is its call and teardown, a fixture the module shares being charged to the first test that
-    asks for it. A test too quick to list costs what the quick ones did on average."""
+    asks for it. A test too quick to list costs what the quick ones did on average. A test the run stopped inside (a job
+    cancelled at its limit) was not measured: it has no cost here, and is packed at the fallback until a run that finished it
+    says what it costs."""
     tests: dict[str, float] = {}
     setups: dict[str, float] = {}
     unlisted: list[float] = []
@@ -179,7 +185,7 @@ def costs_from(logs: Mapping[str, str]) -> Costs:
         if not rows:
             raise ValueError(f"{name} holds no cost report rows: it is not a log of tests/costs.py's report, or its run wrote none")
         in_log: dict[str, float] = defaultdict(float)
-        for cost in rows:
+        for cost in (each for each in rows if not each.stopped):
             in_log[cost.module] += cost.setup
             if cost.call + cost.teardown >= LISTED:
                 tests[cost.test] = round(cost.call + cost.teardown, 1)
@@ -190,5 +196,8 @@ def costs_from(logs: Mapping[str, str]) -> Costs:
 
 
 if __name__ == "__main__":
-    costs = costs_from({each: Path(each).read_text(errors="replace") for each in sys.argv[1:]})
+    logs = {each: Path(each).read_text(errors="replace") for each in sys.argv[1:]}
+    costs = costs_from(logs)
+    stopped = [cost.test for text in logs.values() for cost in costs_in(text) if cost.stopped]
+    print(f"{len(stopped)} tests were stopped inside by their run and have no cost: {', '.join(stopped)}", file=sys.stderr)
     print(json.dumps({"fallback": costs.fallback, "setups": costs.setups, "tests": costs.tests}, indent=1))

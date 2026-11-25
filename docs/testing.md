@@ -71,7 +71,8 @@ holds a fetch, or fails one, does it with Playwright's `route`, not a fake in th
   the shards together run each test once. A module is kept whole in a shard, its fixtures set up once, unless it is more than a
   shard's share. The costs come from the cost reports CI prints (tests/costs.py): after a change that moves a lot of test time,
   `gh run view <run> --log` of the shards' jobs into a file each and `uv run --no-sync python tests/shards.py FILE... >
-  tests/shard-costs.json` regenerates them. A shard says at its start what it was packed at, and at its end what it cost and
+  tests/shard-costs.json` regenerates them, from a job cancelled at its limit too: a test its run stopped inside is marked in the
+  report, is named when the file is regenerated, and has no cost until a run finishes it. A shard says at its start what it was packed at, and at its end what it cost and
   which tests cost 0.5 s or more and are not in the file, so a file gone stale shows in the log; a job cancelled at its limit
   still has the first. `make costs-check-unit` (and `-check-pair`, `-check-outside`) prints the cost report of that target's last
   run, which is what CI's jobs put in their logs.
