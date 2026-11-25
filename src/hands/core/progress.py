@@ -8,11 +8,14 @@ tell when it finishes, and a call is worth hearing about while it runs, before t
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePath
 from typing import cast
+from urllib.parse import urlsplit
 
+from hands.core.skill import Skill
 from hands.core.spoken import spoken_count
+from hands.core.turn import AGENT_ID, AgentId
 
 
 @dataclass(frozen=True)
@@ -45,15 +48,6 @@ EXPLAINING = Work("explain {count} things", "explain something")
 # Text Claude wrote that could not be summarised: said to have been written, since what it says is not known, and never
 # read out.
 WRITING = Work("write {count} things", "write something")
-
-
-@dataclass(frozen=True)
-class Doing:
-    """One call as it is made: its kind of work, and what it is said as when it is the only one of its kind; None when
-    its input does not say what it was done to, and then no other call is the same thing done."""
-
-    work: Work
-    alone: str | None
 
 
 # What a call is done to, each kind rendered by the medium that tells it: the voice says a file by its name, holds back
@@ -98,20 +92,6 @@ class Site:
 
 
 @dataclass(frozen=True)
-class Skill:
-    """A skill and its arguments: the page shows it as it was typed, the voice by its name."""
-
-    name: str
-    args: str | None
-
-    @property
-    def typed(self) -> str:
-        """The skill as a user types it, `/name args`. [LAW:one-source-of-truth] the one wording of a skill's invocation: the
-        page's line, a forked skill's task and a subagent's job all take it from here."""
-        return f"/{self.name} {self.args}" if self.args else f"/{self.name}"
-
-
-@dataclass(frozen=True)
 class Named:
     """A recipient called by a name a listener can follow: a teammate's, or `main`."""
 
@@ -122,17 +102,14 @@ class Named:
 class ById:
     """A recipient called by the id of the agent it is: the page shows it, the voice leaves it out."""
 
-    id: str
+    id: AgentId
 
 
 Recipient = Named | ById
 
-# An agent's id as Claude Code mints it: `a` and sixteen hex digits.
-_AGENT_ID = re.compile(r"a[0-9a-f]{16}")
-
 
 def recipient(to: str) -> Recipient:
-    return ById(to) if _AGENT_ID.fullmatch(to) else Named(to)
+    return ById(AgentId(to)) if AGENT_ID.fullmatch(to) else Named(to)
 
 
 @dataclass(frozen=True)
@@ -145,20 +122,31 @@ class Message:
 
 @dataclass(frozen=True)
 class ToolInput:
-    """A tool no row knows, by its input: the page shows it as JSON, cut to a line, and the voice says only the tool."""
+    """A tool no row knows, and its input: the voice says only the tool, and the page shows the input as JSON."""
 
-    json: str
+    tool: str
+    input: Mapping[str, object]
 
 
 Part = Path | Words | Pattern | Command | Site | Skill | Message | ToolInput
 
-# The states a task is in as Claude Code's TaskUpdate names them, and how each is said; a state not here is left unsaid.
-_TASK_STATES: Mapping[str, str] = {
-    "pending": "pending",
-    "in_progress": "in progress",
-    "completed": "completed",
-    "deleted": "deleted",
-}
+
+@dataclass(frozen=True)
+class Doing:
+    """One call as it is made: its kind of work, and what it is said as when it is the only one of its kind; None when
+    its input does not say what it was done to, and then no other call is the same thing done.
+
+    `thing` is what it was done to, as the page tells it, which is what makes two calls one thing done: an edit and a write
+    of one file are one file, and two files of one name in two directories are two. It stays out of what makes two Doings
+    equal, which is what they say. Where it is None, `alone` stands for it."""
+
+    work: Work
+    alone: str | None
+    thing: str | None = field(default=None, compare=False)
+
+    def same(self, at: int) -> str | int:
+        """What this call is the same thing done as, `at` being where it stands among the calls said together."""
+        return at if self.alone is None else self.alone if self.thing is None else self.thing
 
 # How much of one call the page shows on its line.
 LINE = 120
@@ -176,14 +164,18 @@ class Intent:
 
     def heard(self) -> Doing | None:
         """What the voice says of it; None for a call that asks the user, which is spoken as it is asked."""
-        if self.work is ASKING:
+        if self.work == ASKING:
             return None
-        said_of = None if self.of is None else _voiced(self.of)
-        return Doing(self.work, None if said_of is None else _joined(self.act, said_of))
+        match self.of:
+            case None:
+                return Doing(self.work, None)
+            case part:
+                said_of = _voiced(part)
+                return Doing(self.work, None) if said_of is None else Doing(self.work, _joined(self.act, said_of), _cut(_first_line(_shown(part, PurePath("/"))), LINE))
 
     def line(self, cwd: PurePath) -> str:
-        """The one line the page shows of it, `cwd` taken off the front of a path under it."""
-        return _cut(self.act if self.of is None else _joined(self.act, _shown(self.of, cwd)), LINE)
+        """The one line the page shows of it, `cwd` taken off the front of a path under it, and cut to LINE."""
+        return _cut(_first_line(self.act if self.of is None else _joined(self.act, _shown(self.of, cwd))), LINE)
 
 
 def intent(tool: str, input: Mapping[str, object]) -> Intent:
@@ -204,7 +196,7 @@ def said(doings: Sequence[Doing]) -> str:
     # nothing of themselves are eight, each its own by where it stands.
     grouped: dict[Work, dict[str | int, str]] = {}
     for at, each in enumerate(doings):
-        grouped.setdefault(each.work, {})[at if each.alone is None else each.alone] = each.work.one if each.alone is None else each.alone
+        grouped.setdefault(each.work, {})[each.same(at)] = each.work.one if each.alone is None else each.alone
     return ", then ".join(
         next(iter(things.values())) if len(things) == 1 else work.several.format(count=spoken_count(len(things))) for work, things in grouped.items()
     )
@@ -217,7 +209,7 @@ def _ran(_tool: str, input: Mapping[str, object]) -> Intent:
     if description is not None:
         return Intent(RUNNING, "", Words(lowered(description)))
     command = _text(input, "command")
-    return Intent(RUNNING, RUNNING.one, None) if command is None else Intent(RUNNING, "", Command(command.splitlines()[0]))
+    return Intent(RUNNING, RUNNING.one, None) if command is None else Intent(RUNNING, "", Command(_first_line(command)))
 
 
 def _on_file(work: Work, act: str) -> Callable[[str, Mapping[str, object]], Intent]:
@@ -239,8 +231,8 @@ def _looked_up(_tool: str, input: Mapping[str, object]) -> Intent:
 
 
 def _fetched(_tool: str, input: Mapping[str, object]) -> Intent:
-    host = _HOST.match(_text(input, "url") or "")
-    return Intent(LOOKING_UP, LOOKING_UP.one, None) if host is None else Intent(LOOKING_UP, "read a page on", Site(host[1]))
+    host = _host(_text(input, "url"))
+    return Intent(LOOKING_UP, LOOKING_UP.one, None) if host is None else Intent(LOOKING_UP, "read a page on", Site(host))
 
 
 def _dispatched(_tool: str, input: Mapping[str, object]) -> Intent:
@@ -252,25 +244,29 @@ def _dispatched(_tool: str, input: Mapping[str, object]) -> Intent:
 
 def _skilled(_tool: str, input: Mapping[str, object]) -> Intent:
     name = _text(input, "skill")
-    return Intent(USING, USING.one, None) if name is None else Intent(USING, "", Skill(name, _text(input, "args")))
+    return Intent(USING, USING.one, None) if name is None else Intent(USING, "", Skill.of(name, input.get("args")))
 
 
 def _messaged(_tool: str, input: Mapping[str, object]) -> Intent:
     # `to` is a name or an agent's id; `summary` is the sender's own line for it, absent on some calls.
     to = _text(input, "to")
-    text = _text(input, "summary") or _first_line(_text(input, "message"))
+    message = _text(input, "message")
+    text = _text(input, "summary") or (None if message is None else _first_line(message))
     return Intent(MESSAGING, MESSAGING.one, None) if to is None else Intent(MESSAGING, "send a message", Message(recipient(to), text))
 
 
-def _tasked(act: str, key: str) -> Callable[[str, Mapping[str, object]], Intent]:
-    def row(_tool: str, input: Mapping[str, object]) -> Intent:
-        named = _text(input, key)
-        if named is None:
-            return Intent(PLANNING, PLANNING.one, None)
-        state = _TASK_STATES.get(_text(input, "status") or "")
-        return Intent(PLANNING, act, Words(named if state is None or key == "subject" else f"{named}: {state}"))
+def _task_added(_tool: str, input: Mapping[str, object]) -> Intent:
+    subject = _text(input, "subject")
+    return Intent(PLANNING, PLANNING.one, None) if subject is None else Intent(PLANNING, "add task", Words(subject))
 
-    return row
+
+def _task_updated(_tool: str, input: Mapping[str, object]) -> Intent:
+    task = _text(input, "taskId")
+    if task is None:
+        return Intent(PLANNING, PLANNING.one, None)
+    # Its status as Claude Code names it, "in_progress" said as words.
+    status = _text(input, "status")
+    return Intent(PLANNING, "update task", Words(task if status is None else f"{task}: {status.replace('_', ' ')}"))
 
 
 def _planned(_tool: str, _input: Mapping[str, object]) -> Intent:
@@ -290,7 +286,7 @@ def _approval(_tool: str, _input: Mapping[str, object]) -> Intent:
 
 def _used(tool: str, input: Mapping[str, object]) -> Intent:
     # An MCP tool is named mcp__<server>__<tool>: the tool's own name is the part a listener can follow.
-    return Intent(USING, f"use {tool.rsplit('__', 1)[-1].replace('_', ' ')}", ToolInput(json.dumps(dict(input), ensure_ascii=False, default=str)))
+    return Intent(USING, "use", ToolInput(tool.rsplit("__", 1)[-1].replace("_", " "), input))
 
 
 # [LAW:one-type-per-behavior] one table keyed by tool name, as the step recognisers are; a tool not in it is used.
@@ -310,8 +306,8 @@ _SAID: Mapping[str, Callable[[str, Mapping[str, object]], Intent]] = {
     "Skill": _skilled,
     "SendMessage": _messaged,
     "TodoWrite": _planned,
-    "TaskCreate": _tasked("add task", "subject"),
-    "TaskUpdate": _tasked("update task", "taskId"),
+    "TaskCreate": _task_added,
+    "TaskUpdate": _task_updated,
     "AskUserQuestion": _asked,
     "ExitPlanMode": _approval,
 }
@@ -344,8 +340,8 @@ def _voiced(part: Part) -> str | None:
             return f"saying {text}"
         case Message():
             return ""
-        case ToolInput():
-            return ""
+        case ToolInput(tool=tool):
+            return tool
 
 
 def _shown(part: Part, cwd: PurePath) -> str:
@@ -370,8 +366,8 @@ def _shown(part: Part, cwd: PurePath) -> str:
             return f"to {_called(to)}: {text}"
         case Message(to=to):
             return f"to {_called(to)}"
-        case ToolInput(json=json_text):
-            return json_text
+        case ToolInput(tool=tool, input=input):
+            return f"{tool} {json.dumps(dict(input), ensure_ascii=False)}"
 
 
 def _called(to: Recipient) -> str:
@@ -394,15 +390,20 @@ def _cut(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
-def _first_line(text: str | None) -> str | None:
-    return None if text is None else text.splitlines()[0]
+def _first_line(text: str) -> str:
+    return text.splitlines()[0] if text else text
 
 
 # What a listener can follow: words, and the dashes, dots, and underscores names are spelled with.
 _WORDS = re.compile(r"[\w][\w .'-]*")
 
-# The host of a URL: what follows the scheme, up to its port, path, query, or fragment.
-_HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/]*@)?([^/:?#]+)")
+
+def _host(url: str | None) -> str | None:
+    """The host of a URL, None where it names none."""
+    try:
+        return None if url is None else urlsplit(url).hostname
+    except ValueError:
+        return None
 
 
 def _file(input: Mapping[str, object]) -> str | None:

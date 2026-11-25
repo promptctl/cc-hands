@@ -101,7 +101,9 @@ CWD = PurePath("/code/a")
         pytest.param("TaskCreate", {"subject": "Implement decode_octal", "description": "..."}, "add task Implement decode_octal", "add task Implement decode_octal", id="a task by its subject"),
         pytest.param("TaskUpdate", {"taskId": "3", "status": "completed"}, "update task 3: completed", "update task 3: completed", id="a task's status change beside its id"),
         pytest.param("TaskUpdate", {"taskId": "3", "status": "in_progress"}, "update task 3: in progress", "update task 3: in progress", id="a task's status said as words, not as Claude Code's key"),
-        pytest.param("TaskUpdate", {"taskId": "3", "status": "archived"}, "update task 3", "update task 3", id="a status hands does not know is left unsaid"),
+        pytest.param("TaskUpdate", {"taskId": "3", "status": "blocked"}, "update task 3: blocked", "update task 3: blocked", id="a status hands has not met is said as Claude Code names it"),
+        pytest.param("WebFetch", {"url": "https://example.com?next=user@corp.com"}, "read a page on example.com", "read a page on example.com", id="a site is the URL's host, whatever its query holds"),
+        pytest.param("Skill", {"skill": "review", "args": "  557 1\nsecond line "}, "use the review skill", "/review 557 1", id="a skill's arguments are trimmed and the line is the first of them"),
         pytest.param("Skill", {"skill": "review"}, "use the review skill", "/review", id="a skill with no arguments"),
         pytest.param("TodoWrite", {"todos": []}, "update its plan", "update its plan", id="a todo list"),
         pytest.param("mcp__claude_ai_Firecrawl__firecrawl_search", {"query": "x"}, "use firecrawl search", 'use firecrawl search {"query": "x"}', id="an MCP tool by its own name and its input"),
@@ -130,7 +132,10 @@ def test_a_tool_the_page_has_no_row_for_is_cut_to_a_line() -> None:
 
 @pytest.mark.parametrize("tool", ["Edit", "Read", "Grep", "WebFetch", "WebSearch", "Agent", "Skill", "SendMessage", "TaskCreate", "TaskUpdate", "AskUserQuestion"])
 def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(tool: str) -> None:
-    assert intent(tool, {}).of is None
+    acts = {"Edit": "edit a file", "Read": "read a file", "Grep": "search the code", "WebFetch": "look something up on the web", "WebSearch": "look something up on the web",
+            "Agent": "start a subagent", "Skill": "use a tool", "SendMessage": "send a message", "TaskCreate": "update its plan", "TaskUpdate": "update its plan",
+            "AskUserQuestion": "ask the user"}
+    assert intent(tool, {}).line(CWD) == acts[tool]
 
 
 @pytest.mark.parametrize(
@@ -141,6 +146,9 @@ def test_a_call_whose_input_says_nothing_of_what_it_is_done_to_is_its_act_alone(
         pytest.param((edit("tail.py"),) * 10, "edit tail.py", id="ten edits of one file are that file"),
         pytest.param((Doing(RUNNING, None),) * 8, "run eight commands", id="calls that say nothing of themselves are each their own"),
         pytest.param((edit("a.py"), TESTS, edit("b.py"), TESTS), "edit two files, then run the test suite", id="each kind once, in the order first done"),
+        pytest.param(tuple(d for tool in ("Write", "Edit") if (d := doing(tool, {"file_path": "/c/a/x.py"})) is not None), "edit x.py", id="a file written and then edited is one file"),
+        pytest.param(tuple(d for path in ("/c/a/__init__.py", "/c/b/__init__.py") if (d := doing("Edit", {"file_path": path})) is not None), "edit two files", id="two files of one name are two files"),
+        pytest.param(tuple(d for to in ("a0123456789abcdef", "afedcba9876543210") if (d := doing("SendMessage", {"to": to})) is not None), "send two messages", id="messages to two agents are two messages"),
     ],
 )
 def test_a_burst_is_one_clause(doings: tuple[Doing, ...], sentence: str) -> None:
@@ -397,7 +405,7 @@ def test_calls_read_are_a_line_the_audit_log_can_write() -> None:
         "type": "Progressed",
         "session": SID,
         "of": ["p1"],
-        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command"}, "alone": "run the test suite"}],
+        "doings": [{"type": "Doing", "work": {"type": "Work", "several": "run {count} commands", "one": "run a command"}, "alone": "run the test suite", "thing": None}],
         "at": 7.0,
     }
 

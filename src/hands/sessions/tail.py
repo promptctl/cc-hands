@@ -15,8 +15,9 @@ from typing import Literal, Protocol
 from loguru import logger
 
 from hands.core.events import CarriedOut, Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed, Unqueued, Unqueuing
-from hands.core.progress import Doing, Skill, doing
+from hands.core.progress import Doing, doing
 from hands.core.session import Instant, Membership, PromptId, SessionId
+from hands.core.skill import Skill
 from hands.core.status import Stamp
 from hands.core.turn import AgentId, AgentTask, Answering, Continuing, Interruption, Opening, Said, Step, SubagentDispatched, Turn
 from hands.core.steps import Call
@@ -673,8 +674,7 @@ def _started(session: SessionId, subagent: SubagentTranscript, following: Follow
                     logger.info(f"subagent {subagent.id} names no job, so it is heard as the work of the call whose result names it: {description!r}")
                     return AgentTask(subagent.id, description)
                 case _, [{"skill": str() as skill, **rest}]:
-                    arguments = rest.get("args")
-                    invoked = Skill(skill, arguments if isinstance(arguments, str) else None).typed
+                    invoked = Skill.of(skill, rest.get("args")).typed
                     logger.info(f"subagent {subagent.id} names no job, so it is heard as the work of the one skill its parent is running: {invoked!r}")
                     return AgentTask(subagent.id, invoked)
                 case _:
