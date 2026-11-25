@@ -10,9 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Never
 
+import httpx
 import huggingface_hub
+import huggingface_hub.constants
 import pytest
 from huggingface_hub.errors import OfflineModeIsEnabled
+from huggingface_hub.utils import _detect_agent, _http, _headers  # pyright: ignore[reportPrivateUsage]  (the hub exports no name for the registry's reading, its headers, nor its default client factory)
 
 import conftest
 from conftest import executable, hermetic, without_claude
@@ -83,7 +86,6 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "TMPDIR": "/var/folders/t/",
         "CI": "true",
         "HF_HUB_OFFLINE": "1",
-        "HF_HUB_DISABLE_TELEMETRY": "1",
         "HF_HUB_CACHE": "/Users/developer/.cache/huggingface/hub",
         "NLTK_DATA": "/run/sentences",
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -103,9 +105,29 @@ def test_a_test_runs_in_the_hermetic_environment(environment: dict[str, str], ma
     assert shutil.which("claude") is None
     # Nor does the hub in this process read the developer's token, from under the HOME it found as it was imported.
     assert not Path(huggingface_hub.constants.HF_TOKEN_PATH).is_relative_to(machine["HOME"])
-    # Nor does it send a request for the registry of agents to build its user agent from, or keep one of the developer's.
-    assert huggingface_hub.constants.HF_HUB_DISABLE_TELEMETRY
-    assert not Path(huggingface_hub.constants.AGENT_HARNESSES_PATH).is_relative_to(machine["HOME"])
+    assert not Path(huggingface_hub.constants.HF_STORED_TOKENS_PATH).is_relative_to(machine["HOME"])
+
+
+def test_the_hub_online_asks_no_one_for_its_registry_of_agents(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[str] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        asked.append(f"{request.method} {request.url}")
+        return httpx.Response(404)
+
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    # The registry is read once a process and kept, so this process's reading of it is put aside for this test's.
+    monkeypatch.setattr(_detect_agent, "_registry", None)
+    huggingface_hub.set_client_factory(lambda: httpx.Client(transport=httpx.MockTransport(serve)))
+    try:
+        # The two callers of the registry: the user agent's headers, and the terminal's formatting.
+        _headers.build_hf_headers()  # pyright: ignore[reportUnknownMemberType]  (the hub types its user agent's dict bare)
+        _detect_agent.is_agent()
+    finally:
+        huggingface_hub.set_client_factory(_http.default_client_factory)
+    assert asked == []
+    # Nor is it the registry some earlier request of the run fetched and kept: it is the run's own, which lists no agent.
+    assert _detect_agent._registry == {"standardEnvVars": [], "harnesses": {}}  # pyright: ignore[reportPrivateUsage]
     assert huggingface_hub.get_token() is None
 
 
