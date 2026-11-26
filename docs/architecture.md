@@ -1928,9 +1928,10 @@ on words nobody said. At the clip's end the session is fed silence until the dia
 committed the clip's last chunk, and every speaker's stream is closed on one chunk of silence as
 the model hears it, so a clip's last words are decoded in it and none in the next. Each
 clip the key sent or dropped settles as one of the listener's `hearing` events: its fate, and
-each speaker's words in it. Nothing waits on it. The models load on the stream's own thread, as
-its first work (`streaming.loaded`), so the voice starts without them and clips spoken meanwhile
-are heard behind them; models that fail to load, or decoding that fails, fail the end of that
+each speaker's words in it. The voice queues the pair's load after Whisper finishes warming up
+so the two MLX startup loads cannot overlap. The pair loads as the stream thread's first work
+(`streaming.loaded`), so the voice can start while the pair loads and clips spoken meanwhile are
+heard behind it. Models that fail to load, or decoding that fails, fail the end of that
 clip and every clip's after it, with why.
 
 A turn's words are what Whisper hears of the clip, sent whole (`hands.voice.whisper`): the sound it hears has hands' own voice
