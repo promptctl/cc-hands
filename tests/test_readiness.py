@@ -17,8 +17,7 @@ import pytest
 
 from conftest import answering, children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, SYSTEM_PATH, Unstarting
 from fixtures.fakemachine import UNMANAGED
-from fakeprocesses import PROC_PID, FakeProcesses, Running, processes
-from processescontract import PROCARGS2
+from fakeprocesses import PROCARGS2, PROC_PID, FakeProcesses, Running, processes
 from fixtures.pins import LAID_OUT
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
@@ -463,8 +462,7 @@ def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_o
 def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
-    # Started on a version no longer installed: the kernel says the path it was started by, which names nothing now
-    # (processescontract.py).
+    # Started on a version no longer installed: its original executable path still identifies the session.
     pid = 4001
     found = readiness.sessions(processes(at_a_terminal(pid, root / "install" / "9.9.8", root)), home, path, untmuxed)
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said

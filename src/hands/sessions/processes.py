@@ -4,7 +4,7 @@ processes run at a terminal and whether a pid still names the process it named b
 
 [LAW:effects-at-boundaries] `Processes` is the way the daemon and its sessions reach another process.
 `hands.sessions.kernel.KERNEL` asks the kernel, the composition root hands it on, and tests/fakeprocesses.py holds a table as
-values; tests/processescontract.py holds the two to one contract. Children hands starts and waits on are
+values. Children hands starts and waits on are
 `hands.sessions.child`'s. The brain still reads and signals its own pane's processes itself, each read marked as the
 exception it is, until promptctl-testing-c3u.fhu puts the brain on its fakes.
 

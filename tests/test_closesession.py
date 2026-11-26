@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 
-from fakeprocesses import PROC_PID, FakeProcesses, Running, processes
+from fakeprocesses import KILL, PROC_PID, FakeProcesses, Running, processes
 from hands.core.events import Event, Joined, PermissionRequested, Prompted, StatusReported
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Status, Waiting
@@ -27,7 +27,6 @@ from hands.voice.tool import Result
 from hands.voice.tools import close_session_tool
 from test_startsession import home_in
 from conftest import new_sessions
-from processescontract import KILL
 
 
 async def run[T](table: FakeProcesses, home: Home, sessions: Sessions, clock: VirtualClock, body: Callable[[], Awaitable[T]]) -> T:

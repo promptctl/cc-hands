@@ -1,5 +1,5 @@
 """`Processes` as values a test sets: a table of processes, each with the facts the kernel answers from, and the signals sent
-to them. tests/processescontract.py holds it to what `hands.sessions.kernel.KERNEL` says of real processes."""
+to them."""
 
 import errno
 import os
@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hands.sessions.processes import ControllingTerminal, Process, StartedAs, TerminalProcess, Undescribed, parse_pid
-from processescontract import KILL, LAUNCHD, PIDPATH, PROCARGS2, VNODEPATHINFO
+
+LAUNCHD = 1
+KILL = "kill"
+PIDPATH = "proc_pidpath"
+PROCARGS2 = "kern.procargs2"
+VNODEPATHINFO = "proc_pidinfo flavor 9"
 
 # The user a fake's processes run as, and hands with them, unless a test names another.
 USER = 501
