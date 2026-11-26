@@ -40,12 +40,9 @@ class Running:
     # When it started, in wall-clock seconds: long before anything a test writes, unless it says otherwise.
     start: float = 0.0
     cwd: Path = Path("/")
-    # The directory it was started in, which a relative path it was exec'd by is read against: where it runs, unless it
-    # has moved since.
-    started_in: Path | None = None
-    # The path it was exec'd by, as execve was given it. The kernel names the file that path reached when it started,
-    # links resolved; one deleted since it names none of, refusing proc_pidpath with ENOENT.
+    # The executable reported by the process host, and the invocation path if different.
     path: Path = Path("/bin/sh")
+    invoked_as: Path | None = None
     arguments: tuple[str, ...] = ()
     environment: Mapping[str, str] = field(default_factory=dict[str, str])
     # The device of the file it has open as its stdin and as its stdout, as `st_rdev`; None for a pipe, or none open.
@@ -85,15 +82,15 @@ class FakeProcesses:
 
     def started_as(self, process: Process) -> StartedAs | Undescribed | None:
         match self._described(process.pid, PROCARGS2):
-            case Running(path=path, arguments=arguments, environment=environment):
-                return StartedAs(path, arguments, environment)
+            case Running(path=path, invoked_as=invoked_as, arguments=arguments, environment=environment):
+                return StartedAs(invoked_as or path, arguments, environment)
             case other:
                 return other
 
     def program_of(self, process: Process) -> Path | Undescribed | None:
         match self._described(process.pid, PIDPATH):
-            case Running(cwd=cwd, started_in=started_in, path=path):
-                return Path(os.path.realpath((cwd if started_in is None else started_in) / path))
+            case Running(path=path):
+                return path
             case other:
                 return other
 

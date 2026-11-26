@@ -52,9 +52,10 @@ real adapter, hands.sessions.kernel's `KERNEL`, only a composition root imports 
 brain's reads of its own pane's processes are the exception left, each marked, until promptctl-testing-c3u.fhu. A test of
 what hands makes of the process table gives its code a fake table, tests/fakeprocesses.py, whose rows hold the facts the
 kernel answers from: which file each process has open as its stdin and stdout, and which call the kernel refuses about it.
-Process discovery runs against these values in `tests/test_process_discovery.py`. The tests cover finding an executable
-after the session changes directory and a process exiting between listing and inspection. Session readiness, pane routing,
-liveness and close-session tests cover how those callers use process information.
+The `hands check` diagnostic uses this host's terminal processes to find Claude runs that may have missed registration.
+Registered sessions are identified by the session ID reported by their hooks. In `tests/test_process_discovery.py` the
+process host supplies the executable for a relative invocation, and a process can exit between listing and inspection.
+Session readiness, pane routing, liveness and close-session tests cover how those callers use process information.
 
 ## The user's terminals and the Mac's screen
 

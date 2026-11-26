@@ -1,4 +1,4 @@
-"""Which terminal sessions Hands discovers from process information."""
+"""Terminal process information used to diagnose a missing session registration."""
 
 from pathlib import Path
 
@@ -8,15 +8,15 @@ from fakeprocesses import Running, processes
 from hands.sessions.processes import ControllingTerminal, terminal_processes
 
 
-def test_a_relative_executable_still_identifies_a_session_after_it_changes_directory(tmp_path: Path) -> None:
-    install = tmp_path / "install"
+def test_a_relative_invocation_uses_the_executable_reported_by_the_process_host(tmp_path: Path) -> None:
+    executable = tmp_path / "versions" / "1.2.3"
     worktree = tmp_path / "worktree"
     invocation = Path("bin") / "claude"
-    table = processes(Running(42, terminal=ControllingTerminal(7, foreground=True), path=invocation, started_in=install, cwd=worktree))
+    table = processes(Running(42, terminal=ControllingTerminal(7, foreground=True), path=executable, invoked_as=invocation, cwd=worktree))
 
-    [session] = terminal_processes(table).found
+    [process] = terminal_processes(table).found
 
-    assert (session.executable, session.cwd) == (install / invocation, worktree)
+    assert (process.executable, process.cwd) == (executable, worktree)
 
 
 def test_a_process_that_exits_during_discovery_is_omitted_without_hiding_its_neighbor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,5 +28,5 @@ def test_a_process_that_exits_during_discovery_is_omitted_without_hiding_its_nei
 
     result = terminal_processes(table)
 
-    assert [session.pid for session in result.found] == [43]
+    assert [process.pid for process in result.found] == [43]
     assert result.unread == []
