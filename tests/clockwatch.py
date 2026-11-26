@@ -40,8 +40,7 @@ CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 # Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it
 # advances. test_pinned_brain.py, test_session_contract_pinned.py and test_terminal_contract_pinned.py are not among
 # those to move: they run a real Claude Code, and nothing tells them when it has done what they wait on; nor is
-# test_processes_contract_kernel.py, whose children's exec and exit the kernel's table alone says, polled on the machine's
-# time; nor test_terminals_contract_tmux.py, whose tmux server and programs say only by what they leave that they are up;
+# test_terminals_contract_tmux.py, whose tmux server and programs say only by what they leave that they are up;
 # nor are test_pages.py and test_phonewakepage.py, whose verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it; nor is
 # test_proxy_connect.py, whose clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
@@ -99,7 +98,6 @@ UNMOVED = frozenset({
     "test_pinned_brain.py",
     "test_pinnedfile_served.py",
     "test_playback.py",
-    "test_processes_contract_kernel.py",
     "test_terminals_contract_tmux.py",
     "test_progress.py",
     "test_proxy.py",
