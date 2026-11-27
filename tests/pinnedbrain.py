@@ -28,6 +28,7 @@ from hands.brain.mcp import SERVER_NAME
 from hands.brain.process import starting_settings, workdir
 from hands.clock import SYSTEM
 from hands.core.attention import Attention
+from hands.core.runningon import RunningOn
 from hands.core.session import Runnable
 from hands.core.wire import SIDE_QUESTION_OPENING, Exchanged, Observed, Sent
 from hands.daemon.run import mind
@@ -155,6 +156,8 @@ class Hands:
     errors: list[ErrorFrame]
     # The directory the brain works in, where what it makes is made.
     workdir: Path
+    # The model the brain runs on and the context it has used, as its start found them.
+    running_on: RunningOn
 
     async def until(self, what: Callable[[], bool]) -> None:
         patience = asyncio.timeout(PATIENCE_SECONDS)
@@ -278,7 +281,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:
-                    yield Hands(minded.llm, out, run.worker.queue_frame, recorded, sent, exchanged, watches, run.errors, workdir(brain))
+                    yield Hands(minded.llm, out, run.worker.queue_frame, recorded, sent, exchanged, watches, run.errors, workdir(brain), minded.running_on)
                 finally:
                     for watch in watches:
                         watch.cancel()

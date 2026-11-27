@@ -40,6 +40,7 @@ from hands.sessions.home import Home
 from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
+from hands.core.runningon import RunningOn
 from hands.core.stopfailure import LoginExpired
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Received, Sent, ThroughProxy
 from hands.sessions.audit import Record
@@ -208,6 +209,8 @@ class Mind:
     # [LAW:dataflow-not-control-flow] how the brain degrades hands now, as the heartbeat says it: its login, where its
     # turns last said it expired (`Brain.login`).
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]]
+    # The model the brain runs on and the context it has used, as its start found them, which hands says as it starts.
+    running_on: RunningOn
 
 
 async def front_now(screen: Screen, terminals: Terminals, processes: Processes, sessions: Sessions, environment: Mapping[str, str]) -> InFront:
@@ -238,10 +241,11 @@ async def mind(
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, through, environment)
         try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
+            up = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
+        brain = up.brain
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
         asides = Asides(clock, through, Newest(session), record)
@@ -252,7 +256,7 @@ async def mind(
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                 # A summary is as long as its reply makes it: only its time is the summary's own.
                 # The brain's stage notes each turn of the user's itself, as it types it.
-                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login))
+                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login), up.running_on)
         finally:
             await asides.close()
             await brain.stop()
@@ -435,7 +439,7 @@ async def converse(
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
     channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, children=Children(clock, record)), record, clock)
-    listen(voice, channel, after_crash)
+    listen(voice, channel, after_crash, minded.running_on)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
     # [LAW:single-enforcer] one owner of the wake word's models and one of the runtime the phone runs them on: the desk and

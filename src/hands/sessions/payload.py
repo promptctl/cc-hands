@@ -71,6 +71,9 @@ class Payload:
             case other:
                 raise self._wrong(key, "an integer", other)
 
+    def optional_integer(self, key: str) -> int | None:
+        return None if self.fields.get(key) is None else self.integer(key)
+
     def number(self, key: str) -> float:
         match self._field(key):
             case bool() as other:
