@@ -29,6 +29,7 @@ from loguru import logger
 from hands.core.playback import Bookmark
 from hands.brain import configdir, mcp, pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, Request, Unanswerable, parse, serve_mcp
+from hands.sessions.files import Unread
 from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
@@ -665,19 +666,23 @@ def test_each_file_of_the_machines_policy_whose_env_routes_the_brain_around_hand
     )
 
 
+UNTOLD = Unread("the account hands runs as cannot be told: no such uid")
+
+
 @pytest.mark.parametrize(
-    ("policy", "mode", "account"),
+    ("policy", "account", "unread"),
     [
         # An empty managed-settings.json, as a Mac once given and then cleared of a policy holds.
-        ("", 0o644, "tester"),
-        ('{"env": ["HTTPS_PROXY"]}', 0o644, "tester"),
-        ('{"env": {"HTTPS_PROXY": "http://corp:3128"}}', 0o000, "tester"),
+        ("", "tester", "managed-settings.json"),
+        ('{"env": ["HTTPS_PROXY"]}', "tester", "managed-settings.json"),
+        # A file hands cannot read whatever user it runs as: a folder where the file would be.
+        (None, "tester", "managed-settings.json"),
         # The account the brain runs as cannot be told, so neither can its plist.
-        ("{}", 0o644, None),
+        ("{}", UNTOLD, None),
     ],
     ids=["empty", "env not an object", "unreadable", "account unknown"],
 )
-def test_a_machine_policy_hands_cannot_read_refuses_no_run(tmp_path: Path, policy: str, mode: int, account: str | None) -> None:
+def test_a_machine_policy_hands_cannot_read_refuses_no_run_and_is_named_on_the_starts_event(tmp_path: Path, policy: str | None, account: str | Unread, unread: str | None) -> None:
     brain = tmp_path / "brain"
     onboard(brain)
     script = tmp_path / "claude"
@@ -686,10 +691,20 @@ def test_a_machine_policy_hands_cannot_read_refuses_no_run(tmp_path: Path, polic
     brain_pin = pin(brain, script)
     machine = replace(managed(tmp_path / "machine"), account=account)
     machine.folder.mkdir(parents=True)
-    (machine.folder / "managed-settings.json").write_text(policy)
-    (machine.folder / "managed-settings.json").chmod(mode)
+    file = machine.folder / "managed-settings.json"
+    if policy is None:
+        file.mkdir()
+    else:
+        file.write_text(policy)
     config = configdir.read(brain, brain_pin, machine)
     assert (configdir.runnable(config), configdir.around_proxy(config)) == (Runnable(brain_pin.verified(brain), None), ())
+    match configdir.unread_policy(config), unread:
+        case (named,), str():
+            assert named.startswith(f"{machine.folder / unread} ("), named
+        case (named,), None:
+            assert named == f"{machine.preferences} (the plist of the account the brain runs as is under it, and {UNTOLD.reason})", named
+        case named, _:
+            raise AssertionError(f"{named} does not name the one policy hands cannot read")
 
 
 def test_an_env_that_routes_the_brain_refuses_only_a_brain_through_hands_proxy_and_an_unreadable_key_hides_none_of_it(tmp_path: Path) -> None:

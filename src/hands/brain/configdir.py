@@ -38,12 +38,12 @@ STATE = ".claude.json"
 class Machine:
     """Where Claude Code reads the machine's policy on macOS (docs/claude-code-behavior.md, machine policy): the folder
     of its managed settings and their drop-ins, and the managed preferences that hold its plists, the machine's and each
-    account's; and the account the brain runs as, whose plist it reads beside the machine's, None where it cannot be
+    account's; and the account the brain runs as, whose plist it reads beside the machine's, Unread where it cannot be
     told."""
 
     folder: Path
     preferences: Path
-    account: str | None
+    account: str | Unread
 
 
 _PLIST = "com.anthropic.claudecode.plist"
@@ -53,9 +53,9 @@ def this_machine() -> Machine:
     """[LAW:effects-at-boundaries] the Mac hands runs on, read once by a composition root and handed to every read of a
     config directory: macOS's policy locations, and the account this process runs as, as the brain does."""
     try:
-        account: str | None = getpass.getuser()
-    except (OSError, KeyError):
-        account = None
+        account: str | Unread = getpass.getuser()
+    except (OSError, KeyError) as error:
+        account = Unread(f"the account hands runs as cannot be told: {error}")
     return Machine(Path("/Library/Application Support/ClaudeCode"), Path("/Library/Managed Preferences"), account)
 
 
@@ -82,12 +82,13 @@ class Settings:
 
 @dataclass(frozen=True)
 class Policy:
-    """One file of the machine's Claude Code policy hands can read, and its env: Claude Code puts a policy's env over the
-    environment it is started in, as it does settings.json's (docs/claude-code-behavior.md, policy env). A policy is
-    enterprise config almost no Mac has, and hands' start never rests on one: a file it cannot read is none."""
+    """One file of the machine's Claude Code policy, and its env: Claude Code puts a policy's env over the environment it
+    is started in, as it does settings.json's (docs/claude-code-behavior.md, policy env). A policy is enterprise config
+    almost no Mac has, and hands' start never rests on one: an env hands cannot read refuses nothing, and is named on the
+    start's event (unread_policy)."""
 
     path: Path
-    env: Env
+    env: Env | Unread
 
 
 @dataclass(frozen=True)
@@ -188,24 +189,33 @@ def _policies(machine: Machine) -> tuple[Policy, ...]:
 
 def _account_policy(machine: Machine) -> tuple[Policy, ...]:
     match machine.account:
-        case None:
-            return ()
+        case Unread(reason=reason):
+            # [LAW:no-silent-failure] an account that cannot be told is a plist that cannot be read.
+            return (Policy(machine.preferences, Unread(f"the plist of the account the brain runs as is under it, and {reason}")),)
         case str() as account:
             return _policy(machine.preferences / account / _PLIST)
 
 
 def _policy(path: Path) -> tuple[Policy, ...]:
-    """The policy at `path`, or none where there is no file hands can read, or no env in it hands can read."""
+    """The policy at `path`, or none where there is no file."""
     try:
         held = path.read_bytes()
-        said = Payload.of(plistlib.loads(held), "the plist") if path.suffix == ".plist" else Payload.parse(held)
-    except (OSError, Rejected, ValueError, ExpatError):
+    except FileNotFoundError:
         return ()
-    match _env(said):
-        case Unread():
-            return ()
-        case Env() as env:
-            return (Policy(path, env),)
+    except OSError as error:
+        return (Policy(path, Unread(str(error))),)
+    try:
+        said = Payload.of(plistlib.loads(held), "the plist") if path.suffix == ".plist" else Payload.parse(held)
+    except (Rejected, ValueError, ExpatError) as error:
+        return (Policy(path, Unread(str(error))),)
+    return (Policy(path, _env(said)),)
+
+
+def unread_policy(config: ConfigDir) -> tuple[str, ...]:
+    """Each file of the machine's policy whose env hands cannot read, with why: it refuses nothing, so the start's event
+    names it, the one trace of a file Claude Code may stop on at a Settings Error dialog (docs/claude-code-behavior.md,
+    unreadable machine policy)."""
+    return tuple(f"{policy.path} ({policy.env.reason})" for policy in config.policy if isinstance(policy.env, Unread))
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -271,7 +281,7 @@ def _routed(env: Env | Unread, path: Path) -> tuple[str, ...]:
     """[LAW:single-enforcer] the one refusal of an env that routes the brain: settings.json's and each policy's."""
     match env:
         case Env(routing=()) | Unread():
-            # An env hands cannot read is refused by runnable, whatever the route.
+            # settings.json's is refused by runnable; a policy's refuses nothing (Policy).
             return ()
         case Env(routing=routing):
             said = "; ".join(f"{name} {ROUTING[name]}" for name in routing)
