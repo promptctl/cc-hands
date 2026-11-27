@@ -1364,6 +1364,17 @@ async def test_a_brain_whose_claude_code_ends_before_it_reports_is_unstartable_a
     assert clock.now() == 0.0
 
 
+async def test_a_brain_adrift_before_it_reports_is_unstartable_at_once(tmp_path: Path, errors: list[str]) -> None:
+    # A brain answering nobody is no brain up, as `started` says of one adrift before its start.
+    clock = VirtualClock()
+    reporting, brain, _ = await _reporting(clock, tmp_path)
+    await brain.posted("SessionStart", b"{not json")
+    with pytest.raises(Unstartable, match="SessionStart hook does not parse"):
+        await reporting
+    assert clock.now() == 0.0
+    taken(errors)
+
+
 async def test_a_report_that_does_not_parse_is_no_report_and_a_later_one_changes_nothing(tmp_path: Path, errors: list[str]) -> None:
     clock = VirtualClock()
     reporting, brain, _ = await _reporting(clock, tmp_path)

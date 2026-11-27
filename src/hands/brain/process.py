@@ -1642,9 +1642,11 @@ class Brain:
     async def reported(self, by: float) -> RunningOn | Unreported:
         """The plugin's report of the model and the context its session has used, once the start is applied: Claude Code
         raises its session.start only once its SessionStart hook is answered (docs/claude-code-behavior.md). Or why there is
-        none hands could read by `by`, the launch's deadline. Raises Unstartable where its Claude Code ended first, as
-        `started` does: a brain gone is no brain up."""
-        await wait_first(self._clock, (self._reported, self._exit), by - self._clock.now())
+        none hands could read by `by`, the launch's deadline. Raises Unstartable where the brain is adrift or its Claude
+        Code ended first, as `started` does: a brain gone or answering nobody is no brain up."""
+        await wait_first(self._clock, (self._reported, self._adrift, self._exit), by - self._clock.now())
+        if self._adrift.done():
+            raise Unstartable(str(self._adrift.exception()))
         if self._reported.done():
             return self._reported.result()
         if self._exit.done():

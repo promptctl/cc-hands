@@ -44,6 +44,7 @@ def counted(many: int, thing: str) -> str:
     """
     return f"{spoken_count(many)} {thing}{'' if many == 1 else 's'}"
 
+
 # A Claude model's id as Anthropic writes it: claude, the family, the version's numbers, then the date of a snapshot, and
 # a variant Claude Code marks in brackets after them ("claude-opus-5-5[1m]").
 _MODEL = re.compile(r"claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:-(?P<minor>\d{1,2}))?(?:-\d{8})?(?:\[[^\]]*\])?")
