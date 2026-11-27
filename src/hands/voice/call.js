@@ -5,9 +5,6 @@ import {PAGE_OPEN, asked, carriesKey, wording} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
-// hands sends its voice every 20 ms, silence and all, for as long as the call is up: a call it has sent nothing over
-// for this long is gone, as hands takes a page gone that sends nothing for its QUIET_SECS.
-const QUIET_MS = 3000;
 // The waits between calls made again, doubling from the first to the last, which repeats while hands stays out of reach.
 const FIRST_RETRY_MS = 1000, LAST_RETRY_MS = 8000;
 // hands answers an offer within a second or two: one unanswered for this long went to an address the phone can no longer
@@ -259,6 +256,8 @@ function sayIdle() {
 // The wake word's own state, which no turn's line says: why it is not listening, or that hands has not answered it, why the
 // screen may go to sleep, and that the choice is not kept.
 let lockWhy = null;
+// Why the microphone sleeps still, as its last waking failed: null once it runs.
+let unwokenWhy = null;
 function drawNote() {
   const listening = call?.listening;
   const notes = [];
@@ -266,6 +265,7 @@ function drawNote() {
   else if (listening?.phase === "loading" && listening.waiting !== null) notes.push(`The wake word is waiting on hands: ${listening.waiting}.`);
   if (lockWhy !== null) notes.push(`The screen may go to sleep, which stops the wake word: ${lockWhy}.`);
   if (keptWhy !== null) notes.push(`This browser will not keep the wake word's choice: ${keptWhy}.`);
+  if (unwokenWhy !== null) notes.push(`The microphone is asleep, so hands hears nothing from this phone: ${unwokenWhy}. A press of the button wakes it.`);
   wakeNote.textContent = notes.join(" ");
   wakeNote.classList.toggle("bad", listening?.phase === "failed");
 }
@@ -348,15 +348,41 @@ async function open() {
   audio.createMediaStreamSource(stream).connect(tap).connect(mute).connect(audio.destination);
   // A microphone taken away (unplugged, or by another app) sends nothing again: no call made over it would be heard.
   stream.getAudioTracks().forEach((track) => { track.onended = () => end("The microphone was taken away. Press Connect to open it again."); });
+  // [LAW:single-enforcer] the browser's word on whether the microphone runs is heard here, from the audio it runs on: told to
+  // the call that is up, and a microphone fallen asleep woken at once.
+  audio.onstatechange = () => {
+    if (audio.state === "running") { unwokenWhy = null; drawNote(); }
+    call?.tell(microphone(audio));
+    wake();
+  };
   return {stream, audio, tap};
+}
+
+// What the page tells hands of its microphone: the state of the audio it runs on, running or asleep as the browser has it.
+function microphone(audio) { return {kind: "microphone", state: audio.state}; }
+
+// [LAW:single-enforcer] the one waking of the microphone. A browser may put it to sleep, sending the page to the background or
+// lending the phone's audio to a call, Siri or an alarm, and one asleep sends nothing: it is woken as it falls asleep, as a
+// call is made over it, as the page comes back to the front, and at a press, the gesture a browser may ask for. One that will
+// not wake is told to hands and noted, while its call stays up for the next of those to wake it.
+function wake() {
+  const audio = media?.audio;
+  if (audio === undefined || audio.state === "running") return;
+  audio.resume().catch((error) => {
+    // A microphone let go of meanwhile is nothing to tell of.
+    if (media?.audio !== audio) return;
+    unwokenWhy = wording(error);
+    call?.tell({kind: "microphone", state: "unwoken", why: unwokenWhy});
+    drawNote();
+  });
 }
 
 async function connect(claim) {
   talk.disabled = true;
   if (!media) media = await open();
   const {audio, tap} = media;
-  // A page brought back from the background may find its microphone asleep: a call over it would send nothing.
-  await audio.resume();
+  // Not waited on: a browser may hold a waking until a press, and the call that is made meanwhile says the microphone sleeps.
+  wake();
   const pc = new RTCPeerConnection();
   pc.addTransceiver("audio", {direction: "recvonly"});
   pc.ontrack = (event) => { out.srcObject = new MediaStream([event.track]); out.play(); };
@@ -367,7 +393,7 @@ async function connect(claim) {
   let pending = [], count = 0, marked = null;
   // No sample leaves the phone outside a turn. Inside one, what is gathered goes as audio; outside one, only how many
   // samples were gathered goes, as a `quiet`, which hands hears as that much silence: a message every 20 ms either way is
-  // what hands' clock and its watch on this call run on (hands.voice.phone). The turn's edges end the message being
+  // what hands' clock on this call runs on (hands.voice.phone). The turn's edges end the message being
   // gathered, in the order the button's messages go out, so no sample of one side rides in a message of the other.
   const tag = ++tags;
   tap.port.onmessage = ({data}) => {
@@ -503,12 +529,14 @@ async function connect(claim) {
   channel.onopen = () => {
     wanted = true; tries = 0;
     talk.disabled = false; talk.textContent = "Hold to talk"; sayIdle();
-    watch(made);
+    tell(microphone(audio));
     syncLock();
     if (wakeOn) made.listen();
   };
   channel.onmessage = ({data}) => told(made, JSON.parse(data));
   channel.onclose = () => dropped(made, "hands hung up.");
+  // [LAW:no-ambient-temporal-coupling] the page times no silence of its own: a phone that slept through hands hanging up,
+  // or a hands gone without a word, fails ICE consent freshness (RFC 7675), the connection's own check that hands is there.
   pc.onconnectionstatechange = () => { if (pc.connectionState === "failed") dropped(made, "The connection to hands failed."); };
 
   // From here on, what fails is this call, settled against it: never another call made since, as this one ended.
@@ -534,22 +562,6 @@ async function connect(claim) {
     }
   } catch (error) {
     dropped(made, `Could not reach hands: ${error.message}.`);
-  }
-}
-
-// A call is gone once hands has sent nothing over it for QUIET_MS: a page woken from sleep finds its call still
-// "connected", hands having hung it up while the phone could not hear it say so.
-async function watch(made) {
-  let received = null, heard = performance.now();
-  while (!made.ended) {
-    await new Promise((done) => setTimeout(done, 1000));
-    if (made.ended) return;
-    let now = 0, stats;
-    // Closed while the wait ran: the call is over, and so is its watch.
-    try { stats = await made.pc.getStats(); } catch { return; }
-    stats.forEach((report) => { if (report.type === "inbound-rtp" && report.kind === "audio") now = report.packetsReceived; });
-    if (now !== received) { received = now; heard = performance.now(); }
-    else if (performance.now() - heard > QUIET_MS) dropped(made, "hands went quiet.");
   }
 }
 
@@ -582,14 +594,21 @@ function dropped(made, why) {
 function end(why) {
   wanted = false; tries = 0;
   hangUp();
-  if (media) { media.stream.getTracks().forEach((t) => t.stop()); media.audio.close(); media = null; }
+  if (media) {
+    media.stream.getTracks().forEach((t) => t.stop());
+    // Let go of, the microphone is heard of no more.
+    media.audio.onstatechange = null;
+    media.audio.close();
+    media = null;
+    unwokenWhy = null;
+  }
   talk.disabled = false; talk.textContent = "Connect";
   say(why, true);
 }
 
 function place(claim) {
   say(claim === "take" ? "Connecting…" : "Calling hands again…");
-  // What fails here failed before there was a call to make again: the microphone could not be opened or woken.
+  // What fails here failed before there was a call to make again: the microphone could not be opened.
   connect(claim).catch((error) => end(`Could not connect: ${error.message}`));
 }
 
@@ -598,6 +617,8 @@ function down(event) {
   // A page whose address carries no key never takes the microphone for a call hands would refuse; whether a key it
   // carries is the phone's is hands' to say.
   if (!carriesKey) { say("Open this page from the address `hands phone` prints.", true); return; }
+  // A press is the gesture a browser may ask for before it wakes the microphone.
+  wake();
   if (!call && !retry) { place("take"); return; }
   if (!call || call.channel.readyState !== "open" || held) return;
   talk.setPointerCapture(event.pointerId);
@@ -624,6 +645,7 @@ talk.addEventListener("contextmenu", (event) => event.preventDefault());
 document.addEventListener("visibilitychange", () => {
   syncLock();
   if (document.hidden) { up(); return; }
+  wake();
   if (retry) { clearTimeout(retry); retry = null; place("resume"); }
 });
 wakeButton.addEventListener("click", () => setWake(!wakeOn));

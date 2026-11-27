@@ -20,7 +20,7 @@ from hands.voice.clips import Clip, Sound
 from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import ClipOpened
-from hands.voice.phone import DetectorAnswered, DetectorFailed, DetectorLoaded, DetectorWaiting, Ignored, Level, ScreenKept, ScreenUnkept, Unreadable, Wake, parse_said
+from hands.voice.phone import DetectorAnswered, DetectorFailed, DetectorLoaded, DetectorWaiting, Ignored, Level, Microphone, MicrophoneUnwoken, ScreenKept, ScreenUnkept, Unreadable, Wake, parse_said
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.trigger import PHONE_WAKE
 from hands.voice.wakeword import THRESHOLD
@@ -59,9 +59,12 @@ def detector_message(state: str, why: str | None = None) -> str:
         (json.dumps({"kind": "ignored", "score": 0.8}), Ignored(0.8)),
         (json.dumps({"kind": "screen", "state": "kept"}), ScreenKept()),
         (json.dumps({"kind": "screen", "state": "unkept", "why": "this browser has no screen wake lock"}), ScreenUnkept("this browser has no screen wake lock")),
+        (json.dumps({"kind": "microphone", "state": "running"}), Microphone("running")),
+        (json.dumps({"kind": "microphone", "state": "interrupted"}), Microphone("interrupted")),
+        (json.dumps({"kind": "microphone", "state": "unwoken", "why": "the browser waits on a press"}), MicrophoneUnwoken("the browser waits on a press")),
     ],
 )
-def test_what_the_page_says_of_its_detector_and_its_level_is_read(said: str, read: object) -> None:
+def test_what_the_page_says_of_itself_is_read(said: str, read: object) -> None:
     assert parse_said(said, 48000) == read
 
 
@@ -91,10 +94,13 @@ def test_a_wake_with_no_score_is_still_a_wake() -> None:
         json.dumps({"kind": "ignored"}),
         json.dumps({"kind": "screen", "state": "unkept"}),
         json.dumps({"kind": "screen", "state": "asleep"}),
+        # A microphone the page let go of is told of no more, and one that would not wake says why.
+        json.dumps({"kind": "microphone", "state": "closed"}),
+        json.dumps({"kind": "microphone", "state": "unwoken"}),
         json.dumps({"kind": "hello"}),
     ],
 )
-def test_a_level_a_detector_or_a_screen_hands_cannot_read_is_not_read(said: str) -> None:
+def test_what_the_page_says_of_itself_that_hands_cannot_read_is_not_read(said: str) -> None:
     with pytest.raises(Rejected):
         parse_said(said, 48000)
 
@@ -330,3 +336,15 @@ async def test_a_word_the_page_heard_and_opened_no_turn_for_is_an_event_with_its
         kept, unkept = events(call.recorded, "phone.screen")
         assert (kept.outcome, kept.facts) == ("ok", {"state": "kept"})
         assert (unkept.outcome, unkept.error, unkept.facts) == ("failed", "no lock", {"state": "unkept"})
+
+
+@pytest.mark.outside
+async def test_what_the_page_tells_of_its_microphone_is_an_event_and_one_that_would_not_wake_is_a_failed_one() -> None:
+    async with calling() as call:
+        for said in [{"kind": "microphone", "state": "suspended"}, {"kind": "microphone", "state": "unwoken", "why": "the browser waits on a press"}, {"kind": "microphone", "state": "running"}]:
+            call.page.send(json.dumps(said))
+        await call.until(lambda: len(events(call.recorded, "phone.microphone")) == 3)
+        asleep, unwoken, woken = events(call.recorded, "phone.microphone")
+        assert (asleep.outcome, asleep.facts) == ("ok", {"state": "suspended"})
+        assert (unwoken.outcome, unwoken.error, unwoken.facts) == ("failed", "the browser waits on a press", {"state": "unwoken"})
+        assert (woken.outcome, woken.facts) == ("ok", {"state": "running"})

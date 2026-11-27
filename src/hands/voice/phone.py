@@ -34,10 +34,11 @@ import json
 from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from typing import Literal, NewType
 
 import numpy as np
-from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerConnection, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCDtlsTransport, RTCIceTransport, RTCPeerConnection, RTCSctpTransport, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 from loguru import logger
@@ -56,15 +57,14 @@ from hands.voice.wakeword import THRESHOLD
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
 FRAME_SECS = 0.02
-# How long the page may send nothing before its call is taken to be over. The page sends a message every 20 ms, audio or
-# a `quiet`, for as long as it is open, so a channel this quiet is a page closed, a phone put to sleep, or a network gone: measured
-# 2026-10-03, a browser closed outright leaves aiortc's connection "connected" for good.
-QUIET_SECS = 3.0
 
 
-# Why a call ended: a newer call took its place, the page hung up, the connection failed, the page stopped sending
-# (closed outright, or the phone asleep), or hands stopped.
-PhoneGone = Literal["replaced", "hung up", "failed", "went quiet", "stopped"]
+# Why a call ended: a newer call took its place, the page hung up, the connection failed, or hands stopped.
+# [LAW:no-ambient-temporal-coupling] hands times no silence of its own: a page gone without a word (closed outright, the
+# phone asleep, the network gone) is ended by ICE consent freshness (RFC 7675), the connection's owner of whether the
+# other end is there, which aioice runs: about every 5 s a check, and the sixth unanswered in a row fails the connection.
+# What the page sends, or does not, ends nothing.
+PhoneGone = Literal["replaced", "hung up", "failed", "stopped"]
 
 # What an offer asks of the phone: to take it from whatever page has it, as a press of the page's Connect asks, or to
 # resume it, as a page whose call dropped asks on its own, which no other page's call or offer gives way to.
@@ -81,7 +81,7 @@ class Asked:
 
 @dataclass(frozen=True)
 class CallRefused:
-    """The page's offer was not taken: it came without the phone's key, or was no offer."""
+    """The page's offer was not taken: it came without the phone's key, was no offer, or offered no data channel."""
 
     why: str
 
@@ -97,10 +97,13 @@ class CallUnreached:
 class CallLeft:
     """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended, its page `told` that many
     milestones of its turns and that many `lines` of the transcript. The page held back `held_back` samples of its
-    microphone as `quiet` messages, and sent `rejected` messages hands could not read."""
+    microphone as `quiet` messages, and sent `rejected` messages hands could not read. `heard_ms` after its offer hands
+    last read a message from the page, None if it read none: a page sends one every 20 ms while its microphone runs, so the
+    span from there to the end is how long it had sent nothing."""
 
     reason: PhoneGone
     arrived_ms: float
+    heard_ms: float | None
     told: int
     lines: int
     held_back: int
@@ -398,14 +401,34 @@ class ScreenUnkept:
     why: str
 
 
-# What the page sends over the call's data channel: its microphone, the samples it held back, its button, and what its
-# detector heard and is set to, and whether its screen stays on.
-Said = Pcm | Quiet | Button | Wake | Unreadable | Level | DetectorLoaded | DetectorWaiting | DetectorAnswered | DetectorFailed | Ignored | ScreenKept | ScreenUnkept
+# The state of the audio the page's microphone runs on, as its browser says it: running, or asleep, suspended by the
+# browser or interrupted by the phone (a call, Siri, an alarm).
+MicrophoneState = Literal["running", "suspended", "interrupted"]
+
+
+@dataclass(frozen=True)
+class Microphone:
+    """The page's microphone is in `state`, told as each call opens and as it changes. One asleep sends nothing, which
+    hands could not tell from a user saying nothing."""
+
+    state: MicrophoneState
+
+
+@dataclass(frozen=True)
+class MicrophoneUnwoken:
+    """The page found its microphone asleep and could not wake it, and why: the call carries nothing from it until it wakes."""
+
+    why: str
+
+
+# What the page sends over the call's data channel: its microphone, the samples it held back, its button, what its
+# detector heard and is set to, whether its screen stays on, and whether its microphone runs.
+Said = Pcm | Quiet | Button | Wake | Unreadable | Level | DetectorLoaded | DetectorWaiting | DetectorAnswered | DetectorFailed | Ignored | ScreenKept | ScreenUnkept | Microphone | MicrophoneUnwoken
 
 
 def parse_said(message: object, rate: int) -> Said:
     """One message of the page's: 16-bit mono audio at the offer's rate `rate`, a `quiet`, the button pressed or released,
-    a `wake`, an `ignored` hearing, a `level`, a `detector`, or the `screen`; raises Rejected for anything else, and for
+    a `wake`, an `ignored` hearing, a `level`, a `detector`, the `screen`, or the `microphone`; raises Rejected for anything else, and for
     audio or a count of more than one message may hold. A `wake` whose score is not a probability is still a wake, returned
     as `Unreadable`."""
     most = largest_message(rate)
@@ -458,6 +481,14 @@ def parse_said(message: object, rate: int) -> Said:
                                 return ScreenUnkept(said.text("why"))
                             case other:
                                 raise Rejected(f"its screen's state is {other!r}, which is neither kept nor unkept")
+                    case "microphone":
+                        match said.text("state"):
+                            case "running" | "suspended" | "interrupted" as state:
+                                return Microphone(state)
+                            case "unwoken":
+                                return MicrophoneUnwoken(said.text("why"))
+                            case other:
+                                raise Rejected(f"its microphone's state is {other!r}, which is none of running, suspended, interrupted or unwoken")
                     case other:
                         raise Rejected(f"its kind is {other!r}, which is not one hands reads")
             except Rejected as error:
@@ -492,11 +523,8 @@ class Call:
     remote: str
     asked: Asked
     began: Begun
-    # Set by every message the page sends that hands reads; the watch hangs up a call that goes QUIET_SECS without one.
-    heard: asyncio.Event
-    # Set as it arrives: its channel, its watch, and how long after its offer it came.
+    # Set as it arrives: its channel, and how long after its offer it came.
     channel: RTCDataChannel | None = None
-    watch: asyncio.Task[None] | None = None
     arrived_ms: float = 0.0
     # How many presses the page has sent, as it numbers them, and the gate's turn each opened, until hands answers the press:
     # with the clip it opened, or that it opened none.
@@ -509,6 +537,14 @@ class Call:
     # The samples its page has held back as `quiet` messages, and the messages it sent that hands could not read.
     held_back: int = 0
     rejected: int = 0
+    # How long after its offer hands last read a message from the page, until it reads one.
+    heard_ms: float | None = None
+
+
+def carried(peer: RTCPeerConnection, sctp: RTCSctpTransport) -> set[RTCDtlsTransport]:
+    """Every DTLS transport a call runs over, once its offer is read: its audio's and its channel's `sctp`'s, one and the
+    same where the page bundles them, as every browser does."""
+    return {each.receiver.transport for each in peer.getTransceivers()} | {sctp.transport}
 
 
 class Phone:
@@ -555,24 +591,29 @@ class Phone:
         """The rate the phone's audio is heard at: the pipeline's."""
         return self._heard_rate
 
-    async def answer(self, offer: Offer, remote: str, began: Begun) -> RTCSessionDescription | CallDeclined:
+    async def answer(self, offer: Offer, remote: str, began: Begun) -> RTCSessionDescription | CallDeclined | CallRefused:
         """Answer the call a page offers, `began` as it was offered, with every candidate hands has; it is taken once it
-        connects. A resume while another page has the call or an offer in is declined, and nothing changes."""
+        connects. A resume while another page has the call or an offer in is declined, and nothing changes; an offer with
+        no data channel is refused."""
         # [LAW:one-source-of-truth] no ICE server: the phone reaches hands at an address it already has, on the LAN or
         # the tailnet, so hands' own addresses are every candidate there is.
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         outbound = Outbound(self._clock, self._played_rate)
         resampler = AudioResampler(format="s16", layout="mono", rate=self._heard_rate)
-        call = Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began, asyncio.Event())
+        call = Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began)
         peer.addTrack(outbound)
+
+        async def gone(reason: PhoneGone) -> None:
+            # Every end of this call that hands does not make itself, up or still offered.
+            if self._end(call, reason):
+                await peer.close()
 
         @peer.on("datachannel")
         async def opened(channel: RTCDataChannel) -> None:  # pyright: ignore[reportUnusedFunction]
             # The page closes its channel as it goes: the plainest word that the user hung up.
             @channel.on("close")
             async def closed() -> None:  # pyright: ignore[reportUnusedFunction]
-                if self._call is call:
-                    await self.hang_up("hung up")
+                await gone("hung up")
 
             @channel.on("message")
             def said(message: object) -> None:  # pyright: ignore[reportUnusedFunction]
@@ -582,26 +623,15 @@ class Phone:
                 try:
                     said = parse_said(message, call.rate)
                 except Rejected as error:
-                    # [LAW:no-silent-failure] the page and hands disagree about what it sends: said, not guessed at. It is
-                    # no sign the page is alive: a page that sends only what hands cannot read is hung up as one that
-                    # sends nothing.
+                    # [LAW:no-silent-failure] the page and hands disagree about what it sends: said, not guessed at.
                     call.rejected += 1
                     logger.error(str(error))
                     return
-                call.heard.set()
+                call.heard_ms = since(call.began.clock, call.began.began)
                 self.hear(call, said)
 
             if self._offered is call:
                 await self._arrive(call, channel)
-
-        @peer.on("connectionstatechange")
-        async def changed() -> None:  # pyright: ignore[reportUnusedFunction]
-            if peer.connectionState == "failed":
-                if self._call is call:
-                    await self.hang_up("failed")
-                if self._offered is call:
-                    self._offered = None
-                    await self._let_go(call, "failed")
 
         try:
             await peer.setRemoteDescription(RTCSessionDescription(offer.sdp, offer.type))
@@ -611,52 +641,61 @@ class Phone:
             call_ended(self._record, began, remote, offer.asked, error)
             await peer.close()
             raise
+        match peer.sctp:
+            case None:
+                # [LAW:parse-dont-validate] a call is carried on its data channel, so an offer with none is no call: refused as
+                # aiortc reads it, rather than held as an offer that can never arrive.
+                refused = CallRefused("its offer has no data channel to carry the call")
+                call_ended(self._record, began, remote, offer.asked, refused)
+                await peer.close()
+                return refused
+            case sctp:
+                transports = carried(peer, sctp)
+
+        # [LAW:single-enforcer] the connection's end is heard from the transports the call runs over, DTLS and the ICE under
+        # it, and from nothing else: ICE failing its checks or DTLS its handshake as the call is set up, or DTLS closing under a
+        # call once up, its consent expired. aiortc then closes the peer by itself, from connected to closed and never to
+        # failed, so its connectionState would tell a lost call from a hung-up one by nothing. A page that hangs up closes its
+        # channel while DTLS is still up.
+        # [LAW:no-ambient-temporal-coupling] the order is aiortc's: a lost connection's DTLS closes before aiortc closes the
+        # channel over it, and asyncio starts each handler's task in the order its event came, so the end heard first is
+        # how the call ended (test_phone proves both against aiortc). A page whose hang-up reaches hands only as DTLS's own
+        # close, its channel's close lost on the way, is recorded as failed: aiortc closes DTLS alike for the page's
+        # close_notify and for a connection lost, so nothing tells the two apart.
+        async def lost(transport: RTCDtlsTransport | RTCIceTransport) -> None:
+            if transport.state in ("failed", "closed"):
+                await gone("failed")
+
+        for each in {each for dtls in transports for each in (dtls, dtls.transport)}:
+            each.on("statechange", partial(lost, each))
+
         # [LAW:single-enforcer] checked where the offer is put in, after every await of its answering: a press put in
         # while a resume was being answered is the page in the user's hand.
         if offer.asked.claim == "resume" and any(held.asked.page != offer.asked.page for held in (self._call, self._offered) if held is not None):
             call_ended(self._record, began, remote, offer.asked, CallDeclined())
             await peer.close()
             return CallDeclined()
-        older, self._offered = self._offered, call
-        await self._let_go(older, "replaced")
+        older = self._offered
+        if older is not None:
+            self._end(older, "replaced")
+        self._offered = call
+        if older is not None:
+            await older.peer.close()
         return peer.localDescription
 
     async def _arrive(self, call: Call, channel: RTCDataChannel) -> None:
         # [LAW:no-ambient-temporal-coupling] the call that was up goes, and this one comes, in one step before any
         # await: a speaker reading the gate between them never finds the phone without a call.
+        older = self._call
+        if older is not None:
+            self._end(older, "replaced")
         self._offered = None
-        gone = self._leave("replaced")
         self._call, call.channel, call.arrived_ms = call, channel, since(call.began.clock, call.began.began)
         # [LAW:nothing-unseen] the move a call makes is part of that call, in its trace, wherever the call's end is noticed.
         with continuing(call.began.span):
             self._key.go("phone")
-        # Watched from the channel's opening: the page sends nothing before it.
-        call.watch = asyncio.create_task(self._watch(call), name="the phone's call watch")
-        match gone:
-            case None:
-                pass
-            case Call():
-                await gone.peer.close()
-
-    async def _let_go(self, offered: Call | None, reason: PhoneGone) -> None:
-        # An offer is let go of once it is no longer the one offered, so no other handler of it acts again.
-        match offered:
-            case None:
-                pass
-            case Call():
-                call_ended(self._record, offered.began, offered.remote, offered.asked, CallUnreached(reason))
-                await offered.peer.close()
-
-    async def _watch(self, call: Call) -> None:
-        while True:
-            try:
-                async with self._clock.timeout(QUIET_SECS):
-                    await call.heard.wait()
-            except TimeoutError:
-                if self._call is call:
-                    await self.hang_up("went quiet")
-                return
-            call.heard.clear()
+        if older is not None:
+            await older.peer.close()
 
     def hear(self, call: Call, said: Said) -> None:
         """Act on one message `call`'s page sent, as the channel brings it, in order."""
@@ -694,6 +733,11 @@ class Phone:
                     ended("phone.screen", self._record, begun(self._clock), None, state="kept")
                 case ScreenUnkept(why=why):
                     ended("phone.screen", self._record, begun(self._clock), None, why, state="unkept")
+                # [LAW:nothing-unseen] a call whose microphone sleeps is seen as it falls asleep, not when the call ends.
+                case Microphone(state=state):
+                    ended("phone.microphone", self._record, begun(self._clock), None, state=state)
+                case MicrophoneUnwoken(why=why):
+                    ended("phone.microphone", self._record, begun(self._clock), None, why, state="unwoken")
 
     def _wake(self, call: Call, wake: Wake | Unreadable) -> None:
         """The page's detector heard the word: a press the page numbered, which the gate takes or refuses, and either is told to
@@ -773,35 +817,41 @@ class Phone:
                 for follower in self._followers:
                     follower(frame)
 
-    def _leave(self, reason: PhoneGone) -> Call | None:
-        # [LAW:no-ambient-temporal-coupling] the place moves in the same step the call goes, before any await: a
-        # speaker reading the gate after this never finds the phone without a call.
-        call, self._call = self._call, None
-        match call:
-            case None:
-                return None
-            case Call():
-                with continuing(call.began.span):
-                    self._key.go("desk")
-                call.outbound.stop()
-                if call.watch is not None and call.watch is not asyncio.current_task():
-                    call.watch.cancel()
-                call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.told, call.lines, call.held_back, call.rejected))
-                return call
+    def _end(self, call: Call, reason: PhoneGone) -> bool:
+        """End `call`, up or still offered, and say whether it was either: one hands has let go of was ended as it was let
+        go, and is nothing to end again. Its peer is the caller's to close."""
+        # [LAW:single-enforcer] [LAW:no-ambient-temporal-coupling] the call's place is checked and emptied in the step that
+        # ends it, before any await: no other handler of it ends it again, and the place moves with it, so a speaker reading
+        # the gate after this never finds the phone without a call.
+        if self._call is call:
+            self._call = None
+            with continuing(call.began.span):
+                self._key.go("desk")
+            call.outbound.stop()
+            call_ended(self._record, call.began, call.remote, call.asked, CallLeft(reason, call.arrived_ms, call.heard_ms, call.told, call.lines, call.held_back, call.rejected))
+        elif self._offered is call:
+            self._offered = None
+            call_ended(self._record, call.began, call.remote, call.asked, CallUnreached(reason))
+        else:
+            return False
+        return True
 
     async def hang_up(self, reason: PhoneGone) -> None:
         """End the call, if there is one, and be at the desk again."""
-        match self._leave(reason):
+        match self._call:
             case None:
                 pass
             case call:
+                self._end(call, reason)
                 await call.peer.close()
 
     async def stop(self) -> None:
         """End the call and let go of any offer, as hands stops."""
-        offered, self._offered = self._offered, None
-        await self._let_go(offered, "stopped")
-        await self.hang_up("stopped")
+        ending = [each for each in (self._offered, self._call) if each is not None]
+        for each in ending:
+            self._end(each, "stopped")
+        for each in ending:
+            await each.peer.close()
 
     def tell(self, told: Told | Line) -> None:
         """Tell the page a milestone of the turn it is waiting on, or a line of the transcript, over the call's channel, as the

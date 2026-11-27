@@ -30,7 +30,7 @@ class Page(Phone):
     def __init__(self, clock: VirtualClock, key: PushToTalk, record: Callable[[Entry], None]) -> None:
         super().__init__(clock, key, 16000, 24000, record, speaking=lambda: False)
         # The connection and the speech out are doubles: the page's messages touch neither, and building either mints ids.
-        self.call = Call(Mock(spec=RTCPeerConnection), Mock(spec=Outbound), AudioResampler(format="s16", layout="mono", rate=16000), 16000, "test", Asked("test page", "take"), begun(clock), asyncio.Event())
+        self.call = Call(Mock(spec=RTCPeerConnection), Mock(spec=Outbound), AudioResampler(format="s16", layout="mono", rate=16000), 16000, "test", Asked("test page", "take"), begun(clock))
         self._cued: list[Move] = []
 
     def says(self, said: Said) -> None:
