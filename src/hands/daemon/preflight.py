@@ -48,7 +48,8 @@ class Refused:
 class Preflight:
     """What a start finds: the states of its home's fritter copy and shim, the version of Claude Code its brain was weighed
     against, the `HANDS_*` settings in the environment, and the files of the machine's policy it cannot read, which the
-    start's event records, and whether it starts on them. The environment is the one weighed, so the login the start asks beside it is asked in the same one."""
+    start's event records, and whether it starts on them. The environment is the one weighed, so the login the start
+    asks beside it is asked in the same one."""
 
     fritter: FritterState
     shim: ShimState
@@ -84,6 +85,7 @@ def preflight(home: Home, pin: pinned.Pin, machine: configdir.Machine, environme
     brain = configdir.runnable(config)
     voice = _voice(home)
     stray = _stray(environment)
+    unread_policy = configdir.unread_policy(config)
     # [LAW:dataflow-not-control-flow] every file and the environment are weighed every time: one refused hides none after it.
     refusals = (
         # First: `hands install-fritter`, the fix of the two after it, cannot run until hands is rebuilt.
@@ -99,9 +101,9 @@ def preflight(home: Home, pin: pinned.Pin, machine: configdir.Machine, environme
     )
     match brain, voice:
         case Runnable(), (str() | voicechoice.LibraryVoice()) as kept if not refusals:
-            return Preflight(fritter, shim, pin.version, stray, configdir.unread_policy(config), environment, Startable(brain, kept))
+            return Preflight(fritter, shim, pin.version, stray, unread_policy, environment, Startable(brain, kept))
         case _:
-            return Preflight(fritter, shim, pin.version, stray, configdir.unread_policy(config), environment, Refused(refusals, brain if isinstance(brain, Runnable) else None))
+            return Preflight(fritter, shim, pin.version, stray, unread_policy, environment, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
 def beside(checked: Preflight, unread: Rejected) -> tuple[str, ...]:

@@ -212,10 +212,18 @@ def _policy(path: Path) -> tuple[Policy, ...]:
 
 
 def unread_policy(config: ConfigDir) -> tuple[str, ...]:
-    """Each file of the machine's policy whose env hands cannot read, with why: it refuses nothing, so the start's event
-    names it, the one trace of a file Claude Code may stop on at a Settings Error dialog (docs/claude-code-behavior.md,
-    unreadable machine policy)."""
-    return tuple(f"{policy.path} ({policy.env.reason})" for policy in config.policy if isinstance(policy.env, Unread))
+    """Each file of the machine's policy whose env, or the API key in it, hands cannot read, with why: it refuses nothing,
+    so the start's event names it, the one trace of a file Claude Code may stop on at a Settings Error dialog
+    (docs/claude-code-behavior.md, unreadable machine policy)."""
+    return tuple(f"{policy.path} ({reason})" for policy in config.policy for reason in _unread(policy.env))
+
+
+def _unread(env: Env | Unread) -> tuple[str, ...]:
+    match env:
+        case Unread(reason=reason) | Env(key=Unread(reason=reason)):
+            return (reason,)
+        case Env():
+            return ()
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:

@@ -675,12 +675,13 @@ UNTOLD = Unread("the account hands runs as cannot be told: no such uid")
         # An empty managed-settings.json, as a Mac once given and then cleared of a policy holds.
         ("", "tester", "managed-settings.json"),
         ('{"env": ["HTTPS_PROXY"]}', "tester", "managed-settings.json"),
+        ('{"env": {"ANTHROPIC_API_KEY": 123}}', "tester", "managed-settings.json"),
         # A file hands cannot read whatever user it runs as: a folder where the file would be.
         (None, "tester", "managed-settings.json"),
         # The account the brain runs as cannot be told, so neither can its plist.
         ("{}", UNTOLD, None),
     ],
-    ids=["empty", "env not an object", "unreadable", "account unknown"],
+    ids=["empty", "env not an object", "key not a string", "unreadable", "account unknown"],
 )
 def test_a_machine_policy_hands_cannot_read_refuses_no_run_and_is_named_on_the_starts_event(tmp_path: Path, policy: str | None, account: str | Unread, unread: str | None) -> None:
     brain = tmp_path / "brain"
