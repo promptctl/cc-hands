@@ -83,7 +83,9 @@ class Settings:
 @dataclass(frozen=True)
 class Policy:
     """One file of the machine's Claude Code policy, and its env: Claude Code puts a policy's env over the environment it
-    is started in, as it does settings.json's (docs/claude-code-behavior.md, policy env)."""
+    is started in, as it does settings.json's (docs/claude-code-behavior.md, policy env). A policy is enterprise config
+    almost no Mac has, and hands' start never rests on one: an env hands cannot read refuses nothing, and is named on the
+    start's event (unread_policy)."""
 
     path: Path
     env: Env | Unread
@@ -209,6 +211,25 @@ def _policy(path: Path) -> tuple[Policy, ...]:
     return (Policy(path, _env(said)),)
 
 
+def unread_policy(config: ConfigDir) -> tuple[str, ...]:
+    """Each file of the machine's policy whose env, or the API key in it, hands cannot read, with why: it refuses nothing,
+    so the start's event names it, the one trace of a file Claude Code may stop on at a Settings Error dialog
+    (docs/claude-code-behavior.md, unreadable machine policy)."""
+    return tuple(said for policy in config.policy for said in _unread(policy.env, policy.path))
+
+
+def _unread(env: Env | Unread, path: Path) -> tuple[str, ...]:
+    """[LAW:single-enforcer] what of the env `path` gives Claude Code hands cannot read, settings.json's or a policy's, and
+    why: what Claude Code would start on unseen."""
+    match env:
+        case Unread(reason=reason):
+            return (f"the env {path} gives Claude Code ({reason})",)
+        case Env(key=Unread(reason=reason)):
+            return (f"the API key {path} sets in its env ({reason})",)
+        case Env():
+            return ()
+
+
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
     try:
         said = Payload.parse(path.read_bytes())
@@ -246,7 +267,7 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     """What a Claude Code of hands' own is run with on `config`, or every reason none may run on it, each naming its fix:
     no pinned claude, or settings it must not start on, which a run of one, `hands login`'s among them, would load."""
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
-    refused = (*_pinned(config.claude), *_kept_out(config), *(refusal for policy in config.policy for refusal in _unweighed(policy.env, policy.path)))
+    refused = (*_pinned(config.claude), *_kept_out(config))
     match config.claude, config.settings:
         case PinnedClaude() as claude, Settings(mode=str() | None as mode) if not refused:
             return Runnable(claude, mode)
@@ -272,7 +293,7 @@ def _routed(env: Env | Unread, path: Path) -> tuple[str, ...]:
     """[LAW:single-enforcer] the one refusal of an env that routes the brain: settings.json's and each policy's."""
     match env:
         case Env(routing=()) | Unread():
-            # An env hands cannot read is refused by runnable, whatever the route.
+            # settings.json's is refused by runnable; a policy's refuses nothing (Policy).
             return ()
         case Env(routing=routing):
             said = "; ".join(f"{name} {ROUTING[name]}" for name in routing)
@@ -305,15 +326,9 @@ def _kept_out(config: ConfigDir) -> tuple[str, ...]:
 
 
 def _unweighed(env: Env | Unread, path: Path) -> tuple[str, ...]:
-    """[LAW:single-enforcer] the one refusal of an env hands cannot weigh, settings.json's and each policy's: Claude Code
-    would start on what it sets, unseen, whatever way it reaches the API."""
-    match env:
-        case Unread(reason=reason):
-            return (f"hands cannot read the env {path} gives Claude Code ({reason}): correct it",)
-        case Env(key=Unread(reason=reason)):
-            return (f"hands cannot read the API key {path} sets in its env ({reason}): correct it",)
-        case Env():
-            return ()
+    """An env of settings.json hands cannot weigh: Claude Code would start on what it sets, unseen, whatever way it reaches
+    the API."""
+    return tuple(f"hands cannot read {said}: correct it" for said in _unread(env, path))
 
 
 def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:

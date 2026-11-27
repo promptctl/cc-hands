@@ -656,12 +656,8 @@ def test_each_file_of_the_machines_policy_whose_env_routes_the_brain_around_hand
     (machine.preferences / "com.anthropic.claudecode.plist").write_text("not a plist")
     (account / "com.anthropic.claudecode.plist").write_bytes(plistlib.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gateway.example"}}))
     config = configdir.read(brain, brain_pin, machine)
-    # A policy hands cannot read refuses every run of a Claude Code of hands' own, whatever way it reaches the API.
-    match configdir.runnable(config):
-        case (unread,):
-            assert unread.startswith(f"hands cannot read the env {machine.preferences / 'com.anthropic.claudecode.plist'} gives Claude Code ("), unread
-        case ran:
-            raise AssertionError(f"{ran} is not the one refusal")
+    # A policy is optional enterprise config: one hands cannot read, the machine's plist here, refuses no run.
+    assert configdir.runnable(config) == Runnable(brain_pin.verified(brain), None)
     # What a policy's env routes refuses a brain started through hands' proxy, saying what each variable would do there.
     over = "in its env, which Claude Code puts over the environment hands starts the brain in"
     assert configdir.around_proxy(config) == (
@@ -670,17 +666,46 @@ def test_each_file_of_the_machines_policy_whose_env_routes_the_brain_around_hand
     )
 
 
-def test_an_account_that_cannot_be_told_is_a_policy_that_cannot_be_read_and_refuses_every_run(tmp_path: Path) -> None:
+UNTOLD = Unread("the account hands runs as cannot be told: no such uid")
+
+
+@pytest.mark.parametrize(
+    ("policy", "account", "unread"),
+    [
+        # An empty managed-settings.json, as a Mac once given and then cleared of a policy holds.
+        ("", "tester", "the env {} gives Claude Code ("),
+        ('{"env": ["HTTPS_PROXY"]}', "tester", "the env {} gives Claude Code ("),
+        ('{"env": {"ANTHROPIC_API_KEY": 123}}', "tester", "the API key {} sets in its env ("),
+        # A file hands cannot read whatever user it runs as: a folder where the file would be.
+        (None, "tester", "the env {} gives Claude Code ("),
+        # The account the brain runs as cannot be told, so neither can its plist.
+        ("{}", UNTOLD, None),
+    ],
+    ids=["empty", "env not an object", "key not a string", "unreadable", "account unknown"],
+)
+def test_a_machine_policy_hands_cannot_read_refuses_no_run_and_is_named_on_the_starts_event(tmp_path: Path, policy: str | None, account: str | Unread, unread: str | None) -> None:
     brain = tmp_path / "brain"
     onboard(brain)
     script = tmp_path / "claude"
     script.write_text("#!/bin/sh\n")
     script.chmod(0o755)
     brain_pin = pin(brain, script)
-    machine = replace(managed(tmp_path / "machine"), account=Unread("the account hands runs as cannot be told: no such uid"))
-    assert configdir.runnable(configdir.read(brain, brain_pin, machine)) == (
-        f"hands cannot read the env {machine.preferences} gives Claude Code (the plist of the account the brain runs as is under it, and the account hands runs as cannot be told: no such uid): correct it",
-    )
+    machine = replace(managed(tmp_path / "machine"), account=account)
+    machine.folder.mkdir(parents=True)
+    file = machine.folder / "managed-settings.json"
+    if policy is None:
+        file.mkdir()
+    else:
+        file.write_text(policy)
+    config = configdir.read(brain, brain_pin, machine)
+    assert (configdir.runnable(config), configdir.around_proxy(config)) == (Runnable(brain_pin.verified(brain), None), ())
+    match configdir.unread_policy(config), unread:
+        case (named,), str():
+            assert named.startswith(unread.format(machine.folder / "managed-settings.json")), named
+        case (named,), None:
+            assert named == f"the env {machine.preferences} gives Claude Code (the plist of the account the brain runs as is under it, and {UNTOLD.reason})", named
+        case named, _:
+            raise AssertionError(f"{named} does not name the one policy hands cannot read")
 
 
 def test_an_env_that_routes_the_brain_refuses_only_a_brain_through_hands_proxy_and_an_unreadable_key_hides_none_of_it(tmp_path: Path) -> None:

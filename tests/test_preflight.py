@@ -160,7 +160,7 @@ def test_a_start_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path,
     assert str(refused.value).endswith("; then run hands again")
     # An unreadable settings.json is its own refusal, never also a first screen unanswered.
     assert "first screens" not in str(refused.value)
-    assert checked.facts() == {"fritter": "absent", "shim": "stale", "claude_code": LAID_OUT.version, "hands_settings": "none"}
+    assert checked.facts() == {"fritter": "absent", "shim": "stale", "claude_code": LAID_OUT.version, "hands_settings": "none", "unread_policy": "none"}
 
 
 async def test_the_start_records_what_its_preflight_found_before_its_configuration_is_read(tmp_path: Path) -> None:
@@ -177,6 +177,18 @@ async def test_the_start_records_what_its_preflight_found_before_its_configurati
     events: list[WideEvent] = []
     run_start.ended(events.append, None)
     assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("unreadable", "not-a-shim")]
+
+
+def test_a_machine_policy_hands_cannot_read_starts_and_is_named_on_the_starts_event(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    laid_out(home)
+    machine = _machine(home)
+    machine.folder.mkdir(parents=True)
+    # An empty managed-settings.json, as a Mac once given and then cleared of a policy holds.
+    (machine.folder / "managed-settings.json").write_text("")
+    checked = preflight(home, LAID_OUT, machine, {})
+    assert isinstance(checked.verdict, Startable)
+    assert checked.facts()["unread_policy"].startswith(f"the env {machine.folder / 'managed-settings.json'} gives Claude Code ("), checked.facts()
 
 
 STRAY = {"HANDS_HOME": "/elsewhere", "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}
@@ -329,7 +341,7 @@ def test_a_home_with_the_fritter_and_shim_this_hands_installs_passes(tmp_path: P
     wrapper.install(home)
     checked = preflight(home, LAID_OUT, UNMANAGED, {})
     assert isinstance(checked.verdict, Startable)
-    assert checked.facts() == {"fritter": "current", "shim": "current", "claude_code": LAID_OUT.version, "hands_settings": "none"}
+    assert checked.facts() == {"fritter": "current", "shim": "current", "claude_code": LAID_OUT.version, "hands_settings": "none", "unread_policy": "none"}
 
 
 def test_two_starts_in_one_process_each_weigh_the_brain_against_the_pin_they_are_handed(tmp_path: Path) -> None:
@@ -394,7 +406,7 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
     assert str(refused.value).endswith("; then run hands again")
     events: list[WideEvent] = []
     run_start.ended(events.append, refused.value)
-    assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code", "hands_settings")} for event in events] == [preflight(home, LAID_OUT, UNMANAGED, {}).facts()]
+    assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code", "hands_settings", "unread_policy")} for event in events] == [preflight(home, LAID_OUT, UNMANAGED, {}).facts()]
     # The survey.
     match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, UNMANAGED, shell_without_hands_settings(), heartbeat.NeverRan(home.status)):
         case readiness.Missing(detail=detail):

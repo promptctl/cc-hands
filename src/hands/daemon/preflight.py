@@ -47,21 +47,24 @@ class Refused:
 @dataclass(frozen=True)
 class Preflight:
     """What a start finds: the states of its home's fritter copy and shim, the version of Claude Code its brain was weighed
-    against, and the `HANDS_*` settings in the environment, which the start's event records, and whether it starts on
-    them. The environment is the one weighed, so the login the start asks beside it is asked in the same one."""
+    against, the `HANDS_*` settings in the environment, and the files of the machine's policy it cannot read, which the
+    start's event records, and whether it starts on them. The environment is the one weighed, so the login the start
+    asks beside it is asked in the same one."""
 
     fritter: FritterState
     shim: ShimState
     claude_code: str
     # The `HANDS_*` settings the environment held when it was weighed, which refuse the start.
     stray: tuple[str, ...]
+    # Each file of the machine's policy hands cannot read, which refuses nothing (configdir.unread_policy).
+    unread_policy: tuple[str, ...]
     # Holds the process's secrets: left out of the repr and the comparison, as the brain's launch leaves its keys.
     environment: Mapping[str, str] = field(repr=False, compare=False)
     verdict: Startable | Refused
 
     def facts(self) -> dict[str, str]:
         """What the start's event records of them: the settings it refused are named, and none is said as none."""
-        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim), "claude_code": self.claude_code, "hands_settings": ", ".join(self.stray) or "none"}
+        return {"fritter": _fact(self.fritter), "shim": _fact(self.shim), "claude_code": self.claude_code, "hands_settings": ", ".join(self.stray) or "none", "unread_policy": "; ".join(self.unread_policy) or "none"}
 
 
 def _fact(state: FritterState | ShimState) -> str:
@@ -82,6 +85,7 @@ def preflight(home: Home, pin: pinned.Pin, machine: configdir.Machine, environme
     brain = configdir.runnable(config)
     voice = _voice(home)
     stray = _stray(environment)
+    unread_policy = configdir.unread_policy(config)
     # [LAW:dataflow-not-control-flow] every file and the environment are weighed every time: one refused hides none after it.
     refusals = (
         # First: `hands install-fritter`, the fix of the two after it, cannot run until hands is rebuilt.
@@ -97,9 +101,9 @@ def preflight(home: Home, pin: pinned.Pin, machine: configdir.Machine, environme
     )
     match brain, voice:
         case Runnable(), (str() | voicechoice.LibraryVoice()) as kept if not refusals:
-            return Preflight(fritter, shim, pin.version, stray, environment, Startable(brain, kept))
+            return Preflight(fritter, shim, pin.version, stray, unread_policy, environment, Startable(brain, kept))
         case _:
-            return Preflight(fritter, shim, pin.version, stray, environment, Refused(refusals, brain if isinstance(brain, Runnable) else None))
+            return Preflight(fritter, shim, pin.version, stray, unread_policy, environment, Refused(refusals, brain if isinstance(brain, Runnable) else None))
 
 
 def beside(checked: Preflight, unread: Rejected) -> tuple[str, ...]:
