@@ -3,12 +3,17 @@
 export function register(on) {
   on("session.start", async ($, e, next) => {
     const started = await next(e)
-    const [usage, model] = await Promise.all([$.session.usage(), $.session.model()])
-    await $.http.fetch(await $.env.get("HANDS_SESSION_START"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, tokens: usage.context.tokens }),
-    })
+    try {
+      const [usage, model] = await Promise.all([$.session.usage(), $.session.model()])
+      await $.http.fetch(await $.env.get("HANDS_SESSION_START"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model, tokens: usage.context.tokens }),
+      })
+    } catch {
+      // The brain's start is never the report's to break: hands says a report that never came as it waits on it
+      // (`Brain.reported`).
+    }
     return started
   })
 }

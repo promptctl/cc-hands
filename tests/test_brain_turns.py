@@ -1320,7 +1320,7 @@ def _report(**fields: object) -> bytes:
     return json.dumps(fields).encode()
 
 
-async def _reporting(clock: VirtualClock, config_dir: Path) -> tuple[asyncio.Future[RunningOn | None], Brain, "_Keys"]:
+async def _reporting(clock: VirtualClock, config_dir: Path) -> tuple[asyncio.Future[RunningOn | process.Unreported], Brain, "_Keys"]:
     """A brain whose start is applied, waiting on its plugin's report for START_SECONDS from now on `clock`."""
     starting, brain, keys = _starting(clock, config_dir)
     await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
@@ -1350,16 +1350,18 @@ async def test_a_brain_whose_plugin_reports_nothing_has_no_report_at_its_deadlin
     await clock.sleeping(process.START_SECONDS)
     assert not reporting.done()
     clock.advance_to(process.START_SECONDS)
-    assert await reporting is None
+    assert await reporting == "late"
     assert taken(errors) == ["the brain's Claude Code reported no model or context used by its launch's deadline: hands' plugin posted no session.start"]
 
 
-async def test_a_brain_whose_claude_code_ends_before_it_reports_has_no_report_at_once(tmp_path: Path, errors: list[str]) -> None:
+async def test_a_brain_whose_claude_code_ends_before_it_reports_is_unstartable_at_once(tmp_path: Path) -> None:
+    # A brain gone is no brain up, whatever its start had applied: the launch fails saying so, not its deadline.
     clock = VirtualClock()
     reporting, _, keys = await _reporting(clock, tmp_path)
     keys.exit.set_result(1)
-    assert await reporting is None and clock.now() == 0.0
-    assert len(taken(errors)) == 1
+    with pytest.raises(Unstartable, match="while hands' plugin had posted no session.start"):
+        await reporting
+    assert clock.now() == 0.0
 
 
 async def test_a_report_that_does_not_parse_is_no_report_and_a_later_one_changes_nothing(tmp_path: Path, errors: list[str]) -> None:
@@ -1368,7 +1370,7 @@ async def test_a_report_that_does_not_parse_is_no_report_and_a_later_one_changes
     assert await brain.posted(process.SESSION_START, _report(tokens=45_231)) == {}
     # A report again, as a respawn of the plugin's worker raises one, changes nothing of what the start found.
     await brain.posted(process.SESSION_START, _report(model="claude-opus-5-5", tokens=45_231))
-    assert await reporting is None and clock.now() == 0.0
+    assert await reporting == "unparsed" and clock.now() == 0.0
     assert taken(errors) == ["the brain's report of its model and context used does not parse: missing field 'model'"]
 
 

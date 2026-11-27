@@ -131,6 +131,9 @@ FOREIGN_LOGINS = (
 # as each of the brain's hooks posts to the path of its own.
 SESSION_START = "session.start"
 
+# Why a start has no report of the model and context used: what came did not parse, or nothing came by the deadline.
+type Unreported = Literal["unparsed", "late"]
+
 # The variable Claude Code reads what started it from.
 ENTRYPOINT = "CLAUDE_CODE_ENTRYPOINT"
 
@@ -1117,9 +1120,9 @@ class Brain:
         # [LAW:no-silent-failure] failed once hands no longer knows which conversation the brain is in, or cannot hold it
         # for the next start: the brain is answering nobody, and its run ends, saying why (`exited`).
         self._adrift: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        # What the plugin reported of the model and the context used as Claude Code started its session, or None where what
-        # came does not parse (`reported`).
-        self._reported: asyncio.Future[RunningOn | None] = asyncio.get_running_loop().create_future()
+        # What the plugin reported of the model and the context used as Claude Code started its session, or that what came
+        # does not parse (`reported`).
+        self._reported: asyncio.Future[RunningOn | Unreported] = asyncio.get_running_loop().create_future()
         self._typist = typist
         # The Claude Code fritter wrapped, and where it works: what its own hooks do not say of it.
         self._pid = typist.pid
@@ -1636,16 +1639,19 @@ class Brain:
         reading = self._reading
         return reading.exception() if reading.done() and not reading.cancelled() else None
 
-    async def reported(self, by: float) -> RunningOn | None:
+    async def reported(self, by: float) -> RunningOn | Unreported:
         """The plugin's report of the model and the context its session has used, once the start is applied: Claude Code
-        raises its session.start only once its SessionStart hook is answered (docs/claude-code-behavior.md). None where no
-        report hands could read came by `by`, the launch's deadline, or its Claude Code ended first, which `exited` says."""
+        raises its session.start only once its SessionStart hook is answered (docs/claude-code-behavior.md). Or why there is
+        none hands could read by `by`, the launch's deadline. Raises Unstartable where its Claude Code ended first, as
+        `started` does: a brain gone is no brain up."""
         await wait_first(self._clock, (self._reported, self._exit), by - self._clock.now())
-        if not self._reported.done():
-            # [LAW:no-silent-failure] hands says the context used is not known, never a figure nobody reported.
-            logger.error(f"the brain's Claude Code reported no model or context used by its launch's deadline: hands' plugin posted no {SESSION_START}")
-            return None
-        return self._reported.result()
+        if self._reported.done():
+            return self._reported.result()
+        if self._exit.done():
+            raise _unstarted(self._exit, self._claude.shown(), f"hands' plugin had posted no {SESSION_START}")
+        # [LAW:no-silent-failure] hands says the context used is not known, never a figure nobody reported.
+        logger.error(f"the brain's Claude Code reported no model or context used by its launch's deadline: hands' plugin posted no {SESSION_START}")
+        return "late"
 
     async def exited(self) -> int:
         """Waits for the brain to end, and returns its exit code; the line that says it ended is written once, however many
@@ -1807,7 +1813,7 @@ class Brain:
             self._reported.set_result(parse_running_on(body))
         except Rejected as error:
             logger.error(f"the brain's report of its model and context used does not parse: {error}")
-            self._reported.set_result(None)
+            self._reported.set_result("unparsed")
 
     def _adrift_by(self, why: str) -> None:
         if not self._adrift.done():
@@ -2153,9 +2159,13 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
             await _until(clock, running, by, partial(_input_up, typist))
             await brain.started(by)
             # Where nothing hands could read was reported, the model is the one the brain was launched on, its context used
-            # not known.
-            running_on = await brain.reported(by) or RunningOn(station.model, None)
-            annotate(running_on=running_on.model, context_used=running_on.context_used)
+            # not known; the event says which.
+            match await brain.reported(by):
+                case RunningOn() as running_on:
+                    reported = "posted"
+                case unreported:
+                    running_on, reported = RunningOn(station.model, None), unreported
+            annotate(running_on=running_on.model, context_used=running_on.context_used, reported=reported)
         except BaseException as error:
             # [LAW:no-silent-failure] a start that fails or is cancelled leaves nothing running: the brain is in a session of
             # its own, which nothing but hands' own end would hang up. A brain made stops its listener as it stops, so no

@@ -568,7 +568,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert launched.facts == {
         "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
         "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
-        "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid, "running_on": "claude-sonnet-5", "context_used": None,
+        "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid, "running_on": "claude-sonnet-5", "context_used": None, "reported": "posted",
     }
     # Held once the brain is up, for the next start to resume, as Claude Code keeps the transcript of its turns.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Resumed(SessionId("b1"))
