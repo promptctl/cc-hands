@@ -38,12 +38,12 @@ STATE = ".claude.json"
 class Machine:
     """Where Claude Code reads the machine's policy on macOS (docs/claude-code-behavior.md, machine policy): the folder
     of its managed settings and their drop-ins, and the managed preferences that hold its plists, the machine's and each
-    account's; and the account the brain runs as, whose plist it reads beside the machine's, Unread where it cannot be
+    account's; and the account the brain runs as, whose plist it reads beside the machine's, None where it cannot be
     told."""
 
     folder: Path
     preferences: Path
-    account: str | Unread
+    account: str | None
 
 
 _PLIST = "com.anthropic.claudecode.plist"
@@ -53,9 +53,9 @@ def this_machine() -> Machine:
     """[LAW:effects-at-boundaries] the Mac hands runs on, read once by a composition root and handed to every read of a
     config directory: macOS's policy locations, and the account this process runs as, as the brain does."""
     try:
-        account: str | Unread = getpass.getuser()
-    except (OSError, KeyError) as error:
-        account = Unread(f"the account hands runs as cannot be told: {error}")
+        account: str | None = getpass.getuser()
+    except (OSError, KeyError):
+        account = None
     return Machine(Path("/Library/Application Support/ClaudeCode"), Path("/Library/Managed Preferences"), account)
 
 
@@ -82,11 +82,12 @@ class Settings:
 
 @dataclass(frozen=True)
 class Policy:
-    """One file of the machine's Claude Code policy, and its env: Claude Code puts a policy's env over the environment it
-    is started in, as it does settings.json's (docs/claude-code-behavior.md, policy env)."""
+    """One file of the machine's Claude Code policy hands can read, and its env: Claude Code puts a policy's env over the
+    environment it is started in, as it does settings.json's (docs/claude-code-behavior.md, policy env). A policy is
+    enterprise config almost no Mac has, and hands' start never rests on one: a file it cannot read is none."""
 
     path: Path
-    env: Env | Unread
+    env: Env
 
 
 @dataclass(frozen=True)
@@ -187,26 +188,24 @@ def _policies(machine: Machine) -> tuple[Policy, ...]:
 
 def _account_policy(machine: Machine) -> tuple[Policy, ...]:
     match machine.account:
-        case Unread(reason=reason):
-            # [LAW:no-silent-failure] an account that cannot be told is a plist that cannot be read.
-            return (Policy(machine.preferences, Unread(f"the plist of the account the brain runs as is under it, and {reason}")),)
+        case None:
+            return ()
         case str() as account:
             return _policy(machine.preferences / account / _PLIST)
 
 
 def _policy(path: Path) -> tuple[Policy, ...]:
-    """The policy at `path`, or none where there is no file."""
+    """The policy at `path`, or none where there is no file hands can read, or no env in it hands can read."""
     try:
         held = path.read_bytes()
-    except FileNotFoundError:
-        return ()
-    except OSError as error:
-        return (Policy(path, Unread(str(error))),)
-    try:
         said = Payload.of(plistlib.loads(held), "the plist") if path.suffix == ".plist" else Payload.parse(held)
-    except (Rejected, ValueError, ExpatError) as error:
-        return (Policy(path, Unread(str(error))),)
-    return (Policy(path, _env(said)),)
+    except (OSError, Rejected, ValueError, ExpatError):
+        return ()
+    match _env(said):
+        case Unread():
+            return ()
+        case Env() as env:
+            return (Policy(path, env),)
 
 
 def _state(path: Path, cwd: Path) -> State | Absent | Unread:
@@ -246,7 +245,7 @@ def runnable(config: ConfigDir) -> Runnable | tuple[str, ...]:
     """What a Claude Code of hands' own is run with on `config`, or every reason none may run on it, each naming its fix:
     no pinned claude, or settings it must not start on, which a run of one, `hands login`'s among them, would load."""
     # [LAW:dataflow-not-control-flow] every file is weighed every time: one refused hides none after it.
-    refused = (*_pinned(config.claude), *_kept_out(config), *(refusal for policy in config.policy for refusal in _unweighed(policy.env, policy.path)))
+    refused = (*_pinned(config.claude), *_kept_out(config))
     match config.claude, config.settings:
         case PinnedClaude() as claude, Settings(mode=str() | None as mode) if not refused:
             return Runnable(claude, mode)
@@ -305,8 +304,8 @@ def _kept_out(config: ConfigDir) -> tuple[str, ...]:
 
 
 def _unweighed(env: Env | Unread, path: Path) -> tuple[str, ...]:
-    """[LAW:single-enforcer] the one refusal of an env hands cannot weigh, settings.json's and each policy's: Claude Code
-    would start on what it sets, unseen, whatever way it reaches the API."""
+    """An env of settings.json hands cannot weigh: Claude Code would start on what it sets, unseen, whatever way it reaches
+    the API."""
     match env:
         case Unread(reason=reason):
             return (f"hands cannot read the env {path} gives Claude Code ({reason}): correct it",)

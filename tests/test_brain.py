@@ -29,7 +29,6 @@ from loguru import logger
 from hands.core.playback import Bookmark
 from hands.brain import configdir, mcp, pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, Request, Unanswerable, parse, serve_mcp
-from hands.sessions.files import Unread
 from hands.sessions.payload import Payload
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.brain.session import BrainSession
@@ -656,12 +655,8 @@ def test_each_file_of_the_machines_policy_whose_env_routes_the_brain_around_hand
     (machine.preferences / "com.anthropic.claudecode.plist").write_text("not a plist")
     (account / "com.anthropic.claudecode.plist").write_bytes(plistlib.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gateway.example"}}))
     config = configdir.read(brain, brain_pin, machine)
-    # A policy hands cannot read refuses every run of a Claude Code of hands' own, whatever way it reaches the API.
-    match configdir.runnable(config):
-        case (unread,):
-            assert unread.startswith(f"hands cannot read the env {machine.preferences / 'com.anthropic.claudecode.plist'} gives Claude Code ("), unread
-        case ran:
-            raise AssertionError(f"{ran} is not the one refusal")
+    # A policy is optional enterprise config: one hands cannot read, the machine's plist here, refuses no run.
+    assert configdir.runnable(config) == Runnable(brain_pin.verified(brain), None)
     # What a policy's env routes refuses a brain started through hands' proxy, saying what each variable would do there.
     over = "in its env, which Claude Code puts over the environment hands starts the brain in"
     assert configdir.around_proxy(config) == (
@@ -670,17 +665,31 @@ def test_each_file_of_the_machines_policy_whose_env_routes_the_brain_around_hand
     )
 
 
-def test_an_account_that_cannot_be_told_is_a_policy_that_cannot_be_read_and_refuses_every_run(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("policy", "mode", "account"),
+    [
+        # An empty managed-settings.json, as a Mac once given and then cleared of a policy holds.
+        ("", 0o644, "tester"),
+        ('{"env": ["HTTPS_PROXY"]}', 0o644, "tester"),
+        ('{"env": {"HTTPS_PROXY": "http://corp:3128"}}', 0o000, "tester"),
+        # The account the brain runs as cannot be told, so neither can its plist.
+        ("{}", 0o644, None),
+    ],
+    ids=["empty", "env not an object", "unreadable", "account unknown"],
+)
+def test_a_machine_policy_hands_cannot_read_refuses_no_run(tmp_path: Path, policy: str, mode: int, account: str | None) -> None:
     brain = tmp_path / "brain"
     onboard(brain)
     script = tmp_path / "claude"
     script.write_text("#!/bin/sh\n")
     script.chmod(0o755)
     brain_pin = pin(brain, script)
-    machine = replace(managed(tmp_path / "machine"), account=Unread("the account hands runs as cannot be told: no such uid"))
-    assert configdir.runnable(configdir.read(brain, brain_pin, machine)) == (
-        f"hands cannot read the env {machine.preferences} gives Claude Code (the plist of the account the brain runs as is under it, and the account hands runs as cannot be told: no such uid): correct it",
-    )
+    machine = replace(managed(tmp_path / "machine"), account=account)
+    machine.folder.mkdir(parents=True)
+    (machine.folder / "managed-settings.json").write_text(policy)
+    (machine.folder / "managed-settings.json").chmod(mode)
+    config = configdir.read(brain, brain_pin, machine)
+    assert (configdir.runnable(config), configdir.around_proxy(config)) == (Runnable(brain_pin.verified(brain), None), ())
 
 
 def test_an_env_that_routes_the_brain_refuses_only_a_brain_through_hands_proxy_and_an_unreadable_key_hides_none_of_it(tmp_path: Path) -> None:
