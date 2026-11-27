@@ -188,7 +188,7 @@ def test_a_machine_policy_hands_cannot_read_starts_and_is_named_on_the_starts_ev
     (machine.folder / "managed-settings.json").write_text("")
     checked = preflight(home, LAID_OUT, machine, {})
     assert isinstance(checked.verdict, Startable)
-    assert checked.facts()["unread_policy"].startswith(f"{machine.folder / 'managed-settings.json'} ("), checked.facts()
+    assert checked.facts()["unread_policy"].startswith(f"the env {machine.folder / 'managed-settings.json'} gives Claude Code ("), checked.facts()
 
 
 STRAY = {"HANDS_HOME": "/elsewhere", "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}

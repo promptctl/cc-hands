@@ -673,11 +673,11 @@ UNTOLD = Unread("the account hands runs as cannot be told: no such uid")
     ("policy", "account", "unread"),
     [
         # An empty managed-settings.json, as a Mac once given and then cleared of a policy holds.
-        ("", "tester", "managed-settings.json"),
-        ('{"env": ["HTTPS_PROXY"]}', "tester", "managed-settings.json"),
-        ('{"env": {"ANTHROPIC_API_KEY": 123}}', "tester", "managed-settings.json"),
+        ("", "tester", "the env {} gives Claude Code ("),
+        ('{"env": ["HTTPS_PROXY"]}', "tester", "the env {} gives Claude Code ("),
+        ('{"env": {"ANTHROPIC_API_KEY": 123}}', "tester", "the API key {} sets in its env ("),
         # A file hands cannot read whatever user it runs as: a folder where the file would be.
-        (None, "tester", "managed-settings.json"),
+        (None, "tester", "the env {} gives Claude Code ("),
         # The account the brain runs as cannot be told, so neither can its plist.
         ("{}", UNTOLD, None),
     ],
@@ -701,9 +701,9 @@ def test_a_machine_policy_hands_cannot_read_refuses_no_run_and_is_named_on_the_s
     assert (configdir.runnable(config), configdir.around_proxy(config)) == (Runnable(brain_pin.verified(brain), None), ())
     match configdir.unread_policy(config), unread:
         case (named,), str():
-            assert named.startswith(f"{machine.folder / unread} ("), named
+            assert named.startswith(unread.format(machine.folder / "managed-settings.json")), named
         case (named,), None:
-            assert named == f"{machine.preferences} (the plist of the account the brain runs as is under it, and {UNTOLD.reason})", named
+            assert named == f"the env {machine.preferences} gives Claude Code (the plist of the account the brain runs as is under it, and {UNTOLD.reason})", named
         case named, _:
             raise AssertionError(f"{named} does not name the one policy hands cannot read")
 

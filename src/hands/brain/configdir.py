@@ -215,13 +215,17 @@ def unread_policy(config: ConfigDir) -> tuple[str, ...]:
     """Each file of the machine's policy whose env, or the API key in it, hands cannot read, with why: it refuses nothing,
     so the start's event names it, the one trace of a file Claude Code may stop on at a Settings Error dialog
     (docs/claude-code-behavior.md, unreadable machine policy)."""
-    return tuple(f"{policy.path} ({reason})" for policy in config.policy for reason in _unread(policy.env))
+    return tuple(said for policy in config.policy for said in _unread(policy.env, policy.path))
 
 
-def _unread(env: Env | Unread) -> tuple[str, ...]:
+def _unread(env: Env | Unread, path: Path) -> tuple[str, ...]:
+    """[LAW:single-enforcer] what of the env `path` gives Claude Code hands cannot read, settings.json's or a policy's, and
+    why: what Claude Code would start on unseen."""
     match env:
-        case Unread(reason=reason) | Env(key=Unread(reason=reason)):
-            return (reason,)
+        case Unread(reason=reason):
+            return (f"the env {path} gives Claude Code ({reason})",)
+        case Env(key=Unread(reason=reason)):
+            return (f"the API key {path} sets in its env ({reason})",)
         case Env():
             return ()
 
@@ -324,13 +328,7 @@ def _kept_out(config: ConfigDir) -> tuple[str, ...]:
 def _unweighed(env: Env | Unread, path: Path) -> tuple[str, ...]:
     """An env of settings.json hands cannot weigh: Claude Code would start on what it sets, unseen, whatever way it reaches
     the API."""
-    match env:
-        case Unread(reason=reason):
-            return (f"hands cannot read the env {path} gives Claude Code ({reason}): correct it",)
-        case Env(key=Unread(reason=reason)):
-            return (f"hands cannot read the API key {path} sets in its env ({reason}): correct it",)
-        case Env():
-            return ()
+    return tuple(f"hands cannot read {said}: correct it" for said in _unread(env, path))
 
 
 def _moded(mode: PermissionMode | UnknownMode | Unread | None, path: Path) -> tuple[str, ...]:
