@@ -18,7 +18,7 @@ from typing import Literal, TypedDict
 from loguru import logger
 
 from hands.clock import Clock
-from hands.voice.modelswitch import OwnModel, chosen
+from hands.voice.modelswitch import OfferedModel, OwnModel, chosen
 from hands.voice.tool import Answer, Result, Tool, read_back, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
@@ -794,14 +794,14 @@ def model_tools(own: OwnModel) -> list[Tool[Answer]]:
         """The model hands runs on now. Call this when the user asks what model hands runs on."""
         return {"running_on": own.running()}
 
-    async def use_model(model: str) -> Answer:
+    async def use_model(model: OfferedModel) -> Answer:
         """Run hands on another model: hands restarts on it, back in a few seconds, and stays on it across restarts.
 
         Call this when the user asks to change hands' own model. It never touches a session; a session's model is changed
         by send_command running model in it.
 
         Args:
-            model: the model's id, such as claude-opus-5-5.
+            model: the model to run hands on.
         """
         try:
             return (await chosen(own, model)).answer

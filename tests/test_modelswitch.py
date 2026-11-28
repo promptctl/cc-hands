@@ -5,7 +5,7 @@ import pytest
 
 from hands.core.playback import Labelled
 from hands.sessions.payload import Rejected
-from hands.voice.modelswitch import BargedIn, Switch, Switches
+from hands.voice.modelswitch import BargedIn, OfferedModel, Switch, Switches
 
 
 class Hearing:
@@ -20,7 +20,7 @@ class Hearing:
         return self.heard_to_end.pop(0) if self.heard_to_end else True
 
 
-def switch(to: str, kept: list[str], refusal: str | None = None) -> Switch:
+def switch(to: OfferedModel, kept: list[OfferedModel], refusal: str | None = None) -> Switch:
     async def keep() -> None:
         if refusal is not None:
             raise Rejected(refusal)
@@ -30,7 +30,7 @@ def switch(to: str, kept: list[str], refusal: str | None = None) -> Switch:
 
 
 async def test_a_switch_asked_for_while_one_is_under_way_is_refused_before_it_is_said_and_after_that_one_is_kept_too() -> None:
-    hearing, kept = Hearing(), list[str]()
+    hearing, kept = Hearing(), list[OfferedModel]()
     switches = Switches(hearing)
     first = await switches.announced(switch("claude-opus-5-5", kept))
     with pytest.raises(Rejected, match="hands is switching to claude-opus-5-5 already"):
@@ -43,7 +43,7 @@ async def test_a_switch_asked_for_while_one_is_under_way_is_refused_before_it_is
 
 
 async def test_a_switch_talked_over_or_whose_keep_fails_frees_the_way_for_the_next() -> None:
-    hearing, kept = Hearing(False), list[str]()
+    hearing, kept = Hearing(False), list[OfferedModel]()
     switches = Switches(hearing)
     with pytest.raises(BargedIn):
         await switches.announced(switch("claude-opus-5-5", kept))

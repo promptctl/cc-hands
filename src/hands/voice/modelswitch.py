@@ -8,19 +8,30 @@ gallery page (`hands.voice.gallerypage`) import it, so none depends on another.
 import functools
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol, get_args
 
 from hands.core.playback import Labelled, hands_says
-from hands.sessions.payload import Rejected
+from hands.sessions.payload import Rejected, one_of
 from hands.threads import off_loop
 from hands.voice.tool import After, Result
+
+
+# [LAW:types-are-the-program] the models hands runs on, as one type: the file, --model, the brain's tool and the phone's
+# page each take only these, and the tool's schema shows the brain them.
+OfferedModel = Literal["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]
+OFFERED_MODELS: tuple[OfferedModel, ...] = get_args(OfferedModel)
+
+
+def parse_model(text: str) -> OfferedModel:
+    """The model hands runs on that `text` names; raises Rejected naming the ones it runs on."""
+    return one_of(text, OFFERED_MODELS, "hands runs Claude on")
 
 
 class Weighed(Protocol):
     """A model weighed for hands (hands.daemon.config.ModelChoice): its id, and the keep that runs hands on it."""
 
     @property
-    def to(self) -> str: ...
+    def to(self) -> OfferedModel: ...
 
     def keep(self) -> None: ...
 
@@ -29,9 +40,9 @@ class OwnModel(Protocol):
     """The model hands itself runs on (hands.daemon.config.OwnModel): hands has no session id, so what targets it is a
     tool of its own, never a session's."""
 
-    def running(self) -> str: ...
+    def running(self) -> OfferedModel: ...
 
-    def weigh(self, model: str) -> Weighed: ...
+    def weigh(self, model: OfferedModel) -> Weighed: ...
 
 
 class BargedIn(Rejected):
@@ -49,8 +60,8 @@ class Switch:
     """A switch of hands' model, weighed: the model it switches to, the one it runs on, and the keep, which restarts
     hands. [LAW:effects-at-boundaries] an effect run once the caller has its answer, holding nothing until then."""
 
-    to: str
-    running_on: str
+    to: OfferedModel
+    running_on: OfferedModel
     keep: Callable[[], Awaitable[None]]
 
     @property
@@ -67,7 +78,7 @@ class Switch:
         await self.keep()
 
 
-async def chosen(own: OwnModel, model: str) -> Switch:
+async def chosen(own: OwnModel, model: OfferedModel) -> Switch:
     """The switch to `model`, weighed. Raises Rejected where the switch is refused, and OSError where the file the model
     is kept in cannot be read."""
     choice = await off_loop(functools.partial(own.weigh, model), "weighing a model chosen for hands")
@@ -86,7 +97,7 @@ class Switches:
 
     def __init__(self, player: Heard) -> None:
         self._player = player
-        self._underway: str | None = None
+        self._underway: OfferedModel | None = None
 
     async def announced(self, switch: Switch) -> After:
         """The switch, said, once the user has heard it to its end: the line rides on its result, and the switch is kept

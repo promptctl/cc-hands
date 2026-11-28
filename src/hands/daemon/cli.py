@@ -24,7 +24,7 @@ from loguru import logger
 from hands.brain import configdir, pinned
 from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, preflight, readiness, update, watchdog
-from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, Settings, edited, load
+from hands.daemon.config import OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, Handover, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start, starts_at
 from hands.tasks import cancel_and_wait
@@ -42,6 +42,7 @@ from hands.threads import off_loop
 from hands.visible import VISIBLE
 from hands.voice import summarising
 from hands.voice.listening import LEVELS, Driving, Level, Levels, Listened, Listening, parse_level
+from hands.voice.modelswitch import OfferedModel, parse_model
 from hands.voice.portaudio import Listed, Lists, default_input, default_output, listing
 
 
@@ -291,14 +292,15 @@ def listening_level(text: str) -> Level:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def model_id(text: str) -> str:
-    """[LAW:parse-dont-validate] --model's value as the id it names, which a blank names none of."""
-    if not (model := text.strip()):
-        raise argparse.ArgumentTypeError(f"a model's id, such as {ANTHROPIC_MODEL}, not {text!r}")
-    return model
+def model_id(text: str) -> OfferedModel:
+    """[LAW:parse-dont-validate] --model's value as the model hands runs on that it names."""
+    try:
+        return parse_model(text.strip())
+    except Rejected as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
+def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: OfferedModel | None, level_flag: Level | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -353,8 +355,7 @@ def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, 
                     return 0
                 case Handover() as next_run:
                     # [LAW:one-source-of-truth] the run after a restart is this one again, on what this one hands over and
-                    # the --model its settings hold; each one argument, so an id that begins with a dash is never read as an
-                    # option.
+                    # the --model its settings hold.
                     execv(invocation(home, "run", *next_run.arguments(), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
@@ -446,7 +447,7 @@ def dispatch(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, ma
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
+def door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: OfferedModel | None, run_start: Start) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant and the
     settings it starts on. CannotStart where either is missing. What the home's files and the environment refuse is the start's
     preflight's to say, a step of its own once the run has its heartbeat (hands.daemon.preflight), and said here beside settings
