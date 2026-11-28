@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from hands.core.playback import Labelled, hands_says
+from hands.core.spoken import spoken_model
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.offeredmodels import OfferedModel
@@ -102,7 +103,8 @@ class Switches:
         # [LAW:no-ambient-temporal-coupling] claimed with no await after the check, so no other switch on the loop comes
         # between them; held past a keep that succeeds, since hands is restarting then.
         self._underway = switch.to
-        line = f"Switching to {switch.to}. I'll be back in a few seconds."
+        # [LAW:one-source-of-truth] the model said by the name hands says it by as it starts; the brain's answer keeps its id.
+        line = f"Switching to {spoken_model(switch.to)}. I'll be back in a few seconds."
         try:
             # Kept only once heard: the keep restarts hands, which would cut the line off.
             if not await self._player.heard(hands_says(line)):
@@ -119,5 +121,5 @@ class Switches:
             self._underway = None
             # [LAW:no-silent-failure] a switch the user heard said, which did not happen, is heard not to have, whatever
             # stopped it; the door's event holds what it raised.
-            await self._player.heard(hands_says(f"The switch to {switch.to} did not happen: {error}"))
+            await self._player.heard(hands_says(f"The switch to {spoken_model(switch.to)} did not happen: {error}"))
             raise

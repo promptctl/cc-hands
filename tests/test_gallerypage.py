@@ -373,7 +373,7 @@ async def test_a_model_is_switched_once_its_line_is_heard_and_names_the_switch(p
     assert response.status == 200
     body = await response.json()
     assert body["switching_to"] == "claude-opus-5-5"
-    assert page.speaker.said == ["Switching to claude-opus-5-5. I'll be back in a few seconds."]
+    assert page.speaker.said == ["Switching to Opus 5.5. I'll be back in a few seconds."]
     [switch] = await page.ended("gallery.model")
     assert page.own.kept == ["claude-opus-5-5"]
     assert (switch.outcome, switch.facts["model"], switch.facts["switching"]) == ("ok", "claude-opus-5-5", True)
@@ -386,7 +386,7 @@ async def test_a_model_switch_heard_but_refused_as_it_is_kept_is_said_aloud_and_
     # Answered before the keep: the page is told the switch, and the user hears that it did not happen.
     assert response.status == 200
     [switch] = await page.ended("gallery.model")
-    assert page.speaker.said == ["Switching to claude-opus-5-5. I'll be back in a few seconds.", "The switch to claude-opus-5-5 did not happen: config.toml was saved as the choice was kept"]
+    assert page.speaker.said == ["Switching to Opus 5.5. I'll be back in a few seconds.", "The switch to Opus 5.5 did not happen: config.toml was saved as the choice was kept"]
     assert (switch.outcome, switch.error, switch.facts["switching"]) == ("failed", "the model's switch failed once answered: Rejected: config.toml was saved as the choice was kept", True)
     assert page.own.kept == []
 
