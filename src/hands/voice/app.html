@@ -15,41 +15,84 @@
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; }
-  /* The body grows past the screen with the brain's calls listed, so the top of it is never centred out of reach. */
-  html { height: 100%; }
+  /* "A little sticky": a scroll that ends near the top of the Call view goes back to it, and past it the scroll is free. The
+     browser's own snap does it, with its own physics. */
+  html { height: 100%; scroll-snap-type: y proximity; }
   body { min-height: 100%; }
   body {
     background: var(--bg); color: var(--fg);
     font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
+    display: flex; flex-direction: column; align-items: center; gap: 28px;
     padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
     user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
   }
+  #top { position: absolute; top: 0; left: 0; width: 1px; height: 1px; scroll-snap-align: start; }
+  /* What passes under the bar does not show through the inset above it. */
+  body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: var(--bg); z-index: 2; }
+  /* The Call view scrolls the document, which is where the hero sticks and the button melts. Every other view is its own scroll
+     container, the room the bar and the row leave it, and the document does not scroll under it. */
+  body:has(#call-view[hidden]) { height: 100dvh; }
+  /* The scroll the melt takes is there on the Call view whatever the view holds, a transcript shown or not, the brain at work or
+     not: the document is the screen and the melt long at least. */
+  body:has(#call-view:not([hidden])) { min-height: calc(100% + var(--melt-reach)); }
+  body:has(#call-view[hidden]) #view { flex: 1; min-height: 0; overflow-y: auto; }
+  /* The call: one block that is the big round button on the Call view at the top of its scroll and a bar across the top of the
+     screen everywhere else. --melt is how far along it is, 0 the circle and 1 the bar, and every length the button has is a calc()
+     of it: hero.js writes it, 1 as each view is shown and, on the Call view, from the scroll. Nothing here moves by a
+     transition, so at any scroll position the button has the shape that position gives it. */
+  #hero {
+    --circle: min(68vw, 300px);
+    --bar: 64px;
+    --wake-band: 40px;
+    --w: calc(var(--circle) + (62vw - var(--circle)) * var(--melt));
+    --h: calc(var(--circle) + (var(--bar) - var(--circle)) * var(--melt));
+    position: sticky; top: env(safe-area-inset-top); z-index: 1; align-self: stretch; margin-inline: -16px;
+    display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: calc(8px + var(--wake-band) * (1 - var(--melt))) 8px 8px;
+    /* The bar is the opaque part: what scrolls under it is hidden, and nothing under the rest of the hero's room is. */
+    background: linear-gradient(var(--bg), var(--bg)) top / 100% calc(var(--h) + 16px + var(--wake-band) * (1 - var(--melt))) no-repeat;
+    pointer-events: none;
+  }
+  #hero > * { pointer-events: auto; }
+  /* The room the circle and its lines take is the Call view's from top to bottom of the melt, so the document is as long at
+     the bar as at the circle: a hero that shrank as it melted would shorten the document under the scroll that drives it. The
+     lines are three, the state line wrapping to two, and a hero with more is as tall as they make it while it is the circle. */
+  body:has(#call-view:not([hidden])) #hero { min-height: calc(var(--circle) + var(--wake-band) + 44px + 4.2em); }
+  /* Hidden until app.js has mounted the view that draws it: the circle on Call, the bar on the rest, and never the one of them for a frame before the other. */
+  #hero:not([data-ready]) { visibility: hidden; }
+  #hero.bar { flex-direction: row; }
   #talk {
-    width: min(68vw, 300px); aspect-ratio: 1; border-radius: 50%;
-    border: 10px solid var(--ring); background: var(--idle); color: var(--bg);
-    font: inherit; font-weight: 600; font-size: 22px; line-height: 1.2; letter-spacing: .02em;
+    flex: none; width: var(--w); height: var(--h); margin-left: calc((100% - var(--w)) / 2 * (1 - var(--melt)));
+    border-radius: calc(var(--h) / 2); border: calc(10px - 6px * var(--melt)) solid var(--ring); background: var(--idle); color: var(--bg);
+    font: inherit; font-weight: 600; font-size: calc(22px - 5px * var(--melt)); line-height: 1.2; letter-spacing: .02em;
     touch-action: none; cursor: pointer; transition: transform .08s, background .08s;
   }
   #talk:disabled { opacity: .35; cursor: default; }
   #talk.held { background: var(--live); transform: scale(.96); }
-  #told { color: var(--muted); text-align: center; max-width: 30ch; }
+  /* The two lines fade out under the button as it melts to half way, and fade in beside it from there, so the one change of
+     layout between them is made while they cannot be seen. Reduced motion sets --melt to 0 or 1 alone, and they are not faded. */
+  #told { color: var(--muted); text-align: center; align-self: center; max-width: 30ch; margin-top: 20px; opacity: calc(1 - 2 * var(--melt)); }
+  #hero.bar #told {
+    flex: 1; min-width: 0; align-self: auto; max-width: none; margin: 0; height: var(--bar); display: flex; flex-direction: column; justify-content: center;
+    text-align: left; font-size: 13px; line-height: 1.3; opacity: calc(2 * var(--melt) - 1);
+  }
   #told p { margin: 0; min-height: 1.4em; }
+  #hero.bar #told p { min-height: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #state.bad, #wake-note.bad { color: var(--bad); }
   #count { font-variant-numeric: tabular-nums; }
-  /* One small toggle in the corner: the dot is filled while the wake word is on. */
+  /* One small toggle in the corner of the circle, at the end of the bar's row: the dot is filled while the wake word is on, and its
+     words are said to a screen reader alone once the bar has no room for them. */
   #wake {
-    position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: 12px; display: flex; align-items: center; gap: 6px;
+    position: absolute; top: 8px; right: 12px; display: flex; align-items: center; gap: 6px;
     font: inherit; font-size: 13px; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px;
     padding: 4px 10px; cursor: pointer;
   }
   #wake .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); }
   #wake[aria-pressed="true"] .dot { background: var(--live); border-color: var(--live); }
+  #hero.bar #wake { position: static; flex: none; align-self: flex-start; margin-top: calc((var(--bar) - 36px) / 2); width: 36px; height: 36px; padding: 0; justify-content: center; }
+  #hero.bar #wake .words { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #wake-note:empty { display: none; }
   #shown { font: inherit; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px; padding: 6px 16px; cursor: pointer; }
-  /* The strip is the call: the one button and what is said of it, on every view; the row of views is under it. */
-  #strip, #view, #call-view { display: flex; flex-direction: column; align-items: center; gap: 28px; }
-  #view, #call-view { width: 100%; }
+  #view, #call-view { display: flex; flex-direction: column; align-items: center; gap: 28px; width: 100%; }
   #call-view[hidden] { display: none; }
   /* The row is the router's from the moment it is on screen: hidden, in its place, until app.js has wired it. */
   #views:not([data-ready]) { visibility: hidden; }
@@ -85,9 +128,11 @@
 </style>
 </head>
 <body>
-<header id="strip">
-<!-- Whether the wake word may open a turn: on unless the user turned it off, before Connect or after. -->
-<button id="wake" type="button" aria-pressed="true"><span class="dot" aria-hidden="true"></span>Phone wake word</button>
+<!-- The Call view's one snap position, the top of the document. -->
+<div id="top"></div>
+<!-- The call, drawn on every view: the one button and what is said of it. The Call view melts it from the circle into a bar as it
+     scrolls (views/call.js); on every other view it is the bar from the first frame. hero.js is the one that shapes it. -->
+<header id="hero">
 <button id="talk" type="button">Connect</button>
 <!-- The count changes ten times a second, so it sits outside the live region: a screen reader says each line once. -->
 <div id="told">
@@ -95,6 +140,8 @@
   <p id="wake-note" role="status" aria-live="polite"></p>
   <p id="count" aria-hidden="true"></p>
 </div>
+<!-- Whether the wake word may open a turn: on unless the user turned it off, before Connect or after. -->
+<button id="wake" type="button" aria-pressed="true"><span class="dot" aria-hidden="true"></span><span class="words">Phone wake word</span></button>
 </header>
 <!-- The row of views, drawn by hands (hands.voice.phonepage) and mounted by app.js: a view of the app in this document, a page not
      yet moved into it in a tab of its own, under the same key. A call goes on through a tap on any of them. -->

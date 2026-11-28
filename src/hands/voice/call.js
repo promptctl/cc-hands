@@ -1,5 +1,5 @@
 // The call: the shell's own (app.html), run once as the document loads and never mounted or unmounted, so a move between
-// the app's views is no move of the call's. It takes the elements of the shell's strip by id, and the transcript the Call view
+// the app's views is no move of the call's. It takes the elements of the shell's hero by id, and the transcript the Call view
 // (views/call.js) shows: the call writes it whether that view is shown or not.
 import {PAGE_OPEN, asked, carriesKey, wording} from "/hands.js";
 

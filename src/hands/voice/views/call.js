@@ -1,8 +1,10 @@
-// The Call view: what the phone shows under the call's strip, the transcript with its toggle and the brain's panel. The call
-// itself is call.js's: it writes the transcript whether this view is shown or not, so the transcript and its toggle are the
-// document's from the start and the view shows them, hiding them as it is left. The brain's panel is the view's own: drawn
-// into `root` from its template as the view mounts, read while the view is shown, and gone with it.
+// The Call view: what the phone shows under the call's hero, the transcript with its toggle and the brain's panel, and the scroll
+// of the document that melts the hero's round button into a bar. The call itself is call.js's: it writes the transcript whether
+// this view is shown or not, so the transcript and its toggle are the document's from the start and the view shows them, hiding
+// them as it is left. The brain's panel is the view's own: drawn into `root` from its template as the view mounts, read while the
+// view is shown, and gone with it.
 import {PAGE_OPEN, asked, handsNow, reading, unanswered} from "/hands.js";
+import {MELT, reducedMotion, shape} from "/hero.js";
 
 const content = document.getElementById("call-view");
 const toggle = document.getElementById("shown");
@@ -26,6 +28,9 @@ toggle.addEventListener("click", () => {
   try { localStorage.setItem("transcript", transcript.hidden ? "hidden" : "shown"); } catch { /* kept for this page only */ }
 });
 
+// The button's shape is the scroll position's alone: how far the document has scrolled, as a part of MELT (hero.js draws it).
+const drawMelt = () => shape(scrollY / MELT);
+
 const IDLE = {doing: "idle", calls: []};
 
 // What the last Stop said, of that tap alone, until SAID_MS have passed. It is a deed's word, said whichever view is shown
@@ -39,7 +44,25 @@ function inputOf(call) {
 }
 
 export function mount(root, _route, signal) {
+  // Taken first, so a mount that fails partway still ends cleanly when the view is left. The shell gives the next view the bar.
+  let frame = 0;
+  let redrawing = 0;
+  signal.addEventListener("abort", () => {
+    clearInterval(redrawing);
+    cancelAnimationFrame(frame);
+    content.hidden = true;
+  }, { once: true });
   content.hidden = false;
+  // The circle is the first thing on the view, whatever scroll the browser or the last visit left.
+  scrollTo(0, 0);
+  drawMelt();
+  // The scroll event comes as often as the scroll moves; the shape is drawn once a frame, as far as the scroll has gone by then.
+  document.addEventListener("scroll", () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(drawMelt);
+  }, {passive: true, signal});
+  // A change of the preference redraws the shape it gives, whether or not the scroll moves.
+  reducedMotion.addEventListener("change", drawMelt, {signal});
   // Lines were written while the view was away, and a transcript is read from its end.
   transcript.scrollTop = transcript.scrollHeight;
   root.append(panel.content.cloneNode(true));
@@ -106,9 +129,7 @@ export function mount(root, _route, signal) {
     }
   });
 
-  // Taken first, so a mount that fails partway still ends cleanly when the view is left.
-  const redrawing = setInterval(() => { drawDoing(); drawSaid(); }, 1000);
-  signal.addEventListener("abort", () => { clearInterval(redrawing); content.hidden = true; }, { once: true });
+  redrawing = setInterval(() => { drawDoing(); drawSaid(); }, 1000);
   drawBrain();
   // The brain is read for as long as the view is shown: its signal ends the read, the one in flight at hands included.
   reading(signal, "/brain", shown => {

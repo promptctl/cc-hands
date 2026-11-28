@@ -71,8 +71,8 @@ ROW: tuple[InApp | InTab, ...] = (
     InTab("Voices and options", "/gallery"),
 )
 APP_PATHS = tuple(entry.path for entry in ROW if isinstance(entry, InApp))
-# The scripts hands serves for the app: the one every phone page asks hands through, the router, the call, and the views.
-APP_SCRIPTS = ("hands.js", "app.js", "call.js", *(f"views/{entry.view}.js" for entry in ROW if isinstance(entry, InApp)))
+# The scripts hands serves for the app: the one every phone page asks hands through, the router, the call, the hero's shape, and the views.
+APP_SCRIPTS = ("hands.js", "app.js", "call.js", "hero.js", *(f"views/{entry.view}.js" for entry in ROW if isinstance(entry, InApp)))
 
 _ROW_MARKER = "<!--row-->"
 

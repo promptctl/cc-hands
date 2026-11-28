@@ -1,12 +1,17 @@
-// The phone's one app (design-docs/phone-sessions/design.md, "The one app"): the document holds the call and the strip it
+// The phone's one app (design-docs/phone-sessions/design.md, "The one app"): the document holds the call and the hero it
 // is drawn in, and this module mounts the views under them. A tap on a view, or the back gesture, changes the view and
 // never the document, so the call is never made again by either; only a load of the document, a reload, ends it.
 //
 // A view is `mount(root, route, signal)`: it draws into `root` for `route` (the path, and the query as URLSearchParams),
 // and everything it starts, the reads of hands among them, ends when `signal` aborts, as the view is left.
 import "/call.js";
+import {shape} from "/hero.js";
+
+// The Call view mounts at the top of its scroll, every time, so the browser does not put a reload or a back part-way down it.
+history.scrollRestoration = "manual";
 
 const row = document.getElementById("views");
+const hero = document.getElementById("hero");
 const root = document.getElementById("view");
 
 // [LAW:one-source-of-truth] hands draws the row (hands.voice.phonepage), and this reads it: a link with a `data-view` is a
@@ -19,7 +24,15 @@ try {
 } catch (error) {
   // [LAW:no-silent-failure] the row stays hidden, so no tap unloads the call for a page that fails the same way, and the
   // app says on its face that it has no views.
-  root.textContent = `The app could not load its views: ${error.message}`;
+  said(`The app could not load its views: ${error.message}`, error);
+}
+
+// What the app says on its face where a view was to be, and then fails. The hero is drawn, as the bar: the call is
+// there whatever the views do.
+function said(text, error) {
+  root.textContent = text;
+  shape(1);
+  hero.dataset.ready = "";
   throw error;
 }
 
@@ -37,13 +50,16 @@ function show() {
   leaving?.abort();
   leaving = new AbortController();
   root.replaceChildren();
+  // Every view is shown with the bar; the Call view's mount sets what the scroll gives it.
+  shape(1);
   for (const link of links) link.ariaCurrent = link.pathname === location.pathname ? "page" : null;
   try {
     mount(root, { path: location.pathname, query: new URLSearchParams(location.search) }, leaving.signal);
   } catch (error) {
-    // [LAW:no-silent-failure] a view that fails to mount says so where it was to be, as one that fails to load does.
-    root.textContent = `The app could not show ${location.pathname}: ${error.message}`;
-    throw error;
+    // [LAW:no-silent-failure] a view that fails to mount says so where it was to be, as one that fails to load does, and is left
+    // as a view is: what it started before it threw ends, its scroll listener among it.
+    leaving.abort();
+    said(`The app could not show ${location.pathname}: ${error.message}`, error);
   }
 }
 
@@ -68,3 +84,5 @@ for (const link of links) {
 addEventListener("popstate", show);
 show();
 row.dataset.ready = "";
+// The call is drawn as the view shown shapes it, never as the document's markup has it for a frame.
+hero.dataset.ready = "";
