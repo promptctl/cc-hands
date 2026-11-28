@@ -41,11 +41,19 @@ class Real:
     def echoing(self, name: str) -> str:
         return self._script(name, f"/bin/pwd -P\nprintf '%s\\n' \"${VARIABLE}\" \"$TRACEPARENT\"\nexec /bin/cat\n")
 
-    def waiting(self, name: str) -> str:
-        return self._script(name, "exec /bin/sleep 60\n")
+    def hung(self, name: str, out: bytes, err: bytes) -> str:
+        (self.bin / f"{name}.out").write_bytes(out)
+        (self.bin / f"{name}.err").write_bytes(err)
+        return self._script(name, f"/bin/cat '{self.bin}/{name}.out'\n/bin/cat '{self.bin}/{name}.err' >&2\nexec /bin/sleep 60\n")
 
     def unfound(self) -> str:
         return str(self.bin / "absent")
+
+    def unrunnable(self, name: str) -> str:
+        script = self.bin / name
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o644)
+        return str(script)
 
     async def past(self, seconds: float) -> None:
         # The machine's time passes of itself.

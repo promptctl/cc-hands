@@ -77,9 +77,10 @@ def main() -> None:
             replace(cli.door, stalled_at_the_door)
             sys.exit(cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=KERNEL, indicators=SpawnedIndicators()))
         case "returns":
-            # A restart's run holds the heartbeat from the outset, so its refusal beats, and kicks the watchdog.
+            # A restart's run holds the heartbeat from the outset, so its refusal beats, and kicks the watchdog. The
+            # indicator it names is launchd's pid, never this process's child, so no retire of it signals anything.
             replace(cli.door, refused)
-            code = cli.main(["--home", str(home.root), "run", "--restarted", "0"], machine=UNMANAGED, processes=KERNEL, indicators=SpawnedIndicators())
+            code = cli.main(["--home", str(home.root), "run", "--restarted", "1"], machine=UNMANAGED, processes=KERNEL, indicators=SpawnedIndicators())
             time.sleep(deadline.total_seconds() * 2)
             sys.exit(10 + code)
         case "beats":

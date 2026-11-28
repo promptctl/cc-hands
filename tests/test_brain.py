@@ -20,9 +20,9 @@ from typing import cast
 
 import aiohttp
 import pytest
-from fakeindicators import FakeIndicators
+from fakeparties import main_on_fakes
 from hands.clock import SYSTEM, Clock, SystemClock
-from hands.sessions.child import Children
+from hands.sessions.child import Starter
 from hands.sessions.startsession import SESSION_GIVEN
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from loguru import logger
@@ -43,7 +43,7 @@ from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import BRAIN_HOOKS, PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS, relayed
 from hands.sessions.audit import Entry, Record, segment
-from conftest import children_on, events, faked, new_sessions, onboard, PATIENCE_SECS, patiently, pin, taken, unread
+from conftest import runner_on, events, faked, new_sessions, onboard, PATIENCE_SECS, patiently, pin, taken, unread
 import turns
 from turns import RECORDINGS, prompts, stops
 from brains import dialogs, permissions, unasked
@@ -55,7 +55,6 @@ from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, Mes
 from hands.core.wire import Text as Said
 from hands.core import loopback
 from hands.core.wire import Direct, ThroughProxy
-from hands.daemon.cli import main
 from hands.daemon import run
 from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
@@ -78,7 +77,6 @@ from hands.voice.player import Player
 from hands.voice.braindoor import BrainDoor
 from hands.voice import voicechoice
 from fixtures.fakemachine import UNMANAGED, managed
-from fakeprocesses import processes
 
 # [LAW:no-silent-failure] an error hands logs that a test does not take fails it (`errors`).
 pytestmark = pytest.mark.usefixtures("errors")
@@ -518,7 +516,7 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     assert environment(tmp_path / "brain", THROUGH, inherited)["DISABLE_AUTOUPDATER"] == "1"
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
-        running = await in_tmux(children_on(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, inherited), PLAN, [str(recorder)], workspace)
+        running = await in_tmux(runner_on(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, inherited), PLAN, [str(recorder)], workspace)
         assert await running.exit == 0
     finally:
         shutil.rmtree(workspace)
@@ -1340,12 +1338,12 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
 async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
-    running = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "sleep 60"], workspace)
+    running = await in_tmux(runner_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode == 0)
         # A person attaches, as `tmux attach -t hands-brain` does, on a terminal of their own.
-        person = await on_terminal(children_on(SYSTEM), ["tmux", "attach-session", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        person = await on_terminal(runner_on(SYSTEM), ["tmux", "attach-session", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
         assert isinstance(person, ClaudeCode), person
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
         await running._client.stop()  # pyright: ignore[reportPrivateUsage]
@@ -1364,10 +1362,10 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
 async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
-    assert await (await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
+    assert await (await in_tmux(runner_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
     (workspace / "status").unlink()
     (workspace / "pane").unlink()
-    ended = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "sleep 60"], workspace)
+    ended = await in_tmux(runner_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
         await until(lambda: tmux_at("has-session", "-t", f"={brain_session(station.config_dir)}").returncode == 0)
         tmux_at("kill-session", "-t", f"={brain_session(station.config_dir)}")
@@ -1383,13 +1381,13 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     go = tmp_path / "go"
-    running = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
+    running = await in_tmux(runner_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
     try:
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 1)
         # A person attaches as `tmux attach -d` does, detaching every other client: hands' attaches again, and the brain
         # is not taken for ended.
-        person = await on_terminal(children_on(SYSTEM), ["tmux", "attach-session", "-d", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        person = await on_terminal(runner_on(SYSTEM), ["tmux", "attach-session", "-d", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
         assert isinstance(person, ClaudeCode), person
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
         assert not running.exit.done()
@@ -1410,7 +1408,7 @@ async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_sessi
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         ready = tmp_path / "ready"
-        running = await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
+        running = await in_tmux(runner_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
         await until(ready.exists)
         await running.stop()
         assert running.exit.result() == 7
@@ -1429,7 +1427,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         seen = tmp_path / "seen"
-        assert await (await in_tmux(children_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f'printf "%s" "${{ANTHROPIC_API_KEY-unset}} $CLAUDE_CONFIG_DIR" > {seen}'], workspace)).exit == 0
+        assert await (await in_tmux(runner_on(SYSTEM), station, PLAN, ["/bin/sh", "-c", f'printf "%s" "${{ANTHROPIC_API_KEY-unset}} $CLAUDE_CONFIG_DIR" > {seen}'], workspace)).exit == 0
         assert seen.read_text() == f"unset {tmp_path / 'brain'}"
     finally:
         tmux_at("kill-session", "-t", "=theirs")
@@ -1580,7 +1578,7 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     # a loaded machine a second can pass before the pane is drawn, and the refusal would show only tmux's status line.
     panes: list[InTmux] = []
 
-    async def recording(children: Children, station: Station, account: Account, argv: Sequence[str], workspace: Path) -> InTmux:
+    async def recording(children: Starter, station: Station, account: Account, argv: Sequence[str], workspace: Path) -> InTmux:
         panes.append(await in_tmux(children, station, account, argv, workspace))
         return panes[-1]
 
@@ -1611,10 +1609,10 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
 
 @pytest.mark.outside
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert logged_in(children_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ) == Account("claude.ai", "brain@example.com")
+    assert logged_in(runner_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ) == Account("claude.ai", "brain@example.com")
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(NotLoggedIn, match="`hands login` gives it one"):
-        logged_in(children_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ)
+        logged_in(runner_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ)
 
 
 def logins(home: Path) -> list[tuple[str, dict[str, object]]]:
@@ -1635,7 +1633,7 @@ def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_code
     monkeypatch.setenv("PATH", f"{shim.parent}:{os.environ['PATH']}")
     home = tmp_path / "home"
     brain_pin = pin(home / "brain", fake_claude)
-    assert main(["--home", str(home), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(home), "login"], pin=brain_pin) == 0
     brain = home / "brain"
     assert json.loads((brain / "settings.json").read_text()) == {"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False, "permissions": {"defaultMode": "default"}}
     assert isinstance(configdir.runnable(configdir.read(brain, brain_pin, UNMANAGED)), Runnable)
@@ -1653,7 +1651,7 @@ def test_hands_login_on_a_brain_home_logs_it_in_again_leaving_its_settings_as_th
     brain = tmp_path / "brain"
     said = b'{"permissions": {"allow": ["Bash(lit:*)"], "defaultMode": "acceptEdits"},\n "syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}'
     onboard(brain, said)
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 0
     assert (brain / "settings.json").read_bytes() == said
     assert json.loads((brain / "login.json").read_text())["argv"] == ["auth", "login", "--claudeai"]
     assert capsys.readouterr().out.splitlines() == [f"the brain at {brain} is logged in as brain@example.com (claude.ai)", "a hands already running started its brain on the login before: restart it to start the brain on this one"]
@@ -1666,7 +1664,7 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     # What `claude auth status` leaves, asked by a `hands run` before any `hands login`: its state, and no onboarding.
     brain = tmp_path / "brain"
     (brain / ".claude.json").write_text("{}")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert isinstance(configdir.runnable(configdir.read(brain, brain_pin, UNMANAGED)), Runnable)
     assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": f"its onboarding unfinished; {brain.resolve() / 'cwd'} untrusted", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
@@ -1677,7 +1675,7 @@ def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_
     monkeypatch.setenv("LOGGED_IN", "0")
     # Onboarded, then quit at the trust screen: the brain would start on that screen.
     onboard(tmp_path / "brain", trusted=False)
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert logins(tmp_path)[0][1]["first_run"] == f"{(tmp_path / 'brain' / 'cwd').resolve()} untrusted"
 
@@ -1687,7 +1685,7 @@ def test_hands_login_on_a_brain_home_whose_state_claude_code_cannot_have_written
     monkeypatch.setenv("LOGGED_IN", "0")
     onboard(tmp_path / "brain")
     (tmp_path / "brain" / ".claude.json").write_text("[]")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert str(logins(tmp_path)[0][1]["first_run"]).startswith(f"{tmp_path / 'brain' / '.claude.json'} unreadable: ")
 
@@ -1696,13 +1694,13 @@ def test_hands_login_on_a_brain_home_whose_state_claude_code_cannot_have_written
 def test_hands_login_whose_first_run_was_quit_before_its_last_screen_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], brain_pin: pinned.Pin) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("LOGIN_UNANSWERED", "1")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 1
     assert capsys.readouterr().err == f"hands login: the brain has not been through Claude Code's first screens (no {tmp_path / 'brain' / '.claude.json'}): `hands login` answers them\n"
 
 
 def test_hands_login_on_a_brain_whose_settings_would_sync_its_accounts_skills_runs_no_claude_code(tmp_path: Path, fake_claude: Path, capsys: pytest.CaptureFixture[str], brain_pin: pinned.Pin) -> None:
     onboard(tmp_path / "brain", b'{"permissions": {"defaultMode": "default"}}')
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 1
     assert not (tmp_path / "brain" / "login.json").exists()
     assert "its account's syncClaudeAiSkills and syncClaudeAiPlugins" in capsys.readouterr().err
 
@@ -1711,16 +1709,16 @@ def test_hands_login_on_a_brain_whose_settings_would_sync_its_accounts_skills_ru
 def test_hands_login_after_a_first_run_that_failed_runs_it_again(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, brain_pin: pinned.Pin) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("LOGIN_EXIT", "130")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 1
     monkeypatch.delenv("LOGIN_EXIT")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert [outcome for outcome, _ in logins(tmp_path)] == ["failed", "ok"]
 
 
 def test_hands_login_on_a_brain_path_that_is_no_directory_exits_1_saying_so(tmp_path: Path, fake_claude: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (tmp_path / "brain").write_text("")
-    assert main(["--home", str(tmp_path), "login"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path), "login"]) == 1
     assert capsys.readouterr().err.startswith(f"hands login: [Errno 17] File exists: '{tmp_path / 'brain'}'")
 
 
@@ -1728,7 +1726,7 @@ def test_hands_login_on_a_brain_path_that_is_no_directory_exits_1_saying_so(tmp_
 def test_hands_login_console_logs_a_brain_in_with_an_anthropic_console_key(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], brain_pin: pinned.Pin) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     onboard(tmp_path / "brain")
-    assert main(["--home", str(tmp_path), "login", "--console"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path), "login", "--console"], pin=brain_pin) == 0
     assert json.loads((tmp_path / "brain" / "login.json").read_text())["argv"] == ["auth", "login", "--console"]
     assert capsys.readouterr().out.splitlines()[0] == f"the brain at {tmp_path / 'brain'} is logged in as brain@example.com (api_key)"
     assert logins(tmp_path) == [("ok", {"asked": "console", "settings_written": False, "first_run": None, "account": {"type": "Account", "method": "api_key", "holder": "brain@example.com"}})]
@@ -1738,7 +1736,7 @@ def test_hands_login_console_logs_a_brain_in_with_an_anthropic_console_key(tmp_p
 @pytest.mark.parametrize(("method", "account"), [("api_key", Account("api_key", "brain@example.com")), ("oauth_token", Account("oauth_token", None))])
 def test_a_brain_on_any_anthropic_login_starts(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, method: str, account: Account) -> None:
     monkeypatch.setenv("AUTH_METHOD", method)
-    assert logged_in(children_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ) == account
+    assert logged_in(runner_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ) == account
 
 
 @pytest.mark.outside
@@ -1747,7 +1745,7 @@ def test_hands_login_that_leaves_the_brain_on_another_login_than_asked_exits_1_n
     # A token its settings.json sets ahead of the plan `claude auth login` made.
     monkeypatch.setenv("AUTH_METHOD", "oauth_token")
     onboard(tmp_path / "brain")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 1
     assert capsys.readouterr().err == "hands login: the brain holds a token (oauth_token), not the claude.ai login asked for\n"
     assert [(outcome, facts["asked"]) for outcome, facts in logins(tmp_path)] == [("failed", "claudeai")]
 
@@ -1760,7 +1758,7 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
     onboard(brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "env": {"ANTHROPIC_API_KEY": "sk-ant-api03-0123456789abcdefghijklmn"}}')
     # The brain would start on Claude Code's screen asking whether to use the key, with nobody at its keyboard.
     assert configdir.unanswered(configdir.read(brain, brain_pin, UNMANAGED)) == (f"the API key {brain / 'settings.json'} sets unanswered",)
-    assert main(["--home", str(tmp_path), "login", "--console"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path), "login", "--console"], pin=brain_pin) == 0
     assert json.loads((brain / "login.json").read_text())["argv"] == ["--setting-sources", "user"]
     assert configdir.unanswered(configdir.read(brain, brain_pin, UNMANAGED)) == ()
 
@@ -1769,7 +1767,7 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
 def test_a_brain_reaching_claude_through_a_cloud_provider_is_refused_naming_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_PROVIDER", "bedrock")
     with pytest.raises(NotLoggedIn, match="through bedrock, not the Anthropic API hands' proxy forwards to"):
-        logged_in(children_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ)
+        logged_in(runner_on(SYSTEM), fake_claude, tmp_path / "brain", Direct(), os.environ)
 
 
 @pytest.mark.outside
@@ -1778,7 +1776,7 @@ def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fa
     monkeypatch.setenv("LOGIN_EXIT", "3")
     if onboarded:
         onboard(tmp_path / "brain")
-    assert main(["--home", str(tmp_path), "login"], pin=brain_pin, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path), "login"], pin=brain_pin) == 1
     assert capsys.readouterr().err == f"hands login: {said}\n"
     assert logins(tmp_path) == [("failed", {"asked": "claudeai", "settings_written": not onboarded})]
     # The command fails saying why, in the words it said it.

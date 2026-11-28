@@ -4,19 +4,21 @@
 import asyncio
 import errno
 import os
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import queue
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from hands.clock import Clock, wait_all
-from hands.sessions.child import Captured, Command, Exited, Kill, Killed, Limit, Lost, NeverStarted, Outcome, Ran, Running, Stdio, Traced, Unreaped
+from hands.sessions.child import Captured, Command, Exited, Kill, Killed, Limit, Lost, NeverStarted, Outcome, Ran, Traced, Unreaped
 from hands.tasks import cancel_and_wait
 
 
 @dataclass(frozen=True)
 class Asked:
     """A run, as its program is handed it: its argv, the directory and the environment it runs in (a traced run's with
-    its TRACEPARENT), what is on its stdin, and the limit it is held to."""
+    its TRACEPARENT), what is on its stdin, and the limit it is held to. [LAW:single-enforcer] refused as the Runner
+    refuses a run, by the same Command and Limit, so no run is asked that the Runner would not start."""
 
     argv: tuple[str, ...]
     cwd: Path | None
@@ -24,11 +26,42 @@ class Asked:
     given: bytes | None
     limit: float
 
+    def __post_init__(self) -> None:
+        Command(self.argv, self.cwd, self.env)
+        Limit(self.limit)
 
-# A program a test stands in for: the outcome every run of it ends in, or the answer it makes each run, in the time
-# that run takes.
-type Answer = Callable[[Asked], Awaitable[Outcome]]
-type Program = Outcome | Answer
+
+@dataclass(frozen=True)
+class Refused:
+    """A program the OS will not start, refusing it with `errno` as it refuses one that is not there (ENOENT) or one
+    that is there and cannot be run (EACCES)."""
+
+    errno: int
+
+
+# A program that is not there.
+NOT_THERE = Refused(errno.ENOENT)
+
+
+@dataclass(frozen=True)
+class Hung:
+    """A program that writes `out` and `err` and then never ends of itself, so each run of it is killed at its limit
+    with what it wrote."""
+
+    out: bytes = b""
+    err: bytes = b""
+
+
+@dataclass(frozen=True)
+class Answers:
+    """A program whose every run is the outcome `answer` makes of it, in the time the answer takes: killed at its limit
+    where the answer outlasts it, as the Runner kills a run."""
+
+    answer: Callable[[Asked], Awaitable[Outcome]]
+
+
+# A program a test stands in for: the outcome every run of it ends in, or one of the ways a program behaves above.
+type Program = Outcome | Refused | Hung | Answers
 
 
 def exited(code: int, out: bytes = b"", err: bytes = b"") -> Ran:
@@ -37,9 +70,9 @@ def exited(code: int, out: bytes = b"", err: bytes = b"") -> Ran:
 
 
 class FakeChildren:
-    """Children on `clock` that start no process. A run of a program `programs` holds, by its argv[0], is its answer
-    within the run's limit, and is killed for it, as the Runner kills one, where the answer outlasts it; a run of any
-    other never starts, as the OS answers for a program it cannot find. Every run is kept in `asked`, oldest first."""
+    """Children on `clock` that start no process: a run of a program `programs` holds, by its argv[0], is as that
+    program behaves. A run of any other is the test's mistake, raised as one: a program the test means to be missing is
+    given as NOT_THERE. Every run is kept in `asked`, oldest first."""
 
     def __init__(self, clock: Clock, programs: Mapping[str, Program] | None = None) -> None:
         self.clock = clock
@@ -47,43 +80,56 @@ class FakeChildren:
         self.asked: list[Asked] = []
 
     async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None, given: bytes | None = None) -> Outcome:
-        asked = self._asked(argv, limit, cwd, env.handed if isinstance(env, Traced) else env, given)
-        match self.programs.get(asked.argv[0]):
-            case None:
-                return _unfound(asked.argv[0])
-            case Ran() | NeverStarted() | Unreaped() | Lost() as outcome:
-                return outcome
-            case answer:
+        asked, program = self._asked(Asked(argv, cwd, env.handed if isinstance(env, Traced) else env, given, limit))
+        match program:
+            case Ran() | NeverStarted() | Unreaped() | Lost() | Refused():
+                return _at_once(asked, program)
+            case Hung(out=out, err=err):
+                await self.clock.sleep(limit)
+                return _killed(limit, out, err)
+            case Answers(answer=answer):
                 answering = asyncio.ensure_future(answer(asked))
                 try:
                     await wait_all(self.clock, (answering,), limit)
+                    if answering.done():
+                        return answering.result()
                 finally:
                     # Cancelled, or past its limit: what the program was doing is ended with its run.
                     await cancel_and_wait(answering)
-                return answering.result() if not answering.cancelled() else Ran(Killed(Kill(Limit(limit))), Captured(b""), Captured(b""))
+                return _killed(limit, b"", b"")
 
     def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
-        asked = self._asked(argv, limit, cwd, env, None)
-        match self.programs.get(asked.argv[0]):
-            case None:
-                return _unfound(asked.argv[0])
-            case Ran() | NeverStarted() | Unreaped() | Lost() as outcome:
-                return outcome
-            case _:
+        asked, program = self._asked(Asked(argv, cwd, env, None, limit))
+        match program:
+            case Ran() | NeverStarted() | Unreaped() | Lost() | Refused():
+                return _at_once(asked, program)
+            case Hung(out=out, err=err):
+                # The calling thread waits the limit out, as it does on the Runner: on a virtual clock, at once.
+                try:
+                    self.clock.take(queue.SimpleQueue[None](), limit)
+                except queue.Empty:
+                    pass
+                return _killed(limit, out, err)
+            case Answers():
                 raise AssertionError(f"{asked.argv[0]} answers a run in a coroutine, which a blocking run cannot wait on: give it as the Outcome it ends in")
 
-    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
-        raise AssertionError(f"FakeChildren starts no {argv[0]} to run on its own: a test of a started child runs the Runner (tests/test_child.py)")
-
-    def _asked(self, argv: Sequence[str], limit: float, cwd: Path | None, env: Mapping[str, str] | None, given: bytes | None) -> Asked:
-        # [LAW:single-enforcer] refused as the Runner refuses them, before anything runs.
-        Command(tuple(argv), cwd, env)
-        Limit(limit)
-        asked = Asked(tuple(argv), cwd, env, given, limit)
+    def _asked(self, asked: Asked) -> tuple[Asked, Program]:
         self.asked.append(asked)
-        return asked
+        if (program := self.programs.get(asked.argv[0])) is None:
+            raise AssertionError(f"the test stands in for no program {asked.argv[0]!r}: give it in `programs`, as NOT_THERE where the test means it to be missing")
+        return asked, program
 
 
-def _unfound(program: str) -> NeverStarted:
-    """What the OS answers a start of a program it cannot find with."""
-    return NeverStarted(FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), program))
+def _at_once(asked: Asked, program: Ran | NeverStarted | Unreaped | Lost | Refused) -> Outcome:
+    """The outcome of a run of a program that ends as it is run."""
+    match program:
+        case Refused(errno=code):
+            # [LAW:one-source-of-truth] the OSError the OS's code makes, FileNotFoundError for ENOENT among them.
+            return NeverStarted(OSError(code, os.strerror(code), asked.argv[0]))
+        case outcome:
+            return outcome
+
+
+def _killed(limit: float, out: bytes, err: bytes) -> Ran:
+    """A run killed at its limit, with what its program had written."""
+    return Ran(Killed(Kill(Limit(limit))), Captured(out), Captured(err))

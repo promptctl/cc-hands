@@ -10,15 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from fakeindicators import FakeIndicators
+from fakeindicators import FIRST
+from fakeparties import main_on_fakes
 from hands.clock import SYSTEM, Clock
 from hands.daemon import cli
 from hands.sessions import audit
 from hands.sessions.home import Home
 from hands.voice import keys, talkkey
 from hands.voice.shortcut import CommandPressed, CommandReleased, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Shortcut, Typed, step
-from fixtures.fakemachine import UNMANAGED
-from fakeprocesses import processes
 
 
 def moves(events: Sequence[KeyEvent]) -> list[Move]:
@@ -175,7 +174,7 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     asked: list[None] = []
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
-    assert cli.main(["--home", str(tmp_path), "run"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path), "run"]) == 1
     assert "has no Input Monitoring grant" in capsys.readouterr().err
     assert asked == [None]
     # Refused before its first heartbeat: the one there is left to whatever wrote it, a running hands or a crash, and
@@ -209,7 +208,7 @@ def holding(home: Path, then: str) -> subprocess.Popen[str]:
 # To a run of its own, hands running is no fault, so the lock's answer is info and is never filed. To a restart's run,
 # the process that held the home, it lost the lock, and hands ends with it: an error, filed.
 @pytest.mark.outside
-@pytest.mark.parametrize(("run", "level", "outcome"), [(["run"], "info", "ok"), (["run", "--restarted", "0"], "error", "failed")])
+@pytest.mark.parametrize(("run", "level", "outcome"), [(["run"], "info", "ok"), (["run", "--restarted", str(FIRST)], "error", "failed")])
 def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbeat_and_sockets(run: list[str], level: str, outcome: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     import shutil
     import socket
@@ -233,7 +232,7 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
         asked: list[None] = []
         monkeypatch.setattr(talkkey, "granted", lambda: False)
         monkeypatch.setattr(talkkey, "ask", lambda: asked.append(None))
-        assert cli.main(["--home", str(root), *run], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+        assert main_on_fakes(["--home", str(root), *run]) == 1
         assert f"hands is already running on {root}, as pid {holder.pid}" in capsys.readouterr().err
         assert asked == []
         assert home.status.read_bytes() == live

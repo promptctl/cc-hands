@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
+from conftest import LOGGED_IN, runner_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
+from fakeparties import main_on_fakes
+from fakechildren import FakeChildren, exited
 from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import processes
 from faketerminals import FakeFritters, FakeScreen, FakeTerminals
@@ -69,7 +71,7 @@ def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: P
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.personality == "Dry and wry."
+    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -100,7 +102,7 @@ def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
 
 
 @pytest.mark.parametrize(
@@ -177,7 +179,7 @@ def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings()))
+        run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings()))
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
@@ -186,15 +188,15 @@ def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file
     laid_out(home)
     environment = {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"}
     with pytest.raises(CannotStart, match=f"^HANDS_LLM, HANDS_WHISPER_MODEL set, .* put the setting in {home.config}"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, LAID_OUT, UNMANAGED, environment))
+        run.configured_from(FakeChildren(SYSTEM, {str(LAID_OUT.claude(home.brain)): exited(0, LOGGED_IN)}), home, config.load(home), preflight.preflight(home, LAID_OUT, UNMANAGED, environment))
 
 
 @pytest.mark.outside
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(children_on(SYSTEM), Claude(), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
-    assert backend(children_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == "claude-opus-5-5"
+    assert backend(runner_on(SYSTEM), Claude(), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
+    assert backend(runner_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == "claude-opus-5-5"
 
 
 @pytest.mark.outside
@@ -202,7 +204,7 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fa
 def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(children_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == model
+    assert backend(runner_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == model
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
@@ -233,7 +235,7 @@ def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_fil
 
 def test_a_blank_model_flag_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exited:
-        cli.main(["--home", str(tmp_path), "run", "--model", "  "], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators())
+        main_on_fakes(["--home", str(tmp_path), "run", "--model", "  "])
     assert exited.value.code == 2
     assert f"argument --model: a model's id, such as {ANTHROPIC_MODEL}, not '  '" in capsys.readouterr().err
 
@@ -245,7 +247,7 @@ def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_sett
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: None)
     for given in ((), ("--model", " claude-opus-5-5 ")):
-        assert cli.main(["--home", str(home.root), "run", *given], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+        assert main_on_fakes(["--home", str(home.root), "run", *given]) == 1
     capsys.readouterr()
     starts = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert [(start["outcome"], start["facts"]["model_flag"]) for start in starts] == [("failed", None), ("failed", "claude-opus-5-5")]
@@ -303,13 +305,13 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     # One machine across the restart, so the run after ends the indicator the run before showed.
     indicators = FakeIndicators()
     with pytest.raises(Execed) as first:
-        cli.main(["--home", str(home.root), "run", *given], machine=UNMANAGED, processes=processes(), indicators=indicators)
+        main_on_fakes(["--home", str(home.root), "run", *given], indicators=indicators)
     again = first.value.args[0][-3 - len(carried):]
     assert again == ["--restarted", str(FIRST), "--level=engaged", *carried]
     # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all, its desk to
     # start at the level the run before's desk was at; restarted before it steps it, it carries that level on again.
     with pytest.raises(Execed) as second:
-        cli.main(["--home", str(home.root), "run", *again], machine=UNMANAGED, processes=processes(), indicators=indicators)
+        main_on_fakes(["--home", str(home.root), "run", *again], indicators=indicators)
     # It hands on the indicator it showed, having ended the one before.
     assert second.value.args[0][-3 - len(carried):] == ["--restarted", str(FIRST + 1), *again[2:]]
     assert (indicators.shown, indicators.retired) == ([home, home], [(FIRST, "ended")])
@@ -324,9 +326,18 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
 def test_a_level_given_to_a_start_that_is_no_restart_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     for given, refused in ((("--level=engaged",), "--level is a restart's"), (("--restarted", "42", "--level=loud"), "argument --level: hands listens at off, wake word, engaged, not 'loud'")):
         with pytest.raises(SystemExit) as exited:
-            cli.main(["--home", str(tmp_path), "run", *given], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators())
+            main_on_fakes(["--home", str(tmp_path), "run", *given])
         assert exited.value.code == 2
         assert refused in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("given", ["0", "-1", "99999999", "the indicator"])
+def test_a_restart_naming_no_pid_an_indicator_could_have_is_refused_as_the_command_line_is_parsed(given: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # 0 and -1 would signal a whole group of processes, the run's own among them, as the indicator is retired.
+    with pytest.raises(SystemExit) as exited:
+        main_on_fakes(["--home", str(tmp_path), "run", "--restarted", given])
+    assert exited.value.code == 2
+    assert f"argument --restarted: {given!r} is not a process id" in capsys.readouterr().err
 
 
 def test_a_restart_that_names_no_level_comes_back_at_off_as_one_exec_d_by_a_hands_from_before_the_level_was_carried() -> None:
@@ -365,7 +376,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(Rejected, match="`hands login` gives it one"):
-        backend(children_on(SYSTEM), Claude(), HOME, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
+        backend(runner_on(SYSTEM), Claude(), HOME, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
@@ -479,7 +490,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     levels = Levels("off")
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, processes(), FakeTerminals(), FakeFritters(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, UNMANAGED, run_start, config.OwnModel(home, LAID_OUT, UNMANAGED, {}, _NO_FILE), SYSTEM, levels, levels)
+            await run.run(refused, lambda _: None, processes(), runner_on(SYSTEM), FakeTerminals(), FakeFritters(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, UNMANAGED, run_start, config.OwnModel(home, LAID_OUT, UNMANAGED, {}, _NO_FILE), SYSTEM, levels, levels)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -511,21 +522,21 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:
-            configure = partial(run.configured_from, children_on(clock), home, settings)
+            configure = partial(run.configured_from, FakeChildren(clock), home, settings)
             await start(lambda: run.configured(configure, lambda _: None, processes, home, pin, UNMANAGED, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
 
     monkeypatch.setattr(cli, "loaded", loaded)
-    assert cli.main(["--home", str(home.root), "run"], pin=LAID_OUT, machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "run"], pin=LAID_OUT) == 1
     reason = f"HANDS_LLM set, and hands reads no setting from the environment: unset HANDS_LLM, and put the setting in {home.config}; then run hands again"
     assert capsys.readouterr().err == f"hands: {reason}\n"
     # The start's one event is failed with the reason, and says which run it was.
     [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert (refused["level"], refused["outcome"], refused["error"]) == ("error", "failed", f"CannotStart: {reason}")
     assert (refused["facts"]["pid"], refused["facts"]["restarted"], refused["facts"]["after_crash"]) == (os.getpid(), False, False)
-    assert cli.main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "status"]) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
@@ -544,9 +555,9 @@ def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tm
 
     monkeypatch.setattr(cli, "loaded", loaded)
     with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
-        cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators())
+        main_on_fakes(["--home", str(home.root), "run"])
     assert capsys.readouterr().err == "hands: no key\n"
-    assert cli.main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "status"]) == 1
     assert capsys.readouterr().out == "hands refused to start 0s ago: no key\n"
 
 
@@ -557,12 +568,8 @@ def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path,
     home = Home(tmp_path)
     monkeypatch.setattr(talkkey, "granted", lambda: True)
 
-    class Unshown(FakeIndicators):
-        def show(self, home: Home) -> int:
-            raise OSError("no indicator")
-
     with pytest.raises(OSError, match="no indicator"):
-        cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=processes(), indicators=Unshown())
+        main_on_fakes(["--home", str(home.root), "run"], indicators=FakeIndicators(OSError("no indicator")))
     [failed] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert (failed["outcome"], failed["error"]) == ("failed", "OSError: no indicator")
 
@@ -579,16 +586,16 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     gone, table = 4343, processes()
     crashed = heartbeat.Heart(home.status, gone, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     crashed.beat("running", None, 0, listening=False, degraded=())
-    assert cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=table, indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "run"], processes=table) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
     assert str(home.config) in reason
     # Refused at the door, before the settings name a collector: the hold's event and the start's are on the log alone.
     assert [(line["event"], line["error"]) for line in map(json.loads, audit.tail(home.audit, 10)[0])] == [("hands.hold", None), ("hands.start", f"CannotStart: {reason}")]
     assert cli.crashed_before(SYSTEM, table, home)
     # A restart's run holds the heartbeat from the outset, the run before it having beat starting under its pid.
-    assert cli.main(["--home", str(home.root), "run", "--restarted", "0"], machine=UNMANAGED, processes=table, indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "run", "--restarted", str(FIRST)], processes=table) == 1
     capsys.readouterr()
-    assert cli.main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=table, indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "status"], processes=table) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
 
 
@@ -607,19 +614,19 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "charles"
+    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voicechoice.keep(home, voicechoice.parse_voice("Bill Boerst"))
-    assert run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "bill_boerst"
+    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
+        run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(children_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
+        run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
 
 
 # The settings of a run started with no file: every default.

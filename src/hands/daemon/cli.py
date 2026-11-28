@@ -33,7 +33,7 @@ from hands.sessions.home import Home, default_home
 from hands.sessions.kernel import KERNEL
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
-from hands.sessions.processes import Processes
+from hands.sessions.processes import Processes, parse_pid
 from hands.sessions.terminals import Terminals
 from hands.sessions import tmux
 from hands.threads import off_loop
@@ -211,7 +211,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
-    running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
+    running.add_argument("--restarted", type=indicator_pid, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--level", type=listening_level, metavar="{" + ",".join(LEVELS) + "}", help="the level the desk listens at as a restart starts, which only hands passes, beside --restarted: the one the run before's desk was at; a start that is no restart listens at off")
     running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
@@ -280,6 +280,15 @@ def handed_over(parser: argparse.ArgumentParser, indicator: int | None, level: L
             return Handover(shown, "off")
         case int() as shown, str() as named:
             return Handover(shown, named)
+
+
+def indicator_pid(text: str) -> int:
+    """[LAW:parse-dont-validate] --restarted's value as the pid of the indicator the run before showed, which this run
+    signals: never 0 or negative, a signal to either being one to a whole group of processes."""
+    try:
+        return parse_pid(int(text))
+    except (ValueError, Rejected) as error:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a process id") from error
 
 
 def listening_level(text: str) -> Level:
@@ -548,10 +557,12 @@ def run_here(clock: Clock, processes: Processes, indicators: Indicators, home: H
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
     heart.beat("starting", None, 0, listening=False, degraded=())
+    run_start.heard(previous_indicator=None if handover is None else indicators.retire(handover.indicator, clock))
     # [LAW:dataflow-not-control-flow] every run shows itself through an indicator it started, on the code it runs: one
     # kept across a restart would judge this run's heartbeat by the code the run before had.
-    run_start.heard(previous_indicator=None if handover is None else indicators.retire(handover.indicator, clock))
     shown = indicators.show(home)
+    # [LAW:nothing-unseen] the pid a restart hands on to be retired, so the start says which indicator it showed.
+    run_start.heard(indicator=shown)
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, clock)
     # [LAW:one-source-of-truth] the one owner of the level the desk listens at, made before the run and read after it, so a
@@ -678,7 +689,7 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, mach
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, processes, home, path, True, reached, running, partial(keyboards, terminals, processes)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, terminals, FritterSockets(), LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, machine, run_start, OwnModel(home, pin, machine, environment, settings), clock, listening, driving)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, children, terminals, FritterSockets(), LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, machine, run_start, OwnModel(home, pin, machine, environment, settings), clock, listening, driving)
 
 
 def report(clock: Clock, processes: Processes, home: Home) -> exits.Exit:

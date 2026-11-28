@@ -32,6 +32,7 @@ from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.standing import phase, spoken_state, standing_of
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
+from hands.sessions.child import Children
 from hands.sessions.processes import Processes
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Lit, LitFailed, Untracked
@@ -75,14 +76,14 @@ _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 
 def acts(
-    sessions: Sessions, terminals: Terminals, processes: Processes, store: SummaryStore, home: Home, recounts: Recounts, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: OwnModel, voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str],
+    sessions: Sessions, terminals: Terminals, processes: Processes, children: Children, store: SummaryStore, home: Home, recounts: Recounts, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: OwnModel, voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str],
     record: Record,
 ) -> list[Tool[Answer]]:
     """hands' own tools, in the order its schema lists them, each the act alone: [LAW:types-are-the-program] built with
     no player, no refocus and no cue, so none can speak a voice turn's line, wait on a heard line, or move the focus. A
     room act still sounds in the room, for any caller: hear_voices says voices, use_voice changes the voice hands speaks
-    in, and Spotify plays. Every tool reads time on `sessions.clock`, the run's one clock. `environment` is the run's,
-    which says where tmux keeps its sockets.
+    in, and Spotify plays. Every tool reads time on `sessions.clock`, the run's one clock, and runs a child through
+    `children`. `environment` is the run's, which says where tmux keeps its sockets.
 
     [LAW:one-source-of-truth] the daemon serves the brain these through its `BrainDoor`, and the intermediary's eval
     (tests/test_intermediary.py) judges the prompt against them served the same way, so a tool added here is one the
@@ -94,7 +95,7 @@ def acts(
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts),
         expand_tool(sessions, recounts),
-        *backlog_tools(sessions, store, Lit(sessions.children, environment)),
+        *backlog_tools(sessions, store, Lit(children, environment)),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
         read_screen_tool(sessions, terminals, processes, environment),
@@ -106,7 +107,7 @@ def acts(
         *listening_tools(levels, at_phone, wake),
         *voice_tools(voices),
         *model_tools(own),
-        *spotify_tools(spotify.Player(functools.partial(spotify.osascript, sessions.children)), catalogue),
+        *spotify_tools(spotify.Player(functools.partial(spotify.osascript, children)), catalogue),
         # A session is started by the daemon, in the environment hands was started in, which is the user's, and is started
         # once the registry holds it, so the brain can stage for it at once; it is closed once the registry no longer does.
         start_session_tool(sessions.clock, terminals, processes, home, record, environment, sessions.live_members),

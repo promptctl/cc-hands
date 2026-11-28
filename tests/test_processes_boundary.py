@@ -45,7 +45,7 @@ def unmarked_reaches(root: Path) -> list[str]:
         named = imported(tree, ".".join([root.name, *path.relative_to(root).parent.parts]))
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         reaching = (node for node in ast.walk(tree) if isinstance(node, ast.Name | ast.Attribute) and _reaches(qualified(node, named)))
-        return sorted({f"{path.relative_to(root).as_posix()}:{node.lineno}" for node in reaching if not _marked(node, parents, source.splitlines())})
+        return sorted({f"{path.relative_to(root).as_posix()}:{node.lineno}" for node in reaching if not marked(node, parents, source.splitlines())})
 
     return sorted(each for path in root.rglob("*.py") if path.relative_to(root).as_posix() not in ADAPTERS for each in found(path))
 
@@ -54,16 +54,17 @@ def _reaches(name: str) -> bool:
     return name in REACHES or any(name == binding or name.startswith(f"{binding}.") for binding in BINDINGS)
 
 
-def _marked(node: ast.AST, parents: dict[ast.AST, ast.AST], lines: list[str]) -> bool:
+def marked(node: ast.AST, parents: dict[ast.AST, ast.AST], lines: list[str]) -> bool:
+    """Whether `node` is marked as the exception it is, in the comment just above it or just above a statement it is part of."""
     while True:
-        if isinstance(node, ast.stmt) and EXCEPTION in _comment_above(node.lineno, lines):
+        if isinstance(node, ast.stmt) and EXCEPTION in comment_above(node.lineno, lines):
             return True
         if node not in parents:
             return False
         node = parents[node]
 
 
-def _comment_above(line: int, lines: list[str]) -> str:
+def comment_above(line: int, lines: list[str]) -> str:
     above = lines[: line - 1]
     start = len(above)
     while start and above[start - 1].strip().startswith("#"):

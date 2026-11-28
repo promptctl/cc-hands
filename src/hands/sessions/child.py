@@ -543,29 +543,35 @@ def _as(env: Mapping[str, str] | Traced | None, clock: Clock) -> tuple[wide.Begu
 
 
 class Children(Protocol):
-    """[LAW:effects-at-boundaries] what starts hands' children, each one's limit measured on `clock`: the Runner, and a
-    fake of it in tests (tests/fakechildren.py), the two held to one contract (tests/childrencontract.py)."""
+    """[LAW:effects-at-boundaries] what runs hands' children to their ends, each one's limit measured on `clock`: the
+    Runner, and a fake of it in tests (tests/fakechildren.py), the two held to one contract (tests/childrencontract.py)."""
 
     @property
     def clock(self) -> Clock: ...
 
     async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None, given: bytes | None = None) -> Outcome:
-        """Run `argv` to its end, within `limit`, from a coroutine, `given` on its stdin, or none: raises ValueError for
-        a command no OS can be handed or a limit that is no time, and what ended the wait early, once it is killed."""
+        """Run `argv` to its end, within `limit`, from a coroutine, in `cwd` and `env`, the caller's own where None, with
+        `given` on its stdin, or none: raises ValueError for a command no OS can be handed or a limit that is no time,
+        and what ended the wait early, once it is killed."""
         ...
 
     def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
         """`run`, waited on by the calling thread, for code that runs off any event loop."""
         ...
 
+
+class Starter(Children, Protocol):
+    """[LAW:types-are-the-program] Children that also start a child to run on with no limit of its own, as a terminal's
+    program does: the Runner alone, so code that runs its children to their ends takes Children, which a fake can be."""
+
     def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
-        """Start `argv` to run until it ends or is stopped, from a coroutine, with no limit of its own."""
+        """Start `argv` to run until it ends or is stopped, from a coroutine."""
         ...
 
 
 @dataclass(frozen=True)
 class Runner:
-    """The Children hands runs on: each child a process the OS starts, made from its caller's one clock, which measures
+    """The Starter hands runs on: each child a process the OS starts, made from its caller's one clock, which measures
     every child's limit, and the edge its caller's events leave through, which its children's events leave through too."""
 
     clock: Clock

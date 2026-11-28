@@ -16,6 +16,7 @@ import pytest
 from loguru import logger
 
 from conftest import PLUGIN_PATH, skill_command, standin, unedited
+from fakeparties import main_on_fakes
 from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership, SessionId
 from hands.daemon import cli
@@ -28,8 +29,6 @@ from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.wide import WideEvent
-from fixtures.fakemachine import UNMANAGED
-from fakeprocesses import processes
 
 NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
 EDITED = audit.SettingsEdited(path="/home/config.toml", refused=None)
@@ -371,7 +370,7 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
 
     monkeypatch.setattr(talkkey, "granted", lambda: True)
     monkeypatch.setattr(cli, "loaded", loaded)
-    assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)], machine=UNMANAGED, processes=processes(), indicators=Watched()) == 0
+    assert main_on_fakes(["--home", str(home.root), "run", "--restarted", str(previous)], indicators=Watched()) == 0
     assert steps == ["retired", "started"]
     with pytest.raises(ChildProcessError):
         os.waitpid(previous, os.WNOHANG)

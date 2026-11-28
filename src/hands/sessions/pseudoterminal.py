@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from hands.core.session import ESCAPES
-from hands.sessions.child import Children, Ending, Lost, NeverStarted, Running, Terminal, Unreaped
+from hands.sessions.child import Ending, Lost, NeverStarted, Running, Starter, Terminal, Unreaped
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -87,7 +87,7 @@ class ClaudeCode:
         return await self._running.stopped(STOP_SECONDS)
 
 
-async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
+async def on_terminal(starter: Starter, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
     """Run `argv` in `cwd` and `environment` on a pseudo-terminal of hands' own, as a terminal emulator runs a program."""
     master, slave = pty.openpty()
     closed: queue.SimpleQueue[None] = queue.SimpleQueue()
@@ -101,7 +101,7 @@ async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, enviro
         os.close(slave)
         raise
     try:
-        started = children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": "xterm-256color"}, Terminal(slave, closed))
+        started = starter.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": "xterm-256color"}, Terminal(slave, closed))
     finally:
         # The child holds its own: the read ends once it, and whatever it started, have let go of theirs.
         os.close(slave)

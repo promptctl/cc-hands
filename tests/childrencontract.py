@@ -1,6 +1,7 @@
 """The contract every Children keeps, run against the fake (test_children_contract.py) and the Runner, starting real
 programs (test_children_contract_runner.py): a run ends as its program did, handed what it was given, and held to its
-limit; a program that is not there never starts; and what no OS can be handed is refused before anything runs."""
+limit, with what it wrote by then; a program that is not there, or cannot be run, never starts; and what no OS can be
+handed is refused before anything runs."""
 
 import asyncio
 import errno
@@ -38,12 +39,16 @@ class World(Protocol):
         empty where it is handed none), then its stdin, and exits 0."""
         ...
 
-    def waiting(self, name: str) -> str:
-        """A program that never ends of itself."""
+    def hung(self, name: str, out: bytes, err: bytes) -> str:
+        """A program that writes `out` and `err` and then never ends of itself."""
         ...
 
     def unfound(self) -> str:
         """A program that is not there."""
+        ...
+
+    def unrunnable(self, name: str) -> str:
+        """A program that is there and that the OS cannot run: a file no one may execute."""
         ...
 
     async def past(self, seconds: float) -> None:
@@ -86,14 +91,23 @@ class ChildrenContract:
                 case other:
                     pytest.fail(f"ran as {other}")
 
-    async def test_a_run_past_its_limit_is_killed_for_it(self, world: World) -> None:
-        running = asyncio.ensure_future(world.children.run(world.waiting("waits"), limit=LIMIT))
+    async def test_a_program_that_cannot_be_run_never_starts_and_says_so_as_the_os_does(self, world: World) -> None:
+        program = world.unrunnable("unrunnable")
+        for outcome in (await world.children.run(program, limit=60), world.children.run_blocking(program, limit=60)):
+            match outcome:
+                case NeverStarted(error=PermissionError(errno=errno.EACCES, filename=named)):
+                    assert named == program
+                case other:
+                    pytest.fail(f"ran as {other}")
+
+    async def test_a_run_past_its_limit_is_killed_for_it_with_what_it_wrote(self, world: World) -> None:
+        running = asyncio.ensure_future(world.children.run(world.hung("hangs", b"out\n", b"err\n"), limit=LIMIT))
         await world.past(LIMIT)
-        match await running:
-            case Ran(ending=Killed(kill=Kill(why=Limit(seconds=seconds)))):
-                assert seconds == LIMIT
-            case other:
-                pytest.fail(f"ran as {other}")
+        assert await running == Ran(Killed(Kill(Limit(LIMIT))), Captured(b"out\n"), Captured(b"err\n"))
+
+    def test_a_blocking_run_past_its_limit_is_killed_for_it_with_what_it_wrote(self, world: World) -> None:
+        program = world.hung("hangs", b"out\n", b"err\n")
+        assert world.children.run_blocking(program, limit=LIMIT) == Ran(Killed(Kill(Limit(LIMIT))), Captured(b"out\n"), Captured(b"err\n"))
 
     @pytest.mark.parametrize(("argv", "limit"), [(("echo", "a\0b"), 60.0), (("echo",), 0.0), ((), 60.0)], ids=["a NUL", "no time", "no program"])
     async def test_what_no_os_can_be_handed_is_refused_before_anything_runs(self, world: World, argv: tuple[str, ...], limit: float) -> None:

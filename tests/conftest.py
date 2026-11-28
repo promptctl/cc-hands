@@ -238,9 +238,10 @@ def taken(errors: list[str]) -> list[str]:
 new_sessions = partial(Sessions, record=lambda _: None, typist=untyped, keyboards=reads_no_panes)
 
 
-def children_on(clock: Clock) -> Children:
-    """[LAW:locality-or-seam] what starts a test's children, on the clock the test names, its events let go: a test about
-    a child's event builds its own `Children` with the emit it reads."""
+def runner_on(clock: Clock) -> Runner:
+    """The real Runner, which starts processes, for an `outside` test: on the clock the test names, its events let go. A
+    test of what hands makes of a run hands its code a FakeChildren (tests/fakechildren.py), and a test about a child's
+    event builds its own Runner with the emit it reads."""
     return Runner(clock, lambda _: None)
 
 
@@ -287,7 +288,7 @@ def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None
     """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a baseline or a reading found,
     never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
     spends it; a git that never ends is ended by the suite's timeout."""
-    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, clock=clock or RealWall())
+    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, children=Runner(clock or RealWall(), record))
 
 
 async def settled(steps: int = 100) -> None:
@@ -786,6 +787,10 @@ def pin(config_dir: Path, script: Path) -> pinned.Pin:
     made = pins.of(script.read_bytes())
     placed(config_dir, made, script)
     return made
+
+
+# What `claude auth status` prints for a brain logged in on claude.ai.
+LOGGED_IN = json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "brain@example.com"}).encode()
 
 
 def laid_out(home: Home) -> Path:

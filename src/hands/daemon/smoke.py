@@ -41,7 +41,7 @@ from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.processes import Processes
 from hands.sessions import audit, heartbeat
 from hands.sessions import child
-from hands.sessions.child import Children, NeverStarted
+from hands.sessions.child import Children, NeverStarted, Starter
 from hands.sessions.home import HOME_VARIABLE, Home
 from hands.sessions.liveness import live
 from hands.sessions.payload import Rejected
@@ -257,7 +257,7 @@ class Run:
     home: Home
     word: str
     offset: int
-    children: Children
+    children: Starter
     processes: Processes
     lines: list[Line] = field(default_factory=list[Line])
     began: float = field(init=False)
@@ -295,7 +295,7 @@ async def until[T](clock: Clock, stage: Stage, seconds: float, found: Callable[[
     return seen
 
 
-async def smoke(children: Children, processes: Processes, home: Home, environment: Mapping[str, str]) -> Exit:
+async def smoke(children: Starter, processes: Processes, home: Home, environment: Mapping[str, str]) -> Exit:
     """Run the test, printing each stage as it is reached; 0 once every stage is, and the first that is not, failed."""
     # Picked by the clock's randomness, so a run on a seeded clock picks the same word every time.
     word = WORDS[int(children.clock.token(4), 16) % len(WORDS)]
@@ -513,6 +513,6 @@ async def _synthesized(children: Children, text: str) -> bytes:
             return read.readframes(read.getnframes())
 
 
-def run_smoke(children: Children, processes: Processes, home: Home) -> Exit:
+def run_smoke(children: Starter, processes: Processes, home: Home) -> Exit:
     """`hands smoke`, as the CLI runs it."""
     return asyncio.run(smoke(children, processes, home, os.environ))

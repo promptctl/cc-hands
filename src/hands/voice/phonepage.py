@@ -26,7 +26,7 @@ from aiohttp import web
 from hands.clock import Clock
 from hands.core.bearer import bears
 from hands.sessions.backlog import Lit
-from hands.sessions.child import Runner
+from hands.sessions.child import Children
 from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -138,10 +138,10 @@ def phone_routes(clock: Clock, phone: Phone, key: str, record: Record) -> list[w
     return [*(web.get(path, shown) for path in APP_PATHS), *(script_route(name) for name in APP_SCRIPTS), web.post("/offer", offered)]
 
 
-def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: WakeModels, runtime: Release) -> web.Application:
+def phone_pages(clock: Clock, children: Children, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, audit: Path, key: str, record: Record, environment: Mapping[str, str], gallery: Gallery, models: WakeModels, runtime: Release) -> web.Application:
     """Every page the phone opens, under the phone's `key`. The phone's page reads and stops `brain`. The conversation
     page reads the audit log at `audit` and hands `typed` what is typed into it; the backlog page reads its summaries
-    from `store` and runs its writes in `environment`, the one hands was started in; the gallery page sets hands'
+    from `store` and runs its writes through `children` in `environment`, the one hands was started in; the gallery page sets hands'
     voices, level, modality, and model through `gallery`; the wake word page's detector runs the word `gallery` names, on the
     models `models` fetches and the runtime `runtime` serves (`hands.voice.phonewake`).
 
@@ -152,8 +152,7 @@ def phone_pages(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str
     app.add_routes(phone_routes(clock, phone, key, record))
     app.add_routes(brain_routes(clock, brain, key, record))
     app.add_routes(conversation_routes(clock, Conversation(audit), typed, key, record))
-    # What runs lit for the page: on the phone's clock, each lit's event recorded with the page's.
-    app.add_routes(backlog_routes(Lit(Runner(clock, record), environment), store, key, record))
+    app.add_routes(backlog_routes(Lit(children, environment), store, key, record))
     app.add_routes(gallery_routes(clock, gallery, key, record))
     app.add_routes(wake_routes(clock, gallery.wake, models, runtime, key, record))
     return app

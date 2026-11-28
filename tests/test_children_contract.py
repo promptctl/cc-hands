@@ -1,12 +1,12 @@
 """The children contract (childrencontract.py) held to the fake (fakechildren.py): in `make check`."""
 
-import asyncio
+import errno
 from pathlib import Path
 
 import pytest
 
 from childrencontract import VARIABLE, ChildrenContract
-from fakechildren import Asked, FakeChildren, exited
+from fakechildren import NOT_THERE, Answers, Asked, FakeChildren, Hung, Refused, exited
 from hands.sessions.child import Outcome
 from hands.virtualclock import VirtualClock
 
@@ -37,18 +37,20 @@ class Fake:
             told = f"{asked.cwd}\n{env.get(VARIABLE, '')}\n{env.get('TRACEPARENT', '')}\n".encode()
             return exited(0, told + (asked.given or b""))
 
-        self.fake.programs[name] = echoes
+        self.fake.programs[name] = Answers(echoes)
         return name
 
-    def waiting(self, name: str) -> str:
-        async def waits(asked: Asked) -> Outcome:
-            return await asyncio.get_running_loop().create_future()
-
-        self.fake.programs[name] = waits
+    def hung(self, name: str, out: bytes, err: bytes) -> str:
+        self.fake.programs[name] = Hung(out, err)
         return name
 
     def unfound(self) -> str:
+        self.fake.programs["absent"] = NOT_THERE
         return "absent"
+
+    def unrunnable(self, name: str) -> str:
+        self.fake.programs[name] = Refused(errno.EACCES)
+        return name
 
     async def past(self, seconds: float) -> None:
         await self.clock.sleeping(self.clock.now() + seconds)
@@ -71,5 +73,10 @@ def test_a_program_answered_in_a_coroutine_cannot_be_run_blocking(world: Fake) -
 
 async def test_every_run_is_kept_as_its_program_is_handed_it(world: Fake) -> None:
     await world.children.run(world.program("speaks", 0, b"", b""), "an argument", limit=60, cwd=world.folder, env={VARIABLE: "x"}, given=b"typed")
-    world.children.run_blocking("absent", limit=5)
+    world.children.run_blocking(world.unfound(), limit=5)
     assert world.fake.asked == [Asked(("speaks", "an argument"), world.folder, {VARIABLE: "x"}, b"typed", 60), Asked(("absent",), None, None, None, 5)]
+
+
+def test_a_program_the_test_does_not_stand_in_for_is_the_tests_mistake(world: Fake) -> None:
+    with pytest.raises(AssertionError, match="no program 'git'"):
+        world.children.run_blocking("git", "status", limit=5)

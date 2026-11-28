@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from fakechildren import FakeChildren, exited
+from fakechildren import NOT_THERE, FakeChildren, exited
 from hands.core.effects import Command, Text
 from hands.core.session import CommandName, PromptText
 from hands.core.tmux import Pane, Unanswered
@@ -35,7 +35,7 @@ async def test_with_no_tmux_on_the_path_every_ask_says_so_and_nothing_is_opened_
 
 async def test_a_tmux_that_cannot_be_run_opens_and_types_nothing_and_answers_nothing(tmp_path: Path) -> None:
     # [LAW:no-ambient-temporal-coupling] a tmux never started is never waited on: no real time passes.
-    terminals = TmuxTerminals(FakeChildren(VirtualClock()), tmp_path / "tmux")
+    terminals = TmuxTerminals(FakeChildren(VirtualClock(), {str(tmp_path / "tmux"): NOT_THERE}), tmp_path / "tmux")
     match await terminals.open("billing", tmp_path, ["claude"], {}, {}):
         case Unopened(reason=reason):
             assert reason.startswith("tmux could not be started: ")

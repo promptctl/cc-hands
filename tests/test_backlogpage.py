@@ -31,8 +31,8 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
-from conftest import SYSTEM_PATH, children_on, events, executable
-from fakechildren import Asked, FakeChildren, exited
+from conftest import SYSTEM_PATH, runner_on, events, executable
+from fakechildren import Answers, Asked, FakeChildren, exited
 from litcontract import LitContract, Refusal, answered, refusing
 
 KEY = "the-phones-key"
@@ -329,7 +329,7 @@ class FakeLit:
 
     def children(self, clock: Clock) -> FakeChildren:
         """What runs lit for hands, on `clock`, answered by this lit."""
-        return FakeChildren(clock, {"lit": self.run})
+        return FakeChildren(clock, {"lit": Answers(self.run)})
 
     async def run(self, asked: Asked) -> Ended:
         _, command, *rest = asked.argv
@@ -816,7 +816,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    read = await sighted(Lit(children_on(page.clock), os.environ), page.store, workspace.root)
+    read = await sighted(Lit(runner_on(page.clock), os.environ), page.store, workspace.root)
     assert isinstance(read, Sighted)
     # The leaves are said first; the epic waits on them.
     page.store.keep({due.digest: f"Said of {due.id}." for due in page.store.reckon(read.backlog.thing()).due})
@@ -1005,13 +1005,13 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
-    read = await sighted(Lit(children_on(page.clock), os.environ), page.store, workspace.root)
+    read = await sighted(Lit(runner_on(page.clock), os.environ), page.store, workspace.root)
     assert isinstance(read, Sighted)
     assert await page.store.wanted()
     # Every ticket said, round by round, as the summarising task says them.
     while due := page.store.reckon(read.backlog.thing()).due:
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
-    again = await sighted(Lit(children_on(page.clock), os.environ), page.store, workspace.root)
+    again = await sighted(Lit(runner_on(page.clock), os.environ), page.store, workspace.root)
     assert isinstance(again, Sighted) and len(again.said) == 3
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(page.store.wanted(), 0.2)
@@ -1318,7 +1318,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(Lit(children_on(VirtualClock()), os.environ), workspace.root, hey, "Seen again.", Inherited())
+    await comment(Lit(runner_on(VirtualClock()), os.environ), workspace.root, hey, "Seen again.", Inherited())
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
@@ -1418,4 +1418,4 @@ class TestLit(LitContract):
 
     @pytest.fixture
     def children(self) -> Children:
-        return children_on(VirtualClock())
+        return runner_on(VirtualClock())

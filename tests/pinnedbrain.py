@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-from conftest import children_on, new_sessions, placed, RUN, running, unread
+from conftest import runner_on, new_sessions, placed, RUN, running, unread
 from spoken import Received, Spoken
 from hands.brain import configdir, pinned
 from hands.brain.mcp import SERVER_NAME
@@ -213,7 +213,7 @@ class Hands:
         """A tmux command run against the brain's pane, as a terminal attached to it types: tmux writes the keys to the
         pane, and the pane's fritter forwards them to Claude Code byte for byte."""
         claude = self._claude()
-        ran = await ran_at(children_on(SYSTEM), Path(claude._tmux), claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
+        ran = await ran_at(runner_on(SYSTEM), Path(claude._tmux), claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
         assert isinstance(ran, TmuxExit) and ran.code == 0, ran
 
     async def keyed(self, *keys: str) -> None:

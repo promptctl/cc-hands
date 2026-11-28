@@ -15,18 +15,18 @@ from pathlib import Path
 
 import pytest
 
-from conftest import children_on, executable, laid_out, onboard, pin, shell_without_hands_settings, SYSTEM_PATH
-from fakechildren import FakeChildren, exited
+from conftest import LOGGED_IN, runner_on, executable, laid_out, onboard, pin, shell_without_hands_settings, SYSTEM_PATH
+from fakeparties import main_on_fakes
+from fakechildren import NOT_THERE, FakeChildren, exited
 from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import PROCARGS2, PROC_PID, FakeProcesses, Running, processes
 from fixtures.pins import LAID_OUT
-from fakeindicators import FakeIndicators
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
-from hands.daemon.cli import VERBOSE_HINT, main
+from hands.daemon.cli import VERBOSE_HINT
 from hands.daemon.readiness import Missing, Ready, Unknown
 from hands.sessions import audit, child, heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -62,7 +62,7 @@ def listed(id: str, enabled: bool, scope: str = "user") -> dict[str, object]:
 
 @pytest.mark.outside
 def test_an_enabled_plugin_is_ready(root: Path) -> None:
-    found = readiness.plugin(children_on(SYSTEM), Home(root / "home"), claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]))
+    found = readiness.plugin(runner_on(SYSTEM), Home(root / "home"), claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]))
     assert isinstance(found, Ready) and "/reload-plugins" in found.said
 
 
@@ -77,7 +77,7 @@ def test_a_disabled_plugin_is_missing_and_says_how_to_enable_it() -> None:
 
 @pytest.mark.outside
 def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
-    found = readiness.plugin(children_on(SYSTEM), Home(root / "home"), claude_listing(root, [listed("other@elsewhere", True)]))
+    found = readiness.plugin(runner_on(SYSTEM), Home(root / "home"), claude_listing(root, [listed("other@elsewhere", True)]))
     assert isinstance(found, Missing) and f"claude plugin install {PLUGIN_ID}" in found.said
 
 
@@ -101,13 +101,23 @@ def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> Non
 @pytest.mark.outside
 def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n")
-    found = readiness.plugin(children_on(SYSTEM), Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}")
+    found = readiness.plugin(runner_on(SYSTEM), Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}")
     assert isinstance(found, Unknown) and "exited 3" in found.said and "not logged in" in found.said
 
 
-def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
+# What the plugin step says before why it could not ask.
+CANNOT_ASK = f"cannot ask `claude plugin list` whether the plugin {PLUGIN_ID} is installed: it "
+
+
+def test_a_listing_that_is_not_text_is_unknown_on_the_path_it_was_asked_on(root: Path) -> None:
     claude = FakeChildren(VirtualClock(), {"claude": exited(0, b"\xff\xfe")})
-    assert isinstance(readiness.plugin(claude, Home(root / "home"), SYSTEM_PATH), Unknown)
+    match readiness.plugin(claude, Home(root / "home"), SYSTEM_PATH):
+        case Unknown(step="plugin", detail=detail):
+            assert detail.startswith(f"{CANNOT_ASK}printed what is not text: ")
+        case other:
+            pytest.fail(f"found {other}")
+    [asked] = claude.asked
+    assert (asked.argv, (asked.env or {})["PATH"]) == (readiness.PLUGIN_LIST, SYSTEM_PATH)
 
 
 @pytest.mark.outside
@@ -115,11 +125,12 @@ def test_the_claude_asked_for_its_plugins_runs_with_its_auto_updater_off(root: P
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     listing = json.dumps([listed(PLUGIN_ID, True)])
     executable(root / "real" / "claude", f"#!/bin/sh\n[ \"$DISABLE_AUTOUPDATER\" = 1 ] || {{ echo \"updater=$DISABLE_AUTOUPDATER\" >&2; exit 3; }}\ncat <<'EOF'\n{listing}\nEOF\n")
-    assert isinstance(readiness.plugin(children_on(SYSTEM), Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Ready)
+    assert isinstance(readiness.plugin(runner_on(SYSTEM), Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Ready)
 
 
-def test_no_claude_to_ask_is_unknown(root: Path) -> None:
-    assert isinstance(readiness.plugin(FakeChildren(VirtualClock()), Home(root / "home"), f"{root / 'empty'}:{SYSTEM_PATH}"), Unknown)
+def test_no_claude_to_ask_is_unknown_saying_it_could_not_be_started(root: Path) -> None:
+    found = readiness.plugin(FakeChildren(VirtualClock(), {"claude": NOT_THERE}), Home(root / "home"), SYSTEM_PATH)
+    assert found == Unknown("plugin", f"{CANNOT_ASK}could not be started: {os.strerror(errno.ENOENT)}")
 
 
 @pytest.mark.outside
@@ -128,7 +139,7 @@ def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -
     executable(root / "bin" / "fritter", "#!/bin/sh\necho fritter ran >&2\nexit 9\n")
     executable(root / "bin" / "claude", shim_script(root / "bin" / "fritter", root / "wire.sock"))
     path = claude_listing(root, [listed(PLUGIN_ID, True)])
-    assert isinstance(readiness.plugin(children_on(SYSTEM), Home(root / "home"), f"{root / 'bin'}:{path}"), Ready)
+    assert isinstance(readiness.plugin(runner_on(SYSTEM), Home(root / "home"), f"{root / 'bin'}:{path}"), Ready)
 
 
 # The shim
@@ -727,7 +738,7 @@ def hands_printing(root: Path, said: str, code: int = 0) -> str:
 
 @pytest.mark.outside
 def test_this_hands_on_path_is_ready(root: Path) -> None:
-    found = readiness.installed(children_on(SYSTEM), hands_printing(root, f"hands {version('hands')}"))
+    found = readiness.installed(runner_on(SYSTEM), hands_printing(root, f"hands {version('hands')}"))
     assert isinstance(found, Ready) and str(root / "tools" / "hands") in found.said
 
 
@@ -743,7 +754,7 @@ def test_a_hands_with_no_shim_beside_it_is_missing_since_the_plugin_s_hooks_cann
     # As with a hands from before the plugin ran `hands-shim`: its `hands` answers, and every hook of the plugin fails.
     path = hands_printing(root, f"hands {version('hands')}")
     (root / "tools" / "hands-shim").unlink()
-    found = readiness.installed(children_on(SYSTEM), path)
+    found = readiness.installed(runner_on(SYSTEM), path)
     assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and "`hands update`" in found.fix
 
 
@@ -753,20 +764,20 @@ def test_a_shim_in_another_directory_is_not_the_one_beside_hands(root: Path) -> 
     hands_printing(root, f"hands {version('hands')}")
     (root / "tools" / "hands-shim").unlink()
     executable(root / "other" / "hands-shim", "#!/bin/sh\n")
-    found = readiness.installed(children_on(SYSTEM), f"{root / 'tools'}:{root / 'other'}:{SYSTEM_PATH}")
+    found = readiness.installed(runner_on(SYSTEM), f"{root / 'tools'}:{root / 'other'}:{SYSTEM_PATH}")
     assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and str(root / "other" / "hands-shim") in found.said
 
 
 @pytest.mark.outside
 def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:
     # As after an upgrade that left an older install ahead on PATH: sessions would run its hooks.
-    found = readiness.installed(children_on(SYSTEM), hands_printing(root, "hands 0.0.1"))
+    found = readiness.installed(runner_on(SYSTEM), hands_printing(root, "hands 0.0.1"))
     assert isinstance(found, Missing) and "is hands 0.0.1, not this hands" in found.said
 
 
 @pytest.mark.outside
 def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
-    found = readiness.installed(children_on(SYSTEM), hands_printing(root, "broken", 3))
+    found = readiness.installed(runner_on(SYSTEM), hands_printing(root, "broken", 3))
     assert isinstance(found, Unknown) and "exited 3" in found.said
 
 
@@ -778,7 +789,7 @@ def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monk
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(root / "home")
     onboard(home.brain)
-    found = readiness.configured(children_on(SYSTEM), home, pin(home.brain, fake_claude), UNMANAGED, shell_without_hands_settings(), heartbeat.NeverRan(home.status))
+    found = readiness.configured(runner_on(SYSTEM), home, pin(home.brain, fake_claude), UNMANAGED, shell_without_hands_settings(), heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -795,7 +806,8 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     laid_out(home)
-    found = readiness.configured(FakeChildren(VirtualClock()), home, LAID_OUT, UNMANAGED, {"HANDS_DEBUG": "1"}, heartbeat.NeverRan(home.status))
+    claude = FakeChildren(VirtualClock(), {str(LAID_OUT.claude(home.brain)): exited(0, LOGGED_IN)})
+    found = readiness.configured(claude, home, LAID_OUT, UNMANAGED, {"HANDS_DEBUG": "1"}, heartbeat.NeverRan(home.status))
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
@@ -958,7 +970,7 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
 @pytest.mark.outside
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 0
     assert marks(capsys) == dict.fromkeys(STEPS, "✓")
 
 
@@ -1009,7 +1021,7 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
     assert marks(capsys) == {step: "✗" if step in steps else "✓" for step in STEPS}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1024,10 +1036,10 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     home = set_up(root, fritter, monkeypatch, "unreadable")
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running(), indicators=FakeIndicators()) == 2
+    assert main_on_fakes(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 2
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?"}
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?", "grant": "✗"}
     # Each event's reason names the steps that decided its exit: the one not looked at, then the missing one alone.
     events = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -1044,14 +1056,14 @@ def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_b
 ) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     no_hands(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "check"], pin=LAID_OUT, processes=hands_running()) == 1
     *terse, hint = capsys.readouterr().out.splitlines()
     assert hint == VERBOSE_HINT
     [line] = [each for each in terse if each.startswith("✗")]
     named, fix = line.split("  → ")
     assert (named.rstrip(), fix) == ("✗ `hands` not on PATH", "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH")
     assert not any(each.startswith(" ") for each in terse)
-    assert main(["--home", str(home.root), "check", "-v"], pin=LAID_OUT, machine=UNMANAGED, processes=hands_running(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(home.root), "check", "-v"], pin=LAID_OUT, processes=hands_running()) == 1
     full = capsys.readouterr().out.splitlines()
     # Each step's line is the one the terse check printed, and beneath it, what is said of it in full, less its fix.
     assert [each for each in full if not each.startswith(" ")] == terse

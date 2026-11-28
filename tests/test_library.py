@@ -14,9 +14,9 @@ import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 
 from conftest import KEYCHAIN_READER, PATIENCE_SECS, taken
+from fakeparties import main_on_fakes
 from fakechildren import FakeChildren, exited
 from datetime import UTC, datetime
-from fakeindicators import FakeIndicators
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.daemon import run
@@ -33,8 +33,6 @@ from hands.voice.player import Player
 from hands.voice.voices import Voices, source
 from hands.voice.voicechoice import DEFAULT, LibraryVoice, chosen, parse_voice
 from hands.daemon.run import CannotStart
-from fixtures.fakemachine import UNMANAGED
-from fakeprocesses import processes
 
 LIBRARY_FILES = ["vctk/p225_023_enhanced.wav", "vctk/p226_023_enhanced.wav", "alba-mackenna/casual.wav", "alba-mackenna/casual.wav.1e68beda@240.safetensors"]
 
@@ -308,22 +306,20 @@ def test_the_daemons_run_starts_with_the_keychains_token_in_the_environment_the_
 
     monkeypatch.setattr(library, "_keychain_token", held)
     monkeypatch.setattr(cli, "run_daemon", run_daemon)
-    assert cli.main(["--home", str(tmp_path / "home"), "run"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 0
+    assert main_on_fakes(["--home", str(tmp_path / "home"), "run"]) == 0
     assert ran == ["from-the-keychain"]
 
 
 def test_a_command_but_the_run_reads_no_keychain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from hands.daemon import cli
 
     def unread(_children: Children) -> library.Absent:
         raise AssertionError("a command that fetches no voice read the keychain")
 
     monkeypatch.setattr(library, "_keychain_token", unread)
-    assert cli.main(["--home", str(tmp_path / "home"), "status"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators()) == 1
+    assert main_on_fakes(["--home", str(tmp_path / "home"), "status"]) == 1
 
 
 def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
-    from hands.daemon import cli
 
     reads: list[int] = []
 
@@ -333,5 +329,5 @@ def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(library, "_keychain_token", record)
     with pytest.raises(SystemExit):
-        cli.main(["--help"], machine=UNMANAGED, processes=processes(), indicators=FakeIndicators())
+        main_on_fakes(["--help"])
     assert reads == []

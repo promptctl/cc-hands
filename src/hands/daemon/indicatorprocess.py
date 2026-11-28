@@ -40,18 +40,19 @@ class Indicators(Protocol):
 
 @dataclass(frozen=True)
 class SpawnedIndicators:
-    """The Indicators hands runs on: each a process of this one's, started apart from Children, whose children are
-    supervised by a thread of the process that starts them, which a restart's exec does not keep. The indicator outlives
-    that exec: a restart keeps the pid, so it stays a child of the run after it, which ends it by that pid."""
+    """The Indicators hands runs on: each a process of its own, as AppKit wants a main thread and this process's is the
+    daemon's. Each is started apart from Children, whose children are supervised by a thread of the process that starts
+    them, which a restart's exec does not keep. The indicator outlives that exec: a restart keeps the pid, so it stays a
+    child of the run after it, which ends it by that pid."""
 
     grace: float = RETIRE_GRACE_SECONDS
 
     def show(self, home: Home) -> int:
         argv = invocation(home, "indicator", "--parent", str(os.getpid()))
-        # [LAW:single-enforcer] exception: started apart from the runner, which holds a child to a caller's limit, since
-        # the indicator runs as long as the run does and ends itself once the run that started it is gone (menubar.show),
-        # however the run ended; a session of its own keeps the terminal's Ctrl-C and hangup from ending it first, before
-        # it has said so. Its output shares this terminal, so an indicator that fails is seen where the daemon's own are.
+        # [LAW:single-enforcer] exception: started, waited on and ended apart from hands.sessions.child, which cannot yet
+        # hold a child across the restart's exec, until promptctl-testing-c3u.3pn. The indicator runs as long as the run
+        # does and ends itself once the run that started it is gone (menubar.show), however the run ended; a session of
+        # its own keeps the terminal's Ctrl-C and hangup from ending it first, before it has said so. Its output shares this terminal, so an indicator that fails is seen where the daemon's own are.
         shown = os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
         threading.Thread(target=_reap, args=(shown,), name="indicator", daemon=True).start()
         return shown
@@ -65,7 +66,7 @@ class SpawnedIndicators:
             _said_exited(status)
             return "exited"
         # Still this process's child and unreaped, so the pid is the indicator's and no other process's. Its group goes
-        # with it, the notices it was posting included, as hands.sessions.child kills the group of a child it started.
+        # with it, as hands.sessions.child kills the group of a child it started.
         _signalled(indicator, signal.SIGTERM)
         statuses: queue.SimpleQueue[int] = queue.SimpleQueue()
         threading.Thread(target=lambda: statuses.put(os.waitpid(indicator, 0)[1]), name="retire", daemon=True).start()
@@ -95,8 +96,9 @@ def _signalled(group: int, signum: signal.Signals) -> None:
     try:
         os.killpg(group, signum)
     except (ProcessLookupError, PermissionError):
-        # Every process in the group had exited: gone, ProcessLookupError; exited and not yet reaped, macOS says
-        # PermissionError. The wait that follows reaps the leader all the same.
+        # [LAW:no-silent-failure] exception: until promptctl-testing-c3u.3pn, a refusal is taken for a group that had
+        # exited: gone, ProcessLookupError; exited and not yet reaped, macOS says PermissionError. The wait that follows
+        # reaps the leader all the same.
         pass
 
 

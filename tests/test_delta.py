@@ -24,7 +24,8 @@ from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Record
-from hands.clock import SYSTEM, Clock
+from hands.clock import SYSTEM
+from hands.sessions.child import Children
 from hands.sessions.delta import BASELINING, HELD, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Baseline, Capture, Deltas, Standing, Unread
 from conftest import RealWall, new_sessions, patient
 from hands.sessions.registry import Sessions
@@ -734,12 +735,13 @@ SHUT_DOWN = """
 import asyncio, os, sys, time
 from pathlib import Path
 from hands.clock import SYSTEM
+from hands.sessions.child import Runner
 from hands.sessions.delta import Deltas
 
 root = Path(sys.argv[1])
 
 async def ends(after: float) -> None:
-    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, clock=SYSTEM)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, children=Runner(SYSTEM, lambda _entry: None))
     await deltas.snapshot("s", root)
     (root / "a.py").write_text(f"x = {after}\\n")
     await deltas.compare("s", again=False)
@@ -1394,8 +1396,8 @@ class Stalled(Deltas):
     """A repository whose next read of a stage waits at a gate the test holds, as a read waits on a loaded machine's
     scheduler. A capture is overtaken because its gate is held, never because a deadline was made short."""
 
-    def __init__(self, record: Record, inherited: Mapping[str, str], baselining: float, patience: float, clock: Clock) -> None:
-        super().__init__(record, inherited, baselining=baselining, patience=patience, clock=clock)
+    def __init__(self, record: Record, inherited: Mapping[str, str], baselining: float, patience: float, children: Children) -> None:
+        super().__init__(record, inherited, baselining=baselining, patience=patience, children=children)
         self._gates: dict[Stage, deque[Gate]] = {"baseline": deque(), "standing": deque(), "tree": deque(), "moved": deque()}
 
     def hold(self, stage: Stage) -> Gate:
