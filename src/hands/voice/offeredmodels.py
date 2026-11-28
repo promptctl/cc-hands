@@ -13,6 +13,7 @@ OFFERED_MODELS: tuple[OfferedModel, ...] = get_args(OfferedModel)
 
 
 def parse_model(text: str) -> OfferedModel:
-    """[LAW:single-enforcer] the model hands runs on that `text` names, blanks around it aside, however it was given;
-    raises Rejected naming the ones it runs on."""
+    """[LAW:single-enforcer] the model hands runs on that `text` names, blanks around it aside, as the file, --model and
+    the page give it (the brain's tool is shown the ids as an enum, which takes each exactly); raises Rejected naming the
+    ones it runs on."""
     return one_of(text.strip(), OFFERED_MODELS, "hands runs Claude on")
