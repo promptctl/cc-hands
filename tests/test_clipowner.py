@@ -21,7 +21,7 @@ from hands.sessions.wide import WideEvent, begun
 from hands.virtualclock import VirtualClock
 from hands.voice import clipowner, transcription
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import Clip, Fate, Heard, Hearing, Hearings, Recording, Reference, Sound, Playhead, Synthesis, Transcriber, voices
+from hands.voice.clips import Clip, Fate, Heard, Hearings, Recording, Reference, Sound, Playhead, Synthesis, Transcriber, voices
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger, by_hand
 from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
@@ -305,64 +305,60 @@ async def test_a_listeners_work_after_its_clip_ends_is_a_hearing_of_its_own() ->
 
 
 async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_hears_on() -> None:
-    clock, hung = VirtualClock(), asyncio.Event()
-    answers: list[Hearing] = []
-
-    async def never() -> Heard:
-        await hung.wait()
-        return Heard(None, None)
-
     async def words() -> Heard:
         return Heard("still here", 0.0)
 
-    answers += [never, words]
+    clock, answers = VirtualClock(), [hung, words]
     listener = Heeding("hung", hearings=lambda _clip, _sound: (answers.pop(0),))
     async with rigged(Scripted([None]), (listener,), clock) as rig:
         down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
+        # [LAW:no-ambient-temporal-coupling] the clock moves once the hung hearing is inside its bound.
+        await clock.scheduled(clock.at + clipowner.HEARING_SECONDS)
+        clock.advance(clipowner.HEARING_SECONDS)
+        # Returned once the hung one failed, the next hearing has its whole bound.
         await rig.frame(down, frame_of(3))
-        await run_out(rig, clock, answers)
         await rig.until(lambda: ("barge_in", 1, 0.0) in rig.seen.seen)
         failed, heard = rig.events("hearing")
         assert (failed.outcome, failed.error) == ("failed", "TimeoutError: ")
         assert heard.outcome == "ok"
 
 
-async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_queued_behind_a_hung_one_fails() -> None:
-    clock, hung = VirtualClock(), asyncio.Event()
-    answers: list[Hearing] = []
-
-    async def never() -> Heard:
-        await hung.wait()
-        return Heard(None, None)
-
-    async def words() -> Heard:
-        # A hearing that has to wait at all: one whose words are already in hand is no hearing still to come back.
-        await asyncio.sleep(0)
+async def test_a_hearing_queued_behind_a_hung_one_is_given_what_is_left_of_its_own_bound() -> None:
+    async def too_late() -> Heard:
         return Heard("too long in line", 0.0)
 
-    answers += [never, words]
-    listener = Heeding("hung", hearings=lambda _clip, _sound: (answers.pop(0),))
+    async def in_time() -> Heard:
+        return Heard("in time", 0.5)
+
+    # Returned with the hung one, a hearing whose bound runs out as the hung one's does; and one returned halfway through.
+    clock, answers = VirtualClock(), [(hung, too_late), (in_time,)]
+    bound = clipowner.HEARING_SECONDS
+    listener = Heeding("hung", hearings=lambda _clip, _sound: answers.pop(0))
     async with rigged(Scripted([None]), (listener,), clock) as rig:
         down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
+        # [LAW:no-ambient-temporal-coupling] each move of the clock comes once what it times has begun: the hung hearing
+        # inside its bound, then the third returned, which the listener writes down as it returns it.
+        await clock.scheduled(clock.at + bound)
+        clock.advance(bound / 2)
         await rig.frame(down, frame_of(3))
-        await run_out(rig, clock, answers)
-        await rig.until(lambda: len(rig.events("hearing")) == 2)
-        # Its minute ran out while it waited behind the hung one, as the hung one's did: its event says how long that was.
-        hung_one, queued = rig.events("hearing")
-        assert [event.error for event in (hung_one, queued)] == ["TimeoutError: "] * 2
-        assert queued.duration_ms == clipowner.HEARING_SECONDS * 1000
-        assert ("barge_in", 1, 0.0) not in rig.seen.seen
+        await rig.until(lambda: [kind for kind, _ in listener.given].count("heard") == 2)
+        clock.advance(bound / 2)
+        await rig.until(lambda: len(rig.events("hearing")) == 3)
+        hung_one, in_line, heard = rig.events("hearing")
+        assert [(event.error, event.duration_ms) for event in (hung_one, in_line)] == [
+            ("TimeoutError: ", bound * 1000),
+            (f"TimeoutError: its {bound:g} s ran out while it waited in line", bound * 1000),
+        ]
+        # Its words are heard, half its bound after it was returned, and cut hands off; the late one's never ran.
+        assert (heard.outcome, heard.facts["heard"], heard.duration_ms) == ("ok", "words", bound / 2 * 1000)
+        assert [entry for entry in rig.seen.seen if entry[0] == "barge_in"] == [("barge_in", 1, 0.5)]
 
 
-async def run_out(rig: Rig, clock: VirtualClock, answers: list[Hearing]) -> None:
-    """The hung hearing's bound spent on `clock`, once the listener has returned every hearing in `answers`, each beginning
-    before the clock moves, and the first is inside its bound: a test moves the clock only once the deadline it spends is
-    being waited out [LAW:no-ambient-temporal-coupling]."""
-    await rig.until(lambda: not answers)
-    await clock.scheduled(clipowner.HEARING_SECONDS)
-    clock.advance(clipowner.HEARING_SECONDS)
+async def hung() -> Heard:
+    """A hearing that never comes back."""
+    return await asyncio.get_running_loop().create_future()
 
 
 def at_48k(gate: Gate) -> Frame:

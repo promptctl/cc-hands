@@ -421,7 +421,13 @@ class ClipOwner(FrameProcessor):
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
         with continuing(None), unit("hearing", self._record, began):
             annotate(listener=listener.name, clip=clip.number)
-            async with self._clock.timeout(HEARING_SECONDS - (self._clock.now() - began.began)):
+            left = HEARING_SECONDS - (self._clock.now() - began.began)
+            # [LAW:no-ambient-temporal-coupling] a hearing that waited out its whole bound in line has nothing left, and is not
+            # started: a deadline already come cancels a block only at its first wait, so one whose words are in hand would
+            # come back past its bound and cut on them.
+            if left <= 0:
+                raise TimeoutError(f"its {HEARING_SECONDS:g} s ran out while it waited in line")
+            async with self._clock.timeout(left):
                 heard = await hearing()
             annotate(heard="nothing" if heard.words is None else "words")
             # A speaker a listener hears say words cuts while their clip is still open. Heard once it has closed, they cut
