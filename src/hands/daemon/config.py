@@ -3,7 +3,7 @@ run runs starts the run again, on the file as edited.
 
     [llm]
     backend = "claude"           # the brain, a Claude Code of hands' own: the default, and the one there is
-    model = "claude-sonnet-5-5"  # one of CLAUDE_MODELS
+    model = "claude-sonnet-5-5"  # one of OFFERED_MODELS (hands.voice.offeredmodels)
 
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
@@ -41,6 +41,7 @@ from typing import cast
 from urllib.parse import urlsplit
 
 import tomlkit
+from tomlkit.exceptions import ParseError
 
 from hands.brain import configdir, pinned
 from hands.clock import Clock
@@ -51,6 +52,7 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
+from hands.voice.offeredmodels import OfferedModel, parse_model
 from hands.voice.voicechoice import Chosen, SampleLine, parse_voice
 from hands.voice.wakemodels import PRETRAINED
 from hands.voice.wakeword import Pretrained, Trained, Word
@@ -58,17 +60,12 @@ from hands.voice.wakeword import Pretrained, Trained, Word
 # How late an edit to the file is heard.
 EDIT_SECONDS = 1.0
 
-ANTHROPIC_MODEL = "claude-sonnet-5-5"
-# The models hands runs on: one Haiku, Sonnet, Opus, and Fable each. A model outside them is refused where the file is
-# parsed, since by voice a turn that fails on it could never choose another.
-CLAUDE_MODELS = ("claude-haiku-4-5-20251001", ANTHROPIC_MODEL, "claude-opus-5-5", "claude-fable-5-1")
-
 
 @dataclass(frozen=True)
 class Claude:
     """Claude through a slim Claude Code of hands' own, on its own login; its requests go through hands' proxy, so it has no URL."""
 
-    model: str = ANTHROPIC_MODEL
+    model: OfferedModel = "claude-sonnet-5-5"
 
 
 @dataclass(frozen=True)
@@ -92,16 +89,16 @@ class Settings:
 
     held: bytes | None
     config: Config
-    model: str | None = None
+    model: OfferedModel | None = None
 
     def path(self, home: Home) -> Path | None:
         """The file the settings were read from, None where they are every default."""
         return None if self.held is None else home.config
 
 
-def load(home: Home, model: str | None = None) -> Settings:
+def load(home: Home, model: OfferedModel | None = None) -> Settings:
     """The settings `home` holds, on `model` where one is given, read once as a run starts; raises Rejected naming the
-    file and what is wrong in it, or --model and why hands cannot run on it."""
+    file and what is wrong in it."""
     held = _readable(home, _held(home))
     return Settings(held, _settings(home, held, model), model)
 
@@ -144,7 +141,7 @@ async def edited(home: Home, pin: pinned.Pin, machine: configdir.Machine, enviro
                 continue
             match (await off_loop(weigh, "weighing a settings edit")).verdict:
                 # [LAW:escape-local-minima] exception: a login lost since the start passes here, until
-                # promptctl-phone-app-9d9y.h4s (blocked by promptctl-brain-uoz0.quv) weighs it with no Claude Code started.
+                # promptctl-phone-app-9d9y.h4s weighs it with no Claude Code started.
                 case Startable():
                     if _held(home) == now:
                         return SettingsEdited(path=str(home.config), refused=None)
@@ -174,11 +171,11 @@ class OwnModel:
         self._environment = environment
         self._running = running
 
-    def running(self) -> str:
+    def running(self) -> OfferedModel:
         """The model the run is on: the one --model named, or the file's as it started."""
         return self._running.config.llm.model
 
-    def weigh(self, model: str) -> "ModelChoice":
+    def weigh(self, model: OfferedModel) -> "ModelChoice":
         """`model` weighed, writing nothing: the choice `keep` writes. Raises Rejected where the file could not take it,
         or the start's preflight refuses: weighed here as `edited` weighs an edit by hand, so a choice a restart would
         refuse is refused while the user is there to hear why. A login lost since the start is not weighed
@@ -186,27 +183,21 @@ class OwnModel:
         claude this process has not hashed since it changed, so it is called off the loop."""
         return self._edit(model)
 
-    def _edit(self, model: str) -> "ModelChoice":
+    def _edit(self, model: OfferedModel) -> "ModelChoice":
         if self._running.model is not None:
             # [LAW:one-source-of-truth] the file's model is not the run's while --model outranks it, so an edit to it would
             # change nothing until hands is started without the flag.
             raise Rejected(f"hands was started with --model {self._running.model}, which it keeps over {self._home.config} until it is started without it")
-        model = model.strip()
-        # The file is taken whole first, so the edit is only ever made to settings a start would take: on the run's own
-        # --model, as the start weighs it, and one that does not parse is refused beside the home's other refusals.
+        if model == self.running():
+            raise Rejected(f"hands runs on {model} already")
+        # [LAW:single-enforcer] the bytes the choice writes are the bytes weighed, as the next start reads them, as
+        # SampleLines.keep weighs its own; one a start would refuse is refused beside the home's other refusals.
         try:
             held = _readable(self._home, _held(self._home))
-            on_file = _settings(self._home, held, self._running.model)
+            edited = _with_model(self._home, held, model)
+            _settings(self._home, edited, None)
         except Rejected as error:
             raise Rejected("; ".join(beside(preflight(self._home, self._pin, self._machine, self._environment), error))) from error
-        edited = _with_model(held, model)
-        chosen = _settings(self._home, edited, self._running.model)
-        if chosen == self._running.config:
-            raise Rejected(f"hands runs on {model} already")
-        if chosen == on_file:
-            # The file names it, and the run is not on it: an edit `edited` has yet to take, or one it refused, which the
-            # same bytes written again would not change. Which of the two is not known here, so the reason names both.
-            raise Rejected(f"{self._home.config} names {model} already and hands is not on it yet: an edit it is about to take, or one it refused when saved, which `hands log` says and `hands restart` starts on")
         # [LAW:escape-local-minima] exception: a login lost since the start passes here, until promptctl-phone-app-9d9y.h4s.
         match preflight(self._home, self._pin, self._machine, self._environment).verdict:
             case Refused(refusals=refusals):
@@ -220,7 +211,7 @@ class ModelChoice:
     """A model weighed for hands: its id, and the edit that keeps it, made to the file as it was when weighed. Holds
     nothing until it is kept."""
 
-    to: str
+    to: OfferedModel
     write: Callable[[], None]
 
     def keep(self) -> None:
@@ -233,12 +224,21 @@ class ModelChoice:
         self.write()
 
 
-def _with_model(held: bytes | None, model: str) -> bytes:
-    # Only read once `_settings` has taken the file, so it is TOML and [llm], where there is one, is a table.
-    document = tomlkit.parse(b"" if held is None else held)
-    llm = cast(dict[str, object], document.setdefault("llm", tomlkit.table()))
+def _with_model(home: Home, held: bytes | None, model: OfferedModel) -> bytes:
+    document, llm = _file(home, held, partial(_opened, name="llm"))
     llm["model"] = model
     return tomlkit.dumps(document).encode()
+
+
+def _opened(text: str, name: str) -> tuple[tomlkit.TOMLDocument, dict[str, object]]:
+    """The file as an edit takes it, its every other line kept as written, and its table `name`, made where it has none;
+    raises Rejected where it is not TOML or `name` is no table, so an edit is made only to a file it can be made to."""
+    try:
+        document = tomlkit.parse(text)
+    except ParseError as error:
+        raise Rejected(f"not TOML: {error}") from error
+    document.setdefault(name, tomlkit.table())
+    return document, cast(dict[str, object], _table(document, name))
 
 
 # [LAW:single-enforcer] held by every write of a config.toml, whichever choice makes it, so no two pass `_keep`'s check
@@ -277,7 +277,7 @@ def _readable(home: Home, held: bytes | Unread | None) -> bytes | None:
             return held
 
 
-def _settings(home: Home, held: bytes | None, model: str | None) -> Config:
+def _settings(home: Home, held: bytes | None, model: OfferedModel | None) -> Config:
     # [LAW:single-enforcer] the start and the watch weigh the file's bytes here, the same bytes each compared, on the
     # same --model.
     return _file(home, held, partial(parse, model=model))
@@ -289,17 +289,11 @@ def _file[T](home: Home, held: bytes | None, read: Callable[[str], T]) -> T:
         return read("" if held is None else held.decode())
     except UnicodeDecodeError as error:
         raise Rejected(f"{home.config} could not be read: {error}") from error
-    except ModelFlagRejected:
-        raise
     except Rejected as error:
         raise Rejected(f"{home.config}: {error}") from error
 
 
-class ModelFlagRejected(Rejected):
-    """A model --model named that hands cannot run on: the flag's fault, never the file's, so it is said without it."""
-
-
-def parse(text: str, model: str | None = None) -> Config:
+def parse(text: str, model: OfferedModel | None = None) -> Config:
     """The settings `text` holds, on `model`, the one --model names, where one is given: it outranks the file's, which
     is then never read, so one hands does not offer refuses nothing and an edit to it alone is no edit."""
     return _crossed(text, model)[0]
@@ -312,7 +306,7 @@ def _toml(text: str) -> dict[str, object]:
         raise Rejected(f"not TOML: {error}") from error
 
 
-def _crossed(text: str, model: str | None) -> tuple[Config, dict[Chosen, SampleLine]]:
+def _crossed(text: str, model: OfferedModel | None) -> tuple[Config, dict[Chosen, SampleLine]]:
     """The settings `text` holds, and the lines it keeps for voices, which Config holds none of: a line edited is no
     edit, since it is read where it is said."""
     # [LAW:parse-dont-validate] the one crossing from the file: past it, a setting is a variant that holds exactly its fields.
@@ -375,17 +369,15 @@ class SampleLines:
         # settings a start would take.
         _, kept = _file(self._home, held, partial(_crossed, model=self._running.model))
         key = kept[voice].key if voice in kept else str(voice)
-        edited = _with_line(held, key, line.strip())
+        edited = _with_line(self._home, held, key, line.strip())
         # What is written is taken as a start takes it, so the file never holds a key the next start refuses.
         _settings(self._home, edited, self._running.model)
         _keep(self._home, held, edited)
         return SampleLine(key, line.strip())
 
 
-def _with_line(held: bytes | None, key: str, line: str) -> bytes:
-    # Only read once `_crossed` has taken the file, so it is TOML and [sample_lines], where there is one, is a table.
-    document = tomlkit.parse(b"" if held is None else held)
-    lines = cast(dict[str, object], document.setdefault("sample_lines", tomlkit.table()))
+def _with_line(home: Home, held: bytes | None, key: str, line: str) -> bytes:
+    document, lines = _file(home, held, partial(_opened, name="sample_lines"))
     if line:
         # Set in place, so a line edited keeps its place in the table.
         lines[key] = line
@@ -457,7 +449,7 @@ def _base(url: str, where: str, server: str, example: str, appended: str) -> str
     return url
 
 
-def _llm(table: Mapping[str, object], model: str | None) -> Claude:
+def _llm(table: Mapping[str, object], model: OfferedModel | None) -> Claude:
     # [LAW:one-type-per-behavior] hands reaches its model through a harness it drives, as it drives Claude Code: the brain.
     # Another harness joins as another backend here; a model API reached with a key is none.
     match backend := _text(table, "[llm]", "backend", "claude"):
@@ -469,22 +461,11 @@ def _llm(table: Mapping[str, object], model: str | None) -> Claude:
             raise Rejected(f"[llm] backend {backend!r} is not one hands runs on: it runs on claude, the brain, a Claude Code of its own, never on a model API reached with a key")
 
 
-def _on(llm: Claude, table: Mapping[str, object], flag: str | None) -> Claude:
-    """`llm` on the model `table` names, its default where it names none, or on `flag`, the --model that outranks it."""
-    if flag is None:
-        return replace(llm, model=_offered(_text(table, "[llm]", "model", llm.model)))
-    try:
-        return replace(llm, model=_offered(flag))
-    except Rejected as error:
-        raise ModelFlagRejected(f"--model {flag!r}: {error}") from error
-
-
-def _offered(model: str) -> str:
-    # [LAW:single-enforcer] the one place a model is refused that hands does not offer, whether the file, --model, or a
-    # choice by voice named it.
-    if model not in CLAUDE_MODELS:
-        raise Rejected(f"hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}")
-    return model
+def _on(llm: Claude, table: Mapping[str, object], flag: OfferedModel | None) -> Claude:
+    """`llm` on the model `table` names, its default where it names none, or on `flag`, the --model that outranks it.
+    One the file names that hands does not offer is refused here, as the file is parsed, since by voice a turn that
+    failed on it could never choose another."""
+    return replace(llm, model=parse_model(_text(table, "[llm]", "model", llm.model)) if flag is None else flag)
 
 
 def _table(top: Mapping[str, object], name: str) -> Mapping[str, object]:

@@ -343,7 +343,7 @@ def test_a_claude_code_reached_directly_reaches_the_api_as_hands_environment_doe
 
 
 def station(tmp: Path) -> Station:
-    return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5", THROUGH, dict(os.environ))
+    return Station(tmp / "brain", workdir(tmp / "brain"), "claude-sonnet-5-5", THROUGH, dict(os.environ))
 
 
 # The login a pane's command runs on, where which one is no part of the test.
@@ -516,7 +516,7 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     assert environment(tmp_path / "brain", THROUGH, inherited)["DISABLE_AUTOUPDATER"] == "1"
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
-        running = await in_tmux(spawned_on(SYSTEM), spawned_terminals(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, inherited), PLAN, [str(recorder)], workspace)
+        running = await in_tmux(spawned_on(SYSTEM), spawned_terminals(SYSTEM), Station(tmp_path / "brain", tmp_path, "claude-sonnet-5-5", THROUGH, inherited), PLAN, [str(recorder)], workspace)
         assert await running.exit == 0
     finally:
         shutil.rmtree(workspace)
@@ -565,9 +565,9 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
-        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
+        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
         "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
-        "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid, "running_on": "claude-sonnet-5", "context_used": None, "reported": "posted",
+        "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid, "running_on": "claude-sonnet-5-5", "context_used": None, "reported": "posted",
     }
     # Held once the brain is up, for the next start to resume, as Claude Code keeps the transcript of its turns.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Resumed(SessionId("b1"))
@@ -1336,7 +1336,7 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
 
 @pytest.mark.outside
 async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     running = await in_tmux(spawned_on(SYSTEM), spawned_terminals(SYSTEM), station, PLAN, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
@@ -1360,7 +1360,7 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
 
 @pytest.mark.outside
 async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     assert await (await in_tmux(spawned_on(SYSTEM), spawned_terminals(SYSTEM), station, PLAN, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
     (workspace / "status").unlink()
@@ -1378,7 +1378,7 @@ async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_
 
 @pytest.mark.outside
 async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_brain_neither_ends_it_nor_keeps_it(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     go = tmp_path / "go"
     running = await in_tmux(spawned_on(SYSTEM), spawned_terminals(SYSTEM), station, PLAN, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
@@ -1404,7 +1404,7 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
 
 @pytest.mark.outside
 async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_session(tmp_path: Path) -> None:
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         ready = tmp_path / "ready"
@@ -1423,7 +1423,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
     holder = tmux_at("new-session", "-d", "-s", "theirs", "-e", "ANTHROPIC_API_KEY=theirs", "sleep 60")
     assert holder.returncode == 0, holder.stderr
     tmux_at("set-environment", "-g", "ANTHROPIC_API_KEY", "theirs")
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", THROUGH, dict(os.environ))
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5-5", THROUGH, dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         seen = tmp_path / "seen"
@@ -1811,7 +1811,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
 async def test_the_run_says_the_brains_login_expired_in_every_beat_once_a_turn_says_so_until_a_later_one_says_otherwise(tmp_path: Path, fake_claude: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=list[Entry]().append), Home(tmp_path), list[Entry]().append)
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     async with mind(SYSTEM, claude, [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, THROUGH, Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", list[Entry]().append, os.environ, never_barged_in, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         brain = minded.llm._brain  # pyright: ignore[reportPrivateUsage]
@@ -1830,7 +1830,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     async with mind(SYSTEM, claude, [tool(echo)], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, THROUGH, wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
@@ -1878,7 +1878,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 
     monkeypatch.setattr(run, "start_brain", starting)
     with pytest.raises(CannotStart, match="^seen$"):
-        async with minding(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None))):
+        async with minding(ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None))):
             pass
     [launch] = launched
     assert "\n\nDry and wry.\n\n" in launch.instruction
@@ -1890,7 +1890,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     # A PATH with no tmux: the pinned claude is the start's preflight's to refuse, before any launch (tests/test_preflight.py).
     with pytest.raises(CannotStart, match="^no tmux is on the PATH to run the brain in$"):
         async with mind(SYSTEM, claude, [], BrainDoor({}, (), Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, THROUGH, Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_barged_in, Attention):
@@ -1910,7 +1910,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)
 
-    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
+    claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(faked(tmp_path), pinned.PIN.version), None)), voice=voicechoice.DEFAULT)
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):

@@ -62,7 +62,7 @@ from test_clipowner import Scripted
 def unused_gallery() -> Gallery:
     """A gallery no request in these tests reads: the page's own routes are tested in test_gallerypage, and the one check
     that the phone's server mounts them is made on the port below."""
-    return Gallery(voices=Mock(), levels=Mock(), desk=Mock(), own=Mock(), switches=Mock(), wake=Pretrained(), models=())
+    return Gallery(voices=Mock(), levels=Mock(), desk=Mock(), own=Mock(), switches=Mock(), wake=Pretrained())
 
 
 def unused_wake(home: Home) -> tuple[WakeModels, Release]:

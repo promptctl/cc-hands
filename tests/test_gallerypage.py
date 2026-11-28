@@ -16,6 +16,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
 from hands.voice.modelswitch import Switches
+from hands.voice.offeredmodels import OFFERED_MODELS, OfferedModel
 from hands.voice.listening import Asker, Level
 from hands.virtualclock import VirtualClock
 from hands.voice.longpoll import POLL_SECONDS, WAIT_SECONDS
@@ -30,7 +31,6 @@ from conftest import events
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
-MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
 
 
 @dataclass
@@ -114,15 +114,15 @@ class Speaker:
 class Own:
     """Hands' own model: the one it runs on, a weighing that may refuse, and what was kept, or the keep refused."""
 
-    running_on: str = MODELS[0]
+    running_on: OfferedModel = OFFERED_MODELS[0]
     refused: Exception | None = None
     unkept: Exception | None = None
-    kept: list[str] = field(default_factory=list[str])
+    kept: list[OfferedModel] = field(default_factory=list[OfferedModel])
 
-    def running(self) -> str:
+    def running(self) -> OfferedModel:
         return self.running_on
 
-    def weigh(self, model: str) -> "Weighing":
+    def weigh(self, model: OfferedModel) -> "Weighing":
         if self.refused is not None:
             raise self.refused
         return Weighing(model, self)
@@ -132,7 +132,7 @@ class Own:
 class Weighing:
     """A model the page's own weighed, kept into it, or refused as it is kept."""
 
-    to: str
+    to: OfferedModel
     own: Own
 
     def keep(self) -> None:
@@ -177,7 +177,7 @@ async def page() -> AsyncGenerator[Page]:
         recorded.append(entry)
         arrived.set()
 
-    gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, switches=Switches(speaker), wake=Pretrained(), models=MODELS)
+    gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, switches=Switches(speaker), wake=Pretrained())
     app = web.Application()
     app.add_routes(gallery_routes(clock, gallery, KEY, record))
     async with TestClient(TestServer(app)) as client:
@@ -211,10 +211,10 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
         "voices": list(VOICES), "speaking_in": "charles",
         "levels": ["off", "wake word", "engaged"], "level": "engaged",
         "modalities": ["screen", "audio-only"], "modality": "screen",
-        "models": list(MODELS), "running_on": MODELS[0],
+        "models": list(OFFERED_MODELS), "running_on": OFFERED_MODELS[0],
     }
     [read] = page.events("gallery.read")
-    assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"], read.facts["running_on"]) == ("ok", "charles", "engaged", "screen", MODELS[0])
+    assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"], read.facts["running_on"]) == ("ok", "charles", "engaged", "screen", OFFERED_MODELS[0])
 
 
 async def _seen(page: Page) -> str:
@@ -249,9 +249,9 @@ async def test_a_read_that_has_seen_the_state_answers_it_unchanged_at_the_end_of
 async def test_a_run_on_another_model_answers_a_read_that_saw_the_run_before_at_once(page: Page) -> None:
     # A restart's run is told apart by what it runs on: a page that saw the run before is answered without waiting.
     seen = await _seen(page)
-    page.own.running_on = MODELS[1]
+    page.own.running_on = OFFERED_MODELS[1]
     body = await (await page.client.get(f"/gallery/state?seen={seen}", headers=KEYED)).json()
-    assert (body["shown"]["running_on"], body["seen"] != seen) == (MODELS[1], True)
+    assert (body["shown"]["running_on"], body["seen"] != seen) == (OFFERED_MODELS[1], True)
     assert page.events("gallery.read")[-1].facts["looks"] == 1
 
 
@@ -404,6 +404,16 @@ async def test_a_model_switch_talked_over_is_refused_and_hands_stays_on_its_mode
 
 
 @pytest.mark.outside
+async def test_a_model_hands_does_not_offer_is_a_400_naming_those_it_does_and_nothing_is_said(page: Page) -> None:
+    response = await page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-9"})
+    assert response.status == 400
+    assert f"hands runs Claude on {', '.join(OFFERED_MODELS)}, not 'claude-opus-9'" in await response.text()
+    assert (page.speaker.said, page.own.kept) == ([], [])
+    [switch] = page.events("gallery.model")
+    assert (switch.outcome, switch.facts["model"], switch.facts["switching"]) == ("failed", "claude-opus-9", False)
+
+
+@pytest.mark.outside
 async def test_a_model_the_weighing_refuses_is_a_400_and_nothing_is_said(page: Page) -> None:
     page.own.refused = Rejected("hands runs on claude-sonnet-5-5 already")
     response = await page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-sonnet-5-5"})
@@ -435,7 +445,7 @@ async def test_the_library_search_returns_matches_and_records_the_listing(page: 
 def test_the_routes_are_the_gallery_and_its_seven_choices_and_two_reads() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
     clock = VirtualClock()
-    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(clock)), wake=Pretrained(), models=MODELS)
+    gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(clock)), wake=Pretrained())
     routes: list[Any] = [route for route in gallery_routes(clock, gallery, KEY, lambda _entry: None)]
     assert sorted(f"{route.method} {route.path}" for route in routes) == sorted([
         "GET /gallery", "GET /gallery/state", "GET /gallery/line", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",

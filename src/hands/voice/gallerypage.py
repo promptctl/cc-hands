@@ -25,6 +25,7 @@ from hands.voice.listening import LEVELS, Level, Listening, parse_level
 from hands.voice.keyed import keyed
 from hands.voice.longpoll import page_left, version_of, waited
 from hands.voice.modelswitch import OwnModel, Switches, chosen
+from hands.voice.offeredmodels import OFFERED_MODELS, OfferedModel, parse_model
 from hands.voice.answered import answered_then
 from hands.voice.trigger import described
 from hands.voice.library import Found
@@ -66,8 +67,7 @@ class Desk(Protocol):
 
 @dataclass(frozen=True)
 class Gallery:
-    """What the page reads and sets. `switches` says a model switch, one under way at a time, and `models` the models
-    the page offers, which `own` refuses where they are not hands' to run on."""
+    """What the page reads and sets. `switches` says a model switch, one under way at a time."""
 
     voices: Voicing
     levels: Listening
@@ -75,7 +75,6 @@ class Gallery:
     own: OwnModel
     switches: Switches
     wake: Word
-    models: tuple[str, ...]
 
 
 class Shown(TypedDict):
@@ -87,8 +86,8 @@ class Shown(TypedDict):
     level: Level
     modalities: tuple[Modality, ...]
     modality: Modality
-    models: tuple[str, ...]
-    running_on: str
+    models: tuple[OfferedModel, ...]
+    running_on: OfferedModel
 
 
 def parse_field(body: bytes, field: str) -> str:
@@ -142,7 +141,7 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
             "voices": VOICES, "speaking_in": str(gallery.voices.speaking_in()),
             "levels": LEVELS, "level": gallery.levels.level,
             "modalities": MODALITIES, "modality": gallery.desk.modality,
-            "models": gallery.models, "running_on": gallery.own.running(),
+            "models": OFFERED_MODELS, "running_on": gallery.own.running(),
         }
         return version_of(state), state
 
@@ -248,10 +247,10 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
     @keyed(clock, "gallery.model", record, key)
     async def choose_model(request: web.Request) -> web.StreamResponse:
         try:
-            model = parse_field(await request.read(), "model")
-            annotate(model=model, switching=False)
+            asked = parse_field(await request.read(), "model")
+            annotate(model=asked, switching=False)
             # [LAW:one-source-of-truth] the same switch the voice tool makes: its order, its line, and its refusals.
-            switch = await gallery.switches.announced(await chosen(gallery.own, model))
+            switch = await gallery.switches.announced(await chosen(gallery.own, parse_model(asked)))
         except (Rejected, OSError) as error:
             return _refusal(error)
         annotate(switching=True)

@@ -31,7 +31,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.workers.runner import WorkerRunner
 
 from hands.clock import Clock, dashed
-from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
+from hands.daemon.config import OwnModel, SampleLines, Settings
 from hands.sessions.backlog import Lit
 from hands.sessions import heartbeat, panes
 from hands.sessions.child import Children
@@ -362,7 +362,7 @@ async def run(
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             # [LAW:single-enforcer] one owner of a switch under way, whether the user asks by voice or on the page.
             switches = Switches(player)
-            gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, switches=switches, wake=config.wake, models=CLAUDE_MODELS)
+            gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, switches=switches, wake=config.wake)
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(screen, terminals, processes, sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.through, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each clip is transcribed.

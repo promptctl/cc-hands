@@ -24,6 +24,7 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.playback import hands_says
 from hands.voice.modelswitch import Switches
+from hands.voice.offeredmodels import OFFERED_MODELS, OfferedModel
 from hands.voice.player import Marker, Markers, Player
 from hands.voice.tool import After, Answer, Called, Effect, Tool, audited, result_of
 from hands.sessions.wide import WideEvent
@@ -64,45 +65,50 @@ def test_a_model_chosen_is_an_edit_to_the_file_that_keeps_every_other_line_as_wr
 
 def test_a_model_chosen_with_no_file_is_the_default_backend_on_that_model(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    _own(home).weigh(" claude-opus-5-5 ").keep()
+    _own(home).weigh("claude-opus-5-5").keep()
     assert home.config.read_text() == '[llm]\nmodel = "claude-opus-5-5"\n'
     assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"))
 
 
 def test_the_model_running_is_the_one_the_run_started_on_not_the_file_since(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
     own = _own(home)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
-    assert own.running() == "claude-haiku-4-5-20251001"
+    assert own.running() == "claude-fable-5-1"
 
 
-@pytest.mark.parametrize(
-    ("model", "said"),
-    [
-        # A model named as said aloud is no id hands offers.
-        ("claude opus", "hands runs Claude on .*, not claude opus$"),
-        ("claude-sonnet-5-5", "hands runs on claude-sonnet-5-5 already"),
-        ("", "should be a non-empty string"),
-        ("claude-opus-9", "hands runs Claude on .*, not claude-opus-9$"),
-    ],
-)
-def test_a_model_the_file_could_not_take_is_refused_and_nothing_is_written(tmp_path: Path, model: str, said: str) -> None:
+def test_the_model_hands_runs_on_already_is_refused_and_nothing_is_written(tmp_path: Path) -> None:
+    home = Home(tmp_path)
+    # A personality saved since the start and not taken yet is no reason to say otherwise.
+    home.config.write_text(SPOKEN_FILE)
+    own = _own(home)
+    home.config.write_text(SPOKEN_FILE + '[talk]\npersonality = "Dry."\n')
+    with pytest.raises(Rejected, match="^hands runs on claude-sonnet-5-5 already$"):
+        own.weigh("claude-sonnet-5-5")
+    assert home.config.read_text() == SPOKEN_FILE + '[talk]\npersonality = "Dry."\n'
+
+
+async def test_a_model_the_file_names_already_since_the_start_is_chosen_and_the_run_starts_again_on_it(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    with pytest.raises(Rejected, match=said):
-        _own(home).weigh(model)
-    assert home.config.read_text() == SPOKEN_FILE
+    running_on = config.load(home)
+    # Saved while the run went on, and not taken yet.
+    on_opus = SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-5-5")
+    home.config.write_text(on_opus)
+    config.OwnModel(home, LAID_OUT, UNMANAGED, {}, running_on).weigh("claude-opus-5-5").keep()
+    assert home.config.read_text() == on_opus
+    assert await asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, lambda _entry: None, running_on, SYSTEM, period=0.01), 2.0) == SettingsEdited(path=str(home.config), refused=None)
 
 
-def test_a_model_the_file_names_but_the_run_is_not_on_is_refused_naming_both_ways_that_happens(tmp_path: Path) -> None:
+def test_a_file_whose_one_fault_is_its_model_is_mended_by_a_model_chosen(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     own = _own(home)
-    # Saved while the run went on: an edit `edited` has yet to take, or refused.
-    home.config.write_text(SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-5-5"))
-    with pytest.raises(Rejected, match="names claude-opus-5-5 already and hands is not on it yet: an edit it is about to take, or one it refused.*hands restart"):
-        own.weigh(" claude-opus-5-5 ")
+    # Saved by hand while the run went on, naming a model hands does not offer: refused as it was saved.
+    home.config.write_text(SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-9"))
+    own.weigh("claude-opus-5-5").keep()
+    assert config.load(home).config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
 
 
 def test_a_model_on_a_home_a_start_would_refuse_is_refused_before_it_is_written(tmp_path: Path) -> None:
@@ -114,18 +120,19 @@ def test_a_model_on_a_home_a_start_would_refuse_is_refused_before_it_is_written(
     assert home.config.read_text() == SPOKEN_FILE
 
 
-def test_a_model_chosen_on_a_file_that_is_not_toml_is_refused_naming_the_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("held", "refused"), [("[llm\n", "not TOML"), ('llm = "claude"\n', "llm should be a table")])
+def test_a_model_chosen_on_a_file_it_cannot_be_set_in_is_refused_naming_the_file(tmp_path: Path, held: str, refused: str) -> None:
     home = Home(tmp_path)
-    home.config.write_text("[llm\n")
-    with pytest.raises(Rejected, match=f"^{home.config}: not TOML"):
+    home.config.write_text(held)
+    with pytest.raises(Rejected, match=f"^{home.config}: {refused}"):
         _own(home).weigh("claude-opus-5-5")
-    assert home.config.read_text() == "[llm\n"
+    assert home.config.read_text() == held
 
 
 def test_a_save_by_hand_after_the_choice_was_weighed_is_not_written_over(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    choice = _own(home).weigh(" claude-opus-5-5 ")
+    choice = _own(home).weigh("claude-opus-5-5")
     assert choice.to == "claude-opus-5-5"
     home.config.write_text(SPOKEN_FILE + "# saved by hand\n")
     with pytest.raises(Rejected, match="changed after the choice was made, by another choice kept first or a save by hand"):
@@ -138,10 +145,10 @@ def test_of_two_choices_in_flight_the_one_kept_first_is_kept_and_the_other_refus
     home.config.write_text(SPOKEN_FILE)
     own = _own(home)
     # Both weighed before either is kept, as two switches heard at once are.
-    opus, haiku = own.weigh("claude-opus-5-5"), own.weigh("claude-haiku-4-5-20251001")
+    opus, fable = own.weigh("claude-opus-5-5"), own.weigh("claude-fable-5-1")
     opus.keep()
     with pytest.raises(Rejected, match="by another choice kept first"):
-        haiku.keep()
+        fable.keep()
     assert home.config.read_text() == SPOKEN_FILE.replace("claude-sonnet-5-5", "claude-opus-5-5")
 
 
@@ -217,9 +224,9 @@ def test_a_file_kept_behind_a_link_is_edited_through_it_and_the_link_stays(tmp_p
 def test_a_model_chosen_while_a_model_flag_outranks_the_file_is_refused_naming_the_flag(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
-    flagged = config.OwnModel(home, LAID_OUT, UNMANAGED, {}, config.load(home, "claude-haiku-4-5-20251001"))
-    assert flagged.running() == "claude-haiku-4-5-20251001"
-    with pytest.raises(Rejected, match=f"^hands was started with --model claude-haiku-4-5-20251001, which it keeps over {home.config} until it is started without it$"):
+    flagged = config.OwnModel(home, LAID_OUT, UNMANAGED, {}, config.load(home, "claude-fable-5-1"))
+    assert flagged.running() == "claude-fable-5-1"
+    with pytest.raises(Rejected, match=f"^hands was started with --model claude-fable-5-1, which it keeps over {home.config} until it is started without it$"):
         flagged.weigh("claude-opus-5-5")
     assert home.config.read_text() == SPOKEN_FILE
 
@@ -235,7 +242,7 @@ async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -
 
 @dataclass(frozen=True)
 class FakeChoice:
-    to: str
+    to: OfferedModel
     own: "FakeOwn"
 
     def keep(self) -> None:
@@ -250,15 +257,15 @@ class FakeOwn:
     def __init__(self, refusal: str | None = None, unkept: str | None = None) -> None:
         self.refusal = refusal
         self.unkept = unkept
-        self.kept: list[str] = []
+        self.kept: list[OfferedModel] = []
 
-    def running(self) -> str:
+    def running(self) -> OfferedModel:
         return "claude-sonnet-5-5"
 
-    def weigh(self, model: str) -> FakeChoice:
+    def weigh(self, model: OfferedModel) -> FakeChoice:
         if self.refusal is not None:
             raise Rejected(self.refusal)
-        return FakeChoice(model.strip(), self)
+        return FakeChoice(model, self)
 
 
 @asynccontextmanager
@@ -346,11 +353,20 @@ async def test_use_model_alone_says_nothing_and_keeps_nothing_until_its_effect_i
     with its effect unrun holds nothing."""
     own = FakeOwn()
     [_, use_model] = model_tools(own)
-    answer = await use_model.body(model=" claude-opus-5-5 ")
+    answer = await use_model.body(model="claude-opus-5-5")
     assert result_of(answer) == {"running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}
     assert own.kept == []
     await _effect(answer)()
     assert own.kept == ["claude-opus-5-5"]
+
+
+async def test_use_model_shows_the_brain_the_models_hands_offers_and_refuses_another_before_it_is_weighed() -> None:
+    own = FakeOwn(refusal="weighed")
+    [_, use_model] = model_tools(own)
+    assert use_model.properties["model"]["enum"] == list(OFFERED_MODELS)
+    # Asked for by a name it does not offer, the brain is told the ones it does, and nothing is weighed or kept.
+    assert await use_model.body(model="claude-opus-9") == {"error": f"'claude-opus-9' is no model; it is one of {', '.join(OFFERED_MODELS)}"}
+    assert own.kept == []
 
 
 async def test_a_switch_said_but_refused_as_it_is_kept_is_said_aloud() -> None:

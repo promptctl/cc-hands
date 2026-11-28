@@ -829,8 +829,8 @@ def test_a_brain_whose_claude_could_not_be_asked_is_a_start_refused_and_not_a_lo
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
     # The version is the one the brain's claude was verified at.
-    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(Path("/h/brain/pinned-claude/9.9.9/claude"), "9.9.9"), None)))
-    assert found == Ready("brain logged in as brain@example.com (claude.ai)", "the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5 on Claude Code 9.9.9, hands' own copy: /h/brain/pinned-claude/9.9.9/claude")
+    found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(Path("/h/brain/pinned-claude/9.9.9/claude"), "9.9.9"), None)))
+    assert found == Ready("brain logged in as brain@example.com (claude.ai)", "the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5-5 on Claude Code 9.9.9, hands' own copy: /h/brain/pinned-claude/9.9.9/claude")
 
 
 # hands running

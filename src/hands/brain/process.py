@@ -51,6 +51,7 @@ from hands.core.wire import ApiRoute, Direct, MainTurn, Observed, Sent, ThroughP
 from hands.core.trace import Span
 from hands.core.stopfailure import LoginExpired, StopFailed, expired
 from hands.core.runningon import RunningOn
+from hands.voice.offeredmodels import OfferedModel
 from hands.darwin import child_pids
 from hands.sessions.audit import LoginReported, Record
 from hands.sessions.registry import Sessions, StopHeld, unread, untyped
@@ -203,7 +204,7 @@ class Station:
 
     config_dir: Path
     cwd: Path
-    model: str
+    model: OfferedModel
     # [LAW:types-are-the-program] what starts on a station, the brain, reaches the API through hands' proxy; a login and
     # its status, started on none, reach it Direct.
     through: ThroughProxy

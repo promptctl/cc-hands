@@ -28,11 +28,12 @@ from hands.brain import configdir, pinned, process
 from hands.core.session import PinnedClaude, Runnable
 from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, preflight, run
-from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
+from hands.daemon.config import Claude, Config
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import CannotStart, Ended, Handover, QuitKey, Signalled, Start, Stop, Failing, start
 from hands.voice.desk import Desk, Loaded, Resting
 from hands.voice.listening import Driving, Level, Levels, Listening
+from hands.voice.offeredmodels import OFFERED_MODELS, OfferedModel
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import Entry, SettingsEdited
@@ -53,7 +54,7 @@ HOME = Home(Path("/Users/someone/.hands"))
 
 
 def test_no_file_is_the_brain_on_sonnet(tmp_path: Path) -> None:
-    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Claude(model=ANTHROPIC_MODEL), collector=None))
+    assert config.load(Home(tmp_path)) == config.Settings(None, Config(llm=Claude(model="claude-sonnet-5-5"), collector=None))
     assert config.parse("") == Config()
 
 
@@ -196,13 +197,13 @@ def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(spawned_on(SYSTEM), Claude(), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
+    assert backend(spawned_on(SYSTEM), Claude(), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)) == ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
     assert backend(spawned_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == "claude-opus-5-5"
 
 
 @pytest.mark.outside
-@pytest.mark.parametrize("model", CLAUDE_MODELS)
-def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
+@pytest.mark.parametrize("model", OFFERED_MODELS)
+def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: OfferedModel) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     assert backend(spawned_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == model
@@ -210,35 +211,48 @@ def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, m
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
     # A model by its spoken name, one that does not exist, and a real one hands does not offer: each is refused naming the
-    # four.
-    for model in ("opus", "claude-opus-9", "claude-sonnet-5"):
-        with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(CLAUDE_MODELS)}, not {model}$"):
+    # ones it does.
+    for model in ("opus", "claude-opus-9", "claude-sonnet-4-5-20250929"):
+        with pytest.raises(Rejected, match=f"^hands runs Claude on {', '.join(OFFERED_MODELS)}, not {model!r}$"):
             config.parse(f'[llm]\nbackend = "claude"\nmodel = "{model}"\n')
+
+
+def test_the_readme_names_the_models_hands_offers_as_they_are_offered() -> None:
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    [named] = re.findall(r"the models hands offers that\s+`model` names: ([^.]*)\.", readme)
+    assert tuple(re.findall(r"`(claude-[^`]+)`", named)) == OFFERED_MODELS
 
 
 def test_a_model_flag_outranks_the_files_on_the_files_backend(tmp_path: Path) -> None:
     home = Home(tmp_path)
     assert config.load(home, "claude-opus-5-5") == config.Settings(None, Config(llm=Claude(model="claude-opus-5-5")), "claude-opus-5-5")
-    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[telemetry]\ncollector = "http://otel.example:4318"\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-fable-5-1"\n[telemetry]\ncollector = "http://otel.example:4318"\n')
     assert config.load(home, "claude-opus-5-5").config == Config(llm=Claude(model="claude-opus-5-5"), collector="http://otel.example:4318")
     # The file's model, outranked, is never read: one hands no longer offers is no reason to refuse the run.
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-sonnet-4"\n')
     assert config.load(home, "claude-opus-5-5").config == Config(llm=Claude(model="claude-opus-5-5"))
 
 
-def test_a_model_flag_hands_cannot_run_on_is_refused_naming_the_flag_not_the_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("given", ["  ", "opus"])
+def test_a_model_flag_hands_does_not_offer_refuses_the_start_on_its_event_naming_the_flag_not_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], given: str) -> None:
+    # A restart carries the run's --model onto the release an update brings, which may not offer it: the refusal is the
+    # start's own, on record for a launcher nobody watches.
+    from hands.voice import talkkey
+
     home = Home(tmp_path)
+    laid_out(home)
     home.config.write_text('[llm]\nbackend = "claude"\n')
-    with pytest.raises(Rejected) as refused:
-        config.load(home, "opus")
-    assert str(refused.value) == f"--model 'opus': hands runs Claude on {', '.join(CLAUDE_MODELS)}, not opus"
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
 
+    def logged_in(*_: object) -> Account:
+        return Account("claude.ai", "brain@example.com")
 
-def test_a_blank_model_flag_is_refused_as_the_command_line_is_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exited:
-        main_on_fakes(["--home", str(tmp_path), "run", "--model", "  "])
-    assert exited.value.code == 2
-    assert f"argument --model: a model's id, such as {ANTHROPIC_MODEL}, not '  '" in capsys.readouterr().err
+    monkeypatch.setattr(process, "logged_in", logged_in)
+    assert main_on_fakes(["--home", str(home.root), "run", "--model", given], pin=LAID_OUT) == 1
+    reason = f"--model: hands runs Claude on {', '.join(OFFERED_MODELS)}, not {given.strip()!r}; then run hands again"
+    assert capsys.readouterr().err == f"hands: {reason}\n"
+    [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
+    assert (refused["outcome"], refused["error"], refused["facts"]["model_flag"]) == ("failed", f"CannotStart: {reason}", given)
 
 
 def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_settings_are_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -247,27 +261,17 @@ def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_sett
     home = Home(tmp_path)
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: None)
-    for given in ((), ("--model", " claude-opus-5-5 ")):
+    for given in ((), ("--model", "claude-opus-5-5")):
         assert main_on_fakes(["--home", str(home.root), "run", *given]) == 1
     capsys.readouterr()
     starts = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
     assert [(start["outcome"], start["facts"]["model_flag"]) for start in starts] == [("failed", None), ("failed", "claude-opus-5-5")]
 
 
-def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from hands.voice import talkkey
-
-    home = Home(tmp_path / ".hands")
-    monkeypatch.setattr(talkkey, "granted", lambda: True)
-    assert cli.door(home, LAID_OUT, UNMANAGED, {}, "claude-opus-5-5", Start(False, SYSTEM)) == config.load(home, "claude-opus-5-5")
-    with pytest.raises(CannotStart, match="^--model 'opus': "):
-        cli.door(home, LAID_OUT, UNMANAGED, {}, "opus", Start(False, SYSTEM))
-
-
-@pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
-def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_the_level_its_desk_was_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, ...], loads: str | None, carried: tuple[str, ...]) -> None:
+@pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " claude-opus-5-5 "), "claude-opus-5-5", ("--model=claude-opus-5-5",))])
+def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_the_level_its_desk_was_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, given: tuple[str, ...], loads: OfferedModel | None, carried: tuple[str, ...]) -> None:
     home = Home(tmp_path)
-    loaded_on: list[str | None] = []
+    loaded_on: list[OfferedModel | None] = []
     # What each run's desk does before the restart: the first engages; the second is restarted before its desk steps the
     # level it starts at, as a restart told while the models load is.
     stepped: list[tuple[Level, ...]] = [("engaged",), ()]
@@ -275,8 +279,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     started: list[tuple[Level, Level]] = []
 
     def door(_home: Home, _pin: pinned.Pin, _machine: configdir.Machine, _environment: Mapping[str, str], model: str | None, _run_start: Start) -> config.Settings:
-        # Only what the restart is given is weighed here: an id that begins with a dash is no model hands offers.
-        return config.Settings(None, Config(), model)
+        return config.Settings(None, Config(), None if model is None else cli.model_flag(model))
 
     class Execed(Exception):
         pass
@@ -309,7 +312,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
         main_on_fakes(["--home", str(home.root), "run", *given], indicators=indicators)
     again = first.value.args[0][-3 - len(carried):]
     assert again == ["--restarted", str(FIRST), "--level=engaged", *carried]
-    # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all, its desk to
+    # The restart's own command line parses back to the run it restarts, its --model and all, its desk to
     # start at the level the run before's desk was at; restarted before it steps it, it carries that level on again.
     with pytest.raises(Execed) as second:
         main_on_fakes(["--home", str(home.root), "run", *again], indicators=indicators)
@@ -356,7 +359,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     running = config.load(home, "claude-opus-5-5")
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, running, SYSTEM, period=0.01), 0.3))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-fable-5-1"\n')
     await asyncio.sleep(0.05)
     # Nor is one to a model hands does not offer: outranked, it is never read, so nothing is refused.
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "opus"\n')
@@ -364,7 +367,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
         await watching
     watching = asyncio.create_task(asyncio.wait_for(config.edited(home, LAID_OUT, UNMANAGED, {}, recorded.append, running, SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[talk]\npersonality = "Dry."\n')
+    home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-fable-5-1"\n[talk]\npersonality = "Dry."\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
@@ -383,7 +386,7 @@ def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_c
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
     sessions = new_sessions(clock=SYSTEM)
-    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(pinned.PIN.claude(tmp_path / "brain"), pinned.PIN.version), None)), voice=voicechoice.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")), devices=Choices(Named("MacBook Pro Microphone"), Auto()))
+    config = run.VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(pinned.PIN.claude(tmp_path / "brain"), pinned.PIN.version), None)), voice=voicechoice.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")), devices=Choices(Named("MacBook Pro Microphone"), Auto()))
     return Home(tmp_path), sessions, heart, config
 
 
@@ -423,7 +426,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path) -
     chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model", "input_device", "output_device")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",
-        "backend": "ClaudeCodeBackend", "model": ANTHROPIC_MODEL, "account": Account("claude.ai", "brain@example.com"), "voice": voicechoice.DEFAULT,
+        "backend": "ClaudeCodeBackend", "model": "claude-sonnet-5-5", "account": Account("claude.ai", "brain@example.com"), "voice": voicechoice.DEFAULT,
         "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
         "input_device": Named("MacBook Pro Microphone"), "output_device": Auto(),
     }
@@ -675,7 +678,7 @@ async def test_an_edit_that_does_not_parse_is_said_and_outlived_until_one_that_d
     assert not watching.done()
     assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config}: [llm] backend 'local' is not one hands runs on: it runs on claude, the brain, a Claude Code of its own, never on a model API reached with a key")]
     assert audit.level(recorded[0]) == "error"
-    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
     assert len(recorded) == 1
 
@@ -720,7 +723,7 @@ async def test_a_file_that_cannot_be_read_is_a_refused_edit_and_outlived(tmp_pat
     assert not watching.done()
     assert recorded == [SettingsEdited(path=str(home.config), refused=f"{home.config} could not be read: [Errno 21] Is a directory: '{home.config}'")]
     home.config.rmdir()
-    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+    home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 
 
@@ -820,7 +823,7 @@ def test_a_line_is_never_kept_under_a_key_a_start_would_refuse(tmp_path: Path) -
 def test_a_sample_line_is_never_kept_in_a_file_a_start_would_refuse(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.config.write_text('[llm]\nmodel = "gpt-9"\n')
-    with pytest.raises(Rejected, match="not gpt-9"):
+    with pytest.raises(Rejected, match="not 'gpt-9'"):
         config.SampleLines(home, _NO_FILE).keep(voicechoice.Voice("mary"), "Mary here.")
     assert home.config.read_text() == '[llm]\nmodel = "gpt-9"\n'
     # A start on --model never reads the file's model, so a line is kept in a file whose model only it outranks.
@@ -853,7 +856,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
         assert not watching.done(), watching.result()
         assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
         # And it is still watching: the next edit is the one it takes.
-        home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+        home.config.write_text('[llm]\nmodel = "claude-fable-5-1"\n')
         await patiently(watching.done, lambda: len(weighed))
         assert watching.result() == SettingsEdited(path=str(home.config), refused=None)
     finally:
@@ -863,7 +866,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
 async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
     laid_out(home)
-    edit, other = b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-haiku-4-5-20251001"\n'
+    edit, other = b'[llm]\nmodel = "claude-opus-5-5"\n', b'[llm]\nmodel = "claude-fable-5-1"\n'
     # Seen, settled, saved over as its backend is checked, and back before the next poll.
     reads = iter([edit, edit, other, edit, edit])
 

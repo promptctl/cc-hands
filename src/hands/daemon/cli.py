@@ -22,7 +22,7 @@ from hands.brain import configdir, pinned
 from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, preflight, readiness, update, watchdog
 from hands.daemon.indicatorprocess import Indicators, SpawnedIndicators
-from hands.daemon.config import ANTHROPIC_MODEL, OwnModel, Settings, edited, load
+from hands.daemon.config import OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, Handover, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start, starts_at
 from hands.tasks import cancel_and_wait
@@ -41,6 +41,7 @@ from hands.threads import off_loop
 from hands.visible import VISIBLE
 from hands.voice import summarising
 from hands.voice.listening import LEVELS, Driving, Level, Levels, Listened, Listening, parse_level
+from hands.voice.offeredmodels import OfferedModel, parse_model
 from hands.voice.portaudio import Listed, Lists, default_input, default_output, listing
 
 
@@ -220,7 +221,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     running.add_argument("--restarted", type=indicator_pid, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--level", type=listening_level, metavar="{" + ",".join(LEVELS) + "}", help="the level the desk listens at as a restart starts, which only hands passes, beside --restarted: the one the run before's desk was at; a start that is no restart listens at off")
-    running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
+    running.add_argument("--model", help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     checking = commands.add_parser("check", help="list each step of the README's install, ✓ done, ✗ missing with the command that fixes it, or ? when it could not be looked at: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the brain's login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     checking.add_argument("-v", "--verbose", action="store_true", help="say each step in full beneath its line, every running session among them")
@@ -306,11 +307,14 @@ def listening_level(text: str) -> Level:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def model_id(text: str) -> str:
-    """[LAW:parse-dont-validate] --model's value as the id it names, which a blank names none of."""
-    if not (model := text.strip()):
-        raise argparse.ArgumentTypeError(f"a model's id, such as {ANTHROPIC_MODEL}, not {text!r}")
-    return model
+def model_flag(text: str) -> OfferedModel:
+    """[LAW:parse-dont-validate] --model's value as the model hands runs on that it names; raises Rejected naming the
+    flag, never the file. [LAW:nothing-unseen] parsed at the door, not by argparse, so a model refused is the start's own
+    refusal and on its event: a restart carries the run's --model across an update to a release that may not offer it."""
+    try:
+        return parse_model(text)
+    except Rejected as error:
+        raise Rejected(f"--model: {error}") from error
 
 
 def run_daemon(clock: Clock, processes: Processes, indicators: Indicators, children_on: ChildrenOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
@@ -368,8 +372,7 @@ def run_daemon(clock: Clock, processes: Processes, indicators: Indicators, child
                     return 0
                 case Handover() as next_run:
                     # [LAW:one-source-of-truth] the run after a restart is this one again, on what this one hands over and
-                    # the --model its settings hold; each one argument, so an id that begins with a dash is never read as an
-                    # option.
+                    # the --model its settings hold.
                     execv(invocation(home, "run", *next_run.arguments(), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
@@ -479,7 +482,7 @@ def door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: M
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
     # an edit to them all take these.
     try:
-        return load(home, model)
+        return load(home, None if model is None else model_flag(model))
     except Rejected as error:
         checked = preflight.preflight(home, pin, machine, environment)
         run_start.heard(**checked.facts())
