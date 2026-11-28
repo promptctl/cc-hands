@@ -24,7 +24,7 @@ from pipecat.frames.frames import Frame, InputAudioRawFrame
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import PAIRS, events, hearing_with, running
+from conftest import PAIRS, events, hearing_with, running, taking
 from test_streaming import NOT_SPEECH, READER, fixture_clips, hearings, pcm
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
@@ -233,11 +233,12 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     assert load.outcome == "ok", load.error
     listener = Counted(recognizer, lambda: captured * FRAME)
     downstream = Downstream()
-    async with running([ClipOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record, "desk.loaded") as models:
+    async with running([ClipOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record, "desk.loaded") as models, taking(gate, run.worker.queue_frame):
         async def capture(audio: bytes) -> None:
             nonlocal captured
             captured += 1
-            await run.worker.queue_frame(gate.gate.framed(audio, audio, None, RATE, 1, "desk"))
+            # As the desk's capture thread hears a buffer: in line behind every write of the gate the desk's moves made.
+            gate.hear("desk", audio, audio, None, RATE, 1)
             # The owner tells its listeners of a frame before it passes it on, so once the frame has passed, every
             # hearing it returned is counted.
             await downstream.reached(captured)

@@ -21,7 +21,7 @@ from hands.voice.clipowner import ClipOwner
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import ClipOpened
 from hands.voice.phone import DetectorAnswered, DetectorFailed, DetectorLoaded, DetectorWaiting, Ignored, Level, ScreenKept, ScreenUnkept, Unreadable, Wake, parse_said
-from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.ptt import GateWritten, KeyedAudio
 from hands.voice.trigger import PHONE_WAKE
 from hands.voice.wakeword import THRESHOLD
 from test_clipowner import Heeding, Scripted
@@ -101,27 +101,24 @@ def test_a_level_a_detector_or_a_screen_hands_cannot_read_is_not_read(said: str)
 
 @dataclass
 class Heard:
-    """The call's microphone fed to a clip owner whose observer tells the page, with a listener that keeps what each clip opened with."""
+    """What the pipeline hears of the call fed to a clip owner whose observer tells the page, with a listener that keeps what
+    each clip opened with."""
 
-    frames: list[KeyedAudio]
+    given: list[GateWritten | KeyedAudio]
     heeding: Heeding
     run: Running
-
-    async def at_the_desk(self, key: PushToTalk) -> None:
-        """A frame of the desk's microphone under the gate as it stands, which is what the pipeline hears once hands is at the desk."""
-        await self.run.worker.queue_frame(key.gate.framed(bytes(640), bytes(640), None, 16000, 1, "desk"))
 
 
 @asynccontextmanager
 async def hearing(call: Call) -> AsyncGenerator[Heard]:
     heeding = Heeding("kept")
     owner = ClipOwner(SYSTEM, Scripted([None, None, None]), (heeding,), call.recorded.append)
-    given: list[KeyedAudio] = []
+    given: list[GateWritten | KeyedAudio] = []
     async with running([owner], [LatencyObserver(SYSTEM, owner, call.phone.tell)]) as run:
 
         async def feed() -> None:
             while True:
-                given.append(await call.phone.heard.get())
+                given.append(await call.heard.get())
                 await run.worker.queue_frame(given[-1])
 
         feeding = asyncio.create_task(feed())
@@ -282,13 +279,13 @@ async def test_a_press_over_a_wakes_turn_sends_it_and_opens_the_buttons_own_each
 
 @pytest.mark.outside
 async def test_a_hand_at_the_desk_taking_hands_during_a_wakes_turn_sends_it_and_the_page_is_told_released() -> None:
-    async with calling() as call, hearing(call) as heard:
+    async with calling() as call, hearing(call):
         call.page.send(level_message("wake word"))
         for said in [QUIET, wake_message(), LOUD, LOUD]:
             call.page.send(said)
         await call.until(lambda: call.key.gate.key == "down")
+        # The hand's move alone sends the wake's turn: no frame of the desk's is heard after it.
         call.key.move("start", "shortcut")
-        await heard.at_the_desk(call.key)
         await call.until(lambda: len(call.page.told) == 2)
         assert told(call)[1] == {"kind": "milestone", "milestone": "released", "clip": 1}
         assert call.key.gate.place == "desk"

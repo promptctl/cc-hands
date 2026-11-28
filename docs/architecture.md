@@ -1781,14 +1781,18 @@ turn after the brain listed it is left alone, even before its busy status is rea
 ## The audio side
 
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on
-voice-activity frames, so the key is the VAD: every microphone frame carries the key
-it was captured under, and the clip owner (`hands.voice.clipowner`) pushes the VAD frames
-where those keys change, numbering each clip, so the turn the strategies see and the audio
-every model hears are cut at the same frame. How a turn ended is not a key position: the gate keeps, in order,
-how every turn it has ended ended, sent or thrown away, and every frame carries that record. The clip owner
-ends its clip as the record grows, by the fate it names for it. A frame is captured every 20 ms, and several
-turns can end between two of them: the clip open ends first, and each other turn was over before any
-of it was heard, which the owner says as `TurnUnheard` and records as a `turn.unheard` event, so every turn the gate
+voice-activity frames, so the key is the VAD: each write of the gate reaches the pipeline in line
+with the microphone's frames (`GateWritten`), ahead of every frame captured under it, and the clip owner
+(`hands.voice.clipowner`) pushes the VAD frames where those writes move the key, numbering each clip, so
+the turn the strategies see and the audio every model hears are cut at the same point. The gate's one
+writer and each place's microphone put their writes and frames in line under one lock (`PushToTalk.hear`),
+so a frame whose gate was read before a write is heard ahead of it, whichever thread captured it.
+How a turn ended is not a key position: the gate keeps, in order,
+how every turn it has ended ended, sent or thrown away, and each write carries that record. The clip owner
+ends its clip at the write that grows the record, by the fate it names for it: no turn waits on a frame to
+end, so a phone gone quiet, a call hung up or a run stopping still sends its clip. One write can end several
+turns: the clip open ends first, and each other turn ended with no frame captured while it was open,
+which the owner says as `TurnUnheard` and records as a `turn.unheard` event, so every turn the gate
 ends is a clip or that. The key is also the mute: microphone bytes become silence
 of the same length unless the key is pressed. Frames flow at full rate either way;
 only their content changes. The microphone opens on the press, and a clip's audio
@@ -1801,7 +1805,7 @@ as cut off. That is barge-in.
 
 When a turn cuts is the trigger's that opened its clip (`turn_start` in
 `hands.voice.trigger`, enforced by `TriggerTurnStart`), and each clip carries that trigger
-from the gate, as it carries the key. A clip the user's hand opens, the shortcut or the
+from the gate's write that opened its turn. A clip the user's hand opens, the shortcut or the
 phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
 nothing said is how the user stops hands. A clip the voice opens, the wake word's or
 engaged conversation's, cuts only once words are heard in it, because the desk hears through the
@@ -2194,7 +2198,7 @@ the page sends it as plain 16-bit audio over the call's ordered data channel, in
 order with its button's presses and releases, and holds a release back until every
 block its microphone captured before it has been sent. A release that overtook the
 words said before it would cut the end of the turn; on one ordered channel the key
-travels with the audio, as `KeyedAudio` makes it travel at the desk. Earbuds keep
+travels with the audio, as `PushToTalk` puts the gate's writes in line with the desk's frames. Earbuds keep
 hands' voice out of the phone's microphone, so the phone's audio is gated by its
 button alone.
 

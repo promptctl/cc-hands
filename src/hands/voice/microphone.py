@@ -29,7 +29,7 @@ import queue
 import threading
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, aclosing
 from functools import partial
 from dataclasses import dataclass
 from datetime import timedelta
@@ -37,7 +37,7 @@ from typing import Literal, Protocol, cast
 
 import pyaudio
 from loguru import logger
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InterruptionFrame, OutputAudioRawFrame, StartFrame, TTSAudioRawFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, CancelFrame, EndFrame, EndWorkerFrame, Frame, InterruptionFrame, OutputAudioRawFrame, StartFrame, TTSAudioRawFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -656,19 +656,18 @@ class Speaker(LocalAudioOutputTransport):
 
 
 class KeyedMicrophone(LocalAudioInputTransport):
-    """The local microphone, heard through the echo canceller and silent while the key is up; and the phone's, which
-    the pipeline hears in its place while hands is at the phone."""
+    """The local microphone, heard through the echo canceller and silent while the key is up; and what the pipeline hears
+    of it and of the phone's, which it hears in its place while hands is at the phone, in line with the gate's writes."""
 
-    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, echo: Echo, record: Record, clock: Clock, choice: Choice) -> None:
+    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, echo: Echo, record: Record, clock: Clock, choice: Choice) -> None:
         super().__init__(py_audio, params)
         self._clock = clock
         self._key = key
-        self._phone = phone
         self._choice = choice
         # The canceller the first stream is opened with; each stream after it is opened with its own.
         self._echo = echo
         self._record = record
-        self._listening: asyncio.Task[None] | None = None
+        self._hearing: asyncio.Task[None] | None = None
         # What the attached stream was opened on; None until setup opens the first.
         self.opened: Input | None = None
         # Who hears the desk whatever the gate says. [LAW:no-shared-mutable-globals] published to on the event loop
@@ -756,16 +755,32 @@ class KeyedMicrophone(LocalAudioInputTransport):
 
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
-        self._listening = self.create_task(self._hear_the_phone(), "the phone's microphone")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self._hearing = self.create_task(self._hear(), "what the pipeline hears")  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
-    async def _hear_the_phone(self) -> None:
-        while True:
-            # Keyed by the phone as each arrived, in order with its button.
-            await self.push_audio_frame(await self._phone.heard.get())
+    async def _hear(self) -> None:
+        # [LAW:no-ambient-temporal-coupling] one route for both places' frames and the gate's writes, in the order the key
+        # put them in: never Pipecat's audio queue, which a write, being no audio, could not join. Closed as the task ends,
+        # so what is put after is left for the next to take.
+        async with aclosing(self._key.heard()) as heard:
+            async for each in heard:
+                await self.push_frame(each)
+
+    async def _stop_hearing(self) -> None:
+        """Push nothing more, as Pipecat stops its own audio task: behind an end, there is nobody to hear it."""
+        hearing, self._hearing = self._hearing, None
+        if hearing is not None:
+            await self.cancel_task(hearing)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+
+    async def stop(self, frame: EndFrame) -> None:
+        await self._stop_hearing()
+        await super().stop(frame)
+
+    async def cancel(self, frame: CancelFrame) -> None:
+        await self._stop_hearing()
+        await super().cancel(frame)
 
     async def cleanup(self) -> None:
-        if self._listening is not None:
-            await self.cancel_task(self._listening)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        await self._stop_hearing()
         # As for the speaker: off the loop, where closing a microphone whose device is gone takes seconds.
         await BaseInputTransport.cleanup(self)
         await _let_go_at_cleanup(self._clock, self._held(), self.let_go, lambda: None)
@@ -781,19 +796,12 @@ class KeyedMicrophone(LocalAudioInputTransport):
             # hands running deaf; the pipeline is ended instead, and the run with it.
             asyncio.run_coroutine_threadsafe(self._fail(error), self.get_event_loop())
             return None, pyaudio.paAbort
-        loop = self.get_event_loop()
-        # One read of the gate: what the frame holds and the key it says it was captured under always agree.
-        gate = self._key.gate
-        # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the clip owner: while hands is at the
-        # phone, the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
-        overheard = cancelled.heard if gate.hears("desk") else bytes(len(cancelled.heard))
-        loop.call_soon_threadsafe(self._overheard.publish, overheard)
-        # [LAW:single-enforcer] the gate alone says which place's microphone reaches the clip owner; while hands is at the
-        # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
-        if not gate.hears("desk"):
-            return None, pyaudio.paContinue
-        frame = gate.framed(cancelled.heard, in_data, cancelled.played, self._sample_rate, self._params.audio_in_channels, "desk")
-        asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), loop)
+        # [LAW:single-enforcer] the gate alone says which place's microphone the pipeline hears, by a trigger as by the clip
+        # owner: while hands is at the phone, the desk's frames are not the pipeline's at all, so its stream is the phone's
+        # unbroken, and the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
+        heard = self._key.hear("desk", cancelled.heard, in_data, cancelled.played, self._sample_rate, self._params.audio_in_channels)
+        overheard = cancelled.heard if heard else bytes(len(cancelled.heard))
+        self.get_event_loop().call_soon_threadsafe(self._overheard.publish, overheard)
         return None, pyaudio.paContinue
 
     async def _fail(self, error: Exception) -> None:
@@ -848,7 +856,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         cancelling = echo()
         self._echo = echo
         self._speaker = Speaker(self._pyaudio, params, key, phone, cancelling, record, clock, choices.output, lambda: self.deaf)
-        self._microphone = KeyedMicrophone(self._pyaudio, params, key, phone, cancelling, record, clock, choices.input)
+        self._microphone = KeyedMicrophone(self._pyaudio, params, key, cancelling, record, clock, choices.input)
         self._portaudio = portaudio
 
     def input(self) -> KeyedMicrophone:

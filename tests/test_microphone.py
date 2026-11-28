@@ -15,23 +15,26 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame, TTSAudioRawFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, TTSAudioRawFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
-from conftest import speaker_writers
+from conftest import running, speaker_writers
+from test_atphone import Page
+from test_clipowner import Scripted, Seen
 
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent, begun
+from hands.voice.clipowner import ClipOwner
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
 from hands.voice.clips import Played, Reference, Playhead
 from hands.voice.devicechoice import Auto, BuiltIns, Choices, Closed, DefaultDevices, Hardware, Instead, Missing, Named, Off, OnDefault, OnNamed, Placement
 from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, NoOutput, Output, Playout, PortAudio, Pull
 from hands.voice.system import AudioMoved, system_text
-from hands.voice.phone import Phone
+from hands.voice.phone import Pcm, Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.clips import Clip
 from hands.voice.turnstop import TurnOpened
@@ -66,7 +69,8 @@ class Room:
 
 
 class Rig:
-    """The transport with its PyAudio calls replaced: the clock is set by hand and pushed audio is kept."""
+    """The transport with its PyAudio calls replaced: the clock is set by hand, and the audio the microphone pushes to the
+    pipeline is kept, by its own task, as it pushes it."""
 
     def __init__(self) -> None:
         self.clock = VirtualClock()
@@ -85,15 +89,20 @@ class Rig:
         self.stream = SimpleStream()
         self.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(self.stream, "MacBook Pro Speakers", self.room))  # as setup attaches the stream it opened
 
-        async def push_audio_frame(frame: InputAudioRawFrame) -> None:
-            assert isinstance(frame, KeyedAudio)
-            self.pushed.append(frame.audio)
-            self.captured.append(frame.captured)
-            self.played.append(frame.played)
+        async def push_frame(frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+            match frame:
+                case KeyedAudio():
+                    self.pushed.append(frame.audio)
+                    self.captured.append(frame.captured)
+                    self.played.append(frame.played)
+                case _:
+                    pass
 
-        self.microphone.push_audio_frame = push_audio_frame
+        self.microphone.push_frame = push_frame
         self.microphone.get_event_loop = asyncio.get_running_loop
         self.speaker.get_event_loop = asyncio.get_running_loop
+        # As the pipeline's start starts it.
+        self.hearing = asyncio.create_task(self.microphone._hear())  # pyright: ignore[reportPrivateUsage]
 
     async def play(self, audio: bytes, at: float) -> None:
         self.clock.at = at
@@ -119,6 +128,8 @@ async def devices() -> AsyncGenerator[Rig, None]:
     """The rig, its speaker cleaned up as the test ends, which ends its stream's writer."""
     rig = Rig()
     yield rig
+    rig.hearing.cancel()
+    await asyncio.gather(rig.hearing, return_exceptions=True)
     await rig.speaker.cleanup()
 
 
@@ -177,6 +188,36 @@ async def test_a_trigger_overhears_the_desk_cleaned_whatever_the_key_says_and_on
         assert [await anext(heard), await anext(heard)] == [CLEANED, bytes(len(CLEANED))]
     await devices.capture(at=1.04)
     assert devices.pushed == [QUIET]
+
+
+async def test_a_turn_at_the_desk_and_one_at_the_phone_each_end_as_the_gate_writes_it_with_no_frame_after_it(devices: Rig) -> None:
+    """[LAW:no-ambient-temporal-coupling] a turn ended only as the next frame of its place's microphone came, which a phone
+    gone quiet, a call hung up or a run stopping never sends. Here each place sends nothing after its turn's end, and the
+    clip owner is given both clips by the microphone's own task, from the gate's writes and the frames in line with them."""
+    page, transcriber, seen = Page(devices.clock, devices.key, lambda _: None), Scripted([None, None]), Seen()
+    owner = ClipOwner(SYSTEM, transcriber, (), lambda _: None)
+    async with running([owner, seen]) as run:
+
+        async def push_frame(frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+            await run.worker.queue_frame(frame)
+
+        devices.microphone.push_frame = push_frame
+        # At the desk: a press, a buffer captured while it is down, and its release.
+        devices.key.move("start", "shortcut")
+        await devices.capture(at=1.0)
+        devices.key.end(devices.key.gate.turn, "stop", "shortcut")
+        # At the phone: its button takes hands there, a message of its audio, and the button's release.
+        page.says("start")
+        page.says(Pcm(LOUD))
+        page.says("stop")
+        async with asyncio.timeout(10):
+            while ("resolved", 2) not in seen.seen:
+                await asyncio.sleep(0.01)
+    assert (devices.key.gate.place, devices.key.gate.ended) == ("phone", ("sent", "sent"))
+    # Each sent, and resolved, once, each transcribed over the audio captured before its end and nothing after it.
+    assert seen.ends == [("sent", 1), ("sent", 2)]
+    assert [each for each in seen.seen if each[0] == "resolved"] == [("resolved", 1), ("resolved", 2)]
+    assert [sound.heard for sound in transcriber.given] == [CLEANED, LOUD]
 
 
 class Refusing(Room):

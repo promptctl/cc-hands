@@ -149,7 +149,7 @@ async def hearing(hands: Hands) -> AsyncGenerator[Heeding]:
 
         async def feed() -> None:
             while True:
-                await run.worker.queue_frame(await hands.phone.heard.get())
+                await run.worker.queue_frame(await hands.heard.get())
 
         feeding = asyncio.create_task(feed())
         try:

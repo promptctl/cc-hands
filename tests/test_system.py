@@ -55,7 +55,7 @@ from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip, Sound
 from hands.voice.devicechoice import Instead, Missing, Off
 from hands.voice.microphone import Devices
-from hands.voice.ptt import Gate
+from hands.voice.ptt import Gate, GateWritten
 from hands.voice.shortcut import Move
 from hands.voice.turnstop import TurnResolved, Words
 from fakeprocesses import Running, processes
@@ -424,7 +424,7 @@ async def test_the_clip_owner_is_done_with_every_clip_and_says_nothing_of_one_it
         gate = Gate()
         for _ in range(3):
             for gate in (gate.after("start", "shortcut"), gate.after("start", "shortcut").after("stop", "shortcut")):
-                await run.worker.queue_frame(gate.framed(b"\x00\x00", b"\x00\x00", None, 16000, 1, "desk"))
+                await run.worker.queue_frames([GateWritten(gate=gate), gate.framed(b"\x00\x00", b"\x00\x00", None, 16000, 1)])
         async with asyncio.timeout(10):
             while len(told.clips) < 4:
                 await asyncio.sleep(0.01)

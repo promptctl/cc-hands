@@ -1,11 +1,13 @@
-"""A serial thread: its work runs one piece at a time, in order, and a close ends the thread once all of it has run."""
+"""A serial thread: its work runs one piece at a time, in order, and a close ends the thread once all of it has run. A
+thread-safe queue: what any thread puts is taken on the loop, in the order put."""
 
 import threading
+from contextlib import aclosing
 
 import pytest
 
 from conftest import taken
-from hands.threads import SerialThread
+from hands.threads import SerialThread, ThreadsafeQueue
 
 
 def named(name: str) -> list[threading.Thread]:
@@ -119,3 +121,25 @@ async def test_work_that_fails_once_nobody_waits_for_it_says_so(errors: list[str
     # What is given after it settles after it, so its failure has been said by then.
     await serial.settles(lambda: None)
     assert taken(errors) == ["work on abandoned failed after its waiter had gone"]
+
+
+async def test_what_threads_put_is_taken_on_the_loop_in_the_order_put_before_the_taker_began_and_after() -> None:
+    queue = ThreadsafeQueue[int]()
+    queue.put(0)
+    async with aclosing(queue.taken()) as items:
+        assert await anext(items) == 0
+        # Put from another thread while the taker waits for more: each put wakes it.
+        putting = threading.Thread(target=lambda: [queue.put(item) for item in (1, 2)])
+        putting.start()
+        assert [await anext(items), await anext(items)] == [1, 2]
+        putting.join()
+
+
+async def test_what_is_put_once_a_taker_has_let_go_waits_for_the_next() -> None:
+    queue = ThreadsafeQueue[int]()
+    queue.put(0)
+    async with aclosing(queue.taken()) as items:
+        assert await anext(items) == 0
+    queue.put(1)
+    async with aclosing(queue.taken()) as items:
+        assert await anext(items) == 1

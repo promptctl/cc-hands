@@ -77,8 +77,10 @@ async def _follow(clock: Clock, key: PushToTalk, phone: Phoned, ears: Ears, emit
                     pass
                 case KeyedAudio() as frame:
                     # Audio of the turn the gate has open for the wake, and no other: what was captured before it opened, with the
-                    # key at rest, is the clip's and not the driver's.
-                    if turn is not None and frame.key == "down" and frame.opened == PHONE_WAKE and frame.turn == turn.id:
+                    # key at rest, is the clip's and not the driver's. [LAW:no-ambient-temporal-coupling] the phone hands each
+                    # frame on in the step the gate framed it, and the gate tells a turn in the step it writes it, both on the
+                    # loop, so a frame between the wake's opening and its end here was captured with that turn open.
+                    if turn is not None:
                         heard.extend((await life.hear(frame.audio, True, turn)).told())
                 case told if turn is not None:
                     match step(turn, told):

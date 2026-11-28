@@ -14,8 +14,8 @@ import tempfile
 import threading
 import traceback
 import weakref
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, ExitStack, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
@@ -58,6 +58,7 @@ from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
 from hands.voice.mlxthread import OnMLX
+from hands.voice.ptt import Gate, GateWritten, KeyedAudio, PushToTalk
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 from fixtures import pins
@@ -203,6 +204,37 @@ def pytest_make_collect_report() -> Generator[None, pytest.CollectReport, pytest
 def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
     """The wide events named `name`, in the order they were emitted."""
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
+
+
+def captured_under(heard: Iterable[GateWritten | KeyedAudio]) -> list[tuple[Gate, KeyedAudio]]:
+    """Each frame of what the pipeline heard, with the gate it was captured under: the last written ahead of it, or the gate
+    every run starts at."""
+    gate, frames = Gate(), list[tuple[Gate, KeyedAudio]]()
+    for each in heard:
+        match each:
+            case GateWritten(gate=written):
+                gate = written
+            case KeyedAudio():
+                frames.append((gate, each))
+    return frames
+
+
+@asynccontextmanager
+async def taking(key: PushToTalk, take: Callable[[GateWritten | KeyedAudio], Awaitable[object]]) -> AsyncGenerator[None]:
+    """Everything the pipeline hears from `key`, from its first write on, each write of the gate and each frame, handed to
+    `take` in order as the keyed microphone's task takes it, while the block runs: a queue a test reads, or a pipeline's."""
+
+    async def taken() -> None:
+        async with aclosing(key.heard()) as each:
+            async for item in each:
+                await take(item)
+
+    task = asyncio.create_task(taken())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.fixture

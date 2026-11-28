@@ -23,7 +23,7 @@ from loguru import logger
 from cryptography import x509
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerConnection, RTCSessionDescription
 from av import AudioFrame
-from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
+from pipecat.frames.frames import OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioTransportParams
 
 from hands.virtualclock import VirtualClock
@@ -47,14 +47,14 @@ from hands.core.bearer import bearer
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, not_after, own_certificate, phone_key, server_context
 from hands.voice.phonepage import APP_PATHS, APP_SCRIPTS, ROW, InApp, app_page, phone_pages
-from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.ptt import Gate, GateWritten, KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
 from hands.voice.pinnedfile import Release
 from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from hands.voice.synthesis import Ended, Synthesis
-from conftest import events, patiently, running
+from conftest import captured_under, events, patiently, running, taking
 from test_clipowner import Scripted
 
 
@@ -142,17 +142,20 @@ class Call:
     key: PushToTalk
     page: Page
     recorded: list[Entry]
+    # What the pipeline hears, from the gate's first write on: each write and each frame, in order.
+    heard: asyncio.Queue[GateWritten | KeyedAudio]
 
     async def until(self, done: Callable[[], bool]) -> None:
         async with asyncio.timeout(5):
             while not done():
                 await asyncio.sleep(0.01)
 
-    def heard(self) -> list[KeyedAudio]:
-        frames: list[KeyedAudio] = []
-        while not self.phone.heard.empty():
-            frames.append(self.phone.heard.get_nowait())
-        return frames
+    def taken(self) -> list[GateWritten | KeyedAudio]:
+        """What the pipeline has heard and the test has not yet taken."""
+        heard: list[GateWritten | KeyedAudio] = []
+        while not self.heard.empty():
+            heard.append(self.heard.get_nowait())
+        return heard
 
 
 @asynccontextmanager
@@ -162,12 +165,14 @@ async def calling(clock: Clock = SYSTEM) -> AsyncGenerator[Call, None]:
     # [LAW:one-source-of-truth] the gate and the phone write one record, as the daemon runs them.
     key = PushToTalk(SYSTEM, recorded.append)
     phone = Phone(clock, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
-    page = await connected(phone, FIRST, "192.168.7.20")
-    try:
-        yield Call(phone, key, page, recorded)
-    finally:
-        await page.peer.close()
-        await phone.stop()
+    heard: asyncio.Queue[GateWritten | KeyedAudio] = asyncio.Queue()
+    async with taking(key, heard.put):
+        page = await connected(phone, FIRST, "192.168.7.20")
+        try:
+            yield Call(phone, key, page, recorded, heard)
+        finally:
+            await page.peer.close()
+            await phone.stop()
 
 
 @pytest.fixture
@@ -205,17 +210,18 @@ async def test_the_moves_a_call_makes_are_part_of_its_trace() -> None:
 async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_else(call: Call) -> None:
     for said in [LOUD, "press", LOUD, LOUD, "release", LOUD]:
         call.page.send(said)
-    await call.until(lambda: call.phone.moves.qsize() == 2 and call.phone.heard.qsize() >= 4)
+    await call.until(lambda: call.phone.moves.qsize() == 2 and call.heard.qsize() >= 4)
     await asyncio.sleep(0.1)
-    frames = call.heard()
-    # Each message is resampled to the pipeline's rate, keyed by the button as it stood when the message arrived.
-    keyed = [(frame.key, any(frame.audio)) for frame in frames]
+    frames = captured_under(call.taken())
+    # Each message is resampled to the pipeline's rate, and heard behind the button's write as it stood when the message
+    # arrived: the order of what the pipeline hears is the order the page sent it in.
+    keyed = [(gate.key, any(frame.audio)) for gate, frame in frames]
     down = [loud for key, loud in keyed if key == "down"]
     assert down and all(down)
     assert all(not loud for key, loud in keyed if key == "up")
     first_down, last_down = [key for key, _ in keyed].index("down"), len(keyed) - 1 - [key for key, _ in keyed][::-1].index("down")
     assert all(key == "up" for key, _ in keyed[:first_down]) and all(key == "up" for key, _ in keyed[last_down + 1 :])
-    assert all(frame.sample_rate == 16000 for frame in frames)
+    assert all(frame.sample_rate == 16000 for _, frame in frames)
     assert [call.phone.moves.get_nowait(), call.phone.moves.get_nowait()] == ["start", "stop"]
     assert call.key.gate.key == "up"
 
@@ -299,16 +305,16 @@ async def test_each_press_is_answered_once_under_its_own_number_as_opened_or_as_
 
 
 @asynccontextmanager
-async def hearing(call: Call) -> AsyncGenerator[list[KeyedAudio]]:
-    """The call's microphone fed to a clip owner whose observer tells the call's page, as hands' pipeline is wired: the
-    frames it was given, in order. A clip it sends is transcribed to nothing."""
+async def hearing(call: Call) -> AsyncGenerator[list[GateWritten | KeyedAudio]]:
+    """What the pipeline hears of the call fed to a clip owner whose observer tells the call's page, as hands' pipeline is
+    wired: what it was given, in order. A clip it sends is transcribed to nothing."""
     owner = ClipOwner(SYSTEM, Scripted([None]), (), call.recorded.append)
-    given: list[KeyedAudio] = []
+    given: list[GateWritten | KeyedAudio] = []
     async with running([owner], [LatencyObserver(SYSTEM, owner, call.phone.tell)]) as run:
 
         async def feed() -> None:
             while True:
-                given.append(await call.phone.heard.get())
+                given.append(await call.heard.get())
                 await run.worker.queue_frame(given[-1])
 
         feeding = asyncio.create_task(feed())
@@ -337,7 +343,7 @@ async def test_a_clip_thrown_away_is_told_discarded_naming_it_and_never_released
     async with hearing(call) as given:
         for said in [quiet_message(960), "press", LOUD]:
             call.page.send(said)
-        await call.until(lambda: any(frame.key == "down" and any(frame.audio) for frame in given))
+        await call.until(lambda: any(gate.key == "down" and any(frame.audio) for gate, frame in captured_under(given)))
         call.key.end(call.key.gate.turn, "drop", "phone button")
         call.page.send(quiet_message(960))
         await call.until(lambda: len(call.page.told) == 2)
@@ -542,7 +548,7 @@ async def heard_from(script: Sequence[bytes | str]) -> list[tuple[str, int, int,
             up.page.send(said)
         # The last press is the script's end: the channel is ordered, so everything before it has been heard.
         await up.until(lambda: up.phone.moves.qsize() == script.count("press") + script.count("release") + 1)
-        return [(frame.key, frame.ended.count("sent"), frame.turn, frame.sample_rate, frame.audio) for frame in up.heard()]
+        return [(gate.key, gate.ended.count("sent"), gate.turn, frame.sample_rate, frame.audio) for gate, frame in captured_under(up.taken())]
 
 
 @pytest.mark.outside
@@ -626,7 +632,7 @@ async def test_what_hands_cannot_read_is_said_makes_no_silence_and_is_counted_on
         await call.until(lambda: bool(errors))
     finally:
         logger.remove(sink)
-    assert call.phone.heard.empty()
+    assert captured_under(call.taken()) == []
     assert call.key.gate.place == "phone"
     await call.phone.stop()
     [event] = calls(call.recorded)
@@ -766,7 +772,8 @@ async def test_an_offer_without_the_phone_key_is_refused_and_recorded(page_serve
     [event] = calls(recorded)
     assert (event.outcome, event.error, event.parent_id) == ("failed", "offered without the phone's key", None)
     assert dict(event.facts) == {"remote": "127.0.0.1", "ended": CallRefused("offered without the phone's key")}
-    assert phone.moves.empty() and phone.heard.empty()
+    # Nothing of the phone's moved the gate or was heard: with no call, hands is at the desk, and the gate as it began.
+    assert phone.moves.empty() and key.gate == Gate()
     taken = await client.post("/offer", data=body, headers={"Authorization": f"Bearer {KEY}"})
     assert taken.status == 200
     await page.peer.setRemoteDescription(RTCSessionDescription(**await taken.json()))
@@ -866,28 +873,23 @@ class Desk:
 
 
 @pytest.fixture
-async def a_transport(call: Call) -> AsyncGenerator[tuple[KeyedAudioTransport, Desk, list[bytes]], None]:
-    """The keyed transport on the call's gate and phone, its desk stream kept and its pushed audio kept, and cleaned up
-    as the test ends, which ends its stream's writer."""
+async def a_transport(call: Call) -> AsyncGenerator[tuple[KeyedAudioTransport, Desk], None]:
+    """The keyed transport on the call's gate and phone, its desk stream kept, and cleaned up as the test ends, which ends
+    its stream's writer."""
     echo = EchoCanceller()
     transport = KeyedAudioTransport(SYSTEM, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), call.key, call.phone, lambda _: None, echo=lambda: echo)
-    desk, pushed = Desk(), list[bytes]()
+    desk = Desk()
     transport.output().attach(cast(PortAudio, SimpleNamespace()), Output(desk, "MacBook Pro Speakers", echo))
     microphone = transport.input()
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
-
-    async def push_audio_frame(frame: InputAudioRawFrame) -> None:
-        pushed.append(frame.audio)
-
-    microphone.push_audio_frame = push_audio_frame
     microphone.get_event_loop = asyncio.get_running_loop
-    yield transport, desk, pushed
+    yield transport, desk
     await transport.output().cleanup()
 
 
 @pytest.mark.outside
-async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call, a_transport: tuple[KeyedAudioTransport, Desk, list[bytes]]) -> None:
-    transport, desk, pushed = a_transport
+async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call, a_transport: tuple[KeyedAudioTransport, Desk]) -> None:
+    transport, desk = a_transport
     echo = cast(Output, transport.output().opened).echo  # the canceller the desk streams were attached with
     call.key.move("start", "shortcut")  # a turn opened at the desk takes hands there...
     assert call.key.gate.place == "desk"
@@ -895,7 +897,8 @@ async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_
     await call.until(lambda: call.key.gate.place == "phone")
     transport.input()._captured(echo, b"\x7f\x7f" * 320, 320, None, 0)  # pyright: ignore[reportPrivateUsage]
     await asyncio.sleep(0.05)
-    assert pushed == []
+    # The page sent no audio, so a frame heard would be the desk's.
+    assert captured_under(call.taken()) == []
     speech = (np.full(24000 // 25, 6000, dtype=np.int16)).tobytes()
     assert await asyncio.wait_for(transport.output().write_audio_frame(OutputAudioRawFrame(audio=speech, sample_rate=24000, num_channels=1)), 5)
     assert desk.written == []

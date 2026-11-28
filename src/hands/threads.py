@@ -1,4 +1,4 @@
-"""Blocking work run off the event loop on threads the process does not wait for.
+"""Blocking work run off the event loop on threads the process does not wait for, and what threads hand the loop.
 
 asyncio.to_thread's executor threads are joined at exit, so work that never returns — a model still loading, a
 write to an audio device that is gone — would hold a stopped daemon open for as long as it hangs.
@@ -9,7 +9,7 @@ import concurrent.futures
 import contextlib
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 
 from loguru import logger
 
@@ -142,6 +142,37 @@ def _copied[T](done: concurrent.futures.Future[T], settled: asyncio.Future[T], n
             settled.set_exception(error)
         case error, True:
             logger.opt(exception=error).error(f"work on {name} failed after its waiter had gone")
+
+
+class ThreadsafeQueue[Item]:
+    """What `asyncio.Queue` is to the loop, for any thread: each item put, from whichever thread, is taken on the loop in the
+    order it was put, by one taker at a time.
+
+    [LAW:no-ambient-temporal-coupling] a put is in line the moment it returns, on whichever thread: the order is the queue's,
+    never the order the loop gets to callbacks scheduled from two threads."""
+
+    def __init__(self) -> None:
+        self._items: queue.SimpleQueue[Item] = queue.SimpleQueue()
+        # How a put wakes the taker: nobody, until one takes, and it takes everything put before it first.
+        self._woken: Callable[[], None] = lambda: None
+
+    def put(self, item: Item) -> None:
+        """Queue `item` behind everything put before it, from any thread."""
+        self._items.put(item)
+        self._woken()
+
+    async def taken(self) -> AsyncGenerator[Item]:
+        """Every item put, before this began and after, in the order put, on the loop this runs on, until it is closed."""
+        loop, put = asyncio.get_running_loop(), asyncio.Event()
+        self._woken = lambda: tell(loop, put.set)
+        try:
+            while True:
+                put.clear()
+                while not self._items.empty():
+                    yield self._items.get_nowait()
+                await put.wait()
+        finally:
+            self._woken = lambda: None
 
 
 def tell[*Args](loop: asyncio.AbstractEventLoop, callback: Callable[[*Args], object], *args: *Args) -> None:

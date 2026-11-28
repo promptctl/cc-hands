@@ -51,7 +51,7 @@ from hands.voice.milestone import ClipOpened, ClipReleased, Told
 from hands.voice import player as played
 from hands.core.playback import hands_says
 from hands.voice.player import Player
-from hands.voice.ptt import Gate, Key, KeyedAudio, Open, Pressing, PushToTalk, Resting
+from hands.voice.ptt import Gate, GateWritten, Key, KeyedAudio, Open, Pressing, PushToTalk, Resting
 from hands.voice.trigger import Trigger, place_of
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
@@ -229,19 +229,20 @@ class Rig:
     # What the streaming recognizer hears in each clip while it is open.
     streamed: Streamed = field(kw_only=True)
 
-    # The gate the last frame was captured under.
+    # The gate as last written, which the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
 
     async def clip(
         self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, by: Trigger = "shortcut", captured: bytes | None = None, voices: tuple[str, ...] | None = None
     ) -> None:
-        """A frame captured under each key, by `by`'s microphone, counted as the gate counts them: the key leaving down
-        for a rest, or for a press (one that finds the key down, its release gone by unseen), sends the turn, and for
-        "dropped" throws it away; a clip it opens is opened by `by`. `captured` is the sound before the echo canceller,
-        where the canceller changed it; `voices` hands' TTS played over every frame, nothing known of it for None."""
+        """The gate written at each key, and a frame captured under it by `by`'s microphone, counted as the gate counts
+        them: the key leaving down for a rest, or for a press (one that finds the key down, its release gone by unseen),
+        sends the turn, and for "dropped" throws it away; a clip it opens is opened by `by`. `captured` is the sound before
+        the echo canceller, where the canceller changed it; `voices` hands' TTS played over every frame, nothing known of it
+        for None."""
         syntheses = () if voices is None else tuple(Playhead(Synthesis(voice, "Hands here.", begun(SYSTEM)), 0.0) for voice in voices)
         played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses, True) for _ in range(len(sound) // 320))
-        frames: list[KeyedAudio] = []
+        heard: list[Frame] = []
         for key in keys:
             match self.gate.key, key:
                 case "down", "up" | "listening" | "arming":
@@ -251,18 +252,19 @@ class Rig:
                 case _:
                     pass
             self.gate = _under(self.gate, key, by)
-            frames.append(self.gate.framed(sound, sound if captured is None else captured, played, 16000, 1, place_of(by)))
-        await self.worker.queue_frames(frames)
+            heard += [GateWritten(gate=self.gate), self.gate.framed(sound, sound if captured is None else captured, played, 16000, 1)]
+        await self.worker.queue_frames(heard)
 
     async def play(self, timeline: "Timeline") -> None:
-        """The frames of a timeline, after which the rig's gate is the timeline's: the turns it ended are on the gate's record."""
+        """What a timeline's pipeline heard, after which the rig's gate is the timeline's: the turns it ended are on the gate's
+        record."""
         self.gate = timeline.gate
-        await self.worker.queue_frames(timeline.frames)
+        await self.worker.queue_frames(timeline.heard)
 
     async def capture(self, gate: Gate, sound: bytes) -> None:
-        """A frame captured under `gate`, as it stands after whatever moves made it."""
+        """`gate` written, as it stands after whatever moves made it, and a frame captured under it."""
         self.gate = gate
-        await self.worker.queue_frame(gate.framed(sound, sound, None, 16000, 1, gate.place))
+        await self.worker.queue_frames([GateWritten(gate=gate), gate.framed(sound, sound, None, 16000, 1)])
 
     async def until(self, what: Callable[[], bool]) -> None:
         await until(self.out, what)
@@ -812,16 +814,18 @@ SPEECH = bytes([3, 3]) * 320
 
 @dataclass
 class Timeline:
-    """What a timeline captured: each frame, as the gate tagged it, and every move the trigger made."""
+    """What a timeline's pipeline heard, each write of the gate and each frame captured under it; the key each frame was
+    captured under; and every move the trigger made."""
 
-    frames: list[KeyedAudio]
+    heard: list[GateWritten | KeyedAudio]
+    keys: list[Key]
     moves: list[Move]
-    # The gate as the last frame was captured under it.
+    # The gate as last written, which the last frame was captured under.
     gate: Gate
 
     def clip_frames(self) -> int:
         """How many frames were captured with the turn open or its press arming: the audio the turn is made of."""
-        return sum(frame.key in ("arming", "down") for frame in self.frames)
+        return sum(key in ("arming", "down") for key in self.keys)
 
 
 def play_out[S, E](
@@ -839,7 +843,7 @@ def play_out[S, E](
     arrival = itertools.count()
     due: list[tuple[float, int, E]] = [(at, next(arrival), event) for at, event in told]
     heapq.heapify(due)
-    gate, frames, moves = Gate(), list[KeyedAudio](), list[Move]()
+    gate, heard, keys, moves = Gate(), list[GateWritten | KeyedAudio](), list[Key](), list[Move]()
     for n in range(round(seconds / FRAME_SECONDS)):
         while due and due[0][0] <= n * FRAME_SECONDS:
             _, _, event = heapq.heappop(due)
@@ -855,11 +859,14 @@ def play_out[S, E](
                     case desk.Made(move=move, by=trigger):
                         moves.append(move)
                         gate = gate.after(move, trigger)
+                        heard.append(GateWritten(gate=gate))
                     case move:
                         moves.append(move)
                         gate = gate.after(move, by)
-        frames.append(gate.framed(SPEECH, SPEECH, None, 16000, 1, place_of(by)))
-    return Timeline(frames, moves, gate)
+                        heard.append(GateWritten(gate=gate))
+        heard.append(gate.framed(SPEECH, SPEECH, None, 16000, 1))
+        keys.append(gate.key)
+    return Timeline(heard, keys, moves, gate)
 
 
 def shortcut_timeline(told: Sequence[tuple[float, KeyEvent]], seconds: float) -> Timeline:
@@ -911,7 +918,7 @@ async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it
     # The three seconds up to the limit, every one; after it the microphone is closed, and the room is no part of it.
     assert timeline.clip_frames() == 150
     assert rig.heard[0].rstrip(b"\x00") == SPEECH * timeline.clip_frames()
-    assert timeline.frames[-1].audio == bytes(len(SPEECH))
+    assert timeline.keys[-1] == "up"
 
 
 async def test_an_engaged_turn_that_never_ends_is_sent_at_the_limit_with_all_it_recorded(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1176,13 +1183,13 @@ def owned() -> ClipOwner:
 
 
 async def test_the_clip_owner_hears_only_the_keyed_microphone() -> None:
-    with pytest.raises(TypeError, match="carries no key"):
+    with pytest.raises(TypeError, match="is not the keyed microphone's"):
         await owned()._captured(InputAudioRawFrame(b"\x00\x00", 16000, 1))  # pyright: ignore[reportPrivateUsage]  (what every frame of audio meets)
 
 
 async def test_the_clip_owner_hears_only_mono_audio_at_the_rate_every_model_hears() -> None:
     with pytest.raises(ValueError, match="48000 Hz"):
-        await owned()._captured(Gate().framed(b"\x00\x00", b"\x00\x00", None, 48000, 1, "desk"))  # pyright: ignore[reportPrivateUsage]
+        await owned()._captured(Gate().framed(b"\x00\x00", b"\x00\x00", None, 48000, 1))  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_over_many_turns_each_is_sent_as_its_own_words_and_neither_side_keeps_any_of_them(rig: Rig) -> None:

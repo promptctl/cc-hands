@@ -1,6 +1,9 @@
 """The push-to-talk decisions, with no pipeline and no audio device."""
 
 import itertools
+import threading
+from contextlib import aclosing
+from types import TracebackType
 from typing import cast, get_args
 
 import pytest
@@ -11,7 +14,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.clips import Fate, Trigger as TriggerType
 from hands.voice.shortcut import Beginning, Ending, Move
 from hands.sessions.audit import Entry
-from hands.voice.ptt import Gate, GateEnded, GateOpened, Open, Position, Pressing, PushToTalk, Resting
+from hands.voice.ptt import Gate, GateEnded, GateOpened, GateWritten, KeyedAudio, Open, Position, Pressing, PushToTalk, Resting
 from hands.voice.tools import modality_tool
 from hands.voice.trigger import Trigger, by_hand, place_of
 from hands.voice.voiceturn import TurnId
@@ -476,3 +479,69 @@ async def test_set_modality_switches_it_says_so_and_refuses_what_is_neither() ->
     assert key.modality == "screen"
     assert "error" in await switch.body(modality="video")
     assert key.modality == "screen"
+
+
+async def heard(key: PushToTalk, count: int) -> list[Gate | KeyedAudio]:
+    """The first `count` of what the pipeline hears from `key`, in its order: each frame, and the gate of each write, since
+    every frame of Pipecat's is its own."""
+    async with aclosing(key.heard()) as each:
+        return [written.gate if isinstance(written := await anext(each), GateWritten) else written for _ in range(count)]
+
+
+async def test_the_pipeline_hears_each_write_of_the_gate_ahead_of_every_frame_captured_under_it_and_only_where_hands_is() -> None:
+    key = PushToTalk(VirtualClock(), lambda _: None)
+    desk = key.hear("desk", LOUD, LOUD, None, 16000, 1)
+    key.move("start", "shortcut")
+    # The phone's microphone is not the pipeline's while hands is at the desk: nothing of it is put in line.
+    assert key.hear("phone", LOUD, LOUD, None, 16000, 1) == ()
+    talking = key.hear("desk", LOUD, LOUD, None, 16000, 1)
+    key.end(key.gate.turn, "stop", "shortcut")
+    assert await heard(key, 4) == [
+        *desk,
+        Gate(Open("shortcut")),
+        *talking,
+        Gate(Resting("shortcut"), ended=("sent",)),
+    ]
+    # Each frame is as the gate it was captured under has it heard: silence with the key up, intact while it is down.
+    assert [frame.audio for frame in (*desk, *talking)] == [QUIET, LOUD]
+
+
+class Contended:
+    """A lock whose first taker is held inside it until a second waits on it: a write made while a capture is inside the
+    gate's one step is a write that waited for it. A build in which either does not take it never sees a second taker, and
+    its test is held until the suite's bound fails it, saying where each thread was."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._first = True
+        self.inside = threading.Event()
+        self._waited = threading.Event()
+
+    def __enter__(self) -> None:
+        if not self._lock.acquire(blocking=False):
+            self._waited.set()
+            self._lock.acquire()
+            return
+        first, self._first = self._first, False
+        if first:
+            self.inside.set()
+            self._waited.wait()
+
+    def __exit__(self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None) -> None:
+        self._lock.release()
+
+
+async def test_a_frame_captured_as_the_gate_is_written_is_heard_under_the_gate_it_was_captured_under_and_ahead_of_the_write() -> None:
+    """[LAW:no-ambient-temporal-coupling] the desk's capture thread frames a buffer as the loop writes the gate: the write
+    waits for the frame to be put, so the frame is heard ahead of it, and muted as the gate it was captured under has it."""
+    contended = Contended()
+    key = PushToTalk(VirtualClock(), lambda _: None, lock=lambda: contended)
+    captured: list[KeyedAudio] = []
+    capture = threading.Thread(target=lambda: captured.extend(key.hear("desk", LOUD, LOUD, None, 16000, 1)))
+    capture.start()
+    contended.inside.wait()
+    # On the loop, as the talk key's edge writes it, while the capture is inside its step.
+    key.move("start", "shortcut")
+    capture.join()
+    assert await heard(key, 2) == [*captured, Gate(Open("shortcut"))]
+    assert [frame.audio for frame in captured] == [QUIET]

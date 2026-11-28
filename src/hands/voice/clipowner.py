@@ -1,11 +1,12 @@
 """The clip owner: it cuts the microphone's audio into clips where the gate cut them, numbers each, and gives every model
 the same samples of it, in the order they were captured; it passes on what the models heard, in clip order.
 
-The gate's key and the record of how each turn ended travel with every frame (`hands.voice.ptt.KeyedAudio`), so a clip
-begins and ends where the frames say the key moved, in capture order, and nothing else says so. As a clip opens, the owner
-says the user started speaking (`TurnOpened`); as it ends, that they stopped, sent (`ClipSent`) or thrown away
-(`ClipDiscarded`), each naming its clip. A turn the gate ended that no frame saw open is said unheard (`TurnUnheard`), so
-every turn the gate ended is a clip or that. Words the user typed are a clip of their own, numbered with the key's and
+Each write of the gate reaches the owner in line with the microphone's frames, ahead of every frame captured under it
+(`hands.voice.ptt.GateWritten`), so a clip opens at the first frame captured with the gate's turn open and ends at the
+write that ends the turn, in capture order, and nothing else says so: no turn waits on a frame to end. As a clip opens, the
+owner says the user started speaking (`TurnOpened`); as it ends, that they stopped, sent (`ClipSent`) or thrown away
+(`ClipDiscarded`), each naming its clip. A turn the gate ended with no frame captured while it was open is said unheard
+(`TurnUnheard`), so every turn the gate ended is a clip or that. Words the user typed are a clip of their own, numbered with the key's and
 taken as they came. Each listener (`hands.voice.clips.Listener`) hears
 every clip of the key's as it is spoken; the transcriber is given each clip the key sent, whole, once it ends, and its
 words, or why it had none, go on in the order the clips ended, followed by the clip's `TurnResolved`.
@@ -24,11 +25,10 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 
 from hands.clock import Clock
-from hands.core.place import Place
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
 from hands.voice.clips import LANGUAGE, RATE, Clip, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber, voices
-from hands.voice.ptt import Key, KeyedAudio
+from hands.voice.ptt import Gate, GateWritten, KeyedAudio
 from hands.voice.trigger import turn_start
 from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
 
@@ -112,16 +112,14 @@ class ClipOwner(FrameProcessor):
         self._transcriber = transcriber
         self._listeners = tuple(listeners)
         self._record = record
-        # The gate as the last frame was captured under it: the key, how many of the turns it had ended are accounted for
-        # (each a clip that ended, or said unheard), and whose microphone it came from.
-        self._key: Key = "up"
-        self._accounted = 0
-        self._place: Place = "desk"
+        # The gate as it was last written, which every frame since was captured under: until its first write, the gate
+        # every run starts at. [LAW:one-source-of-truth] the gate's own value, never a copy of a part of it.
+        self._gate = Gate()
         self._recording = Recording()
-        # How many clips have opened, the key's and those typed; and the last the key opened, clip 0 until one has. It is
-        # open while the key is down.
+        # How many clips have opened, the key's and those typed; and the key's clip open, from the first frame captured
+        # with the gate's turn open until the write that ends that turn.
         self._clips = 0
-        self._latest = Clip(0, "shortcut")
+        self._open: Clip | None = None
         # What is to be pushed, oldest first; the clips ended and not yet resolved; and each listener's hearings, with the
         # clip open as it returned them and when it did. None ends a queue, as the pipeline ends.
         self._out: asyncio.Queue[Frame | None] = asyncio.Queue()
@@ -153,6 +151,9 @@ class ClipOwner(FrameProcessor):
             case Typed(text=text):
                 # Taken here, not passed on: the clip it is goes on in its place.
                 await self._typed(text)
+            case GateWritten(gate=gate):
+                # Taken here, not passed on: the clips it cuts go on in its place.
+                await self._written(gate)
             case InputAudioRawFrame():
                 await self._captured(frame)
                 await self.push_frame(frame, direction)
@@ -216,57 +217,62 @@ class ClipOwner(FrameProcessor):
         await self.push_frame(ClipSent(clip=clip))
         await self._ended.put(_Written(clip, text, begun(self._clock)))
 
-    async def _captured(self, frame: InputAudioRawFrame) -> None:
-        # [LAW:parse-dont-validate] the microphone makes every frame this sees, and tags each one.
-        if not isinstance(frame, KeyedAudio):
-            raise TypeError(f"{type(frame).__name__} carries no key; the keyed microphone makes every frame a clip is cut from")
-        if (frame.sample_rate, frame.num_channels) != (RATE, 1):
-            raise ValueError(f"a frame came as {frame.num_channels} channel(s) at {frame.sample_rate} Hz; every clip is mono at {RATE} Hz")
-        # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's record of ended turns grows, not as its key is next
-        # seen at rest: several can end between two frames, with no frame captured at rest between them. The clip open, if
-        # there is one, is the first to end, and it ends over its own audio before a move between places clears it; each
-        # other was over before any of it was heard.
-        ending = frame.ended[self._accounted :]
-        closing, unheard = (ending[:1], ending[1:]) if self._key == "down" else ((), ending)
-        for fate in closing:
-            await self._end(fate)
-        for turn, fate in enumerate(unheard, start=self._accounted + len(closing)):
+    async def _written(self, gate: Gate) -> None:
+        """The gate as its writer wrote it: each turn it ended since its last write ends, and a move between places, or a press
+        that was Shift after all, starts again the audio a clip would keep.
+
+        [LAW:no-ambient-temporal-coupling] a turn ends as the gate's record of ended turns grows, never as a microphone next
+        sends: the clip open ends here over the audio captured before this write, and nothing after it waits on a frame."""
+        ending = gate.ended[len(self._gate.ended) :]
+        # The clip open, if there is one, is the first to end; each other ended with no frame captured while it was open.
+        match self._open, ending:
+            case Clip() as clip, (fate, *_):
+                await self._end(clip, fate)
+                unheard = ending[1:]
+            case _:
+                unheard = ending
+        for turn, fate in enumerate(unheard, start=len(gate.ended) - len(unheard)):
             # [LAW:nothing-unseen] a turn no clip was opened for is still one event, with how it ended, and told, so nothing
             # waits on it.
             ended("turn.unheard", self._record, begun(self._clock), None, turn=turn, fate=fate)
             await self.push_frame(TurnUnheard(turn=turn))
-        self._accounted += len(ending)
-        if frame.place != self._place:
+        if gate.place != self._gate.place:
             # A turn is heard at one place: what the other's microphone heard before it is no part of it.
             self._recording.clear()
-            self._place = frame.place
-        match self._key, frame.key:
+        match self._gate.key, gate.key:
             case ("up", "arming") | ("arming", "up"):
                 # A clip's audio begins at its press, and a press that was Shift after all heard no part of any turn.
                 self._recording.clear()
-            case "up" | "listening" | "arming", "down":
+            case _:
+                # From listening to arming, or back, the second the desk heard is kept: the turn's first words. A turn the
+                # key opens is a clip from the first frame captured under it.
+                pass
+        self._gate = gate
+
+    async def _captured(self, frame: InputAudioRawFrame) -> None:
+        # [LAW:parse-dont-validate] the keyed microphone makes every frame this sees.
+        if not isinstance(frame, KeyedAudio):
+            raise TypeError(f"{type(frame).__name__} is not the keyed microphone's, which makes every frame a clip is cut from")
+        if (frame.sample_rate, frame.num_channels) != (RATE, 1):
+            raise ValueError(f"a frame came as {frame.num_channels} channel(s) at {frame.sample_rate} Hz; every clip is mono at {RATE} Hz")
+        match self._gate.key, self._open:
+            case "down", None:
                 self._clips += 1
-                self._latest = Clip(self._clips, frame.opened)
-                await self.push_frame(KeyOpened(clip=self._latest, turn=frame.turn))
+                clip = self._open = Clip(self._clips, self._gate.opened)
+                await self.push_frame(KeyOpened(clip=clip, turn=self._gate.turn))
                 # What the press heard while arming, or the second the desk heard while listening, is the clip's start.
                 before = self._recording.sound
-                self._tell(self._latest, lambda listener: listener.opened(self._latest, before))
-            case "down", "up" | "listening" | "arming":
-                # [LAW:no-silent-failure] the gate records every end of a turn, so a key leaving down unrecorded is a gate
-                # that lies.
-                raise RuntimeError(f"the key went from down to {frame.key} with no turn sent or thrown away")
+                self._tell(clip, lambda listener: listener.opened(clip, before))
             case _:
-                # From listening to arming, or back, the second the desk heard is kept: the turn's first words.
                 pass
-        self._key = frame.key
         sound = Sound(frame.audio, frame.captured, frame.played)
         # [LAW:no-ambient-temporal-coupling] a press is heard as speech from the start: nothing it hears is trimmed while
         # SHORTCUT_SECONDS runs, however long.
-        self._recording.add(sound, gathering=frame.key in ("arming", "down"))
-        match frame.key:
-            case "down":
-                self._tell(self._latest, lambda listener: listener.heard(sound))
-            case _:
+        self._recording.add(sound, gathering=self._gate.key in ("arming", "down"))
+        match self._open:
+            case Clip() as clip:
+                self._tell(clip, lambda listener: listener.heard(sound))
+            case None:
                 pass
 
     def _tell(self, clip: Clip, told: Callable[[Listener], Hearings]) -> None:
@@ -288,12 +294,13 @@ class ClipOwner(FrameProcessor):
             ended("hearing", self._record, begun(self._clock), error, listener=listener.name, clip=clip.number)
             return ()
 
-    async def _end(self, fate: Fate) -> None:
-        """The clip open ends: every listener is told, and it goes in line to be resolved, transcribed where it was sent."""
-        clip, sound = self._latest, self._recording.sound
+    async def _end(self, clip: Clip, fate: Fate) -> None:
+        """The clip open, `clip`, ends: every listener is told, and it goes in line to be resolved, transcribed where it was
+        sent."""
+        sound = self._recording.sound
         # [LAW:no-ambient-temporal-coupling] closed before anything is awaited: words a hearing returns while the clip's
         # end is pushed find it closed, and cut nothing.
-        self._key = "up"
+        self._open = None
         self._recording.clear()
         self._tell(clip, lambda listener: listener.ended(clip, fate, sound))
         match fate:
@@ -303,17 +310,13 @@ class ClipOwner(FrameProcessor):
                 await self.push_frame(ClipDiscarded(clip=clip))
         await self._ended.put(_Spoken(clip, fate, sound, begun(self._clock)))
 
-    def _open(self, clip: Clip) -> bool:
-        """Whether `clip` is the clip open now."""
-        return self._key == "down" and self._latest == clip
-
     def _clear(self, clip: Clip, first: float) -> bool:
         """Whether speech first heard `first` seconds into `clip` cut hands off.
 
         [LAW:single-enforcer] the one cut while a clip is open, checked and queued in one step, with nothing awaited between.
         Speech heard once the clip closed cuts nothing, so a late hearing never cuts the turn after it, and the clip's close
         says what it held."""
-        match self._open(clip):
+        match self._open == clip:
             case True:
                 self._out.put_nowait(SpeechHeard(clip=clip, first=first))
                 self._cut.add(clip)
