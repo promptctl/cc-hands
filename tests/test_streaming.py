@@ -2,7 +2,6 @@
 hearing for each step the diarizer commits, one session for the run, and the real pair hearing words in every clip engaged
 conversation would close, none in noise, and each word from the speaker who said it."""
 
-import asyncio
 import contextlib
 import itertools
 import re
@@ -32,13 +31,8 @@ from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip, Fate, Sound, decoded
 from hands.voice.mlxthread import OnMLX
 from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
-# The real load, bound before conftest stands a pair that hears nothing in for it.
-from hands.voice.streaming import load as nemotron
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-# The sessions the tests script, and the pair `Paired` is tested over, are fakes, which run no MLX.
-ON = OnMLX()
 
 
 def said(*texts: str | tuple[int, str]) -> Spoken:
@@ -130,7 +124,7 @@ class Rig:
 
 def rigged(session: Session) -> Rig:
     recorded: list[Entry] = []
-    listener = StreamingRecognizer(SYSTEM, lambda _on, _gating: session, recorded.append)
+    listener = StreamingRecognizer(SYSTEM, lambda _gating: lambda _on: session, recorded.append)
     return Rig(listener, ClipOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
 
 
@@ -283,8 +277,8 @@ async def test_a_speakers_words_cut_hands_off_from_when_they_were_first_heard() 
     # Half a second kept from before the clip opened; the speaker first heard in the run's eighth frame, 0.06 s after it.
     session = Scripted([(), said("stop")], active=[(), (Active(0, 7), Active(0, 8))])
     stream = streaming.Stream(session)
-    stream.opened(ON, sound(0.5), 0)
-    stream.heard(ON, sound(seconds(STEPPED)))
+    mlxthread.call(lambda on: stream.opened(on, sound(0.5), 0))
+    mlxthread.call(lambda on: stream.heard(on, sound(seconds(STEPPED))))
     since = stream.said()
     assert since.added == said("stop")
     assert since.barge_in_at == pytest.approx(0.06)
@@ -293,16 +287,16 @@ async def test_a_speakers_words_cut_hands_off_from_when_they_were_first_heard() 
 def test_a_sound_the_diarizer_took_for_a_speaker_with_no_words_in_it_cuts_nothing() -> None:
     session = Scripted([(), ()], active=[(), (Active(0, 7), Active(0, 8))])
     stream = streaming.Stream(session)
-    stream.opened(ON, sound(0.5), 0)
-    stream.heard(ON, sound(seconds(STEPPED)))
+    mlxthread.call(lambda on: stream.opened(on, sound(0.5), 0))
+    mlxthread.call(lambda on: stream.heard(on, sound(seconds(STEPPED))))
     assert stream.said().barge_in_at is None
 
 
 def test_a_speaker_marked_only_where_the_clip_has_no_samples_was_first_heard_nowhere_and_cuts_nothing() -> None:
     # Speaker 0 only in frame 40, 3.2 s into a run whose clip is 0.48 s: in the silence after it.
     stream = streaming.Stream(Scripted([(), said("stop")], active=[(), (Active(0, 40),)]))
-    stream.opened(ON, sound(0), 0)
-    stream.heard(ON, sound(seconds(2 * STEPPED)))
+    mlxthread.call(lambda on: stream.opened(on, sound(0), 0))
+    mlxthread.call(lambda on: stream.heard(on, sound(seconds(2 * STEPPED))))
     since = stream.said()
     assert since.added == said("stop") and since.barge_in_at is None
 
@@ -315,21 +309,21 @@ async def test_clips_spoken_while_the_models_load_are_heard_once_they_have() -> 
     recorded: list[Entry] = []
     go = threading.Event()
 
-    def slow(_on: OnMLX, _gating: int) -> Session:
+    def slow(_gating: int) -> Callable[[OnMLX], Session]:
         go.wait()
-        return Scripted([(), said("hello")])
+        return lambda _on: Scripted([(), said("hello")])
 
     listener = StreamingRecognizer(SYSTEM, slow, recorded.append)
     rig = Rig(listener, ClipOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
     try:
+        # The clip, given while the fetch holds the load up: the session that hears its words is made only after it.
         await rig.opened(CLIP, sound(0))
-        hearing = asyncio.create_task(rig.heard(CLIP, sound(seconds(2 * STEPPED))))
-        await asyncio.sleep(0.1)
+        given = [hearing for _ in range(2) for hearing in listener.heard(Sound(pcm(sound(seconds(STEPPED))), pcm(sound(seconds(STEPPED))), None))]
         assert (loaded(recorded), rig.told()) == ([], [])
     finally:
-        # The load holds the process's MLX thread, which every test after this one runs its models on.
+        # A fetch never let go of would hold the stream's line for the rest of the run.
         go.set()
-    await hearing
+    await rig.run(CLIP, tuple(given))
     assert rig.told() == [("ok", "words", said("hello"))]
     [load] = loaded(recorded)
     assert (load.outcome, model_facts(load)) == (
@@ -344,7 +338,7 @@ async def test_clips_spoken_while_the_models_load_are_heard_once_they_have() -> 
 async def test_models_that_fail_to_load_fail_each_clip_once_saying_why() -> None:
     recorded: list[Entry] = []
 
-    def unreachable(_on: OnMLX, _gating: int) -> Session:
+    def unreachable(_gating: int) -> Callable[[OnMLX], Session]:
         raise OSError("the hub is unreachable")
 
     listener = StreamingRecognizer(SYSTEM, unreachable, recorded.append)
@@ -369,7 +363,7 @@ def test_a_recognizer_that_frames_the_run_with_another_fft_is_refused_before_a_s
 
     monkeypatch.setattr(mlx_audio.stt, "load", recognizer)
     with pytest.raises(ValueError, match="FFT of 400; hands places a clip's last mel frame on 512"):
-        nemotron(ON, streaming.GATING)
+        mlxthread.call(lambda on: streaming.load(on, streaming.GATING))
 
 
 def test_a_speaker_is_the_number_the_session_gave_them() -> None:
@@ -389,7 +383,7 @@ GAP = streaming.RATE // 2
 def pair() -> Any:
     """The real pair, loaded once, as a run loads it, on the MLX thread, and the only one the suite holds while this module
     runs."""
-    return PAIRS.loaded(lambda: mlxthread.call(lambda on: nemotron(on, streaming.GATING)))
+    return mlxthread.call(PAIRS.fetched(streaming.GATING))
 
 
 @pytest.fixture
@@ -468,7 +462,7 @@ def test_the_session_is_fed_nothing_until_a_feed_completes_a_step_and_then_all_o
     # Each diarizer step costs the session a feed, and a feed reads the GPU, so 20 ms frames between steps must not.
     run = np.arange(32000, dtype=np.float32)
     frames = [run[start : start + 320] for start in range(0, len(run), 320)]
-    told = [paired.decoded(ON, frame) for frame in frames]
+    told = [mlxthread.call(lambda on: paired.decoded(on, frame)) for frame in frames]
     ends = [len(frame) + index * 320 for index, frame in enumerate(frames)]
     completing = [end for end, before in zip(ends, [0, *ends]) if steps(end) > steps(before)]
     assert list(itertools.accumulate(map(len, session.fed))) == completing
@@ -479,20 +473,20 @@ def test_the_session_is_fed_nothing_until_a_feed_completes_a_step_and_then_all_o
 def test_a_run_begun_afresh_keeps_nothing_of_one_stopped_part_way_through_a_step() -> None:
     session = Stepped()
     paired = streaming.Paired(session)
-    paired.decoded(ON, np.ones(320, np.float32))
-    paired.reset(ON)
+    mlxthread.call(lambda on: paired.decoded(on, np.ones(320, np.float32)))
+    mlxthread.call(paired.reset)
     first = next(samples for samples in range(320, 32000, 320) if steps(samples) > 0)
     for _ in range(first // 320):
-        paired.decoded(ON, np.zeros(320, np.float32))
+        mlxthread.call(lambda on: paired.decoded(on, np.zeros(320, np.float32)))
     assert [len(fed) for fed in session.fed] == [first]
     assert not np.any(session.fed[0])
 
 
 def test_a_clip_closed_short_of_a_step_fails_rather_than_carrying_its_samples_into_the_next() -> None:
     paired = streaming.Paired(Stepped())
-    paired.decoded(ON, np.ones(320, np.float32))
+    mlxthread.call(lambda on: paired.decoded(on, np.ones(320, np.float32)))
     with pytest.raises(AssertionError, match="ends every clip on a step"):
-        paired.closed(ON)
+        mlxthread.call(paired.closed)
 
 
 # Clips of one LibriVox reader (The Invisible Man, read solo; public domain), 20 to 30 dB down: utterances of 0.8 to 2 s,

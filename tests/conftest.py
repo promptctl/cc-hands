@@ -416,12 +416,17 @@ def chained(error: BaseException | None) -> Iterator[BaseException]:
 @dataclass
 class Pairs:
     """The one owner of every real pair of streaming models the suite loads: it holds 2.7 GB, and a second beside it
-    outgrows CI's VMs, whose GPU then times out loading the next. Each module loads its pair through `loaded`, on
-    whichever thread its models are to run on."""
+    outgrows CI's VMs, whose GPU then times out loading the next. Each module loads its pair through `fetched`, as a run
+    does."""
 
     _loaded: list[weakref.ref[streaming.Session]] = field(default_factory=list[weakref.ref[streaming.Session]])
 
-    def loaded(self, load: Callable[[], streaming.Session]) -> streaming.Session:
+    def fetched(self, gating: int) -> Callable[[OnMLX], streaming.Session]:
+        """The real pair at `gating`, fetched now: what loads it on the MLX thread, once no pair loaded before is held."""
+        load = _FETCHED(gating)
+        return lambda on: self._loaded_from(lambda: load(on))
+
+    def _loaded_from(self, load: Callable[[], streaming.Session]) -> streaming.Session:
         """The pair `load` gives, once no pair loaded before is held any more."""
         # pytest keeps a failed test's exception, and with it the frames that held its pair, until the next test's call,
         # which a pair loaded in that test's setup comes before: its own frames, and those of every exception it chains
@@ -438,6 +443,8 @@ class Pairs:
         return pair
 
 
+# The real fetch, bound before `no_streaming_weights` stands a pair that hears nothing in for it.
+_FETCHED = streaming.fetched
 # [LAW:no-shared-mutable-globals] the suite's one owner of the pairs it loads.
 PAIRS = Pairs()
 
@@ -460,10 +467,10 @@ def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
 def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building the voice hears holds with a pair that hears no word: its load would fetch 2.5 GB of weights, which no
     test is about but the ones that ask for the real models."""
-    def unspoken(_on: OnMLX, _gating: int) -> Unspoken:
-        return Unspoken()
+    def unspoken(_gating: int) -> Callable[[OnMLX], Unspoken]:
+        return lambda _on: Unspoken()
 
-    monkeypatch.setattr(streaming, "load", unspoken)
+    monkeypatch.setattr(streaming, "fetched", unspoken)
 
 
 async def unprimed() -> None:

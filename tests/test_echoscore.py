@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import echoes
+from conftest import PAIRS
 from echoscore import CHAINS, LATE, TAKES, Line, Take, Word, erle, heard_words, judged, normal, recorded, scored, summary, words_of
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
@@ -158,7 +159,7 @@ def test_a_take_whose_samples_and_slots_are_not_one_stretch_is_none() -> None:
 
 @pytest.fixture(scope="module")
 def pair() -> streaming.Session:
-    return mlxthread.call(lambda on: streaming.load(on, streaming.GATING))
+    return mlxthread.call(PAIRS.fetched(streaming.GATING))
 
 
 @pytest.mark.outside

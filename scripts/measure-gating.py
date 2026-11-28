@@ -77,7 +77,7 @@ def scored(known: tuple[str, ...], ended: streaming.Ended) -> Counter[str]:
 
 def measured(gating: int, meetings: list[list[tuple[tuple[str, ...], dict[str, np.ndarray]]]]) -> None:
     """Every meeting's clips at `gating`, on a pair loaded for it alone, let go as it ends: no two pairs are held at once."""
-    pair = mlxthread.call(lambda on: streaming.load(on, gating))
+    pair = mlxthread.call(streaming.fetched(gating))
     for shape in SHAPES:
         total = Counter[str]()
         for clips in meetings:

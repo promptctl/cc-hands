@@ -1,5 +1,6 @@
 """The process runs MLX on one thread, one piece of work at a time: the desk's and the phone's Smart Turns, loading
-together as hands starts and judging turns from an executor thread each, never run on MLX side by side.
+together as hands starts and judging turns as Pipecat asks, never run on MLX side by side, and MLX asked for anywhere
+else fails before it begins.
 
 Two threads in MLX at once killed the daemon with a null pointer read in `eval_impl`, the desk's Smart Turn warming up on
 its executor's thread while the phone's warmed up on its own (promptctl-voice-oalb.8vn). Each test holds one port inside
@@ -7,7 +8,7 @@ a verdict, as a model is held evaluating, gives the other's work while it is hel
 
 import asyncio
 import threading
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from typing import Literal
 
 import numpy as np
 import pytest
+from conftest import patiently
 from pipecat.audio.turn.smart_turn import base_smart_turn
 
 from hands.sessions.wide import WideEvent
@@ -67,17 +69,17 @@ class Port:
         return SimpleNamespace(prediction=0, probability=0.0)
 
 
-async def until(done: Callable[[], bool]) -> None:
-    """Until `done` holds, looked at again each turn of the loop, on no clock: a wait that never ends is the suite's
-    timeout's to end."""
-    while not done():
-        await asyncio.sleep(0)
+def moved(ports: Ports) -> tuple[int, int]:
+    """What a wait here sees move: the steps the ports took, and the MLX work waiting. A wait says only that a step came,
+    and the test asserts what it was."""
+    return len(ports.seen), mlxthread.waiting()
 
 
 @pytest.fixture
 def ports(monkeypatch: pytest.MonkeyPatch) -> Ports:
     ports = Ports()
-    monkeypatch.setattr(engaged, "ported", ports.ported)
+    # Nothing to fetch: each load the analyzers ask for is a port of the test's.
+    monkeypatch.setattr(engaged, "fetched", lambda: ports.ported)
     return ports
 
 
@@ -99,11 +101,12 @@ async def test_the_desks_and_the_phones_smart_turn_loading_as_hands_starts_run_o
     loads = list[asyncio.Task[None]]()
     try:
         loads.append(asyncio.create_task(loaded("desk.loaded", events)))
-        await until(lambda: ports.seen == [("loaded", 0), ("in", 0)])
+        await patiently(lambda: len(ports.seen) >= 2, lambda: moved(ports))
+        assert ports.seen == [("loaded", 0), ("in", 0)]
         # Nothing else waits for the MLX thread, so the work that comes to wait next is the phone's load.
         assert mlxthread.waiting() == 0
         loads.append(asyncio.create_task(loaded("phone.loaded", events)))
-        await until(lambda: mlxthread.waiting() == 1 or len(ports.seen) > 2)
+        await patiently(lambda: mlxthread.waiting() == 1 or len(ports.seen) > 2, lambda: moved(ports))
         assert ports.seen == [("loaded", 0), ("in", 0)]
     finally:
         let_go.set()
@@ -119,20 +122,26 @@ async def test_a_verdict_asked_while_the_other_analyzers_is_inside_mlx_waits_for
     monkeypatch.setattr(base_smart_turn, "time", SimpleNamespace(monotonic=clock.now, perf_counter=clock.now))
     async with ears("desk.loaded", events) as desk, ears("phone.loaded", events) as phone:
         warmed = len(ports.seen)
-        # Pipecat asks each analyzer's verdict on that analyzer's own executor thread.
+        # Pipecat asks each analyzer's verdict on the executor the analyzer gives it.
         let_go = ports.hold(0)
         judging = list[asyncio.Task[object]]()
         for models in (desk, phone):
             models.heard(SPEECH, True)
         try:
             judging.append(asyncio.create_task(desk.judge()))
-            await until(lambda: ports.seen[warmed:] == [("in", 0)])
+            await patiently(lambda: len(ports.seen) > warmed, lambda: moved(ports))
+            assert ports.seen[warmed:] == [("in", 0)]
             assert mlxthread.waiting() == 0
             judging.append(asyncio.create_task(phone.judge()))
-            await until(lambda: mlxthread.waiting() == 1 or len(ports.seen) > warmed + 1)
+            await patiently(lambda: mlxthread.waiting() == 1 or len(ports.seen) > warmed + 1, lambda: moved(ports))
             assert ports.seen[warmed:] == [("in", 0)]
         finally:
             let_go.set()
         await asyncio.gather(*judging)
     assert ports.seen[warmed:] == [("in", 0), ("out", 0), ("in", 1), ("out", 1)]
     assert len(ports.threads) == 1
+
+
+def test_mlx_asked_for_off_the_mlx_thread_fails_before_it_begins() -> None:
+    with pytest.raises(RuntimeError, match="MLX runs only on the MLX thread, and this is MainThread"):
+        OnMLX()

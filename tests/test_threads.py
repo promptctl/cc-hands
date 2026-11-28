@@ -75,3 +75,22 @@ def test_the_work_waiting_is_what_was_given_behind_the_work_running() -> None:
         let_go.set()
     serial.call(lambda: None)
     assert serial.waiting == 0
+
+
+def test_work_submitted_and_cancelled_before_its_turn_never_runs_and_the_work_behind_it_does() -> None:
+    serial, let_go, ran = SerialThread("cancelled"), threading.Event(), list[str]()
+    serial.submit(let_go.wait)
+    try:
+        # As an executor's work is, when the task awaiting it is cancelled: Pipecat's verdicts are given this way.
+        cancelled = serial.submit(lambda: ran.append("cancelled"))
+        behind = serial.submit(lambda: ran.append("behind"))
+        assert cancelled.cancel()
+    finally:
+        let_go.set()
+    behind.result()
+    assert (ran, cancelled.cancelled()) == (["behind"], True)
+
+
+def test_only_the_thread_itself_is_here() -> None:
+    serial = SerialThread("here")
+    assert (serial.here(), serial.call(serial.here)) == (False, True)

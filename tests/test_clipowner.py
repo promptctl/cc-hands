@@ -524,7 +524,7 @@ async def test_a_clip_the_voice_opened_whose_transcription_does_not_return_is_gi
 async def test_a_transcription_given_up_on_is_not_run_beside_the_next(monkeypatch: pytest.MonkeyPatch) -> None:
     returns, ran_on = threading.Event(), list[threading.Thread]()
 
-    def stuck(_on: OnMLX, samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
+    def stuck(_on: OnMLX, _weights: str, samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
         ran_on.append(threading.current_thread())
         returns.wait()
         return []

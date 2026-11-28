@@ -89,7 +89,7 @@ def main() -> None:
     directory = Path(sys.argv[1])
     directory.mkdir(parents=True, exist_ok=True)
     # The run's session as hands builds it, so its diarizer and threshold are hands'; its recognizer is left unused.
-    session = mlxthread.call(lambda on: streaming.load(on, streaming.GATING)).session
+    session = mlxthread.call(streaming.fetched(streaming.GATING)).session
     # (user's turns, newcomer's turns, order) -> how each joined clip came out; and the joined clips each pair got wrong.
     tally: dict[tuple[int, int, str], Counter[str]] = {}
     missed: Counter[tuple[str, str, str]] = Counter()

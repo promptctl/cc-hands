@@ -261,7 +261,7 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
     real.write_text("#!/bin/sh\n")
     real.chmod(0o755)
     monkeypatch.setenv("PATH", str(real.parent))
-    def unloaded(_on: OnMLX) -> None:
+    def unloaded(_on: OnMLX, _weights: str) -> None:
         pass
 
     monkeypatch.setattr(transcription, "load", unloaded)

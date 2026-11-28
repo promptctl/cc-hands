@@ -20,6 +20,7 @@ from pipecat.audio.vad.silero import SileroOnnxModel
 from hands.clock import Clock
 from hands.sessions.audit import ClipHeard, Record, Unsaid
 from hands.sessions.wide import annotate
+from hands.threads import SerialThread
 from hands.voice import loads, mlxthread
 from hands.voice import transcription
 from hands.voice.clips import RATE, SECOND, Clip, Sound, decoded
@@ -72,13 +73,19 @@ class Whisper:
     def __init__(self, *, clock: Clock, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with loads.loading(clock, "whisper.loaded", record):
-            mlxthread.call(transcription.load)
+            # Fetched here, off the MLX thread, then loaded and run once on it.
+            weights = transcription.weights()
+            mlxthread.call(lambda on: transcription.load(on, weights))
             # Silero, which says how sure it is that anyone spoke in a segment.
             self._silero = SileroOnnxModel(str(_SILERO))
             annotate(model=transcription.MODEL, revision=transcription.REVISION)
+        self._weights = weights
         # The vocabulary each clip is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
         self._record = record
+        # [LAW:single-enforcer] the one line a clip is heard on, Silero's passes around its decoding on the MLX thread: a
+        # transcription given up on is still running, and the next must not run beside it.
+        self._line = SerialThread("Whisper")
 
     async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
         """The words a person said in a clip of the key's, primed with the vocabulary as it is now; recorded, so "I spoke
@@ -98,14 +105,13 @@ class Whisper:
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
 
-        def scored_unless_given_up(on: OnMLX) -> list[tuple[transcription.Segment, float]]:
-            return [] if given_up.is_set() else self._scored(on, sound, prompt)
+        def scored_unless_given_up() -> list[tuple[transcription.Segment, float]]:
+            return [] if given_up.is_set() else self._scored(sound, prompt)
 
         try:
-            # [LAW:single-enforcer] on the MLX thread, the clip's decoding and Silero's pass after it: the model runs for a
-            # third of a second a clip, and the speaker and the key go on meanwhile; a transcription given up on is still
-            # running, and the next waits behind it there.
-            scored = await mlxthread.run(scored_unless_given_up)
+            # Off the loop, the clip's decoding and its levels with it: the model runs for a third of a second a clip, and
+            # the speaker and the key go on meanwhile.
+            scored = await self._line.settles(scored_unless_given_up)
         finally:
             given_up.set()
         kept: list[transcription.Segment] = []
@@ -117,16 +123,11 @@ class Whisper:
                 dropped.append(Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, voiced))
         return ClipHeard(clip, " ".join(segment.text for segment in kept) or None, tuple(dropped))
 
-    def _scored(self, on: OnMLX, sound: Sound, prompt: str | None) -> list[tuple[transcription.Segment, float]]:
+    def _scored(self, sound: Sound, prompt: str | None) -> list[tuple[transcription.Segment, float]]:
         """Each segment Whisper hears in a clip, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, and how sure
-        Silero is that anyone spoke in the stretch it was heard in."""
+        Silero is that anyone spoke in the stretch it was heard in. It blocks while the model runs."""
         samples = self._without_long_quiet(decoded(sound.heard + _TRAILING_SILENCE))
-        segments = transcription.segments(on, samples, prompt)
-        # A decode primed with the vocabulary that loops is heard again unprimed (`_REPEATING`): the looped segments still go
-        # to the gates, which drop and record them, and the unprimed decode's take the clip's place. The whole clip is heard
-        # again, not the looped stretch: a loop's own times are not to be trusted (one ran 0.0 to 30.0 s, promptctl-voice-i15t.65f.qem).
-        looping = [segment for segment in segments if segment.compression_ratio > _REPEATING]
-        heard = transcription.segments(on, samples, None) if looping else segments
+        looping, heard = mlxthread.call(lambda on: _decodes(on, self._weights, samples, prompt))
         return [(segment, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)])) for segment in [*looping, *heard]]
 
     def _without_long_quiet(self, samples: np.ndarray) -> np.ndarray:
@@ -164,6 +165,17 @@ class Whisper:
             if surest >= _VOICED:
                 break
         return surest
+
+
+def _decodes(on: OnMLX, weights: str, samples: np.ndarray, prompt: str | None) -> tuple[list[transcription.Segment], list[transcription.Segment]]:
+    """The segments a decode of `samples` primed with `prompt` looped in, and the segments they are heard as.
+
+    A decode primed with the vocabulary that loops is heard again unprimed (`_REPEATING`): the looped segments still go to
+    the gates, which drop and record them, and the unprimed decode's take the clip's place. The whole clip is heard again,
+    not the looped stretch: a loop's own times are not to be trusted (one ran 0.0 to 30.0 s, promptctl-voice-i15t.65f.qem)."""
+    segments = transcription.segments(on, weights, samples, prompt)
+    looping = [segment for segment in segments if segment.compression_ratio > _REPEATING]
+    return looping, (transcription.segments(on, weights, samples, None) if looping else segments)
 
 
 def _words(text: str) -> list[str]:

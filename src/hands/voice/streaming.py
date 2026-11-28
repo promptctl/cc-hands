@@ -26,6 +26,7 @@ from loguru import logger
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
+from hands.threads import SerialThread
 from hands.voice import loads, mlxthread
 from hands.voice.clips import RATE, Clip, Fate, Heard, Hearings, Samples, Sound, decoded
 from hands.voice.mlxthread import OnMLX
@@ -293,29 +294,33 @@ class Broken:
 
 
 class StreamingRecognizer:
-    """The run's stream on the MLX thread: a listener on the clip owner, given each clip's audio as it is spoken and told
-    when it ends, which nothing the owner does waits on.
+    """The run's stream on a line of its own: a listener on the clip owner, given each clip's audio as it is spoken and told
+    when it ends, which the owner waits on only in the hearings it returns. The line fetches the pair, then runs its load
+    and every decode on the MLX thread, waiting for each: a download holds up only the stream, and the MLX thread holds one
+    piece of the stream's at a time, so other models' work waits behind no more than that.
 
-    [LAW:no-ambient-temporal-coupling] what moves the stream is queued on the MLX thread inside the call that brings it, so
-    a clip's end lands behind its last audio and ahead of the next clip's first; a hearing only waits on what the stream
+    [LAW:no-ambient-temporal-coupling] what moves the stream is queued on the line inside the call that brings it, so a
+    clip's end lands behind its last audio and ahead of the next clip's first; a hearing only waits on what the stream
     says at its place in that line.
     """
 
     name = "streaming"
 
-    # The run's stream, set by the first work this gives the MLX thread and read only by the work it queues behind it.
+    # The run's stream, set by the line's first work and read only by the work queued behind it, on the same thread.
     _stream: Stream | Broken
 
-    def __init__(self, clock: Clock, model: Callable[[OnMLX, int], Session], record: Record) -> None:
+    def __init__(self, clock: Clock, model: Callable[[int], Callable[[OnMLX], Session]], record: Record) -> None:
         self._clock = clock
         self._record = record
-        # The models load on the MLX thread first, so clips spoken while they load wait behind them.
-        mlxthread.give(lambda on: self._load(on, model))
+        # The models are fetched and load on the line first, so clips spoken meanwhile wait behind them, and nothing else does.
+        self._line = SerialThread("Streaming")
+        self._line.give(lambda: self._load(model))
         # [LAW:one-source-of-truth] the samples the run's stream has been given, the silence after each clip included:
-        # the diarizer's steps they complete are where the stream's words change, and where a frame falls in a clip.
+        # the diarizer's steps they complete are where the stream's words change, and where a frame falls in a clip. Kept by
+        # the thread that gives the line its work and never read on the line: what a piece needs of it is taken as it is given.
         self._fed = 0
 
-    def _load(self, on: OnMLX, model: Callable[[OnMLX, int], Session]) -> None:
+    def _load(self, model: Callable[[int], Callable[[OnMLX], Session]]) -> None:
         """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each clip with why.
         [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's is."""
         try:
@@ -329,37 +334,39 @@ class StreamingRecognizer:
                     preset=PRESET,
                     gating=GATING,
                 )
-                # [LAW:one-source-of-truth] the gating the event says is the one the session is made with.
-                self._stream = Stream(model(on, GATING))
+                # [LAW:one-source-of-truth] the gating the event says is the one the session is made with: fetched here, on
+                # the line, and made on the MLX thread.
+                self._stream = Stream(mlxthread.call(model(GATING)))
         except Exception as error:
             self._stream = Broken(f"the models did not load: {type(error).__name__}: {error}")
 
     def opened(self, clip: Clip, before: Sound) -> Hearings:
         """`clip` opens: what it kept from before it opened is the start of its words."""
         samples, start = decoded(before.heard), self._fed
-        mlxthread.give(lambda on: self._moved(lambda stream: stream.opened(on, samples, start)))
+        self._line.give(lambda: self._moved(lambda on, stream: stream.opened(on, samples, start)))
         return self._fed_with(len(samples))
 
     def heard(self, sound: Sound) -> Hearings:
-        """More of the clip open, decoded on the MLX thread behind everything given before it."""
+        """More of the clip open, decoded behind everything given before it."""
         samples = decoded(sound.heard)
-        mlxthread.give(lambda on: self._moved(lambda stream: stream.heard(on, samples)))
+        self._line.give(lambda: self._moved(lambda on, stream: stream.heard(on, samples)))
         return self._fed_with(len(samples))
 
-    def _moved(self, move: Callable[[Stream | Broken], None]) -> None:
-        """Move the run's stream, on the MLX thread. [LAW:no-silent-failure] decoding that raises leaves the models' caches,
-        and the grid hearings are timed on, in a state nothing vouches for: the stream is broken from there, and the clip
-        it broke in and every one after it end failed with why."""
+    def _moved(self, move: Callable[[OnMLX, Stream | Broken], None]) -> None:
+        """Move the run's stream on the MLX thread, waited for on the line. [LAW:no-silent-failure] decoding that raises
+        leaves the models' caches, and the grid hearings are timed on, in a state nothing vouches for: the stream is broken
+        from there, and the clip it broke in and every one after it end failed with why."""
+        stream = self._stream
         try:
-            move(self._stream)
+            mlxthread.call(lambda on: move(on, stream))
         except Exception as error:
             # Each clip from here fails saying why; where in the pair it broke is said once, here.
             logger.opt(exception=error).error("the streaming session's decoding broke; no clip is heard live from here")
             self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
 
-    def _ended(self, on: OnMLX, silence: int) -> Ended:
-        """The clip open, heard through the silence after it, on the MLX thread."""
-        self._moved(lambda stream: stream.silence(on, silence))
+    def _ended(self, silence: int) -> Ended:
+        """The clip open, heard through the silence after it, on the line."""
+        self._moved(lambda on, stream: stream.silence(on, silence))
         return self._stream.ended()
 
     def _fed_with(self, samples: int) -> Hearings:
@@ -371,7 +378,7 @@ class StreamingRecognizer:
             case 0:
                 return ()
             case _:
-                said = mlxthread.settles(lambda _: self._stream.said())
+                said = self._line.settles(lambda: self._stream.said())
 
                 async def hear() -> Heard:
                     since = await said
@@ -385,7 +392,7 @@ class StreamingRecognizer:
         """The clip open ends, sent or dropped: every word each speaker said in it, the last of them after it closed,
         which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same clip."""
         silence = through(self._fed) - self._fed
-        ended = mlxthread.settles(lambda on: self._ended(on, silence))
+        ended = self._line.settles(lambda: self._ended(silence))
         self._fed += silence
 
         async def close() -> Heard:
@@ -526,10 +533,21 @@ def diarizer(on: OnMLX) -> Any:
     return model
 
 
+def fetched(gating: int) -> Callable[[OnMLX], Paired]:
+    """The pair, fetched into the hub's cache now unless it is there already: what makes the run's session of it at
+    `gating` (`load`), on the MLX thread, which a download never holds up."""
+    from mlx_audio.utils import get_model_path  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+
+    # [LAW:one-source-of-truth] fetched as mlx-audio's loads fetch them, so each load finds every file it asks for here.
+    get_model_path(MODEL, revision=REVISION)
+    get_model_path(DIARIZATION, revision=DIARIZATION_REVISION)
+    return lambda on: load(on, gating)
+
+
 def load(on: OnMLX, gating: int) -> Paired:
     """The run's session of the pair, each speaker's stream stepped `gating` chunks from the last the diarizer heard them
-    in, the models fetched if they never were: a few seconds on this Mac from the cache, on the MLX thread, on MLX's
-    default device, which is the CPU where there is no Metal."""
+    in: a few seconds on this Mac from the hub's cache, which `fetched` fills, on MLX's default device, which is the CPU
+    where there is no Metal."""
     from mlx_audio.stt import load as loaded  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
     model = cast(Any, loaded(MODEL, revision=REVISION))

@@ -305,10 +305,10 @@ async def rigged(
     primed: list[None] = []
     streamed = Streamed()
 
-    def load(_on: OnMLX, _gating: int) -> Streamed:
-        return streamed
+    def fetched(_gating: int) -> Callable[[OnMLX], Streamed]:
+        return lambda _on: streamed
 
-    monkeypatch.setattr(streaming, "load", load)
+    monkeypatch.setattr(streaming, "fetched", fetched)
 
     async def vocabulary() -> None:
         primed.append(None)
@@ -649,7 +649,9 @@ async def test_a_clip_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         assert line.result() is False
         assert cut == [BargeIn("The parser is fixed.", 1)]
         await rig.until(lambda: user_turns(rig) == [("on a person", True)])
-        *_, whole = hearings(rig)
+        # The clip's end is heard on the stream's line, which nothing in the turn waits on.
+        await rig.until(lambda: any("fate" in event.facts for event in hearings(rig)))
+        [whole] = [event for event in hearings(rig) if "fate" in event.facts]
         assert (whole.outcome, whole.error, whole.facts["clip"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
         assert [(event.facts["clip"], event.facts.get("cut")) for event in rig.recorded if isinstance(event, WideEvent) and event.event == "clip"] == [(1, "at close")]
 

@@ -54,7 +54,7 @@ def one_person(directory: Path) -> None:
             clips[-1] = (clips[-1][0], end)
         else:
             clips.append((start, end))
-    run, words, wordless = Live(mlxthread.call(lambda on: streaming.load(on, streaming.GATING))), Counter[int](), 0
+    run, words, wordless = Live(mlxthread.call(streaming.fetched(streaming.GATING))), Counter[int](), 0
     for start, end in clips:
         said = spoken(run, audio[start:end])
         words.update(said)
@@ -71,7 +71,7 @@ def meeting(directory: Path, name: str) -> None:
     audio = mono(fetched(directory, AMI_AUDIO.format(name)))
     # Their words, in turns no one else is heard in: not a word of theirs, nor a laugh, cough or other sound.
     alone = meeting_turns(directory, name, len(audio) / RATE)
-    run, heard = Live(mlxthread.call(lambda on: streaming.load(on, streaming.GATING))), list[tuple[str, int | None, float]]()
+    run, heard = Live(mlxthread.call(streaming.fetched(streaming.GATING))), list[tuple[str, int | None, float]]()
     for turn in alone:
         said = spoken(run, audio[int(turn.start * RATE) : int(turn.end * RATE)])
         heard.append((turn.person, said.most_common(1)[0][0] if said else None, turn.end - turn.start))

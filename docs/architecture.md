@@ -1928,18 +1928,24 @@ on words nobody said. At the clip's end the session is fed silence until the dia
 committed the clip's last chunk, and every speaker's stream is closed on one chunk of silence as
 the model hears it, so a clip's last words are decoded in it and none in the next. Each
 clip the key sent or dropped settles as one of the listener's `hearing` events: its fate, and
-each speaker's words in it. The pair loads as the first work the listener gives the MLX thread
+each speaker's words in it. The pair is fetched and loads as the stream line's first work
 (`streaming.loaded`), so the voice can start while the pair loads and clips spoken meanwhile are
-heard behind it.
-
-MLX is not thread safe, so the process runs it on one thread (`hands.voice.mlxthread`): Whisper's
-load and every clip it transcribes, the pair's load and every chunk it decodes, both Smart Turns'
-loads and verdicts, the desk's and the phone's, and the memory sample's read of MLX's split. Each
-waits there behind the work given before it. A function that runs MLX takes the `OnMLX` that
-thread hands its work, so one called from any other thread does not type-check. Two threads in
-MLX at once killed the daemon with a null pointer read in `eval_impl`, as the desk's and the
-phone's Smart Turn warmed up together on threads of their own (promptctl-voice-oalb.8vn). Models that fail to load, or decoding that fails, fail the end of that
+heard behind it. Models that fail to load, or decoding that fails, fail the end of that
 clip and every clip's after it, with why.
+
+MLX is not thread safe, so the process runs it on one thread (`hands.voice.mlxthread`), one piece
+of work at a time: every model's load, and every graph a model evaluates, Whisper's, the pair's,
+and both Smart Turns', the desk's and the phone's. A model's weights are fetched into the hub's
+cache before its load is given there, so a download holds up only that model. A model's own order
+is kept by whoever gives its work: the stream line hands each load and decode over and waits for
+it, so the MLX thread holds at most one piece of the pair's at a time; Whisper's clips are heard
+one at a time on a line of Whisper's; and Pipecat judges each Smart Turn verdict on the executor
+the analyzer gives it, which is the MLX thread. A function that runs MLX takes an `OnMLX`, which
+can be made only on that thread, so MLX asked for anywhere else fails before it begins. Two
+threads in MLX at once killed the daemon with a null pointer read in `eval_impl`, as the desk's
+and the phone's Smart Turn warmed up together on threads of their own
+(promptctl-voice-oalb.8vn). The memory sample (`memory.sampled`) reads MLX's split there too, and
+says how much MLX work was waiting, or that the thread did not answer within ten seconds.
 
 A turn's words are what Whisper hears of the clip, sent whole (`hands.voice.whisper`): the sound it hears has hands' own voice
 taken out of it by the canceller (`hands.voice.echo`), so every word it writes is a person's, hands' own words said at the same
@@ -2767,8 +2773,8 @@ still open come from NVIDIA's Nemotron Speech Streaming on MLX (`hands.voice.str
 its 160 ms streaming mode (one frame of look-ahead), paired with Nemotron 3 Diarization at its
 0.32 s preset, which decides each word's speaker before the word is decoded: on this Mac a
 clip's first words are out 0.17 to 0.4 s after they are said, and the pair hears 20 ms of a clip
-in about 8 ms. It loads on a thread of its own (the `streaming.loaded` event), so nothing waits
-on it. Every model's load, pocket-tts's (`tts.loaded`) and a trigger's models' included, is a unit
+in about 8 ms. It is fetched and loads on a line of its own (the `streaming.loaded` event), so
+only its own clips wait on it. Every model's load, pocket-tts's (`tts.loaded`) and a trigger's models' included, is a unit
 of work of its own (`hands.voice.loads`) that says the process's physical footprint as it ended
 (`footprint_mb`, as Activity Monitor's Memory column shows it: the resident set size `ps -o rss`
 gives leaves out what only the GPU wrote, most of an MLX model) and how much the process grew across it

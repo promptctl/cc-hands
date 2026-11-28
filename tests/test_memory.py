@@ -1,6 +1,9 @@
 """The run's memory: MLX keeps no more of the GPU memory its arrays free than the limit, and a sample of the process's
 memory is one event saying what it holds."""
 
+import asyncio
+import contextlib
+import threading
 from collections.abc import Generator, Mapping
 
 import mlx.core as mx
@@ -10,13 +13,10 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice import memory, mlxthread
-from hands.voice.memory import CACHE_LIMIT, SAMPLED, limit_cache, sample
+from hands.voice.memory import CACHE_LIMIT, SAMPLE_SECONDS, SAMPLED, SPLIT_SECONDS, limit_cache, sample
 from hands.voice.mlxthread import OnMLX
 
 MEGABYTE = 2**20
-
-# The samples below read no MLX: what it holds is the test's.
-ON = OnMLX()
 
 
 def emptied(on: OnMLX) -> None:
@@ -66,20 +66,55 @@ def test_mlx_says_in_megabytes_what_its_live_arrays_hold_and_what_its_cache_hold
     assert (round(live["mlx_active_mb"] - before["mlx_active_mb"]), round(freed["mlx_cache_mb"] - live["mlx_cache_mb"])) == (256, 256)
 
 
-def test_a_sample_is_one_event_saying_the_footprint_and_mlx_split() -> None:
+def sampled(kept: list[Entry]) -> list[WideEvent]:
+    return [entry for entry in kept if isinstance(entry, WideEvent) and entry.event == SAMPLED]
+
+
+async def test_a_sample_is_one_event_saying_the_footprint_the_mlx_work_waiting_and_mlx_split() -> None:
     kept = list[Entry]()
     held = {"mlx_active_mb": 2587.0, "mlx_cache_mb": 1024.0}
-    sample(ON, VirtualClock(), kept.append, read=lambda: 6354 * MEGABYTE, held=lambda _: held)
-    samples = [entry for entry in kept if isinstance(entry, WideEvent)]
-    assert [(event.event, event.outcome, event.facts) for event in samples] == [(SAMPLED, "ok", {"footprint_mb": 6354.0, **held})]
+    await sample(VirtualClock(), kept.append, read=lambda: 6354 * MEGABYTE, held=lambda _: held, waiting=lambda: 2)
+    assert [(event.outcome, event.facts) for event in sampled(kept)] == [("ok", {"footprint_mb": 6354.0, "mlx_waiting": 2, **held})]
 
 
-def test_a_footprint_the_kernel_refuses_is_said_on_the_sample() -> None:
+async def test_a_footprint_the_kernel_refuses_is_said_on_the_sample() -> None:
     kept = list[Entry]()
 
     def refused() -> int:
         raise PermissionError(1, "Operation not permitted")
 
-    sample(ON, VirtualClock(), kept.append, read=refused, held=lambda _: {})
-    samples = [entry for entry in kept if isinstance(entry, WideEvent)]
-    assert [(event.outcome, event.facts) for event in samples] == [("ok", {"footprint_error": "[Errno 1] Operation not permitted"})]
+    await sample(VirtualClock(), kept.append, read=refused, held=lambda _: {}, waiting=lambda: 0)
+    assert [(event.outcome, event.facts) for event in sampled(kept)] == [("ok", {"footprint_error": "[Errno 1] Operation not permitted", "mlx_waiting": 0})]
+
+
+async def test_an_mlx_thread_that_does_not_answer_in_time_is_said_on_the_sample_with_the_footprint() -> None:
+    clock = VirtualClock()
+    kept = list[Entry]()
+    go = threading.Event()
+    # The MLX thread, held up by work given before the sample's.
+    holding = mlxthread.settles(lambda _: go.wait())
+    try:
+        sampling = asyncio.create_task(sample(clock, kept.append, read=lambda: 6354 * MEGABYTE, held=memory.mlx_held, waiting=lambda: 1))
+        await clock.scheduled(SPLIT_SECONDS)
+        clock.advance(SPLIT_SECONDS)
+        await sampling
+    finally:
+        go.set()
+    await holding
+    assert [(event.outcome, event.facts) for event in sampled(kept)] == [("ok", {"footprint_mb": 6354.0, "mlx_waiting": 1, "mlx_split_error": "the MLX thread did not answer in 10 s"})]
+
+
+async def test_the_memory_is_sampled_at_once_and_again_a_period_after_each_sample() -> None:
+    clock = VirtualClock()
+    kept = list[Entry]()
+    sampling = asyncio.create_task(memory.keep_sampling(clock, kept.append))
+    try:
+        await clock.sleeping(SAMPLE_SECONDS)
+        assert len(sampled(kept)) == 1
+        clock.advance(SAMPLE_SECONDS)
+        await clock.sleeping(2 * SAMPLE_SECONDS)
+        assert len(sampled(kept)) == 2
+    finally:
+        sampling.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sampling
