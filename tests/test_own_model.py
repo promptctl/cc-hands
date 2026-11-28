@@ -338,7 +338,7 @@ async def test_use_model_says_it_is_switching_and_keeps_the_model_once_answered_
     async with spoken(player) as (_, heard):
         answer = await served["use_model"].tool.body(model="claude-opus-5-5")
         said = await heard.until(1, TTSSpeakFrame)
-    line = "Switching to claude-opus-5-5. I'll be back in a few seconds."
+    line = "Switching to Opus 5.5. I'll be back in a few seconds."
     assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)] == [line]
     assert result_of(answer) == {"said": line, "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}
     assert silent(served["use_model"], result_of(answer))
@@ -378,7 +378,7 @@ async def test_a_switch_said_but_refused_as_it_is_kept_is_said_aloud() -> None:
         with pytest.raises(Rejected):
             await _effect(answer)()
         said = await heard.until(2, TTSSpeakFrame)
-    assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)][1] == "The switch to claude-opus-5-5 did not happen: the home's brain is not logged in"
+    assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)][1] == "The switch to Opus 5.5 did not happen: the home's brain is not logged in"
     assert own.kept == []
 
 
@@ -431,6 +431,6 @@ async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the
     events = [entry for entry in recorded if isinstance(entry, WideEvent)]
     assert [(event.outcome, cast(Called, event.facts["called"]).result) for event in events] == [
         ("ok", {"running_on": "claude-sonnet-5-5"}),
-        ("ok", {"said": "Switching to claude-opus-5-5. I'll be back in a few seconds.", "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}),
+        ("ok", {"said": "Switching to Opus 5.5. I'll be back in a few seconds.", "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}),
         ("failed", {"error": "The user spoke over hands saying it would switch to claude-opus-5-5, so it did not switch. Ask whether they still want it."}),
     ]

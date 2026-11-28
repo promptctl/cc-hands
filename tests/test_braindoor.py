@@ -106,8 +106,8 @@ async def test_a_switch_of_model_any_act_answers_is_said_before_it_is_answered_a
     turn = BrainDoor({}, (), Home(tmp_path), lambda: None, Switches(hearing))
     served = {each.tool.name: each.tool for each in turn.serve([tool(retune), tool(later)])}
     switched = await served["retune"].body()
-    assert hearing.said == ["Switching to claude-opus-5-5. I'll be back in a few seconds."]
+    assert hearing.said == ["Switching to Opus 5.5. I'll be back in a few seconds."]
     assert isinstance(switched, After) and switched.unanswered == "run"
     assert result_of(switched)["said"] == hearing.said[0]
     assert await served["later"].body() == After({"done": True}, unswitched, "dropped")
-    assert hearing.said == ["Switching to claude-opus-5-5. I'll be back in a few seconds."]
+    assert hearing.said == ["Switching to Opus 5.5. I'll be back in a few seconds."]
