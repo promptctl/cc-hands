@@ -72,7 +72,7 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> Generator[list[str]]:
 
 
 def test_a_snapshot_a_fetch_cut_short_is_fetched_whole_from_the_hub(hub: list[str]) -> None:
-    weights = Path(transcription.weights())
+    weights = transcription.weights()
 
     assert {name: (weights / name).read_bytes() for name in (FETCHED[0], MISSING[0])} == dict((FETCHED, MISSING))
     # Only what the snapshot was missing is fetched.

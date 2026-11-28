@@ -68,16 +68,18 @@ class Unported(Exception):
 
 def fetched() -> Callable[[OnMLX], Any]:
     """Smart Turn's MLX port, fetched into the hub's cache now unless it is there already: what loads it, with every weight,
-    on the MLX thread, which a download never holds up."""
+    from the directory fetched, on the MLX thread, which a download never holds up. [LAW:types-are-the-program] a load
+    given a directory reads it alone, so the load never asks the hub."""
     # mlx-audio ships no types.
-    from mlx_audio.utils import get_model_path  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+    from mlx_audio.utils import get_model_name_parts, get_model_path  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
     from mlx_audio.vad import load  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
-    # [LAW:one-source-of-truth] fetched as mlx-audio's load fetches it, so the load finds every file it asks for here.
-    _unported(lambda: get_model_path(SMART_TURN, revision=SMART_TURN_REVISION))
+    # [LAW:one-source-of-truth] fetched as mlx-audio's load fetches it.
+    port = _unported(lambda: get_model_path(SMART_TURN, revision=SMART_TURN_REVISION))
     # [LAW:no-silent-failure] strict: a weight the port's loader no longer maps fails the load, where it would be left at
-    # random and every verdict after it noise.
-    return lambda on: _unported(lambda: cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION, strict=True)))
+    # random and every verdict after it noise. [LAW:one-source-of-truth] the port's class is told by its repository's
+    # name, as a load by that name tells it.
+    return lambda on: _unported(lambda: cast(Any, load(port, strict=True, model_name_parts=get_model_name_parts(SMART_TURN))))
 
 
 def _unported[T](got: Callable[[], T]) -> T:
@@ -124,13 +126,19 @@ class SmartTurn(BaseSmartTurn):
         return {"prediction": verdict.prediction, "probability": verdict.probability}
 
 
-class Models:
-    """Silero's voice activity detector, on the CPU as Pipecat ships it, and Smart Turn on MLX."""
+def detector(sample_rate: int) -> SileroVADAnalyzer:
+    """Silero's voice activity detector, on the CPU as Pipecat ships it, ending speech at STOP_SECS of silence."""
+    vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
+    vad.set_sample_rate(sample_rate)
+    return vad
 
-    def __init__(self, on: OnMLX, port: Callable[[OnMLX], Any], clock: Clock, sample_rate: int) -> None:
-        self._vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
-        self._vad.set_sample_rate(sample_rate)
-        self._turn = SmartTurn(on, port, clock, sample_rate)
+
+class Models:
+    """Silero's voice activity detector and Smart Turn on MLX."""
+
+    def __init__(self, vad: SileroVADAnalyzer, turn: SmartTurn) -> None:
+        self._vad = vad
+        self._turn = turn
         # As Pipecat syncs it at each start: the speech Silero takes to be sure of is kept before the segment judged.
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
 
@@ -177,11 +185,12 @@ async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], Non
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
             # pause the detector ends speech at, as it was loaded with it, and how long Smart Turn's warm-up took.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
-            # Fetched off the MLX thread, so a download holds up only this load, then loaded and warmed up on it, as every
-            # model's load is; both inside the unit, so the load's time and growth are all on it, the wait behind other
-            # models' MLX work included.
+            # Smart Turn fetched, and Silero loaded, off the MLX thread, so a download holds up only this load, and Smart
+            # Turn then loaded and warmed up on it, as every model's load is; all inside the unit, so the load's time and
+            # growth are all on it, the wait behind other models' MLX work included.
             port = await off_loop(fetched, f"fetching Smart Turn for {name}")
-            loading = mlxthread.settles(lambda on: Models(on, port, clock, sample_rate))
+            vad = await off_loop(lambda: detector(sample_rate), f"loading Silero for {name}")
+            loading = mlxthread.settles(lambda on: Models(vad, SmartTurn(on, port, clock, sample_rate)))
             held.push_async_callback(_let_go, loading)
             models = await asyncio.shield(loading)
             annotate(vad_stop_secs=models.vad_stop_secs, smart_turn_warmup_secs=models.smart_turn_warmup_secs)

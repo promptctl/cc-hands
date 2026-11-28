@@ -495,7 +495,7 @@ class Unloadable:
         raise OSError("no Smart Turn weights the port can read")
 
 
-@pytest.mark.parametrize("patched", [{"fetched": unfetchable}, {"fetched": fetched_already, "Models": Unloadable}], ids=["fetch", "load"])
+@pytest.mark.parametrize("patched", [{"fetched": unfetchable}, {"fetched": fetched_already, "SmartTurn": Unloadable}], ids=["fetch", "load"])
 async def test_ears_that_cannot_be_loaded_fail_as_the_unit_they_were_loaded_for_whoever_hears_with_them(patched: Mapping[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
     """The phone's ears are loaded as the daemon starts and before its page is answered, so a load that fails is the start's failure,
     named `phone.loaded`; the desk's is `desk.loaded`: their port fetched off the MLX thread or loaded on it."""

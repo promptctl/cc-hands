@@ -25,7 +25,7 @@ dependencies = [
     "sherpa-onnx>=2.0.1,<3",  # hands.voice.voiceprints runs ERes2Net speaker embeddings with its SpeakerEmbeddingExtractor, on the CPU
     "soxr>=1.0,<2",  # hands.voice.echo and hands.voice.recorder resample the speaker's output to the clips' rate
     "ai-edge-litert>=2.3,<3",  # hands.voice.dtln runs DTLN-aec's two TFLite parts with its Interpreter
-    "mlx>=0.32.4,<0.33",  # hands.voice.memory bounds MLX's buffer cache and reads its allocator's counters, whose functions moved from mx.metal once already
+    "mlx==0.32.4",  # hands.voice.memory bounds MLX's buffer cache and reads its allocator's counters, whose functions moved from mx.metal once already; hands.voice.mlxthread lets a weight go on any thread because this release's allocator frees under its mutex, which no release promises: so the version is pinned
     "cryptography>=50,<51",  # hands.sessions.authority mints the authority and the certificate hands' proxy answers the API's host with
 ]
 

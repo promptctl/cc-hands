@@ -363,7 +363,7 @@ def test_a_recognizer_that_frames_the_run_with_another_fft_is_refused_before_a_s
 
     monkeypatch.setattr(mlx_audio.stt, "load", recognizer)
     with pytest.raises(ValueError, match="FFT of 400; hands places a clip's last mel frame on 512"):
-        mlxthread.call(lambda on: streaming.load(on, streaming.GATING))
+        mlxthread.call(lambda on: streaming.load(on, Path("recognizer"), Path("diarization"), streaming.GATING))
 
 
 def test_a_speaker_is_the_number_the_session_gave_them() -> None:

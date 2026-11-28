@@ -1936,12 +1936,14 @@ clip and every clip's after it, with why.
 MLX is not thread safe, so the process runs it on one thread (`hands.voice.mlxthread`), one piece
 of work at a time: every model's load, and every graph a model evaluates, Whisper's, the pair's,
 and both Smart Turns', the desk's and the phone's. A model's weights are fetched into the hub's
-cache before its load is given there, so a download holds up only that model. A model's own order
+cache before its load is given there, and the load reads the directory fetched, never the hub, so a
+download holds up only that model. A model's own order
 is kept by whoever gives its work: the stream line hands each load and decode over and waits for
 it, so the MLX thread holds at most one piece of the pair's at a time; Whisper's clips are heard
-one at a time on a line of Whisper's; and Pipecat judges each Smart Turn verdict on the executor
+one at a time on a line of Whisper's, each decode a piece of its own; and Pipecat judges each Smart Turn verdict on the executor
 the analyzer gives it, which is the MLX thread. A function that runs MLX takes an `OnMLX`, which
-can be made only on that thread, so MLX asked for anywhere else fails before it begins. Two
+can be made only on that thread and is handed to each piece of work there for that piece alone, so
+MLX asked for with a token of its own anywhere else fails before it begins. Two
 threads in MLX at once killed the daemon with a null pointer read in `eval_impl`, as the desk's
 and the phone's Smart Turn warmed up together on threads of their own
 (promptctl-voice-oalb.8vn). The memory sample (`memory.sampled`) reads MLX's split there too, and

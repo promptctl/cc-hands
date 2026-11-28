@@ -10,8 +10,8 @@ So MLX is confined to one thread. Every model's load, and every graph a model bu
 one piece of work at a time in the order it was given, and nothing else does: a model's weights are fetched before its load
 is given, and a model's own order is kept by whoever gives its work. Work from different models runs in the order it comes,
 and nothing depends on that order. A weight let go of anywhere else goes back through the allocator's `free`, which holds
-the allocator's mutex (mlx/backend/metal/allocator.cpp at v0.32.4); its counters are written under that mutex and read
-without it, so MLX's split of the memory it holds is read here too.
+the allocator's mutex (mlx/backend/metal/allocator.cpp at v0.32.4, the release pyproject.toml pins for it); its counters
+are written under that mutex and read without it, so MLX's split of the memory it holds is read here too.
 """
 
 import asyncio
@@ -25,9 +25,10 @@ from hands.threads import SerialThread
 
 @final
 class OnMLX:
-    """Proof that the work holding it runs on the MLX thread, asked for by every function that runs MLX. [LAW:single-enforcer]
-    making one is the one check of the thread, and it raises anywhere else, so MLX asked for from another thread fails
-    before it begins. The thread hands one to each piece of work it runs; code Pipecat calls there makes its own."""
+    """The token every function that runs MLX asks for, made only on the MLX thread. [LAW:single-enforcer] making one is the
+    one check of the thread, and it raises anywhere else, so MLX asked for with a token of its own from another thread
+    fails before it begins. The thread hands one to each piece of work it runs, for that piece alone: a token kept past its
+    piece is checked nowhere it is used again. Code Pipecat calls there makes its own."""
 
     def __init__(self) -> None:
         if not _THREAD.here():

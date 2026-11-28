@@ -18,6 +18,7 @@ how long the thread took to answer, the event's own time; a thread that does not
 have not, so one that hangs is seen within a minute, and the footprint is never held up behind it.
 """
 
+import asyncio
 from collections.abc import Callable, Mapping
 
 from hands import footprint
@@ -52,25 +53,39 @@ def mlx_held(on: OnMLX) -> Mapping[str, float]:
     return {"mlx_active_mb": footprint.megabytes(mx.get_active_memory()), "mlx_cache_mb": footprint.megabytes(mx.get_cache_memory())}
 
 
-async def keep_sampling(clock: Clock, record: Record) -> None:
-    """Sample now and SAMPLE_SECONDS after each sample ends, until cancelled: a sample waiting on the MLX thread never has
-    another queued behind it."""
-    while True:
-        await sample(clock, record)
-        await clock.sleep(SAMPLE_SECONDS)
+class Sampler:
+    """The run's memory, sampled as one `memory.sampled` event at a time: the footprint and the MLX work waiting, now, and
+    MLX's split, as the MLX thread reads it, or that it did not within SPLIT_SECONDS. A footprint the kernel refuses is on
+    the event as `footprint_error`. A split the thread has yet to answer is the one the next sample waits on, never asked
+    for again, so the sampler keeps one piece of work waiting there at most, however long the thread is held."""
 
+    def __init__(self, clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[OnMLX], Mapping[str, Fact]] = mlx_held, waiting: Callable[[], int] = mlxthread.waiting) -> None:
+        self._clock = clock
+        self._record = record
+        self._read = read
+        self._held = held
+        self._waiting = waiting
+        # The split last asked of the MLX thread, until a sample has its answer: one answered late is the next sample's.
+        self._asked: asyncio.Future[Mapping[str, Fact]] | None = None
 
-async def sample(clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[OnMLX], Mapping[str, Fact]] = mlx_held, waiting: Callable[[], int] = mlxthread.waiting) -> None:
-    """One sample of the process's memory, as one event: the footprint and the MLX work waiting, now, and MLX's split, as
-    the MLX thread reads it, or that it did not within SPLIT_SECONDS. A footprint the kernel refuses is on the event as
-    `footprint_error`."""
-    with unit(SAMPLED, record, begun(clock)):
-        annotate(**footprint.size(footprint.measured(read)), mlx_waiting=waiting())
-        bound = clock.timeout(SPLIT_SECONDS)
-        try:
-            async with bound:
-                split = await mlxthread.settles(held)
-        except TimeoutError:
-            annotate(mlx_split_error=f"the MLX thread did not answer in {SPLIT_SECONDS:g} s")
-        else:
-            annotate(**split)
+    async def keep_sampling(self) -> None:
+        """Sample now and SAMPLE_SECONDS after each sample ends, until cancelled."""
+        while True:
+            await self.sample()
+            await self._clock.sleep(SAMPLE_SECONDS)
+
+    async def sample(self) -> None:
+        with unit(SAMPLED, self._record, begun(self._clock)):
+            annotate(**footprint.size(footprint.measured(self._read)), mlx_waiting=self._waiting())
+            if self._asked is None:
+                self._asked = mlxthread.settles(self._held)
+            bound = self._clock.timeout(SPLIT_SECONDS)
+            try:
+                async with bound:
+                    # Shielded: the bound ends this sample's wait, and the split stays asked for the next.
+                    split = await asyncio.shield(self._asked)
+            except TimeoutError:
+                annotate(mlx_split_error=f"the MLX thread did not answer in {SPLIT_SECONDS:g} s")
+            else:
+                self._asked = None
+                annotate(**split)

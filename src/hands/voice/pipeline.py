@@ -117,8 +117,6 @@ def build_voice(
     # who said it, on a line of its own that its models' fetch and load hold up alone. The recorder keeps each clip in a
     # directory of the run's own, named by when the voice was built: a clip's number is the run's.
     recorder = Recorder(clock, clips, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), record)
-    # Whisper loads and warms up on the MLX thread (`hands.voice.mlxthread`) before the streaming pair's line starts, so
-    # the pair's load comes behind Whisper's warm-up there.
     whisper = Whisper(clock=clock, prompt=prompt, record=record)
     listeners = (streaming.StreamingRecognizer(clock, streaming.fetched, record), recorder)
     stt = ClipOwner(clock, whisper, listeners, record)

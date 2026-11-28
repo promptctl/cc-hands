@@ -7,6 +7,7 @@ its executor's thread while the phone's warmed up on its own (promptctl-voice-oa
 a verdict, as a model is held evaluating, gives the other's work while it is held, and sees it wait."""
 
 import asyncio
+import concurrent.futures
 import threading
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -17,8 +18,10 @@ from typing import Literal
 import numpy as np
 import pytest
 from pipecat.audio.turn.smart_turn import base_smart_turn
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 
 from hands.sessions.wide import WideEvent
+from hands.threads import tell
 from hands.virtualclock import VirtualClock
 from hands.voice import engaged, mlxthread
 from hands.voice.engaged import Models
@@ -30,6 +33,16 @@ SPEECH = bytes(2 * RATE // 50)
 
 
 @dataclass
+class Held:
+    """A port's next verdict, held inside it: `inside` is set on the loop that held it once the verdict is there, and the
+    verdict stays until `let_go` is set."""
+
+    loop: asyncio.AbstractEventLoop
+    inside: asyncio.Event = field(default_factory=asyncio.Event)
+    let_go: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass
 class Ports:
     """Smart Turn's port for each analyzer, numbered in the order they load, as the test holds them: each load and each
     verdict's start and end, by port, and the threads they ran on; a port told to hold keeps its next verdict inside until
@@ -37,16 +50,16 @@ class Ports:
 
     seen: list[tuple[str, int]] = field(default_factory=list[tuple[str, int]])
     threads: set[int] = field(default_factory=set[int])
-    holding: dict[int, threading.Event] = field(default_factory=dict[int, threading.Event])
+    holding: dict[int, Held] = field(default_factory=dict[int, Held])
 
     def ported(self, _on: OnMLX) -> "Port":
         number = sum(step == "loaded" for step, _ in self.seen)
         self.ran("loaded", number)
         return Port(self, number)
 
-    def hold(self, number: int) -> threading.Event:
-        """Hold port `number`'s next verdict inside it until the event is set."""
-        self.holding[number] = threading.Event()
+    def hold(self, number: int) -> Held:
+        """Hold port `number`'s next verdict inside it until the test lets it go."""
+        self.holding[number] = Held(asyncio.get_running_loop())
         return self.holding[number]
 
     def ran(self, step: str, number: int) -> None:
@@ -63,16 +76,31 @@ class Port:
         self.ports.ran("in", self.number)
         held = self.ports.holding.pop(self.number, None)
         if held is not None:
-            held.wait()
+            tell(held.loop, held.inside.set)
+            held.let_go.wait()
         self.ports.ran("out", self.number)
         return SimpleNamespace(prediction=0, probability=0.0)
 
 
-async def until(done: Callable[[], bool]) -> None:
-    """Until `done` holds, looked at again each turn of the loop, on no clock: `done` says only that a step came, and the
-    test asserts what it was, so a step that went wrong fails there, and a wait that never ends is the suite's timeout's."""
-    while not done():
-        await asyncio.sleep(0)
+def given(monkeypatch: pytest.MonkeyPatch) -> asyncio.Queue[None]:
+    """Each piece of work handed to the MLX thread, told as it is handed over, on the loop that hands it: a load given to
+    it (`mlxthread.settles`), or a verdict Pipecat submits to the executor the analyzer gives it."""
+    handed = asyncio.Queue[None]()
+    settles, submit = mlxthread.settles, mlxthread.EXECUTOR.submit
+
+    def settling[T](work: Callable[[OnMLX], T]) -> asyncio.Future[T]:
+        settled = settles(work)
+        handed.put_nowait(None)
+        return settled
+
+    def submitting[**P, T](fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> concurrent.futures.Future[T]:
+        submitted = submit(fn, *args, **kwargs)
+        handed.put_nowait(None)
+        return submitted
+
+    monkeypatch.setattr(mlxthread, "settles", settling)
+    monkeypatch.setattr(mlxthread.EXECUTOR, "submit", submitting)
+    return handed
 
 
 @pytest.fixture
@@ -94,25 +122,33 @@ async def loaded(name: Literal["desk.loaded", "phone.loaded"], events: list[Wide
         pass
 
 
-async def test_the_desks_and_the_phones_smart_turn_loading_as_hands_starts_run_on_mlx_one_after_the_other(ports: Ports) -> None:
-    events = list[WideEvent]()
+async def test_the_desks_and_the_phones_smart_turn_loading_as_hands_starts_run_on_mlx_one_after_the_other(ports: Ports, monkeypatch: pytest.MonkeyPatch) -> None:
+    events, handed = list[WideEvent](), given(monkeypatch)
+    # Silero, Pipecat's detector on the CPU, by the thread each is built on.
+    detector, built = engaged.detector, list[str]()
+
+    def detecting(sample_rate: int) -> SileroVADAnalyzer:
+        built.append(threading.current_thread().name)
+        return detector(sample_rate)
+
+    monkeypatch.setattr(engaged, "detector", detecting)
     # The desk's warm-up, held inside the port as the phone's load is given.
-    let_go = ports.hold(0)
+    held = ports.hold(0)
     loads = list[asyncio.Task[None]]()
     try:
         loads.append(asyncio.create_task(loaded("desk.loaded", events)))
-        await until(lambda: len(ports.seen) >= 2)
-        assert ports.seen == [("loaded", 0), ("in", 0)]
-        # Nothing else waits for the MLX thread, so the work that comes to wait next is the phone's load.
-        assert mlxthread.waiting() == 0
+        await handed.get()
+        await held.inside.wait()
+        assert (ports.seen, mlxthread.waiting()) == ([("loaded", 0), ("in", 0)], 0)
         loads.append(asyncio.create_task(loaded("phone.loaded", events)))
-        await until(lambda: mlxthread.waiting() == 1 or len(ports.seen) > 2)
-        assert ports.seen == [("loaded", 0), ("in", 0)]
+        await handed.get()
+        # The phone's load waits behind the desk's warm-up, its detector built while it was held.
+        assert (ports.seen, mlxthread.waiting(), len(built)) == ([("loaded", 0), ("in", 0)], 1, 2)
     finally:
-        let_go.set()
+        held.let_go.set()
     await asyncio.gather(*loads)
     assert ports.seen == [("loaded", 0), ("in", 0), ("out", 0), ("loaded", 1), ("in", 1), ("out", 1)]
-    assert len(ports.threads) == 1
+    assert (len(ports.threads), "MLX" in built) == (1, False)
     assert sorted((event.event, event.outcome) for event in events) == [("desk.loaded", "ok"), ("phone.loaded", "ok")]
 
 
@@ -121,22 +157,22 @@ async def test_a_verdict_asked_while_the_other_analyzers_is_inside_mlx_waits_for
     # Pipecat's analyzer keeps the speech it judges, and times its verdict, by the `time` module's clocks.
     monkeypatch.setattr(base_smart_turn, "time", SimpleNamespace(monotonic=clock.now, perf_counter=clock.now))
     async with ears("desk.loaded", events) as desk, ears("phone.loaded", events) as phone:
-        warmed = len(ports.seen)
+        warmed, handed = len(ports.seen), given(monkeypatch)
         # Pipecat asks each analyzer's verdict on the executor the analyzer gives it.
-        let_go = ports.hold(0)
+        held = ports.hold(0)
         judging = list[asyncio.Task[object]]()
         for models in (desk, phone):
             models.heard(SPEECH, True)
         try:
             judging.append(asyncio.create_task(desk.judge()))
-            await until(lambda: len(ports.seen) > warmed)
-            assert ports.seen[warmed:] == [("in", 0)]
-            assert mlxthread.waiting() == 0
+            await handed.get()
+            await held.inside.wait()
+            assert (ports.seen[warmed:], mlxthread.waiting()) == ([("in", 0)], 0)
             judging.append(asyncio.create_task(phone.judge()))
-            await until(lambda: mlxthread.waiting() == 1 or len(ports.seen) > warmed + 1)
-            assert ports.seen[warmed:] == [("in", 0)]
+            await handed.get()
+            assert (ports.seen[warmed:], mlxthread.waiting()) == ([("in", 0)], 1)
         finally:
-            let_go.set()
+            held.let_go.set()
         await asyncio.gather(*judging)
     assert ports.seen[warmed:] == [("in", 0), ("out", 0), ("in", 1), ("out", 1)]
     assert len(ports.threads) == 1

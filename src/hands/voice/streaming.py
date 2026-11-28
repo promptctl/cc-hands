@@ -18,6 +18,7 @@ batch models measured beside it), so the transcriber (`hands.voice.whisper`) say
 import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 import numpy as np
@@ -516,15 +517,17 @@ class Paired:
         return Closed(speakers, tuple(last))
 
 
-def diarizer(on: OnMLX) -> Any:
-    """Nemotron 3 Diarization at PRESET, fetched if it never was.
+def diarizer(on: OnMLX, weights: Path) -> Any:
+    """Nemotron 3 Diarization at PRESET, from `weights`, the directory `fetched` fetched it into.
 
     [LAW:parse-dont-validate] a diarizer that cuts the run other than `steps` says is refused here, so no hearing is timed
     on a grid it does not commit on."""
     # mlx-audio ships no types.
+    from mlx_audio.utils import get_model_name_parts  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
     from mlx_audio.vad import load as loaded  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
-    model = cast(Any, loaded(DIARIZATION, revision=DIARIZATION_REVISION))
+    # [LAW:one-source-of-truth] the model's class is told by its repository's name, as a load by that name tells it.
+    model = cast(Any, loaded(weights, model_name_parts=get_model_name_parts(DIARIZATION)))
     model.set_streaming_config(PRESET)
     modules, processor, factor = model.config.modules_config, model.config.processor_config, model.config.encoder_config.subsampling_factor
     cut = (processor.sampling_rate, processor.hop_length, processor.n_fft, modules.chunk_len * factor, modules.chunk_right_context * factor)
@@ -535,29 +538,31 @@ def diarizer(on: OnMLX) -> Any:
 
 def fetched(gating: int) -> Callable[[OnMLX], Paired]:
     """The pair, fetched into the hub's cache now unless it is there already: what makes the run's session of it at
-    `gating` (`load`), on the MLX thread, which a download never holds up."""
+    `gating` (`load`) from the directories fetched, on the MLX thread, which a download never holds up."""
     from mlx_audio.utils import get_model_path  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
-    # [LAW:one-source-of-truth] fetched as mlx-audio's loads fetch them, so each load finds every file it asks for here.
-    get_model_path(MODEL, revision=REVISION)
-    get_model_path(DIARIZATION, revision=DIARIZATION_REVISION)
-    return lambda on: load(on, gating)
+    # [LAW:one-source-of-truth] fetched as mlx-audio's loads fetch them.
+    recognizer = get_model_path(MODEL, revision=REVISION)
+    diarization = get_model_path(DIARIZATION, revision=DIARIZATION_REVISION)
+    return lambda on: load(on, recognizer, diarization, gating)
 
 
-def load(on: OnMLX, gating: int) -> Paired:
-    """The run's session of the pair, each speaker's stream stepped `gating` chunks from the last the diarizer heard them
-    in: a few seconds on this Mac from the hub's cache, which `fetched` fills, on MLX's default device, which is the CPU
-    where there is no Metal."""
+def load(on: OnMLX, recognizer: Path, diarization: Path, gating: int) -> Paired:
+    """The run's session of the pair, from the directories each model was fetched into, each speaker's stream stepped
+    `gating` chunks from the last the diarizer heard them in: a few seconds on this Mac, on MLX's default device, which is
+    the CPU where there is no Metal. [LAW:types-are-the-program] a load given a directory reads it alone, so a load never
+    asks the hub."""
     from mlx_audio.stt import load as loaded  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+    from mlx_audio.utils import get_model_name_parts  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
-    model = cast(Any, loaded(MODEL, revision=REVISION))
+    model = cast(Any, loaded(recognizer, model_name_parts=get_model_name_parts(MODEL)))
     # [LAW:parse-dont-validate] the session checks the two models hear the same rate and hop, and `diarizer` that they
     # are hands'; this, the recognizer's own FFT, which places a clip's last mel frame for `through`, and the chunk
     # GATING counts in.
     if model.preprocessor_config.n_fft != N_FFT:
         raise ValueError(f"{MODEL} frames the run with an FFT of {model.preprocessor_config.n_fft}; hands places a clip's last mel frame on {N_FFT}")
     session = model.create_speaker_streaming_session(
-        diarizer(on), att_context_size=[model.default_att_context_size[0], LOOKAHEAD], cache_gating_buffer_size=gating
+        diarizer(on, diarization), att_context_size=[model.default_att_context_size[0], LOOKAHEAD], cache_gating_buffer_size=gating
     )
     if session.chunk_mel != CHUNK:
         raise ValueError(f"{MODEL}'s session takes chunks of {session.chunk_mel} mel frames; hands gates speakers in chunks of {CHUNK}")

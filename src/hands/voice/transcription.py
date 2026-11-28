@@ -11,6 +11,7 @@ import wave
 from dataclasses import dataclass
 from functools import cache
 from importlib.resources import files
+from pathlib import Path
 from typing import Any, cast
 
 import mlx_whisper
@@ -30,7 +31,7 @@ REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 _HANDS_HERE = files("hands.voice") / "hands_here.wav"
 
 
-def load(on: OnMLX, weights: str) -> None:
+def load(on: OnMLX, weights: Path) -> None:
     """Load the model from `weights`, the directory `weights()` fetched it into, and run it once.
 
     MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was never
@@ -55,7 +56,7 @@ class Segment:
     avg_logprob: float
 
 
-def segments(on: OnMLX, weights: str, samples: np.ndarray, prompt: str | None) -> list[Segment]:
+def segments(on: OnMLX, weights: Path, samples: np.ndarray, prompt: str | None) -> list[Segment]:
     """The segments Whisper, loaded from `weights`, hears in mono `samples` at RATE, primed with `prompt`."""
     return [
         Segment(
@@ -70,7 +71,7 @@ def segments(on: OnMLX, weights: str, samples: np.ndarray, prompt: str | None) -
 
 
 @cache
-def weights() -> str:
+def weights() -> Path:
     """The directory MODEL's weights are in at REVISION, fetched into the hub's cache if they are not all there yet; the
     hub is not asked again once they are, since a commit names its files for good. Asked for a commit, the hub's client
     lists its files from the hub unless it kept the list, offline or not, so the cache is looked in first.
@@ -80,14 +81,14 @@ def weights() -> str:
     is what is raised, since the fetch could only fail on the first file it asked the hub for. A snapshot with no list
     kept, fetched by a client older than the list, is taken as whole [LAW:single-enforcer]."""
     try:
-        return snapshot_download(MODEL, revision=REVISION, local_files_only=True)
+        return Path(snapshot_download(MODEL, revision=REVISION, local_files_only=True))
     except LocalEntryNotFoundError:
         if is_offline_mode():
             raise
-        return snapshot_download(MODEL, revision=REVISION)
+        return Path(snapshot_download(MODEL, revision=REVISION))
 
 
-def _transcribe(on: OnMLX, weights: str, audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
+def _transcribe(on: OnMLX, weights: Path, audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
     """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every clip run.
 
     Each 30 s window is decoded on its own, not conditioned on the text of the one before: conditioned, a long clip fell
@@ -96,6 +97,6 @@ def _transcribe(on: OnMLX, weights: str, audio: np.ndarray, prompt: str | None) 
     (promptctl-voice-je8.d20). MLX Whisper then primes only the first window with `prompt`.
     """
     transcribed: dict[str, Any] = mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)
-        audio, path_or_hf_repo=weights, temperature=0.0, language=LANGUAGE, initial_prompt=prompt, condition_on_previous_text=False
+        audio, path_or_hf_repo=str(weights), temperature=0.0, language=LANGUAGE, initial_prompt=prompt, condition_on_previous_text=False
     )
     return cast("list[dict[str, Any]]", transcribed["segments"])

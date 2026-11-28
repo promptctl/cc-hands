@@ -4,6 +4,7 @@ import threading
 
 import pytest
 
+from conftest import taken
 from hands.threads import SerialThread
 
 
@@ -94,3 +95,27 @@ def test_work_submitted_and_cancelled_before_its_turn_never_runs_and_the_work_be
 def test_only_the_thread_itself_is_here() -> None:
     serial = SerialThread("here")
     assert (serial.here(), serial.call(serial.here)) == (False, True)
+
+
+def test_work_asked_to_settle_where_no_loop_runs_is_refused_before_it_is_queued() -> None:
+    serial, ran = SerialThread("loopless"), list[str]()
+    with pytest.raises(RuntimeError, match="no running event loop"):
+        serial.settles(lambda: ran.append("settled"))
+    # Work given after it runs once everything given before it has.
+    serial.call(lambda: None)
+    assert ran == []
+
+
+async def test_work_that_fails_once_nobody_waits_for_it_says_so(errors: list[str]) -> None:
+    serial, let_go = SerialThread("abandoned"), threading.Event()
+
+    def fails() -> None:
+        let_go.wait()
+        raise ValueError("no weights")
+
+    waited = serial.settles(fails)
+    waited.cancel()
+    let_go.set()
+    # What is given after it settles after it, so its failure has been said by then.
+    await serial.settles(lambda: None)
+    assert taken(errors) == ["work on abandoned failed after its waiter had gone"]

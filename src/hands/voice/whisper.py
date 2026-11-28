@@ -24,7 +24,6 @@ from hands.threads import SerialThread
 from hands.voice import loads, mlxthread
 from hands.voice import transcription
 from hands.voice.clips import RATE, SECOND, Clip, Sound, decoded
-from hands.voice.mlxthread import OnMLX
 
 # Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
 # with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
@@ -127,7 +126,18 @@ class Whisper:
         """Each segment Whisper hears in a clip, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, and how sure
         Silero is that anyone spoke in the stretch it was heard in. It blocks while the model runs."""
         samples = self._without_long_quiet(decoded(sound.heard + _TRAILING_SILENCE))
-        looping, heard = mlxthread.call(lambda on: _decodes(on, self._weights, samples, prompt))
+
+        def transcribe(primed: str | None) -> list[transcription.Segment]:
+            # [LAW:no-ambient-temporal-coupling] each decode is a piece of MLX work of its own, so what another model has
+            # waiting on the MLX thread, a verdict the desk is waiting for among it, waits behind one decode at most.
+            return mlxthread.call(lambda on: transcription.segments(on, self._weights, samples, primed))
+
+        segments = transcribe(prompt)
+        # A decode primed with the vocabulary that loops is heard again unprimed (`_REPEATING`): the looped segments still go
+        # to the gates, which drop and record them, and the unprimed decode's take the clip's place. The whole clip is heard
+        # again, not the looped stretch: a loop's own times are not to be trusted (one ran 0.0 to 30.0 s, promptctl-voice-i15t.65f.qem).
+        looping = [segment for segment in segments if segment.compression_ratio > _REPEATING]
+        heard = transcribe(None) if looping else segments
         return [(segment, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)])) for segment in [*looping, *heard]]
 
     def _without_long_quiet(self, samples: np.ndarray) -> np.ndarray:
@@ -165,17 +175,6 @@ class Whisper:
             if surest >= _VOICED:
                 break
         return surest
-
-
-def _decodes(on: OnMLX, weights: str, samples: np.ndarray, prompt: str | None) -> tuple[list[transcription.Segment], list[transcription.Segment]]:
-    """The segments a decode of `samples` primed with `prompt` looped in, and the segments they are heard as.
-
-    A decode primed with the vocabulary that loops is heard again unprimed (`_REPEATING`): the looped segments still go to
-    the gates, which drop and record them, and the unprimed decode's take the clip's place. The whole clip is heard again,
-    not the looped stretch: a loop's own times are not to be trusted (one ran 0.0 to 30.0 s, promptctl-voice-i15t.65f.qem)."""
-    segments = transcription.segments(on, weights, samples, prompt)
-    looping = [segment for segment in segments if segment.compression_ratio > _REPEATING]
-    return looping, (transcription.segments(on, weights, samples, None) if looping else segments)
 
 
 def _words(text: str) -> list[str]:

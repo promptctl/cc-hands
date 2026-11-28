@@ -13,7 +13,8 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice import memory, mlxthread
-from hands.voice.memory import CACHE_LIMIT, SAMPLE_SECONDS, SAMPLED, SPLIT_SECONDS, limit_cache, sample
+from hands.threads import tell
+from hands.voice.memory import CACHE_LIMIT, SAMPLE_SECONDS, SAMPLED, SPLIT_SECONDS, Sampler, limit_cache
 from hands.voice.mlxthread import OnMLX
 
 MEGABYTE = 2**20
@@ -73,7 +74,7 @@ def sampled(kept: list[Entry]) -> list[WideEvent]:
 async def test_a_sample_is_one_event_saying_the_footprint_the_mlx_work_waiting_and_mlx_split() -> None:
     kept = list[Entry]()
     held = {"mlx_active_mb": 2587.0, "mlx_cache_mb": 1024.0}
-    await sample(VirtualClock(), kept.append, read=lambda: 6354 * MEGABYTE, held=lambda _: held, waiting=lambda: 2)
+    await Sampler(VirtualClock(), kept.append, read=lambda: 6354 * MEGABYTE, held=lambda _: held, waiting=lambda: 2).sample()
     assert [(event.outcome, event.facts) for event in sampled(kept)] == [("ok", {"footprint_mb": 6354.0, "mlx_waiting": 2, **held})]
 
 
@@ -83,31 +84,68 @@ async def test_a_footprint_the_kernel_refuses_is_said_on_the_sample() -> None:
     def refused() -> int:
         raise PermissionError(1, "Operation not permitted")
 
-    await sample(VirtualClock(), kept.append, read=refused, held=lambda _: {}, waiting=lambda: 0)
+    await Sampler(VirtualClock(), kept.append, read=refused, held=lambda _: {}, waiting=lambda: 0).sample()
     assert [(event.outcome, event.facts) for event in sampled(kept)] == [("ok", {"footprint_error": "[Errno 1] Operation not permitted", "mlx_waiting": 0})]
+
+
+async def held_up(go: threading.Event) -> asyncio.Future[None]:
+    """The MLX thread, held up by work given before the sample's, until `go` is set: once that work is running."""
+    loop, running = asyncio.get_running_loop(), asyncio.Event()
+
+    def holds(_: OnMLX) -> None:
+        tell(loop, running.set)
+        go.wait()
+
+    holding = mlxthread.settles(holds)
+    await running.wait()
+    return holding
+
+
+async def unanswered(clock: VirtualClock, sampler: Sampler) -> None:
+    """A sample whose split the MLX thread does not answer in time."""
+    sampling = asyncio.create_task(sampler.sample())
+    await clock.scheduled(clock.at + SPLIT_SECONDS)
+    clock.advance(SPLIT_SECONDS)
+    await sampling
 
 
 async def test_an_mlx_thread_that_does_not_answer_in_time_is_said_on_the_sample_with_the_footprint() -> None:
     clock = VirtualClock()
     kept = list[Entry]()
     go = threading.Event()
-    # The MLX thread, held up by work given before the sample's.
-    holding = mlxthread.settles(lambda _: go.wait())
+    holding = await held_up(go)
     try:
-        sampling = asyncio.create_task(sample(clock, kept.append, read=lambda: 6354 * MEGABYTE, held=memory.mlx_held, waiting=lambda: 1))
-        await clock.scheduled(SPLIT_SECONDS)
-        clock.advance(SPLIT_SECONDS)
-        await sampling
+        await unanswered(clock, Sampler(clock, kept.append, read=lambda: 6354 * MEGABYTE, held=memory.mlx_held, waiting=lambda: 1))
     finally:
         go.set()
     await holding
     assert [(event.outcome, event.facts) for event in sampled(kept)] == [("ok", {"footprint_mb": 6354.0, "mlx_waiting": 1, "mlx_split_error": "the MLX thread did not answer in 10 s"})]
 
 
+async def test_a_split_the_mlx_thread_has_yet_to_answer_is_the_one_the_next_sample_waits_on() -> None:
+    clock = VirtualClock()
+    kept = list[Entry]()
+    held = {"mlx_active_mb": 2587.0, "mlx_cache_mb": 1024.0}
+    sampler = Sampler(clock, kept.append, read=lambda: 6354 * MEGABYTE, held=lambda _: held, waiting=lambda: 0)
+    go = threading.Event()
+    holding = await held_up(go)
+    try:
+        for _ in range(3):
+            await unanswered(clock, sampler)
+        # However long the thread is held, the sampler's one split waits there, and nothing more of the sampler's.
+        assert mlxthread.waiting() == 1
+    finally:
+        go.set()
+    await holding
+    await sampler.sample()
+    timed_out = {"footprint_mb": 6354.0, "mlx_waiting": 0, "mlx_split_error": "the MLX thread did not answer in 10 s"}
+    assert [event.facts for event in sampled(kept)] == [timed_out] * 3 + [{"footprint_mb": 6354.0, "mlx_waiting": 0, **held}]
+
+
 async def test_the_memory_is_sampled_at_once_and_again_a_period_after_each_sample() -> None:
     clock = VirtualClock()
     kept = list[Entry]()
-    sampling = asyncio.create_task(memory.keep_sampling(clock, kept.append))
+    sampling = asyncio.create_task(Sampler(clock, kept.append).keep_sampling())
     try:
         await clock.sleeping(SAMPLE_SECONDS)
         assert len(sampled(kept)) == 1

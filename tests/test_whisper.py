@@ -3,6 +3,7 @@ model, and what hands takes as said from the segments it answers with."""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import mlx_whisper
 import numpy as np
@@ -82,7 +83,7 @@ async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built
     await whisper.transcribed(clip(1), as_heard(SILENCE))
 
     [(heard, loaded), (_, transcribed)] = model.asked
-    assert transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
+    assert transcribed == {"path_or_hf_repo": str(transcription.weights()), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
     assert (loaded, bool(np.abs(heard).max() > 0.1)) == (transcribed, True)
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
@@ -196,7 +197,7 @@ async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Mo
     spoke = len(SPOKEN) / 2 / 16_000
     heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3), transcription.Segment("Thank you.", spoke + 0.1, spoke + 0.5, 0.56, -0.28)]
 
-    def segments(_on: OnMLX, _weights: str, _samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
+    def segments(_on: OnMLX, _weights: Path, _samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
         return heard
 
     monkeypatch.setattr(transcription, "segments", segments)

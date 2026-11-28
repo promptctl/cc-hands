@@ -330,8 +330,8 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
     annotate(model=transcription.MODEL, revision=transcription.REVISION)
-    ear = await off_loop(transcription.weights, "fetching the smoke test's Whisper")
-    await mlxthread.settles(lambda on: transcription.load(on, ear))
+    weights = await off_loop(transcription.weights, "fetching the smoke test's Whisper")
+    await mlxthread.settles(lambda on: transcription.load(on, weights))
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
@@ -365,7 +365,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         try:
             await _called(home, caller)
             smoked.reached("called", f"hands answered a call at https://127.0.0.1:{PHONE_PORT}")
-            await _turns(smoked, caller, member.id, said, ear)
+            await _turns(smoked, caller, member.id, said, weights)
         except NotReached as missed:
             # [LAW:nothing-unseen] what the session showed is part of why a stage it took part in was not reached.
             raise NotReached(missed.stage, f"{missed.why}\nthe smoke session showed:\n{session.shown()}") from missed
@@ -437,7 +437,7 @@ async def _called(home: Home, caller: Caller) -> None:
     caller.tasks.append(asyncio.create_task(caller.keep_sending(), name="the smoke test's voice"))
 
 
-async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence[bytes], ear: str) -> None:
+async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence[bytes], weights: Path) -> None:
     asking, sending, questioning = said
 
     def logged(stage: Logged, since: int, what: str) -> Callable[[], Awaitable[str]]:
@@ -459,7 +459,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
             if last is None or last in transcribed_to:
                 return None
             transcribed_to.append(last)
-            heard[:] = [await _transcribed(ear, caller.ear.since(released))]
+            heard[:] = [await _transcribed(weights, caller.ear.since(released))]
             return f"hands said {heard[0]!r}" if holds in heard[0].casefold() else None
 
         return await until(smoked.clock, stage, TURN_SECONDS, found, lambda: f"what hands said back never named {holds!r}: it said {heard[0]!r}" if heard else "hands said nothing back on the call")
@@ -492,9 +492,9 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     smoked.reached("told", await told_back("told", released, smoked.word))
 
 
-async def _transcribed(ear: str, audio: bytes) -> str:
+async def _transcribed(weights: Path, audio: bytes) -> str:
     """`audio`, as the Whisper hands transcribes with hears it, unprimed."""
-    heard = await mlxthread.settles(lambda on: transcription.segments(on, ear, clips.decoded(audio), None))
+    heard = await mlxthread.settles(lambda on: transcription.segments(on, weights, clips.decoded(audio), None))
     return " ".join(segment.text for segment in heard).strip()
 
 
