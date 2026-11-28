@@ -1,8 +1,7 @@
 """What the brain is sent of each take the harness holds (tests/echoscore.py), through the desk's canceller and the real
 Whisper at its pinned weights: every word of the person's, and none of hands' own, with no rule about whose a word is by
 its text or its time. The harness scores the streaming pair's dated words; Whisper's come back as one string a clip, so
-the same two numbers are read here undated, over the stretch hands played alone and over the whole take. numba times
-each compile by the machine's clock, so this module stays in UNMOVED in tests/clockwatch.py."""
+the same two numbers are read here undated, over the stretch hands played alone and over the whole take."""
 
 from difflib import SequenceMatcher
 from pathlib import Path

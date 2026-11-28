@@ -1,4 +1,4 @@
-"""Which test modules reach the machine's time, ids, and randomness as they run, held to UNMOVED.
+"""Which test modules reach the machine's time, ids, and randomness as they run, held to TO_MOVE and PERMANENT.
 
 [LAW:single-enforcer] This is the one check on tests/: a reach is caught by what a test's run calls, not by how its
 source spells the call. What no wrapper sees is taken from the code scan in tests/test_clock_boundary.py, whose own
@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import CodeType
@@ -38,13 +38,9 @@ from test_clock_boundary import offenders, reached, written
 CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 
 # Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it
-# advances. test_pinned_brain.py, test_session_contract_pinned.py and test_terminal_contract_pinned.py are not among
-# those to move: they run a real Claude Code, and nothing tells them when it has done what they wait on; nor is
-# test_terminals_contract_tmux.py, whose tmux server and programs say only by what they leave that they are up;
-# nor are test_pages.py and test_phonewakepage.py, whose verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it; nor is
-# test_proxy_connect.py, whose clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
-# subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
-UNMOVED = frozenset({
+# advances. Which facilities a module reaches is not recorded: a library reaches some only on a race, as subprocess's
+# communicate sleeps only while its child still runs, and a module is moved whole or not at all.
+TO_MOVE = frozenset({
     "conftest.py",
     "fixtures/standin_daemon.py",
     "fixtures/watched_run.py",
@@ -70,7 +66,6 @@ UNMOVED = frozenset({
     "test_devices.py",
     "test_display.py",
     "test_echoscore.py",
-    "test_engaged_models.py",
     "test_filing.py",
     "test_focus.py",
     "test_front.py",
@@ -87,21 +82,16 @@ UNMOVED = frozenset({
     "test_offline.py",
     "test_otlp.py",
     "test_own_model.py",
-    "test_pages.py",
     "test_patience.py",
     "test_phone.py",
     "test_phone_listening.py",
     "test_phonepage.py",
     "test_phonewake.py",
-    "test_phonewakepage.py",
     "test_pinned.py",
-    "test_pinned_brain.py",
     "test_pinnedfile_served.py",
     "test_playback.py",
-    "test_terminals_contract_tmux.py",
     "test_progress.py",
     "test_proxy.py",
-    "test_proxy_connect.py",
     "test_read_session.py",
     "test_readiness.py",
     "test_recall.py",
@@ -111,7 +101,6 @@ UNMOVED = frozenset({
     "test_render.py",
     "test_restart.py",
     "test_sentences.py",
-    "test_session_contract_pinned.py",
     "test_shim.py",
     "test_shortcut.py",
     "test_smoke.py",
@@ -129,7 +118,6 @@ UNMOVED = frozenset({
     "test_tail.py",
     "test_talking_over.py",
     "test_tap.py",
-    "test_terminal_contract_pinned.py",
     "test_timeouts.py",
     "test_tool_runs.py",
     "test_transcript.py",
@@ -145,12 +133,31 @@ UNMOVED = frozenset({
     "test_wake.py",
     "test_watchdog.py",
     "test_whisper.py",
-    "test_whisper_recorded.py",
-    "test_whisper_takes.py",
     "test_wide.py",
     "test_wrapper.py",
     "timeouts.py",
 })  # fmt: skip
+
+REAL_CLAUDE_CODE = "it runs a real Claude Code, and nothing tells it when Claude Code has done what it waits on"
+REAL_CHROME = "its verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it"
+REAL_WHISPER = "numba compiles the real Whisper's word timing as the model loads, and times each compile by the machine's clock"
+
+# [LAW:no-ambient-temporal-coupling] exception: test modules that test hands against a real party that runs on the
+# machine's time, each with why a clock the test advances cannot stand in for it. They are never moved, and a run that
+# collects a test of one not marked outside fails: the unit layer would run it, off the watch.
+PERMANENT = {
+    "test_engaged_models.py": "Smart Turn's own code reads the machine's time as it takes audio",
+    "test_launchservices_lsappinfo.py": "it reads the app in front from the real lsappinfo, a child that runs in real time, so only the machine's time ends its limit on one that hangs",
+    "test_pages.py": REAL_CHROME,
+    "test_phonewakepage.py": REAL_CHROME,
+    "test_pinned_brain.py": REAL_CLAUDE_CODE,
+    "test_proxy_connect.py": "its clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it",
+    "test_session_contract_pinned.py": "it shows a real Claude Code waits on an end's reply by holding the reply for seconds of the machine's time, the time Claude Code waits on",
+    "test_terminal_contract_pinned.py": REAL_CLAUDE_CODE,
+    "test_terminals_contract_tmux.py": "its tmux server and programs say only by what they leave that they are up",
+    "test_whisper_recorded.py": REAL_WHISPER,
+    "test_whisper_takes.py": REAL_WHISPER,
+}  # fmt: skip
 
 # Facilities the code scan finds in tests/, as it names them.
 SCANNED = frozenset({"datetime.datetime.now()", "datetime.datetime.utcnow()", "datetime.datetime.today()", "datetime.date.today()", ".acquire(timeout=)", ".acquire(seconds)", ".get(timeout=)"})
@@ -187,9 +194,14 @@ ORIGIN: contextvars.ContextVar[str] = contextvars.ContextVar("clockwatch.origin"
 class Watch:
     """The record of one run: each module under `tests` with the facilities its run reached."""
 
-    def __init__(self, tests: Path, patch: pytest.MonkeyPatch, unmoved: frozenset[str]) -> None:
+    def __init__(self, tests: Path, patch: pytest.MonkeyPatch, to_move: frozenset[str], permanent: Mapping[str, str], outside: Callable[[pytest.Item], bool]) -> None:
         self.tests = tests
-        self.unmoved = unmoved
+        # Every module that may reach the machine's time, held to move or for good: a run that sees any other reach it fails.
+        self.held = to_move.union(permanent)
+        self.permanent = permanent
+        self.outside = outside
+        # Each module held for good with the tests collected from it that are not marked outside, which the unit layer runs.
+        self.unmarked: defaultdict[str, list[str]] = defaultdict(list)
         self._patch = patch
         self._originals: dict[int, Callable[..., object]] = {}
         self._within = threading.local()
@@ -205,12 +217,17 @@ class Watch:
         """The module `filename` is, relative to tests/; "" for a file outside it, and this one, that a test may have
         called into; None for pytest's and pluggy's, below which no test frame lies, since pytest calls every test."""
         if filename not in self._modules:
-            path = Path(filename)
+            path = real(Path(filename))
             self._modules[filename] = (
-                path.relative_to(self.tests).as_posix() if path.is_relative_to(self.tests) and path != Path(__file__)
+                path.relative_to(self.tests).as_posix() if path.is_relative_to(self.tests) and path != real(Path(__file__))
                 else None if {"_pytest", "pluggy"} & set(path.parts) else ""
             )  # fmt: skip
         return self._modules[filename]
+
+    def _of(self, item: pytest.Item) -> str | None:
+        """The module `item` was collected from, relative to tests/; None for one outside it."""
+        path = real(item.path)
+        return path.relative_to(self.tests).as_posix() if path.is_relative_to(self.tests) else None
 
     def _entered(self) -> tuple[str, bool] | None:
         """The innermost frame's module under tests/, and whether the code it runs in is the harness's: entered from
@@ -322,9 +339,8 @@ class Watch:
 
     @pytest.hookimpl(wrapper=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, object, object]:
-        if not item.path.is_relative_to(self.tests):
+        if (module := self._of(item)) is None:
             return (yield)
-        module = item.path.relative_to(self.tests).as_posix()
         self._ran.add(module)
         if isinstance(item, pytest.Function):
             functions: list[Callable[..., object]] = [item.function]  # pyright: ignore[reportUnknownMemberType]
@@ -336,6 +352,12 @@ class Watch:
             return (yield)
         finally:
             ORIGIN.reset(token)
+
+    def pytest_itemcollected(self, item: pytest.Item) -> None:
+        # [LAW:single-enforcer] which tests need the outside is the layer's to say, by the one predicate it selects on, asked
+        # of every test collected, a layer's run deselecting it or not: one the unit layer runs is off the watch with its module.
+        if (module := self._of(item)) is not None and module in self.permanent and not self.outside(item):
+            self.unmarked[module].append(item.nodeid)
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         # An xfail ran, and its report says skipped.
@@ -351,26 +373,39 @@ class Watch:
         whole = session.exitstatus == 0 and not self._skipped and not self._deselected and modules <= self._ran
         for module, found in scanned(self.tests).items():
             self.record[module] |= found
-        self.new, self.stale = verdict({module: found for module, found in dict(self.record).items() if found}, self.unmoved, whole)
+        self.new, self.stale = verdict({module: found for module, found in dict(self.record).items() if found}, self.held, whole)
         # Only a run that would pass fails for the watch: an interrupted or empty one keeps its own status.
-        if (self.new or self.stale) and session.exitstatus == pytest.ExitCode.OK:
+        if (self.new or self.stale or self.unmarked) and session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
         if self.new:
-            terminalreporter.section("reached the machine's time, not in UNMOVED (tests/clockwatch.py)", red=True)
+            terminalreporter.section("reached the machine's time, in neither TO_MOVE nor PERMANENT (tests/clockwatch.py)", red=True)
             for module, facilities in sorted(self.new.items()):
                 terminalreporter.line(f"{module}: {sorted(facilities)}")
         if self.stale:
-            terminalreporter.section("in UNMOVED, never reached the machine's time", red=True)
+            terminalreporter.section("in TO_MOVE or PERMANENT, never reached the machine's time", red=True)
             terminalreporter.line(", ".join(sorted(self.stale)))
+        if self.unmarked:
+            terminalreporter.section("in PERMANENT, not marked outside (tests/clockwatch.py)", red=True)
+            for module, tests in sorted(self.unmarked.items()):
+                terminalreporter.line(f"{module}, held for good: {self.permanent[module]}")
+                terminalreporter.line("\n".join(tests))
 
 
-def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:
-    """Each module a run saw reach the machine's time that `unmoved` does not hold, with what it reached, and, from a run
-    of the whole suite, each it holds that never did. A part of the suite sees only its part's reaches, so only the whole
+def real(path: Path) -> Path:
+    """`path` with each symlink in it followed; the name of code with no file, as "<string>" is, is no path, and stays.
+
+    [LAW:one-source-of-truth] every path the watch compares is this one's, so a checkout a run reaches through a symlink,
+    by the paths it names or by its --rootdir, is one checkout, spelled as each is."""
+    return path.resolve() if path.is_absolute() else path
+
+
+def verdict(record: dict[str, set[str]], held: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:
+    """Each module a run saw reach the machine's time that is not `held`, with what it reached, and, from a run of the
+    whole suite, each held that never did. A part of the suite sees only its part's reaches, so only the whole
     can prove an entry stale."""
-    return {module: found for module, found in record.items() if module not in unmoved}, set(unmoved - record.keys()) if whole else set()
+    return {module: found for module, found in record.items() if module not in held}, set(held - record.keys()) if whole else set()
 
 
 def layers(function: Callable[..., object]) -> Iterator[CodeType]:
@@ -395,9 +430,13 @@ def scanned(tests: Path) -> dict[str, set[str]]:
     return {module: facilities for module, facilities in found.items() if facilities}
 
 
-def register(config: pytest.Config, unmoved: frozenset[str]) -> None:
+def register(config: pytest.Config, to_move: frozenset[str], permanent: Mapping[str, str], outside: Callable[[pytest.Item], bool]) -> None:
+    """The watch on this run, holding the modules `to_move` and the ones `permanent` holds for good, whose tests must each be
+    one `outside` says needs the outside."""
+    if both := sorted(to_move & permanent.keys()):
+        raise pytest.UsageError(f"held both to move and for good (tests/clockwatch.py): {both}")
     patch = pytest.MonkeyPatch()
     config.add_cleanup(patch.undo)
-    watch = Watch(config.rootpath.resolve() / "tests", patch, unmoved)
+    watch = Watch(real(config.rootpath / "tests"), patch, to_move, permanent, outside)
     watch.install()
     config.pluginmanager.register(watch, "clockwatch")

@@ -172,12 +172,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         layered(config, items, layer)
 
 
+def needs_the_outside(item: pytest.Item) -> bool:
+    """Whether a mark on `item` or on its module says it needs the outside."""
+    return item.get_closest_marker("outside") is not None
+
+
 def layered(config: pytest.Config, items: list[pytest.Item], layer: str) -> None:
     """[LAW:single-enforcer] the one owner of which tests a layer run takes: the unit layer's, the tests no mark says need
     the outside; an audit's, the ones that do, each an expected failure that must fail, since a marked test the hold
     refuses nothing for does not need its mark."""
-    outside = [item for item in items if item.get_closest_marker("outside") is not None]
-    inside = [item for item in items if item.get_closest_marker("outside") is None]
+    outside = [item for item in items if needs_the_outside(item)]
+    inside = [item for item in items if not needs_the_outside(item)]
     kept, dropped = (inside, outside) if layer == "unit" else (outside, inside)
     config.hook.pytest_deselected(items=dropped)
     items[:] = kept
@@ -607,7 +612,7 @@ def pytest_configure(config: pytest.Config) -> None:
         config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard", shards.WHOLE)), shards.Costs.load(shards.COSTS)), "shards")
     elif config.getoption("shard", shards.WHOLE) != shards.WHOLE:
         raise pytest.UsageError("--shard cuts the unit layer, which the cost file prices: run it with --layer=unit")
-    clockwatch.register(config, clockwatch.UNMOVED)
+    clockwatch.register(config, clockwatch.TO_MOVE, clockwatch.PERMANENT, needs_the_outside)
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")
     if claude := shutil.which("claude", path=SYSTEM_PATH):

@@ -1,7 +1,5 @@
 """Whisper as hands runs it, on speech recorded once and committed (tests/speech.py): the real model at its pinned weights,
-primed with a vocabulary of the shape hands primes with, given each clip a held key sends. The model's word timing is
-compiled by numba as the model loads, and numba times each compile by the machine's clock, so this module stays in UNMOVED
-in tests/clockwatch.py though its own time is a VirtualClock's."""
+primed with a vocabulary of the shape hands primes with, given each clip a held key sends."""
 
 import re
 from difflib import SequenceMatcher

@@ -1,5 +1,4 @@
-"""The desk's end-of-turn detection on the real models. Smart Turn's own code reads the machine's time as it takes audio, so
-this module stays in UNMOVED in tests/clockwatch.py, and test_engaged.py, which drives the desk on scripted ears, moves."""
+"""The desk's end-of-turn detection on the real models; test_engaged.py drives the desk on scripted ears."""
 
 import pytest
 from conftest import model_facts
