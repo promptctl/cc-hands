@@ -1,10 +1,11 @@
-"""The runtime record of what test modules reach of the machine's time, and its verdict against UNMOVED."""
+"""The runtime record of what test modules reach of the machine's time, and its verdict against the modules held to move
+and held for good."""
 
 from pathlib import Path
 
 import pytest
 
-from clockwatch import PERMANENT, TO_MOVE, verdict
+from clockwatch import verdict
 
 SAMPLE = """
 import datetime, threading, time, uuid
@@ -38,10 +39,10 @@ def test_a_thread_hands_started_carries_the_test_that_started_it():
 """
 
 
-def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, *args: str, unmoved: str = "frozenset()", permanent: str = "frozenset()", hooks: str = "", **modules: str) -> pytest.RunResult:
+def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, *args: str, to_move: str = "frozenset()", permanent: str = "{}", hooks: str = "", **modules: str) -> pytest.RunResult:
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parent))
     pytester.makepyfile(**{f"tests/{name}": source for name, source in modules.items()})
-    pytester.makepyfile(**{"tests/conftest": f"import clockwatch\n\ndef pytest_configure(config):\n    clockwatch.register(config, {unmoved}, {permanent})\n{hooks}"})
+    pytester.makepyfile(**{"tests/conftest": f"import clockwatch\n\ndef pytest_configure(config):\n    clockwatch.register(config, {to_move}, {permanent})\n{hooks}"})
     return pytester.runpytest_subprocess("tests", "-p", "no:randomly", *args)
 
 
@@ -77,8 +78,11 @@ def test_a_module_unmoved_does_not_hold_fails_any_run_and_one_never_reached_only
     assert verdict(record, unmoved, whole=True) == ({"test_a.py": {"time.sleep"}}, {"test_c.py"})
 
 
-def test_no_module_is_held_both_to_move_and_for_good() -> None:
-    assert TO_MOVE & PERMANENT.keys() == set()
+@pytest.mark.outside
+def test_a_module_held_both_to_move_and_for_good_stops_the_run_before_any_test(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = run(pytester, monkeypatch, to_move="frozenset({'test_quiet.py'})", permanent="{'test_quiet.py': 'a party'}", test_quiet="def test_waits_on_nothing():\n    pass\n")
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    assert "held both to move and for good (tests/clockwatch.py): ['test_quiet.py']" in result.stderr.str()
 
 
 @pytest.mark.outside
@@ -89,20 +93,20 @@ def test_a_test_of_a_module_held_for_good_that_the_unit_layer_would_run_fails_th
         "test_each_marked": marked,
         "test_mixed": f"{marked}\n\ndef test_unit():\n    pass\n",
     }
-    result = run(pytester, monkeypatch, permanent=repr(frozenset(f"{name}.py" for name in modules)), **modules)
+    result = run(pytester, monkeypatch, permanent=repr({f"{name}.py": "a party" for name in modules}), **modules)
     assert result.ret == pytest.ExitCode.TESTS_FAILED
-    assert "tests/test_mixed.py::test_unit" in result.outlines
+    assert result.outlines[result.outlines.index("test_mixed.py, held for good: a party") + 1] == "tests/test_mixed.py::test_unit"
     assert not {f"tests/{name}.py::test_outside" for name in modules} & set(result.outlines)
 
 
 @pytest.mark.outside
 def test_an_entry_never_reached_fails_a_run_of_the_whole_suite_and_no_part_of_it(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
-    unmoved = "frozenset({'test_quiet.py'})"
+    to_move = "frozenset({'test_quiet.py'})"
     quiet = "def test_waits_on_nothing():\n    pass\n\ndef test_neither():\n    pass\n"
-    whole = run(pytester, monkeypatch, unmoved=unmoved, test_quiet=quiet)
+    whole = run(pytester, monkeypatch, to_move=to_move, test_quiet=quiet)
     assert whole.ret == pytest.ExitCode.TESTS_FAILED
     assert "test_quiet.py" in whole.outlines
-    assert run(pytester, monkeypatch, "-k", "nothing", unmoved=unmoved, test_quiet=quiet).ret == pytest.ExitCode.OK
+    assert run(pytester, monkeypatch, "-k", "nothing", to_move=to_move, test_quiet=quiet).ret == pytest.ExitCode.OK
 
 
 @pytest.mark.outside
@@ -120,16 +124,16 @@ def test_a_thread_starts_with_none_of_its_starters_context(pytester: pytest.Pyte
 
 @pytest.mark.outside
 def test_a_run_that_runs_no_test_or_ignores_a_module_is_not_the_whole_suite(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
-    unmoved = "frozenset({'test_quiet.py'})"
+    to_move = "frozenset({'test_quiet.py'})"
     quiet = "def test_waits_on_nothing():\n    pass\n"
-    assert run(pytester, monkeypatch, "--co", unmoved=unmoved, test_quiet=quiet, test_other=quiet).ret == pytest.ExitCode.OK
-    assert run(pytester, monkeypatch, "--ignore", "tests/test_other.py", unmoved=unmoved, test_quiet=quiet, test_other=quiet).ret == pytest.ExitCode.OK
+    assert run(pytester, monkeypatch, "--co", to_move=to_move, test_quiet=quiet, test_other=quiet).ret == pytest.ExitCode.OK
+    assert run(pytester, monkeypatch, "--ignore", "tests/test_other.py", to_move=to_move, test_quiet=quiet, test_other=quiet).ret == pytest.ExitCode.OK
 
 
 @pytest.mark.outside
 def test_an_xfail_does_not_keep_the_whole_suite_from_proving_an_entry_stale(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     quiet = "import pytest\n\n@pytest.mark.xfail(strict=True)\ndef test_fails():\n    assert False\n"
-    result = run(pytester, monkeypatch, unmoved="frozenset({'test_quiet.py'})", test_quiet=quiet)
+    result = run(pytester, monkeypatch, to_move="frozenset({'test_quiet.py'})", test_quiet=quiet)
     assert result.ret == pytest.ExitCode.TESTS_FAILED
     assert "test_quiet.py" in result.outlines
 
@@ -137,7 +141,7 @@ def test_an_xfail_does_not_keep_the_whole_suite_from_proving_an_entry_stale(pyte
 @pytest.mark.outside
 def test_a_run_that_says_it_deselected_nothing_is_still_the_whole_suite(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     hooks = "\ndef pytest_collection_modifyitems(config, items):\n    config.hook.pytest_deselected(items=[])\n"
-    result = run(pytester, monkeypatch, hooks=hooks, unmoved="frozenset({'test_quiet.py'})", test_quiet="def test_waits_on_nothing():\n    pass\n")
+    result = run(pytester, monkeypatch, hooks=hooks, to_move="frozenset({'test_quiet.py'})", test_quiet="def test_waits_on_nothing():\n    pass\n")
     assert result.ret == pytest.ExitCode.TESTS_FAILED
     assert "test_quiet.py" in result.outlines
 
@@ -188,7 +192,7 @@ def test_a_semaphore_polled_is_no_reach_whatever_clock_it_reads_and_one_waited_o
 @pytest.mark.outside
 def test_a_shared_fixture_torn_down_after_a_test_is_charged_to_the_harness_and_not_the_test(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     # This repo's timeouts.py, run from the run's own tests/ and registered as its conftest does.
-    hooks = "\nimport timeouts\n\ndef pytest_configure(config):\n    config.pluginmanager.register(timeouts, 'timeouts')\n    clockwatch.register(config, frozenset({'timeouts.py'}))\n"
+    hooks = "\nimport timeouts\n\ndef pytest_configure(config):\n    config.pluginmanager.register(timeouts, 'timeouts')\n    clockwatch.register(config, frozenset({'timeouts.py'}), {})\n"
     shared = "import pytest\n\n@pytest.fixture(scope='module')\ndef shared():\n    yield\n\ndef test_uses(shared):\n    pass\n"
     timeouts = (Path(__file__).parent / "timeouts.py").read_text()
     result = run(pytester, monkeypatch, "--timeout", "60", hooks=hooks, timeouts=timeouts, test_quiet=shared)
