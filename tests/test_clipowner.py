@@ -22,7 +22,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice import clipowner, transcription
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip, Fate, Heard, Hearing, Hearings, Recording, Reference, Sound, Playhead, Synthesis, Transcriber, voices
-from hands.voice.ptt import Gate
+from hands.voice.ptt import Gate, GateWritten
 from hands.voice.trigger import Trigger, by_hand
 from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
 from hands.voice.mlxthread import OnMLX
@@ -114,18 +114,24 @@ class Rig:
     recorded: list[Entry]
     gate: Gate = field(default_factory=Gate)
 
-    async def frame(self, gate: Gate, sound: bytes, voices: tuple[str, ...] = (), reached: bool = True) -> None:
-        """A frame captured under `gate`, hands playing in `voices` over it, its voice `reached` the microphone or not."""
+    async def write(self, gate: Gate) -> None:
+        """`gate`, as its one writer wrote it."""
         self.gate = gate
-        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound, voices, reached), 16000, 1, "desk"))
+        await self.run.worker.queue_frame(GateWritten(gate=gate))
+
+    async def frame(self, gate: Gate, sound: bytes, voices: tuple[str, ...] = (), reached: bool = True) -> None:
+        """`gate` written, and a frame captured under it, hands playing in `voices` over it, its voice `reached` the
+        microphone or not. The writer writes on every move, so a gate written again is one the owner has already."""
+        await self.write(gate)
+        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound, voices, reached), 16000, 1))
 
     async def clip(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Trigger = "engaged conversation", voices: tuple[str, ...] = (), reached: bool = True) -> None:
         """A clip opened by `by`, a frame of each sound captured while it is open, hands playing in `voices` over it, its
-        voice `reached` the microphone or not, then sent or thrown away."""
+        voice `reached` the microphone or not, then sent or thrown away by the gate's write alone, with no frame after it."""
         down = started(self.gate, by)
         for sound in sounds:
             await self.frame(down, sound, voices, reached)
-        await self.frame(down.after("stop" if fate == "sent" else "drop", by), b"\x00\x00" * 320, voices, reached)
+        await self.write(down.after("stop" if fate == "sent" else "drop", by))
 
     def events(self, name: str) -> list[WideEvent]:
         return [entry for entry in self.recorded if isinstance(entry, WideEvent) and entry.event == name]
@@ -150,7 +156,7 @@ def started(gate: Gate, by: Trigger) -> Gate:
 
 
 def tap(gate: Gate, by: Trigger = "shortcut") -> Gate:
-    """The gate once a press and its release both came, with no frame captured between them."""
+    """The gate once a press and its release both came, written as one, so no frame was captured between them."""
     return started(gate, by).after("stop", by)
 
 
@@ -357,18 +363,20 @@ async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_qu
 
 
 def at_48k(gate: Gate) -> Frame:
-    return gate.framed(frame_of(3), frame_of(3), None, 48_000, 1, "desk")
+    return gate.framed(frame_of(3), frame_of(3), None, 48_000, 1)
 
 
 def unkeyed(_gate: Gate) -> Frame:
     return InputAudioRawFrame(audio=frame_of(3), sample_rate=16_000, num_channels=1)
 
 
-@pytest.mark.parametrize(("framed", "why"), [(at_48k, "at 48000 Hz"), (unkeyed, "carries no key")])
+@pytest.mark.parametrize(("framed", "why"), [(at_48k, "at 48000 Hz"), (unkeyed, "is not the keyed microphone's")])
 async def test_a_frame_no_clip_can_be_cut_from_fails_as_it_arrives_and_no_listener_hears_it(framed: Callable[[Gate], Frame], why: str) -> None:
     listener = Heeding("given")
     async with rigged(Scripted([]), (listener,)) as rig:
-        await rig.run.worker.queue_frame(framed(started(rig.gate, "engaged conversation")))
+        down = started(rig.gate, "engaged conversation")
+        await rig.write(down)
+        await rig.run.worker.queue_frame(framed(down))
         await rig.until(lambda: len(rig.run.errors) == 1)
         [error] = rig.run.errors
         assert why in error.error
@@ -392,7 +400,8 @@ async def test_a_clip_sent_by_a_move_to_the_phone_is_measured_over_its_own_audio
         down = started(rig.gate, "shortcut")
         await rig.frame(down, frame_of(16384))
         await rig.frame(down, frame_of(16384))
-        await rig.run.worker.queue_frame(down.moved("phone").framed(frame_of(0), frame_of(0), None, 16000, 1, "phone"))
+        # The move alone sends it: no frame of the phone's is heard after it.
+        await rig.write(down.moved("phone"))
         await rig.until(lambda: len(rig.events("clip")) == 1)
         [clip] = rig.events("clip")
         assert (clip.facts["fate"], clip.facts["seconds"], clip.facts["levels"]) == ("sent", 0.04, Levels(-6.0, -6.0))
@@ -567,7 +576,7 @@ async def test_a_clip_the_hand_opened_was_cut_as_it_opened_so_its_close_cuts_not
         assert voices(given) == ("charles",)
 
 
-async def test_a_turn_that_opens_and_ends_between_two_frames_is_said_unheard_once_and_the_next_clip_is_numbered_as_ever() -> None:
+async def test_a_turn_that_opens_and_ends_with_no_frame_captured_while_open_is_said_unheard_once_and_the_next_clip_is_numbered_as_ever() -> None:
     async with rigged(Scripted([None])) as rig:
         await rig.frame(rig.gate, frame_of(1))
         await rig.frame(tap(rig.gate), frame_of(2))
@@ -579,20 +588,32 @@ async def test_a_turn_that_opens_and_ends_between_two_frames_is_said_unheard_onc
     assert [(event.facts["turn"], event.facts["fate"]) for event in rig.events("turn.unheard")] == [(0, "sent")]
 
 
-async def test_every_turn_the_gate_ended_between_two_frames_is_said_unheard_in_the_order_it_ended() -> None:
+async def test_every_turn_one_write_of_the_gate_ended_is_said_unheard_in_the_order_it_ended_with_no_frame_after_it() -> None:
     async with rigged(Scripted([])) as rig:
         await rig.frame(rig.gate, frame_of(1))
-        await rig.frame(tap(tap(rig.gate)), frame_of(2))
+        await rig.write(tap(tap(rig.gate)))
         await rig.until(lambda: len(rig.seen.ends) == 2)
     assert rig.seen.ends == [("unheard", 0), ("unheard", 1)]
 
 
-async def test_a_clip_thrown_away_is_said_discarded_and_never_sent_though_a_turn_ended_beside_it_before_the_next_frame() -> None:
-    """The clip open is dropped, and a tap opens and ends, with no frame between: the record says in order how each ended, so
-    the clip is not taken for the one the totals alone would call sent."""
+async def test_a_clip_thrown_away_is_said_discarded_and_never_sent_though_a_turn_ended_beside_it_in_the_same_write() -> None:
+    """The clip open is dropped, and a tap opens and ends, in one write and with no frame after it: the record says in order
+    how each ended, so the clip is not taken for the one the totals alone would call sent."""
     async with rigged(Scripted([])) as rig:
         down = started(rig.gate, "shortcut")
         await rig.frame(down, frame_of(1))
-        await rig.frame(tap(down.after("drop", "shortcut")), frame_of(2))
+        await rig.write(tap(down.after("drop", "shortcut")))
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
     assert rig.seen.ends == [("discarded", 1), ("unheard", 1)]
+
+
+@pytest.mark.parametrize(("fate", "said"), [("sent", "sent"), ("dropped", "discarded")])
+async def test_a_clip_ends_as_the_gate_writes_its_end_and_no_frame_after_it_is_waited_for(fate: Fate, said: str) -> None:
+    """[LAW:no-ambient-temporal-coupling] the microphone may never send again: the place it is at went quiet, its call went,
+    or the run is stopping. The write of the turn's end is the clip's end, and it is resolved on that alone."""
+    listener = Heeding("given")
+    async with rigged(Scripted([None]), (listener,)) as rig:
+        await rig.clip([frame_of(3)], fate=fate, by="shortcut")
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+        assert rig.seen.ends == [(said, 1)]
+        assert listener.given[-1] == ("ended", (Clip(1, "shortcut"), fate, Sound(frame_of(3), frame_of(3), played_with(frame_of(3)))))

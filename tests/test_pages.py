@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
-from conftest import patiently
+from conftest import captured_under, patiently, taking
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, ElementHandle, FloatRect, Locator, Page, ViewportSize, async_playwright, expect
 
 from hands.clock import SYSTEM
@@ -32,7 +32,7 @@ from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import APP_PATHS, ROW, phone_pages
 from hands.voice.pinnedfile import Fetch, Kept, Mismatch, Pin, Release
-from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.ptt import GateWritten, KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.transcript import Heard
 from hands.voice.tool import audited, tool
@@ -83,6 +83,8 @@ class Hands:
     recorded: list[Entry]
     # The gate the phone moves, which a test moves as the desk's key or the pipeline would.
     gate: PushToTalk
+    # What the pipeline hears, from the gate's first write on: each write and each frame, in order.
+    heard: asyncio.Queue[GateWritten | KeyedAudio]
 
     def address(self, path: str, **query: str) -> str:
         """`path` on this server, carrying the phone's key as `hands phone` prints it."""
@@ -123,8 +125,9 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
             ended.append(request.path)
 
     pages.middlewares.append(taken)
-    async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, ended, recorded, gate)
+    heard: asyncio.Queue[GateWritten | KeyedAudio] = asyncio.Queue()
+    async with taking(gate, heard.put), TestServer(pages) as server:
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, ended, recorded, gate, heard)
         await phone.stop()
 
 
@@ -348,13 +351,11 @@ async def test_the_page_sends_its_microphone_only_inside_a_turn_and_counts_what_
                 pytest.fail(f"the page sent what this test does not know: {unknown}")
     assert [each["button"] for each in timeline if "button" in each] == ["press", "release"] * 2
     # What hands heard: the tone inside the turns, and the second clip ended by the silence that follows it.
-    frames: list[KeyedAudio] = []
+    heard: list[GateWritten | KeyedAudio] = []
     async with asyncio.timeout(10):
-        while not frames or len(frames[-1].ended) < 2:
-            await asyncio.sleep(0.05)
-            while not hands.phone.heard.empty():
-                frames.append(hands.phone.heard.get_nowait())
-    assert any(any(frame.audio) for frame in frames if frame.key == "down")
+        while not any(isinstance(each, GateWritten) and len(each.gate.ended) == 2 for each in heard):
+            heard.append(await hands.heard.get())
+    assert any(any(frame.audio) for gate, frame in captured_under(heard) if gate.key == "down")
     # And hands could read every message the page sent: it counted what the page held back and rejected nothing.
     await hands.phone.stop()
     [event] = [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "phone.call"]

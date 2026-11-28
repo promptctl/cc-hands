@@ -541,8 +541,6 @@ class Phone:
         # The call hands is at, and the newest offer answered and not yet up.
         self._call: Call | None = None
         self._offered: Call | None = None
-        # The phone's microphone as the pipeline hears it: keyed frames at the pipeline's rate, while hands is at the phone.
-        self.heard: asyncio.Queue[KeyedAudio] = asyncio.Queue()
         # The moves the page's button has made, as the gate took them, for what follows a move: its tone and its words.
         self.moves: asyncio.Queue[Move] = asyncio.Queue()
 
@@ -764,14 +762,11 @@ class Phone:
         frame = AudioFrame.from_ndarray(np.frombuffer(audio, dtype=np.int16)[None, :], format="s16", layout="mono")
         frame.sample_rate = call.rate
         for out in call.resampler.resample(frame):
-            # One read of the gate per frame, as the desk's capture thread reads it.
-            gate = self._key.gate
-            if gate.hears("phone"):
-                heard = out.to_ndarray().astype(np.int16).tobytes()
-                frame = gate.framed(heard, heard, None, self._heard_rate, 1, "phone")
-                self.heard.put_nowait(frame)
+            heard = out.to_ndarray().astype(np.int16).tobytes()
+            # The phone's microphone as the pipeline hears it, in line with the gate's writes, while hands is at the phone.
+            for framed in self._key.hear("phone", heard, heard, None, self._heard_rate, 1):
                 for follower in self._followers:
-                    follower(frame)
+                    follower(framed)
 
     def _leave(self, reason: PhoneGone) -> Call | None:
         # [LAW:no-ambient-temporal-coupling] the place moves in the same step the call goes, before any await: a

@@ -1,10 +1,11 @@
 """Push-to-talk: the key is the voice activity detector and the microphone mute.
 
 Pipecat's turn machinery, and the clip owner that cuts the clips every model
-hears, both run off the key. So the key *is* the VAD: every microphone frame
-carries the key it was captured under, and the clip owner
-(`hands.voice.clipowner`) says the user started or stopped speaking where those
-keys change. The key is also the mute: the microphone bytes are silence unless
+hears, both run off the key. So the key *is* the VAD: each write of the gate
+reaches the pipeline in line with the microphone frames, ahead of every frame
+captured under it (`GateWritten`), and the clip owner
+(`hands.voice.clipowner`) says the user started or stopped speaking where the
+writes move the key. The key is also the mute: the microphone bytes are silence unless
 the key is pressed (applied where they are captured, in
 `hands.voice.microphone`), and a clip's audio begins at its press, so what was
 said before the key meant talk is kept. Audio frames always flow; only their
@@ -23,16 +24,19 @@ pressed and who has a clip open, so a rule about whose a turn is is a transition
 is told by the gate as it opens and ends one.
 """
 
-from collections.abc import Callable
+import threading
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from pipecat.frames.frames import InputAudioRawFrame
+from pipecat.frames.frames import InputAudioRawFrame, SystemFrame
 
 from hands.clock import Clock
 from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
+from hands.threads import ThreadsafeQueue
 from hands.voice.clips import Fate, Played
 from hands.voice.shortcut import Beginning, Ending, Instant, Move
 from hands.voice.trigger import PhoneLevel, Trigger, by_hand, place_of
@@ -106,11 +110,8 @@ class GateEnded:
 
 @dataclass(kw_only=True)
 class KeyedAudio(InputAudioRawFrame):
-    """Microphone audio, the gate as it was when the audio was captured, and the place whose microphone captured it.
-
-    [LAW:no-ambient-temporal-coupling] the gate travels with the audio, in capture order, so whatever reads it later
-    reads the gate as it was when this sound was recorded, never as it is by the time the frame arrives.
-    """
+    """Microphone audio as the pipeline hears it, muted by the gate it was captured under: the gate of the last
+    `GateWritten` ahead of it in what the pipeline hears."""
 
     # The same sound as the microphone captured it, before the echo canceller and as long as `audio`, muted by the key
     # as it is; the phone is heard through no canceller, so there it is `audio` itself.
@@ -118,17 +119,6 @@ class KeyedAudio(InputAudioRawFrame):
     # What the desk's speaker was playing as it was captured, the echo canceller's reference for each 10 ms of `audio`;
     # None at the phone, whose own canceller is told what it plays, and hands is not.
     played: Played
-    key: Key
-    # How every turn the gate has ended ended, in order, by this frame (`Gate.ended`).
-    ended: tuple[Fate, ...]
-    place: Place
-    # The trigger that opened the last clip, as it opened it.
-    opened: Trigger
-
-    @property
-    def turn(self) -> TurnId:
-        """The gate's number for the turn this audio is of, or the next to open (`Gate.turn`)."""
-        return TurnId(len(self.ended))
 
 
 @dataclass(frozen=True)
@@ -142,9 +132,8 @@ class Gate:
     # at its wake word level, which its page tells for the call and no longer. Each place's own, so the desk's level and the
     # phone's never move each other.
     listening: frozenset[Place] = frozenset()
-    # [LAW:no-ambient-temporal-coupling] how each turn ended is recorded in order, not left in a key position: a frame is
-    # captured every 20 ms and several turns can end between two of them, so the clip owner reads each turn's end, and which
-    # it was, off this record as it grows.
+    # [LAW:no-ambient-temporal-coupling] how each turn ended is recorded in order, not left in a key position: one move can
+    # end a turn and open the next, so the clip owner reads each turn's end, and which it was, off this record as it grows.
     ended: tuple[Fate, ...] = ()
 
     @property
@@ -304,29 +293,60 @@ class Gate:
         # only decides its content.
         return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
-    def framed(self, audio: bytes, captured: bytes, played: Played, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
-        """Audio captured at `place`, as the pipeline hears it, as the microphone `captured` it, and what the speaker
-        `played` over it, tagged with this gate. What was played is not the microphone's, so the key mutes none of it."""
-        return KeyedAudio(
-            audio=self.audible(audio), captured=self.audible(captured), played=played, sample_rate=sample_rate, num_channels=num_channels,
-            key=self.key, ended=self.ended, place=place, opened=self.opened,
-        )
+    def framed(self, audio: bytes, captured: bytes, played: Played, sample_rate: int, num_channels: int) -> KeyedAudio:
+        """Audio captured where hands is, as the pipeline hears it under this gate, as the microphone `captured` it, and what
+        the speaker `played` over it. What was played is not the microphone's, so the key mutes none of it."""
+        return KeyedAudio(audio=self.audible(audio), captured=self.audible(captured), played=played, sample_rate=sample_rate, num_channels=num_channels)
+
+
+@dataclass(kw_only=True)
+class GateWritten(SystemFrame):
+    """The gate as its one writer wrote it, in line with the microphone frames the pipeline hears: every frame after this
+    one, up to the next, was captured under it.
+
+    [LAW:no-ambient-temporal-coupling] a system frame, as the microphone's audio is, so no processor's queue takes one ahead
+    of the other."""
+
+    gate: Gate
 
 
 class PushToTalk:
-    """The one owner of the key position and of where the user is: the talk key's edge writes, the microphone reads and
-    tags every frame with it; and whether the user can see a screen there, which the place they talk from sets and they
-    can switch by voice."""
+    """The one owner of the key position and of where the user is: the talk key's edge writes, each place's microphone
+    frames what it captures under it, and the pipeline hears both in one order; and whether the user can see a screen
+    there, which the place they talk from sets and they can switch by voice."""
 
     # [LAW:no-shared-mutable-globals] the event loop writes the key and the capture thread reads it,
-    # so it lives here once with one writer.
-    def __init__(self, clock: Clock, record: Record) -> None:
+    # so it lives here once with one writer. `lock` makes each write and each read one step with what it puts in line: a
+    # lock, or a test's own, which says when a write waits on a read.
+    def __init__(self, clock: Clock, record: Record, lock: Callable[[], AbstractContextManager[object]] = threading.Lock) -> None:
         self._clock = clock
         self._gate = Gate()
         self._modality: Modality = modality_at(self._gate.place)
         self._record = record
         # Who is told as the gate opens and ends a turn, however it came to.
         self._watchers: list[Callable[[GateOpened | GateEnded], None]] = []
+        # [LAW:no-ambient-temporal-coupling] what the pipeline hears, in the one order the gate was written and read in:
+        # each write as it is made, and each frame behind every write made before its gate was read, on whichever thread.
+        self._lock = lock()
+        self._heard: ThreadsafeQueue[GateWritten | KeyedAudio] = ThreadsafeQueue()
+
+    def hear(self, place: Place, audio: bytes, captured: bytes, played: Played, sample_rate: int, num_channels: int) -> tuple[KeyedAudio, ...]:
+        """What the pipeline hears of a buffer `place`'s microphone captured, put in line behind every write of the gate
+        before it: a frame, as the gate now has the pipeline hear it, where hands is at `place`, and nothing elsewhere. From
+        either thread.
+
+        [LAW:single-enforcer] the one place that says which place's microphone the pipeline hears."""
+        with self._lock:
+            gate = self._gate
+            heard = (gate.framed(audio, captured, played, sample_rate, num_channels),) if gate.hears(place) else ()
+            for frame in heard:
+                self._heard.put(frame)
+        return heard
+
+    def heard(self) -> AsyncGenerator[GateWritten | KeyedAudio]:
+        """Everything the pipeline hears, in the one order: each write of the gate, and every frame captured under it after
+        it, from the first write and the first frame on, for one taker at a time."""
+        return self._heard.taken()
 
     def watch(self, told: Callable[[GateOpened | GateEnded], None]) -> None:
         """Have `told` called with each turn the gate opens and ends, as it does, in order."""
@@ -360,7 +380,9 @@ class PushToTalk:
         return moves
 
     def _become(self, moves: tuple[Move, ...], gate: Gate, by: Cause) -> None:
-        before, self._gate = self._gate, gate
+        with self._lock:
+            before, self._gate = self._gate, gate
+            self._heard.put(GateWritten(gate=gate))
         # [LAW:one-source-of-truth] the moves are the gate's only account of what it did: whoever follows a turn is told
         # from them, in the order the gate made them, and keeps no copy of its own that could outlive the turn.
         number = len(before.ended)
@@ -391,7 +413,6 @@ class PushToTalk:
 
     @property
     def gate(self) -> Gate:
-        # Read from the audio callback thread too: one attribute load of a frozen value, whole either way.
         return self._gate
 
     @property

@@ -38,10 +38,10 @@ class Page(Phone):
         self.hear(self.call, said)
 
     def sounds(self, sound: bytes) -> None:
-        """A frame of the page's audio, under the gate as it stands, given to the pipeline and to those who follow it."""
-        frame = self._key.gate.framed(sound, sound, None, 16000, 1, "phone")
-        for follower in self._followers:
-            follower(frame)
+        """A frame of the page's audio, as the gate has the pipeline hear it, given to the pipeline and to those who follow it."""
+        for frame in self._key.hear("phone", sound, sound, None, 16000, 1):
+            for follower in self._followers:
+                follower(frame)
 
     def cued(self) -> list[Move]:
         """Every move the page's tones and words have been told to follow so far."""
