@@ -799,6 +799,7 @@ async def test_the_call_view_opens_on_the_large_circle_which_holds_near_the_top_
     told, wake = await box_of(page.locator("#told")), await box_of(page.locator("#wake"))
     assert told["x"] >= talk["x"] + talk["width"] and wake["x"] >= told["x"] + told["width"]
     assert wake["x"] + wake["width"] == pytest.approx(PHONE_SCREEN["width"] - 8, abs=0.5)
+    assert wake["y"] + wake["height"] / 2 == pytest.approx(talk["y"] + talk["height"] / 2, abs=0.5), "the wake word's button is level with the bar's button"
     await expect(page.locator("#state")).to_be_visible()
     await expect(page.get_by_role("button", name="Phone wake word")).to_be_visible()
 
@@ -934,3 +935,13 @@ async def test_the_call_button_is_there_when_a_view_of_the_app_fails_to_load(bro
     await expect(page.get_by_role("button", name="Connect")).to_be_visible()
     assert len(browser.faults) == 1 and "uncaught" in browser.faults[0]
     browser.faults.clear()
+
+
+async def test_the_melt_can_finish_on_a_screen_as_tall_as_a_phones_whatever_the_call_view_holds(browser: Opened, hands: Hands) -> None:
+    page = await on_the_call(browser, hands, screen={"width": 390, "height": 664})
+    # The view holds little: the brain idle, the transcript hidden. The document is still the screen and MELT long.
+    assert await page.evaluate("document.documentElement.scrollHeight") >= 664 + MELT
+    await scrolled_to(page, 1000)
+    assert await page.evaluate("scrollY") >= MELT
+    await expect(page.locator("#hero")).to_have_class("bar")
+    assert a_bar(await box_of(page.locator("#talk")))

@@ -32,6 +32,9 @@
   /* The Call view scrolls the document, which is where the hero sticks and the button melts. Every other view is its own scroll
      container, the room the bar and the row leave it, and the document does not scroll under it. */
   body:has(#call-view[hidden]) { height: 100dvh; }
+  /* The scroll the melt takes is there on the Call view whatever the view holds, a transcript shown or not, the brain at work or
+     not: the document is the screen and the melt long at least. */
+  body:has(#call-view:not([hidden])) { min-height: calc(100% + var(--melt-reach)); }
   body:has(#call-view[hidden]) #view { flex: 1; min-height: 0; overflow-y: auto; }
   /* The call: one block that is the big round button on the Call view at the top of its scroll and a bar across the top of the
      screen everywhere else. --melt is how far along it is, 0 the circle and 1 the bar, and every length the button has is a calc()
@@ -85,7 +88,7 @@
   }
   #wake .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); }
   #wake[aria-pressed="true"] .dot { background: var(--live); border-color: var(--live); }
-  #hero.bar #wake { position: static; flex: none; align-self: center; width: 36px; height: 36px; padding: 0; justify-content: center; }
+  #hero.bar #wake { position: static; flex: none; align-self: flex-start; margin-top: calc((var(--bar) - 36px) / 2); width: 36px; height: 36px; padding: 0; justify-content: center; }
   #hero.bar #wake .words { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   #wake-note:empty { display: none; }
   #shown { font: inherit; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px; padding: 6px 16px; cursor: pointer; }

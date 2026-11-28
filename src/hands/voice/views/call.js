@@ -4,14 +4,12 @@
 // them as it is left. The brain's panel is the view's own: drawn into `root` from its template as the view mounts, read while the
 // view is shown, and gone with it.
 import {PAGE_OPEN, asked, handsNow, reading, unanswered} from "/hands.js";
-import {reducedMotion, shape} from "/hero.js";
+import {MELT, reducedMotion, shape} from "/hero.js";
 
 const content = document.getElementById("call-view");
 const toggle = document.getElementById("shown");
 const transcript = document.getElementById("transcript");
 const panel = document.getElementById("brain-panel");
-// How far the document scrolls while the button melts from the circle into the bar: a starting value, to be tuned on the phone.
-const MELT = 160;
 // hands answers a Stop at once: one unanswered for this long went to an address the phone can no longer reach. What a Stop
 // said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the brain stands
 // from then on.
