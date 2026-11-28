@@ -9,7 +9,8 @@ from typing import cast
 
 import pytest
 
-from conftest import children_on, laid_out, new_sessions, shell_without_hands_settings
+from conftest import laid_out, new_sessions, shell_without_hands_settings
+from fakechildren import FakeChildren
 from fixtures import pins
 from fixtures.pins import LAID_OUT
 from fixtures.fakemachine import UNMANAGED, managed
@@ -154,7 +155,7 @@ def test_a_start_refused_on_its_home_names_every_refusal_at_once(tmp_path: Path,
     each = _faulted(home, monkeypatch)
     checked = preflight(home, LAID_OUT, UNMANAGED, {})
     with pytest.raises(CannotStart) as refused:
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), checked)
+        run.configured_from(FakeChildren(VirtualClock()), home, config.load(home), checked)
     assert [said for said in each if said not in str(refused.value)] == []
     # Said once, after them all: the fix of each is made before hands is run again.
     assert str(refused.value).endswith("; then run hands again")
@@ -209,10 +210,10 @@ def test_a_start_refused_on_a_hands_setting_in_the_environment_says_it_beside_ev
         case passed:
             raise AssertionError(f"{passed} passed the preflight")
     with pytest.raises(CannotStart) as refused:
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), checked)
+        run.configured_from(FakeChildren(VirtualClock()), home, config.load(home), checked)
     assert [said for said in (*each, SAID_STRAY) if said not in str(refused.value)] == []
     # The survey says the same refusal.
-    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, UNMANAGED, STRAY, heartbeat.NeverRan(home.status)):
+    match readiness.configured(FakeChildren(VirtualClock()), home, LAID_OUT, UNMANAGED, STRAY, heartbeat.NeverRan(home.status)):
         case readiness.Missing(fix=fix):
             assert SAID_STRAY in fix
         case found:
@@ -408,7 +409,7 @@ async def test_settings_that_do_not_parse_hide_none_of_the_homes_refusals_from_t
     run_start.ended(events.append, refused.value)
     assert [{fact: event.facts[fact] for fact in ("fritter", "shim", "claude_code", "hands_settings", "unread_policy")} for event in events] == [preflight(home, LAID_OUT, UNMANAGED, {}).facts()]
     # The survey.
-    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, UNMANAGED, shell_without_hands_settings(), heartbeat.NeverRan(home.status)):
+    match readiness.configured(FakeChildren(VirtualClock()), home, LAID_OUT, UNMANAGED, shell_without_hands_settings(), heartbeat.NeverRan(home.status)):
         case readiness.Missing(detail=detail):
             assert [said for said in each if said not in detail] == []
         case found:
@@ -447,10 +448,10 @@ def test_a_start_refused_on_the_homes_other_files_names_the_brains_lost_login_be
     asked = _logged_out(monkeypatch)
     each = ("is not the shim this hands writes", "the brain holds no login: run `hands login`")
     with pytest.raises(CannotStart) as refused:
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, UNMANAGED, {}))
+        run.configured_from(FakeChildren(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, UNMANAGED, {}))
     assert [said for said in each if said not in str(refused.value)] == []
     assert str(refused.value).endswith("; then run hands again")
-    match readiness.configured(children_on(VirtualClock()), home, LAID_OUT, UNMANAGED, {}, heartbeat.NeverRan(home.status)):
+    match readiness.configured(FakeChildren(VirtualClock()), home, LAID_OUT, UNMANAGED, {}, heartbeat.NeverRan(home.status)):
         case readiness.Missing(fix=fix):
             assert [said for said in each if said not in fix] == []
         case found:
@@ -465,8 +466,8 @@ def test_a_brain_whose_own_config_directory_is_refused_is_asked_no_login(tmp_pat
     (home.brain / "settings.json").write_text("{}")
     asked = _logged_out(monkeypatch)
     with pytest.raises(CannotStart):
-        run.configured_from(children_on(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, UNMANAGED, {}))
-    assert isinstance(readiness.configured(children_on(VirtualClock()), home, LAID_OUT, UNMANAGED, {}, heartbeat.NeverRan(home.status)), readiness.Missing)
+        run.configured_from(FakeChildren(VirtualClock()), home, config.load(home), preflight(home, LAID_OUT, UNMANAGED, {}))
+    assert isinstance(readiness.configured(FakeChildren(VirtualClock()), home, LAID_OUT, UNMANAGED, {}, heartbeat.NeverRan(home.status)), readiness.Missing)
     assert asked == []
 
 

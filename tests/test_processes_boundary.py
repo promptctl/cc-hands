@@ -15,9 +15,9 @@ KERNEL = "hands.sessions.kernel"
 # call is a word on some process.
 REACHES = frozenset({"os.kill", "os.killpg", "os.getuid", "os.geteuid", "hands.darwin.child_pids"})
 BINDINGS = ("hands.darwin.libc", "hands.darwin.libproc")
-# Where those calls belong: the bindings themselves, the kernel's adapter, for any process, and hands.sessions.child,
-# for the children hands starts and waits on.
-ADAPTERS = frozenset({"darwin.py", "sessions/kernel.py", "sessions/child.py"})
+# Where those calls belong: the bindings themselves, the kernel's adapter, for any process, hands.sessions.child, for
+# the children hands starts and waits on, and hands.daemon.indicatorprocess, for the indicator each run shows.
+ADAPTERS = frozenset({"darwin.py", "sessions/kernel.py", "sessions/child.py", "daemon/indicatorprocess.py"})
 EXCEPTION = "[LAW:effects-at-boundaries] exception"
 
 
@@ -45,7 +45,7 @@ def unmarked_reaches(root: Path) -> list[str]:
         named = imported(tree, ".".join([root.name, *path.relative_to(root).parent.parts]))
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         reaching = (node for node in ast.walk(tree) if isinstance(node, ast.Name | ast.Attribute) and _reaches(qualified(node, named)))
-        return sorted({f"{path.relative_to(root).as_posix()}:{node.lineno}" for node in reaching if not _marked(node, parents, source.splitlines())})
+        return sorted({f"{path.relative_to(root).as_posix()}:{node.lineno}" for node in reaching if not marked(node, parents, source.splitlines())})
 
     return sorted(each for path in root.rglob("*.py") if path.relative_to(root).as_posix() not in ADAPTERS for each in found(path))
 
@@ -54,16 +54,17 @@ def _reaches(name: str) -> bool:
     return name in REACHES or any(name == binding or name.startswith(f"{binding}.") for binding in BINDINGS)
 
 
-def _marked(node: ast.AST, parents: dict[ast.AST, ast.AST], lines: list[str]) -> bool:
+def marked(node: ast.AST, parents: dict[ast.AST, ast.AST], lines: list[str]) -> bool:
+    """Whether `node` is marked as the exception it is, in the comment just above it or just above a statement it is part of."""
     while True:
-        if isinstance(node, ast.stmt) and EXCEPTION in _comment_above(node.lineno, lines):
+        if isinstance(node, ast.stmt) and EXCEPTION in comment_above(node.lineno, lines):
             return True
         if node not in parents:
             return False
         node = parents[node]
 
 
-def _comment_above(line: int, lines: list[str]) -> str:
+def comment_above(line: int, lines: list[str]) -> str:
     above = lines[: line - 1]
     start = len(above)
     while start and above[start - 1].strip().startswith("#"):
@@ -73,6 +74,10 @@ def _comment_above(line: int, lines: list[str]) -> str:
 
 def test_only_a_composition_root_reaches_the_kernels_processes() -> None:
     assert importers(Path(hands.__file__).parent) == sorted(ROOTS)
+
+
+def test_only_the_root_that_builds_the_run_reaches_the_indicators_process() -> None:
+    assert importers(Path(hands.__file__).parent, "hands.daemon.indicatorprocess") == ["daemon/cli.py"]
 
 
 def test_every_other_reach_of_another_process_is_in_an_adapter_or_marked_as_an_exception() -> None:

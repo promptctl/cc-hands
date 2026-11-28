@@ -61,9 +61,9 @@ from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import parse_pid
-from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Unreaped, said
+from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, SpawnedChildren, Unreaped, said
 from hands.sessions.files import replace_whole
-from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
+from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, Pseudoterminals, SpawnedPseudoterminals
 from hands.core.tmux import Unanswered
 from hands.sessions.panes import socket_directory
 from hands.sessions.terminals import Unconfirmed, Untyped
@@ -506,7 +506,7 @@ class InTmux:
                 pass
 
 
-async def in_tmux(children: Children, station: Station, account: Account, argv: Sequence[str], workspace: Path) -> InTmux:
+async def in_tmux(children: Children, pseudoterminals: Pseudoterminals, station: Station, account: Account, argv: Sequence[str], workspace: Path) -> InTmux:
     """Run a slim Claude Code's command on `account` in the brain's tmux session on the user's default tmux server, the one
     `tmux attach` reaches, so a person can watch it and type into it.
 
@@ -588,11 +588,11 @@ async def in_tmux(children: Children, station: Station, account: Account, argv: 
         # is the size of whoever watches it.
         + f"\nwhile [ ! -e {shlex.quote(str(status))} ] && {tmuxed} has-session -t ={session} 2>/dev/null; do {tmuxed} attach-session -f ignore-size -t ={session} || sleep 0.2; done\n"
     )
-    match await on_terminal(children, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited):
-        case ClaudeCode() as client:
-            return InTmux(children, client, tmux, socket, session, workspace)
+    match await pseudoterminals.start(["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited):
         case NeverStarted(error=error):
             raise Unstartable(f"the tmux client the brain is shown in could not be started: {error}")
+        case client:
+            return InTmux(children, client, tmux, socket, session, workspace)
 
 
 class BrainGone(Exception):
@@ -653,7 +653,7 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, machine: config
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
     # [LAW:single-enforcer] exception: run in hands' own process group, the terminal's foreground job, so it reads the
-    # keyboard the person logging in types at; a session of its own, as the runner starts each child in, has no terminal.
+    # keyboard the person logging in types at; a session of its own, as SpawnedChildren starts each child in, has no terminal.
     import subprocess
 
     signed = subprocess.run([claude, *argv], cwd=workdir(config_dir), env=environment(config_dir, route, inherited))
@@ -2150,7 +2150,10 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
         by = clock.now() + START_SECONDS
         try:
-            running = await in_tmux(Children(clock, record), station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
+            # [LAW:effects-at-boundaries] exception: the brain builds the children it runs tmux with and the terminals it
+            # starts its pane's client on, where it is to be handed them, until promptctl-testing-c3u.fhu.
+            terminals = SpawnedPseudoterminals(spawned := SpawnedChildren(clock, record))
+            running = await in_tmux(spawned, terminals, station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper, shell = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)

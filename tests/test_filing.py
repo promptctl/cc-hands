@@ -6,23 +6,20 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import get_args
 
 import pytest
 
-from conftest import Faked, exited
+from fakechildren import FakeChildren, exited
+from fakeparties import main_on_fakes
 from hands.virtualclock import VirtualClock
-from hands.daemon import cli
 from hands.sessions import audit, backlog, filing, grouping
 from hands.sessions.audit import AuditLog, Entry, Logged, Transcribed
 from hands.sessions.backlog import parse_export
-from hands.sessions.child import Command, Outcome as Ended
+from hands.sessions.child import Command, SpawnedChildren
 from hands.visible import VISIBLE
-from fixtures.fakemachine import UNMANAGED
-from fakeprocesses import processes
 
 LIT = shutil.which("lit")
 real_lit = pytest.mark.skipif(LIT is None, reason="the tickets are lit's, so it is lit that is driven")
@@ -252,17 +249,17 @@ def test_file_tickets_files_each_group_once_however_often_it_runs_and_comments_o
     clock = Clock()
     log = write_audit(home / "audit", clock)
     monkeypatch.chdir(repository)
-    assert cli.main(["--home", str(home), "file-tickets", epic], machine=UNMANAGED, processes=processes()) == 0
+    assert main_on_fakes(["--home", str(home), "file-tickets", epic], children_on=SpawnedChildren) == 0
     filed = bugs(repository)
     assert sorted(str(issue["title"]) for issue in filed) == [
         "src/hands/sessions/delta.py: git add in <path> did not answer in <n>s",
         "src/hands/sessions/tap.py: hands could not read session <id>'s copy at <path>: not JSON at char <n> in <text>",
     ]
     assert all(issue["status"] == "open" for issue in filed)
-    assert cli.main(["--home", str(home), "file-tickets", epic], machine=UNMANAGED, processes=processes()) == 0
+    assert main_on_fakes(["--home", str(home), "file-tickets", epic], children_on=SpawnedChildren) == 0
     assert len(bugs(repository)) == 2
     log.record(broke("4ce425fb-670d-4936-b5c2-f9b045875d8d", "/tmp/d.jsonl", 9))
-    assert cli.main(["--home", str(home), "file-tickets", epic], machine=UNMANAGED, processes=processes()) == 0
+    assert main_on_fakes(["--home", str(home), "file-tickets", epic], children_on=SpawnedChildren) == 0
     assert len(bugs(repository)) == 2
     exported = json.loads(lit(repository, "export"))
     assert [comment["body"].splitlines()[0] for comment in exported["comments"]] == ["Seen again once, from 2026-10-24T12:06:00.000+00:00 to 2026-10-24T12:06:00.000+00:00."]
@@ -286,7 +283,7 @@ def test_file_tickets_names_an_epic_the_backlog_lists_or_fails_saying_so(tmp_pat
     home = tmp_path / "home"
     write_audit(home / "audit", Clock())
     monkeypatch.chdir(repository)
-    assert cli.main(["--home", str(home), "file-tickets", "no-such-epic"], machine=UNMANAGED, processes=processes()) == 1
+    assert main_on_fakes(["--home", str(home), "file-tickets", "no-such-epic"], children_on=SpawnedChildren) == 1
     assert f"hands file-tickets: the backlog in {repository} lists no epic no-such-epic" in capsys.readouterr().err
     assert bugs(repository) == []
     [event] = [line for line in map(json.loads, audit.forwards(home / "audit")) if line.get("event") == "tickets.file"]
@@ -304,7 +301,7 @@ def test_file_tickets_files_a_warning_that_said_what_lit_cannot_be_handed_with_e
     home = tmp_path / "home"
     AuditLog(home / "audit", clock=Clock()).record(Logged(level="warning", source="hands.sessions.delta:_git", message="git said a\0b \ud800", where="/x/delta.py:515", stacktrace=()))
     monkeypatch.chdir(repository)
-    assert cli.main(["--home", str(home), "file-tickets", epic], machine=UNMANAGED, processes=processes()) == 0
+    assert main_on_fakes(["--home", str(home), "file-tickets", epic], children_on=SpawnedChildren) == 0
     assert [issue["title"] for issue in bugs(repository)] == ["src/hands/sessions/delta.py: git said a\\u0000b \\ud800"]
 
 
@@ -405,11 +402,9 @@ def test_a_ticket_closed_answers_for_every_sighting_before_it_was_closed(tmp_pat
 
 
 def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path) -> None:
-    async def silent(*argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Ended:
-        return exited(0, out=b"\n")
-
+    silent = FakeChildren(VirtualClock(), {"lit": exited(0, out=b"\n")})
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
-        asyncio.run(backlog.file_ticket(backlog.Lit(Faked(VirtualClock(), lambda _: None, silent), os.environ), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab", backlog.Inherited()))
+        asyncio.run(backlog.file_ticket(backlog.Lit(silent, os.environ), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab", backlog.Inherited()))
 
 
 def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:

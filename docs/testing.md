@@ -58,6 +58,22 @@ Registered sessions are identified by the session ID reported by their hooks. In
 process host supplies the executable for a relative invocation, and a process can exit between listing and inspection.
 Session readiness, pane routing, liveness and close-session tests cover how those callers use process information.
 
+The programs hands runs, it runs through `Children` (hands.sessions.child), whose real adapter is `SpawnedChildren`, named
+in hands.daemon.cli and, until promptctl-testing-c3u.fhu, where the brain marks the exception it is
+(test_children_boundary.py): `cli.main` is given what makes each command's children, on its
+clock, and a test gives it tests/fakechildren.py's `Programs` through tests/fakeparties.py's `main_on_fakes`. A test of
+what hands makes of a run gives its code a FakeChildren, the programs it stands in for as values, kept in `asked`: a run
+of a program it was not given is the test's mistake, raised, so no test passes on a run it never meant, and a program the
+test means to be missing is `NOT_THERE`. What hands relies on of a run is a contract, tests/childrencontract.py, run
+against the fake in `make check` (test_children_contract.py) and against SpawnedChildren, on scripts the test writes,
+`outside` (test_children_contract_spawned.py). An `outside` test hands its code SpawnedChildren itself, or conftest's
+`spawned_on`. A program run on a terminal of hands' own, the brain's tmux client and the smoke test's claude, is started
+through `Pseudoterminals` (hands.sessions.pseudoterminal), whose real adapter `SpawnedPseudoterminals` is named where
+SpawnedChildren is: tests give `main_on_fakes` tests/fakepseudoterminals.py, and tests/pseudoterminalcontract.py holds it
+to `SpawnedPseudoterminals`, on real terminals, `outside`. The menu-bar indicator each run shows is started
+and ended through `Indicators` (hands.daemon.indicatorprocess), apart from Children since it outlives the restart's exec;
+tests hand `cli.main` tests/fakeindicators.py, and test_restart.py holds the real one to real processes.
+
 ## The user's terminals and the Mac's screen
 
 The daemon reads and types into the user's tmux panes through `Terminals`, types into fritters through `Fritters` (both

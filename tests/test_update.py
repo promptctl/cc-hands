@@ -20,8 +20,9 @@ from typing import Any, TextIO
 
 import pytest
 
-from conftest import children_on, exited, standin
-from fixtures.fakemachine import UNMANAGED
+from conftest import spawned_on, standin
+from fakeparties import main_on_fakes
+from fakechildren import Asked, FakeChildren, exited
 from fakeprocesses import FakeProcesses, Running, processes
 from hands.sessions.processes import Processes
 from hands.brain.process import PLUGIN
@@ -29,6 +30,7 @@ from hands.clock import Clock, SYSTEM
 from hands.daemon import cli, update
 from hands.daemon.restart import Outcome, Restarted, reply
 from hands.daemon.starting import invocation
+from hands.virtualclock import VirtualClock
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.daemon.update import Failed, Installed, Step, Taken, Unfinished
@@ -110,6 +112,13 @@ def events(home: Home) -> list[dict[str, Any]]:
     return [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line.get("event") == "hands.command"]
 
 
+def test_each_command_of_an_update_runs_where_no_git_asks_for_a_login(tmp_path: Path) -> None:
+    # The brain's terminal, where an update runs, has nobody at it: a fetch refused would wait on a prompt to its limit.
+    children = FakeChildren(VirtualClock(), {"git": exited(0, b"fetched\n")})
+    assert update.run(children, ["git", "fetch"], tmp_path, {"HOME": "/Users/someone"}, 30.0) == exited(0, b"fetched\n")
+    assert children.asked == [Asked(("git", "fetch"), tmp_path, {"HOME": "/Users/someone", "GIT_TERMINAL_PROMPT": "0"}, None, 30.0)]
+
+
 def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     commands = Commands(tools_of_this_hands(tmp_path))
@@ -139,7 +148,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     monkeypatch.setattr(cli, "detach", detach)
     monkeypatch.setattr(cli, "restart", restart)
 
-    assert cli.main(["--home", str(home.root), "update"], machine=UNMANAGED, processes=running_hands()) == 1
+    assert main_on_fakes(["--home", str(home.root), "update"], processes=running_hands()) == 1
 
     # Nothing after the failed step ran, and nothing restarted.
     upto = TOOL_STEPS.index(failing) + 1
@@ -215,7 +224,7 @@ def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(s
     heartbeat.write(home.status, replace(status, written_at=status.written_at - stalled))
     assert isinstance(heartbeat.look(running_hands(), home.status, datetime.now(UTC)), verdict)
 
-    assert cli.main(["--home", str(home.root), "update"], machine=UNMANAGED, processes=running_hands()) == 1
+    assert main_on_fakes(["--home", str(home.root), "update"], processes=running_hands()) == 1
 
     # Its restart would start it again on the checkout, so nothing is fetched, installed, or restarted.
     assert [argv for argv, _cwd in commands.ran] == [("uv", "tool", "dir")]
@@ -277,7 +286,7 @@ def test_an_update_of_a_checkout_that_fails_after_its_sync_says_the_checkout_is_
 
     monkeypatch.setattr(cli, "detach", detach)
 
-    assert cli.main(["--home", str(home.root), "update"], machine=UNMANAGED, processes=running_hands()) == 1
+    assert main_on_fakes(["--home", str(home.root), "update"], processes=running_hands()) == 1
 
     _out, err = capsys.readouterr()
     assert f"but the checkout {root} at {SHA} is installed: what starts from hands' environment now, its hooks and its next start, is the checkout {root}'s, short of what install-fritter installs" in err
@@ -287,7 +296,6 @@ def test_an_update_of_a_checkout_that_fails_after_its_sync_says_the_checkout_is_
 # commands are stood in for, each logged to a file, so nothing is fetched or installed.
 CALLER = """
 import json, sys
-from hands.brain import configdir
 from hands.daemon import cli, update
 from hands.sessions import child
 
@@ -308,8 +316,9 @@ def run(children, argv, cwd, env, limit):
     return exited("")
 
 update.run = run
-# As hands' entry point starts it: an update reads no policy of the machine's, so the machine's own is named.
-sys.exit(cli.main(["--home", home, "update"], machine=configdir.this_machine(), processes=cli.KERNEL))
+# As hands' entry point starts it, on every party the entry binds.
+sys.argv[1:] = ["--home", home, "update"]
+sys.exit(cli.entry())
 """
 
 
@@ -443,7 +452,7 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
     monkeypatch.setattr(cli, "detach", detaching(lambda: answering(answers)))
 
     # Nothing ends the caller, so the caller hears it, and exits saying hands was not restarted.
-    assert cli.main(["--home", str(home.root), "update"], machine=UNMANAGED, processes=running_hands()) == 1
+    assert main_on_fakes(["--home", str(home.root), "update"], processes=running_hands()) == 1
     assert answers == [1]
 
     out, err = capsys.readouterr()
@@ -502,7 +511,7 @@ def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_maste
     # A daemon started by a checkout's `uv run hands run` starts again on the checkout, whatever the update installed.
     restarting_from(monkeypatch, runs_from)
 
-    assert cli.main(["--home", str(home.root), "update"], machine=UNMANAGED, processes=running_hands()) == 1
+    assert main_on_fakes(["--home", str(home.root), "update"], processes=running_hands()) == 1
 
     assert detached == [True]
     _out, err = capsys.readouterr()
@@ -522,7 +531,7 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     monkeypatch.setattr(cli, "detach", detaching(lambda: answering([])))
     restarting_from(monkeypatch, Path(sys.prefix))
 
-    assert cli.main(["--home", str(home.root), "update"], machine=UNMANAGED, processes=running_hands()) == 0
+    assert main_on_fakes(["--home", str(home.root), "update"], processes=running_hands()) == 0
 
     # Every step ran, the brain's Claude Code installed after the fritter, and hands restarted onto master.
     assert [argv[:3] for argv, _cwd in commands.ran] == [argv[:3] for argv, _cwd in expected(home, Path("/"))]
@@ -578,7 +587,7 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
     monkeypatch.setattr(cli, "detach", detaching(lambda: monkeypatch.setattr(sys, "stdout", gone) or answering([], taken=False)))
     restarting_from(monkeypatch, Path(sys.prefix))
 
-    assert cli.main(["--home", str(home.root), "update"], machine=UNMANAGED, processes=running_hands()) == 0
+    assert main_on_fakes(["--home", str(home.root), "update"], processes=running_hands()) == 0
 
     [event] = events(home)
     facts = event["facts"]
@@ -589,7 +598,7 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
 @pytest.mark.outside
 def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> None:
     # A warning uv or git prints is never taken for the path or the commit the update reads.
-    ran = update.run(children_on(SYSTEM), [sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ, 60)
+    ran = update.run(spawned_on(SYSTEM), [sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ, 60)
     assert ran == exited(0, b"/tools\n", b"warning: stale\n")
 
 

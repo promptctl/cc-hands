@@ -13,7 +13,8 @@ from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
-from conftest import answering, running
+from conftest import running
+from fakechildren import FakeChildren
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.sessions import child, heartbeat
@@ -447,7 +448,7 @@ async def test_a_notification_osascript_never_posts_is_refused_and_said() -> Non
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        assert await post_notification("hello", answering(stuck)) is False
+        assert await post_notification("hello", FakeChildren(VirtualClock(), {"osascript": stuck})) is False
     finally:
         logger.remove(sink)
     assert errors == [f"osascript did not post 'hello': osascript was killed with SIGKILL, because it ran past {notify.POST_TIMEOUT_SECONDS:.1f}s"]

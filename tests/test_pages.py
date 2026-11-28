@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestServer
-from conftest import events, patiently
+from conftest import events, patiently, spawned_on
 from playwright.async_api import Browser, BrowserContext, ConsoleMessage, ElementHandle, FloatRect, Locator, Page, ViewportSize, async_playwright, expect
 
 from hands.clock import SYSTEM
@@ -109,7 +109,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(VirtualClock())), wake=Pretrained())
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
-    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
+    pages = phone_pages(SYSTEM, spawned_on(SYSTEM), phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
     requests = list[str]()
 
     @web.middleware

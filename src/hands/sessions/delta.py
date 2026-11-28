@@ -31,7 +31,7 @@ from hands.sessions.audit import Record, said
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.tasks import settled
-from hands.clock import Clock, wait_all
+from hands.clock import wait_all
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, begun, count, unit
 
@@ -251,7 +251,7 @@ class Deltas:
         self,
         record: Record,
         inherited: Mapping[str, str],
-        clock: Clock,
+        children: Children,
         baselining: float = BASELINING,
         reading: float = READING,
         patience: float = PATIENCE,
@@ -262,9 +262,10 @@ class Deltas:
         self._baselining = baselining
         self._reading = reading
         self._patience = patience
-        # [LAW:effects-at-boundaries] the one clock every budget here is read off and waited out on, git's and gh's too.
-        self._clock = clock
-        self._children = Children(clock, record)
+        # [LAW:effects-at-boundaries] what runs git and gh, and the one clock every budget here is read off and waited out
+        # on, theirs too.
+        self._children = children
+        self._clock = children.clock
         # The baseline each session's last snapshot took, None where it took none, until a reading spends it. The registry
         # performs a session's Snapshot before any Compare decided after it, so a compare finds the baseline already in
         # [LAW:no-ambient-temporal-coupling]. Bounded by the sessions the registry itself keeps, which holds every session it has heard of.

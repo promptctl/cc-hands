@@ -15,19 +15,18 @@ from urllib.request import Request
 
 import pytest
 
+from fakeparties import main_on_fakes
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import Answered, Ending, Exchanged, Garbled, MainTurn, Message, Reached, Synthetic, Unfinished, Unkept, Unreached, Written
 from hands.daemon import indicator
-from hands.daemon.cli import main
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions.home import Home
 from hands.sessions.otlp import BATCH_SPANS, ENCODINGS, FAILING_BATCHES, LOGS, STOPPED, TIMEOUT_SECONDS, TRACES, Exporter, Exports, Failing, answered, degradation, exporting, failing, logs, spans, traced
 from hands.sessions.wide import WideEvent, annotate, begun, count, root, unit
-from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import Running, processes
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
@@ -593,7 +592,7 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
         assert failing_now.title == "⚠︎ hands can't export traces"
         assert failing_now.text.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
         assert failing_now.notices == (failing_now.text,)
-        assert main(["--home", str(tmp_path), "status"], machine=UNMANAGED, processes=table) == 0
+        assert main_on_fakes(["--home", str(tmp_path), "status"], processes=table) == 0
         assert capsys.readouterr().out.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
         # Refusing on, in other words each time, it stays said and is not news again.
         refusing.answer = b'{"code": 14, "message": "the store is still down"}'

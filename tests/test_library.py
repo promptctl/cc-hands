@@ -13,14 +13,14 @@ from unittest.mock import Mock
 import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 
-from conftest import KEYCHAIN_READER, PATIENCE_SECS, answering, exited, taken
+from conftest import PATIENCE_SECS, taken
+from fakeparties import main_on_fakes
+from fakechildren import NOT_THERE, Answer, FakeChildren, Programs, exited
 from datetime import UTC, datetime
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.daemon import run
 from hands.daemon.config import Config, SampleLines, Settings
-from hands.sessions import child
-from hands.sessions.child import Children
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import library, voicechoice, voices
@@ -31,8 +31,6 @@ from hands.voice.player import Player
 from hands.voice.voices import Voices, source
 from hands.voice.voicechoice import DEFAULT, LibraryVoice, chosen, parse_voice
 from hands.daemon.run import CannotStart
-from fixtures.fakemachine import UNMANAGED
-from fakeprocesses import processes
 
 LIBRARY_FILES = ["vctk/p225_023_enhanced.wav", "vctk/p226_023_enhanced.wav", "alba-mackenna/casual.wav", "alba-mackenna/casual.wav.1e68beda@240.safetensors"]
 
@@ -242,44 +240,39 @@ async def test_the_find_voices_tool_returns_matches_and_when_they_were_listed(tm
 
 # --- the token: the environment's, else the keychain's, once, and never logged ------------------------------------------
 
-@pytest.fixture
-def keychain(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The keychain asked as hands asks it, through whatever children a test gives: conftest's stand-in put back."""
-    monkeypatch.setattr(library, "_keychain_token", KEYCHAIN_READER)
+def keychain_answering(outcome: Answer) -> FakeChildren:
+    """Children whose `security` ends every run as `outcome` says."""
+    return FakeChildren(VirtualClock(), {"security": outcome})
 
 
-@pytest.mark.usefixtures("keychain")
 def test_the_environments_token_is_used_and_the_keychain_is_not_read() -> None:
-    asking = answering(exited(0, b"from-the-keychain\n"))
+    asking = keychain_answering(exited(0, b"from-the-keychain\n"))
     assert library.hub_token(asking, {"HF_TOKEN": "from-the-environment"}) == "from-the-environment"
     assert asking.asked == []
 
 
-@pytest.mark.usefixtures("keychain")
 def test_with_no_environment_token_the_keychain_is_asked_for_the_item_on_stdout() -> None:
-    asking = answering(exited(0, b"from-the-keychain\n"))
+    asking = keychain_answering(exited(0, b"from-the-keychain\n"))
     assert library.hub_token(asking, {}) == "from-the-keychain"
-    assert asking.asked == [("security", "find-generic-password", "-s", "HF_TOKEN", "-w")]
+    assert [asked.argv for asked in asking.asked] == [("security", "find-generic-password", "-s", "HF_TOKEN", "-w")]
 
 
-@pytest.mark.usefixtures("keychain")
 def test_with_neither_token_there_is_none_and_the_environment_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    assert library.hub_token(answering(exited(library.NOT_IN_KEYCHAIN, err=b"The specified item could not be found in the keychain.\n")), {}) is None
+    assert library.hub_token(keychain_answering(exited(library.NOT_IN_KEYCHAIN, err=b"The specified item could not be found in the keychain.\n")), {}) is None
     assert "HF_TOKEN" not in os.environ
 
 
-@pytest.mark.usefixtures("keychain")
 @pytest.mark.parametrize(
     ("asked", "why"),
     [
         (exited(51, err=b"User interaction is not allowed.\n"), "`security find-generic-password` exited 51: User interaction is not allowed."),
         (exited(0, b"\xff\xfe"), "the keychain's HF_TOKEN is no token"),
-        (child.NeverStarted(FileNotFoundError(2, "No such file or directory", "security")), "`security find-generic-password` could not be started: No such file or directory"),
+        (NOT_THERE, "`security find-generic-password` could not be started: No such file or directory"),
     ],
 )
-def test_a_keychain_that_cannot_be_read_is_said_and_gives_no_token(asked: child.Outcome, why: str, errors: list[str]) -> None:
-    assert library.hub_token(answering(asked), {}) is None
+def test_a_keychain_that_cannot_be_read_is_said_and_gives_no_token(asked: Answer, why: str, errors: list[str]) -> None:
+    assert library.hub_token(keychain_answering(asked), {}) is None
     [said] = taken(errors)
     assert said.startswith(f"the Hugging Face token could not be read from the keychain: {why}"), said
 
@@ -290,41 +283,26 @@ def test_the_daemons_run_starts_with_the_keychains_token_in_the_environment_the_
     # An empty token is no token: the keychain is asked, and the environment is restored by monkeypatch at the end.
     monkeypatch.setenv("HF_TOKEN", "")
 
-    def held(_children: Children) -> str:
-        return "from-the-keychain"
-
     ran: list[str] = []
 
     def run_daemon(*_: object) -> int:
         ran.append(os.environ["HF_TOKEN"])
         return 0
 
-    monkeypatch.setattr(library, "_keychain_token", held)
     monkeypatch.setattr(cli, "run_daemon", run_daemon)
-    assert cli.main(["--home", str(tmp_path / "home"), "run"], machine=UNMANAGED, processes=processes()) == 0
+    assert main_on_fakes(["--home", str(tmp_path / "home"), "run"], children_on=Programs({"security": exited(0, b"from-the-keychain\n")})) == 0
     assert ran == ["from-the-keychain"]
 
 
-def test_a_command_but_the_run_reads_no_keychain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from hands.daemon import cli
-
-    def unread(_children: Children) -> library.Absent:
-        raise AssertionError("a command that fetches no voice read the keychain")
-
-    monkeypatch.setattr(library, "_keychain_token", unread)
-    assert cli.main(["--home", str(tmp_path / "home"), "status"], machine=UNMANAGED, processes=processes()) == 1
+def test_a_command_but_the_run_reads_no_keychain(tmp_path: Path) -> None:
+    # Children that stand in for no program: a `security` asked is the test's failure.
+    children = Programs()
+    assert main_on_fakes(["--home", str(tmp_path / "home"), "status"], children_on=children) == 1
+    assert children.asked == []
 
 
-def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
-    from hands.daemon import cli
-
-    reads: list[int] = []
-
-    def record(_children: Children) -> library.Absent:
-        reads.append(1)
-        return library.Absent()
-
-    monkeypatch.setattr(library, "_keychain_token", record)
+def test_help_reads_no_keychain() -> None:
+    children = Programs()
     with pytest.raises(SystemExit):
-        cli.main(["--help"], machine=UNMANAGED, processes=processes())
-    assert reads == []
+        main_on_fakes(["--help"], children_on=children)
+    assert children.asked == []

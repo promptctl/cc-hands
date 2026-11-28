@@ -47,19 +47,21 @@ READING = 1.0
 class Lexicon:
     """Reads Whisper's vocabulary as each clip is transcribed, and records what it read."""
 
-    def __init__(self, sessions: Sessions, home: Home, environment: Mapping[str, str], record: Record) -> None:
+    def __init__(self, sessions: Sessions, children: Children, home: Home, environment: Mapping[str, str], record: Record) -> None:
         self._sessions = sessions
+        # What runs git, on the clock the reading is timed on.
+        self._children = children
         self._home = home
         # The daemon's environment, which git is found and run in.
         self._environment = environment
         self._record = record
 
     async def __call__(self) -> str | None:
-        clock = self._sessions.clock
+        clock = self._children.clock
         began = clock.now()
         # Read off the loop: a name is read from its session's transcript.
         listings = await asyncio.to_thread(self._sessions.live)
-        primed = await vocabulary(self._sessions.children, listings, self._focus(), self._environment, began)
+        primed = await vocabulary(self._children, listings, self._focus(), self._environment, began)
         self._record(primed)
         # [LAW:dataflow-not-control-flow] no words is no prompt, which is Whisper unprimed.
         return prompt(primed.words) or None

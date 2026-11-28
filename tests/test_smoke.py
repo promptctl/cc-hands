@@ -16,11 +16,13 @@ from typing import Any
 import numpy as np
 import pytest
 
-from hands.clock import SYSTEM, Clock
+from fakeparties import main_on_fakes
+from fakepseudoterminals import FakePseudoterminals, Shows
+from hands.clock import SYSTEM
 from hands.core.effects import Fritter, Summarise, Text, Type, ToldByStop
 from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
-from hands.daemon.cli import main
+from hands.sessions.child import Children
 from hands.sessions.startsession import joined
 from hands.sessions.liveness import live
 from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
@@ -30,7 +32,6 @@ from hands.sessions.home import Home
 from hands.voice import transcription
 from hands.voice.mlxthread import OnMLX
 from hands.sessions.wide import Fact, Outcome, WideEvent
-from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import FakeProcesses, Running, processes
 
 SESSION = SessionId("5086f176-e3cf-4222-bdb9-d7993c507d33")
@@ -215,7 +216,7 @@ def events(home: Home) -> list[dict[str, Any]]:
 
 def test_with_hands_not_running_the_run_stops_at_up_and_its_event_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
-    assert main(["--home", str(home.root), "smoke"], machine=UNMANAGED, processes=processes()) == 1
+    assert main_on_fakes(["--home", str(home.root), "smoke"]) == 1
     assert capsys.readouterr().out == f"FAILED up: hands has not run: there is no heartbeat at {home.status}; start it with `hands run`\n"
     [command] = events(home)
     assert (command["event"], command["outcome"], command["facts"]["command"], command["facts"]["failed_at"]) == ("hands.command", "failed", "smoke", "up")
@@ -232,7 +233,7 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     home.root.mkdir()
     heartbeat.write(home.status, heartbeat.Status(HANDS, now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-    assert main(["--home", str(home.root), "smoke"], machine=UNMANAGED, processes=up(now)) == 1
+    assert main_on_fakes(["--home", str(home.root), "smoke"], processes=up(now)) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"
     [command] = events(home)
     facts = command["facts"]
@@ -266,29 +267,27 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
 
     monkeypatch.setattr(transcription, "load", unloaded)
 
-    async def synthesized(_clock: Clock, _text: str) -> bytes:
+    async def synthesized(_children: Children, _text: str) -> bytes:
         return b""
 
-    started: list[dict[str, str]] = []
-
-    async def on_terminal(_clock: object, _argv: list[str], _cwd: Path, environment: dict[str, str]) -> None:
-        started.append(environment)
-        raise NotReached("joined", "the test's stand-in claude is not started")
-
+    # The stand-in claude exits at once, so the run stops at joined.
+    terminals = FakePseudoterminals({str(real): Shows(lambda _asked: "a stand-in", 0)})
     monkeypatch.setattr(smoke, "_synthesized", synthesized)
-    monkeypatch.setattr(smoke, "on_terminal", on_terminal)
-    assert main(["--home", str(home.root), "smoke"], machine=UNMANAGED, processes=up(now)) == 1
-    return capsys.readouterr().out.splitlines()[-1], started
+    assert main_on_fakes(["--home", str(home.root), "smoke"], processes=up(now), pseudoterminals_on=lambda _clock, _emit: terminals) == 1
+    [failed] = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAILED")]
+    return failed, [dict(asked.environment) for asked in terminals.asked]
 
 
-STOPPED_BY_THE_STAND_IN = "FAILED joined: the test's stand-in claude is not started"
+def stopped_by_the_stand_in(tmp_path: Path) -> str:
+    """The line a run stand_in_run made fails with, once it has started its claude."""
+    return f"FAILED joined: `{tmp_path / 'real' / 'claude'}` started in {(tmp_path / 'home' / FOLDER).resolve()} exited 0 before it joined hands; it showed:"
 
 
 def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     # The claude on PATH here is no shim, so nothing but the smoke run itself switches its auto-updater off.
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     last, started = stand_in_run(tmp_path, capsys, monkeypatch, tmp_path / "elsewhere", datetime.now(UTC).timestamp())
-    assert last == STOPPED_BY_THE_STAND_IN
+    assert last == stopped_by_the_stand_in(tmp_path)
     [environment] = started
     assert environment["DISABLE_AUTOUPDATER"] == "1"
 
@@ -319,4 +318,4 @@ def test_a_session_hands_does_not_call_smoke_does_not_stop_the_run(
     # A file written before CLAUDE started names a claude that has exited and whose pid was handed out
     # again; a live session in a folder of another name is called by that name.
     last, _ = stand_in_run(tmp_path, capsys, monkeypatch, tmp_path / folder, datetime.now(UTC).timestamp() - ago)
-    assert last == STOPPED_BY_THE_STAND_IN
+    assert last == stopped_by_the_stand_in(tmp_path)

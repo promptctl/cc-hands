@@ -6,7 +6,7 @@ import pytest
 from aiohttp import web
 
 from hands.virtualclock import VirtualClock
-from conftest import exited
+from fakechildren import exited
 from hands.sessions.child import Captured, Kill, Killed, Limit, NeverStarted, Outcome, Ran
 from hands.sessions.wide import WideEvent
 from hands.spotify import TELL_SECONDS, Catalogue, Credentials, Missing, Player, Refused, credentials, link

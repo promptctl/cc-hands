@@ -2,6 +2,10 @@
 
 The brain and the smoke test's working session both run so; what each runs, and in what environment,
 is theirs to say.
+
+[LAW:effects-at-boundaries] `Pseudoterminals` is the way hands runs a program so: `SpawnedPseudoterminals` on the
+processes SpawnedChildren starts, named only at the root and where an exception is marked (test_children_boundary.py),
+and tests/fakepseudoterminals.py in tests, the two held to one contract (tests/pseudoterminalcontract.py).
 """
 
 import asyncio
@@ -13,14 +17,20 @@ import re
 import struct
 import termios
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from hands.core.session import ESCAPES
-from hands.sessions.child import Children, Ending, Lost, NeverStarted, Running, Terminal, Unreaped
+from hands.clock import Clock
+from hands.sessions import wide
+from hands.sessions.child import Command, Ending, Lost, NeverStarted, Running, SpawnedChildren, Terminal, Unreaped
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
+# The terminal a program run on one is told it is on.
+TERM = "xterm-256color"
 # How much of what it last showed is kept, for the line that says it exited or never came up.
 SHOWN_BYTES = 16 * 1024
 SHOWN_LINES = 20
@@ -58,13 +68,54 @@ class _Terminal:
     def last(self) -> str:
         """The last lines it showed, as text."""
         with self._lock:
-            shown = self._shown.decode(errors="replace")
-        lines = [line.rstrip() for line in _CONTROL.sub("", shown.replace("\r", "\n")).split("\n") if line.strip()]
-        return "\n".join(lines[-SHOWN_LINES:])
+            return last_lines(self._shown.decode(errors="replace"))
 
 
-class ClaudeCode:
-    """A Claude Code running on a terminal hands holds, until it ends or is stopped."""
+def last_lines(shown: str) -> str:
+    """The last lines of what a terminal showed, as text: what it was told rather than shown taken out, and its blank
+    lines."""
+    lines = [line.rstrip() for line in _CONTROL.sub("", shown.replace("\r", "\n")).split("\n") if line.strip()]
+    return "\n".join(lines[-SHOWN_LINES:])
+
+
+class ClaudeCode(Protocol):
+    """A Claude Code, or any program, running on a terminal hands holds, until it ends or is stopped."""
+
+    @property
+    def pid(self) -> int: ...
+
+    @property
+    def exit(self) -> asyncio.Future[Ending | Lost]:
+        """How it ended, once it has and what it showed last is read to its end."""
+        ...
+
+    def shown(self) -> str:
+        """The last lines it showed on its terminal."""
+        ...
+
+    async def stop(self) -> Ending | Lost | Unreaped:
+        """Ask it alone to end, kill its group once it has not within STOP_SECONDS, and say how it ended."""
+        ...
+
+
+class Pseudoterminals(Protocol):
+    """What runs a program on a pseudo-terminal of hands' own, as a terminal emulator runs one."""
+
+    async def start(self, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
+        """Run `argv` in `cwd` and `environment`, its TERM a terminal's, as a terminal's shell runs a command: a program
+        the shell cannot run is said on the terminal, which ends 127 where it is not there and 126 where it cannot be
+        run. Never started where the OS would not start the terminal's shell, in a directory that is not there among
+        them."""
+        ...
+
+
+# [LAW:effects-at-boundaries] what makes the Pseudoterminals a unit runs on, as hands.sessions.child.ChildrenOn makes
+# its Children.
+type PseudoterminalsOn = Callable[[Clock, Callable[[wide.WideEvent], None]], Pseudoterminals]
+
+
+class _Held:
+    """A program running on a terminal hands holds, as SpawnedPseudoterminals starts it."""
 
     def __init__(self, running: Running, terminal: _Terminal) -> None:
         self._running = running
@@ -87,29 +138,37 @@ class ClaudeCode:
         return await self._running.stopped(STOP_SECONDS)
 
 
-async def on_terminal(children: Children, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
-    """Run `argv` in `cwd` and `environment` on a pseudo-terminal of hands' own, as a terminal emulator runs a program."""
-    master, slave = pty.openpty()
-    closed: queue.SimpleQueue[None] = queue.SimpleQueue()
-    try:
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        # [LAW:no-ambient-temporal-coupling] read before the child starts, so nothing that can fail comes between its
-        # start and the read of its terminal; the read closes the master once no process holds the slave.
-        terminal = _Terminal(master, closed)
-    except BaseException:
-        os.close(master)
-        os.close(slave)
-        raise
-    try:
-        started = children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": "xterm-256color"}, Terminal(slave, closed))
-    finally:
-        # The child holds its own: the read ends once it, and whatever it started, have let go of theirs.
-        os.close(slave)
-    match started:
-        case NeverStarted():
-            return started
-        case Running():
-            return ClaudeCode(started, terminal)
+@dataclass(frozen=True)
+class SpawnedPseudoterminals:
+    """Pseudoterminals on processes `children` starts, each on a pty of its own."""
+
+    children: SpawnedChildren
+
+    async def start(self, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
+        # [LAW:single-enforcer] the program's own command refused as a run of it is, an empty one among them, which the
+        # shell it runs under would take as nothing to run. Whether it can be run is the shell's exec's to say, alone.
+        Command(tuple(argv), cwd, environment)
+        master, slave = pty.openpty()
+        closed: queue.SimpleQueue[None] = queue.SimpleQueue()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+            # [LAW:no-ambient-temporal-coupling] read before the child starts, so nothing that can fail comes between its
+            # start and the read of its terminal; the read closes the master once no process holds the slave.
+            terminal = _Terminal(master, closed)
+        except BaseException:
+            os.close(master)
+            os.close(slave)
+            raise
+        try:
+            started = self.children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": TERM}, Terminal(slave, closed))
+        finally:
+            # The child holds its own: the read ends once it, and whatever it started, have let go of theirs.
+            os.close(slave)
+        match started:
+            case NeverStarted():
+                return started
+            case Running():
+                return _Held(started, terminal)
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:

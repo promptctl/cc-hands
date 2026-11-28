@@ -24,6 +24,7 @@ from hands.voice.voices import Voices
 from hands.voice.braindoor import Voiced, BrainDoor
 from hands.voice.wakeword import Pretrained
 from fixtures.fakemachine import UNMANAGED
+from fakechildren import FakeChildren
 from fakeprocesses import processes
 from faketerminals import FakeTerminals
 
@@ -32,7 +33,7 @@ def every_act(sessions: Sessions, home: Home) -> list[Tool[Answer]]:
     """Every act a voice turn is served, as the daemon builds them, on `home` and with no Spotify credentials."""
     settings = Settings(None, Config())
     given = acts(
-        sessions, FakeTerminals(), processes(), SummaryStore(Summaries(home.root / "summaries.db")), home, Recounts(), PushToTalk(sessions.clock, lambda _entry: None).switch, Levels("off"), lambda: None, Pretrained(), OwnModel(home, pinned.PIN, UNMANAGED, {}, settings),
+        sessions, FakeTerminals(), processes(), FakeChildren(sessions.clock), SummaryStore(Summaries(home.root / "summaries.db")), home, Recounts(), PushToTalk(sessions.clock, lambda _entry: None).switch, Levels("off"), lambda: None, Pretrained(), OwnModel(home, pinned.PIN, UNMANAGED, {}, settings),
         Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, Library(sessions.clock, lambda: []), DEFAULT, SampleLines(home, settings)), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": str(home.root)},
         lambda _entry: None,
     )  # fmt: skip

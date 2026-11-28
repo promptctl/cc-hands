@@ -55,6 +55,7 @@ from hands.voice.wakemodels import WakeModels
 from hands.voice.wakeword import Pretrained
 from hands.voice.synthesis import Ended, Synthesis
 from conftest import events, patiently, running
+from fakechildren import FakeChildren
 from test_clipowner import Scripted
 
 
@@ -688,7 +689,7 @@ def offered(offer: Offer) -> str:
 async def page_server(tmp_path: Path) -> AsyncGenerator[Served, None]:
     key, recorded, home = PushToTalk(SYSTEM, lambda _: None), list[Entry](), Home(tmp_path)
     phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
-    client = TestClient(TestServer(phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, KEY, recorded.append, {}, unused_gallery(), *unused_wake(home))))
+    client = TestClient(TestServer(phone_pages(SYSTEM, FakeChildren(SYSTEM), phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, KEY, recorded.append, {}, unused_gallery(), *unused_wake(home))))
     await client.start_server()
     yield client, phone, key, recorded
     await phone.stop()
@@ -979,7 +980,7 @@ async def _served(home: Home, answers: list[Tailnet | Untailed], waits: list[flo
     monkeypatch.setattr(phonepage, "PHONE_PORT", 0)
     recorded: list[Entry] = []
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append, speaking=lambda: False)
-    pages = phone_pages(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery(), *unused_wake(home))
+    pages = phone_pages(SYSTEM, FakeChildren(SYSTEM), phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, phone_key(SYSTEM, home), recorded.append, {}, unused_gallery(), *unused_wake(home))
     with unit("hands.start", recorded.append, begun(clock)):
         serving = asyncio.create_task(phonepage.serve_phone(clock, pages, home, asked, recorded.append))
     async with asyncio.timeout(5):
@@ -1075,7 +1076,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
 
     home = Home(tmp_path)
     key = phone_key(SYSTEM, home)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, FakeChildren(SYSTEM), phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -1119,7 +1120,7 @@ async def test_a_read_the_page_leaves_waiting_at_hands_ends_there_saying_the_pag
     home = Home(tmp_path)
     key = phone_key(SYSTEM, home)
     brain = IdleBrain()
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, brain, nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, FakeChildren(SYSTEM), phone, brain, nobody_types, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
     await patiently(lambda: events(recorded, "phone.served") != [], lambda: len(recorded))
     [served] = events(recorded, "phone.served")
     unverified = ssl.create_default_context()
@@ -1171,7 +1172,7 @@ async def test_a_deed_whose_phone_goes_away_before_it_is_answered_runs_to_its_en
 
     home = Home(tmp_path)
     key = phone_key(SYSTEM, home)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone_pages(SYSTEM, FakeChildren(SYSTEM), phone, IdleBrain(), typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, {}, unused_gallery(), *unused_wake(home)), home, asked, recorded.append))
     await patiently(lambda: events(recorded, "phone.served") != [], lambda: len(recorded))
     [served] = events(recorded, "phone.served")
     unverified = ssl.create_default_context()

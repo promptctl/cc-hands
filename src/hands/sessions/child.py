@@ -22,7 +22,7 @@ import os
 import queue
 import select
 import signal
-# [LAW:single-enforcer] exception: the runner's own start, the one every other child of hands goes through.
+# [LAW:single-enforcer] exception: SpawnedChildren's own start, the one every other child of hands goes through.
 import subprocess
 import tempfile
 import threading
@@ -542,17 +542,41 @@ def _as(env: Mapping[str, str] | Traced | None, clock: Clock) -> tuple[wide.Begu
             return wide.begun(clock), env
 
 
+class Children(Protocol):
+    """[LAW:effects-at-boundaries] what runs hands' children to their ends, each one's limit measured on `clock`: the
+    SpawnedChildren, and a fake of it in tests (tests/fakechildren.py), the two held to one contract (tests/childrencontract.py)."""
+
+    @property
+    def clock(self) -> Clock: ...
+
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None, given: bytes | None = None) -> Outcome:
+        """Run `argv` to its end, within `limit`, from a coroutine, in `cwd` and `env`, the caller's own where None, with
+        `given` on its stdin, or none: raises ValueError for a command no OS can be handed or a limit that is no time,
+        and what ended the wait early, once it is killed."""
+        ...
+
+    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
+        """`run`, waited on by the calling thread, for code that runs off any event loop."""
+        ...
+
+
+# [LAW:effects-at-boundaries] what makes the Children a unit runs on, on the unit's own clock and with its children's
+# events leaving through the unit's own emit: SpawnedChildren itself, bound at the root (hands.daemon.cli.entry), and a
+# fake's maker in tests. A unit given one has one clock, its own, for its children too.
+type ChildrenOn = Callable[[Clock, Callable[[wide.WideEvent], None]], Children]
+
+
 @dataclass(frozen=True)
-class Children:
-    """[LAW:effects-at-boundaries] what starts hands' children: a value made from its caller's one clock, which measures
-    every child's limit, and the edge its caller's events leave through, which its children's events leave through too."""
+class SpawnedChildren:
+    """The Children hands runs on: each child a process the OS starts, made from its caller's one clock, which measures
+    every child's limit, and the edge its caller's events leave through, which its children's events leave through too.
+    It also starts a child to run on with no limit of its own, on a terminal, which only hands.sessions.pseudoterminal's
+    real adapter asks of it."""
 
     clock: Clock
     emit: Callable[[wide.WideEvent], None]
 
     async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None, given: bytes | None = None) -> Outcome:
-        """Run `argv` to its end, within `limit`, from a coroutine, `given` on its stdin, or none: raises ValueError for
-        a command no OS can be handed or a limit that is no time, and what ended the wait early, once it is killed."""
         bound = Limit(limit)
         loop = asyncio.get_running_loop()
         ended: asyncio.Future[Ran | Lost] = loop.create_future()
@@ -563,7 +587,6 @@ class Children:
         return await _awaited(_bounded(bound), started, ended, self.clock)
 
     def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
-        """`run`, waited on by the calling thread, for code that runs off any event loop."""
         bound = Limit(limit)
         ended: queue.SimpleQueue[Ran | Lost] = queue.SimpleQueue()
         started = self._captured(wide.begun(self.clock), Command(argv, cwd, env), limit, ended.put)
@@ -572,7 +595,7 @@ class Children:
         return _waited(_bounded(bound), started, ended, self.clock)
 
     def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
-        """Start `argv` to run until it ends or is stopped, from a coroutine, with no limit of its own."""
+        """Start `argv` to run until it ends or is stopped, from a coroutine."""
         loop = asyncio.get_running_loop()
         ended: asyncio.Future[Ending | Lost] = loop.create_future()
 

@@ -5,12 +5,9 @@ import asyncio
 import fcntl
 import os
 import platform
-import signal
 import struct
 import sys
 import tempfile
-import queue
-import threading
 from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,18 +21,20 @@ from loguru import logger
 from hands.brain import configdir, pinned
 from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, preflight, readiness, update, watchdog
+from hands.daemon.indicatorprocess import Indicators, SpawnedIndicators
 from hands.daemon.config import OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, Handover, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start, starts_at
 from hands.tasks import cancel_and_wait
 from hands.core.tmux import Keyboard
-from hands.sessions.child import Children
-from hands.sessions import audit, backlog, child, filing, grouping, heartbeat, panes, recall, wide, wrapper
+from hands.sessions.child import Children, ChildrenOn, SpawnedChildren
+from hands.sessions import audit, backlog, filing, grouping, heartbeat, panes, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.kernel import KERNEL
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
-from hands.sessions.processes import Processes
+from hands.sessions.pseudoterminal import PseudoterminalsOn, SpawnedPseudoterminals
+from hands.sessions.processes import Pid, Processes, parse_pid
 from hands.sessions.terminals import Terminals
 from hands.sessions import tmux
 from hands.threads import off_loop
@@ -197,23 +196,30 @@ def show_phone(children: Children, home: Home) -> exits.Exit:
     return 0
 
 
+def spawned_pseudoterminals(clock: Clock, emit: Callable[[wide.WideEvent], None]) -> SpawnedPseudoterminals:
+    """The pseudo-terminals hands runs a program on, each on a process SpawnedChildren starts, on the unit's clock and
+    with its events leaving through the unit's emit."""
+    return SpawnedPseudoterminals(SpawnedChildren(clock, emit))
+
+
 def entry() -> int:
     """The `hands` script: loguru's default sink, DEBUG on stderr, let go of once as the process starts, so what it prints
     is the terminal's that `logging_to` sets up; then the command its arguments name."""
     logger.remove(0)
-    return main(processes=KERNEL, machine=configdir.this_machine())
+    return main(processes=KERNEL, indicators=SpawnedIndicators(), machine=configdir.this_machine(), children_on=SpawnedChildren, pseudoterminals_on=spawned_pseudoterminals)
 
 
 # [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, the pin of the Claude
 # Code its brain runs, where `hands install-brain` fetches that pin's builds from, the processes every command reads and
-# signals, and the Mac whose Claude Code policy the brain runs under, each bound here for every command.
-def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE, *, processes: Processes, machine: configdir.Machine) -> int:
+# signals, what shows a run's indicator, the Mac whose Claude Code policy the brain runs under, what makes the children
+# each command runs, and what makes the pseudo-terminals a command runs a program on, each bound here for every command.
+def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE, *, processes: Processes, indicators: Indicators, machine: configdir.Machine, children_on: ChildrenOn, pseudoterminals_on: PseudoterminalsOn) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
     commands = parser.add_subparsers(dest="command", required=True)
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
-    running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
+    running.add_argument("--restarted", type=indicator_pid, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--level", type=listening_level, metavar="{" + ",".join(LEVELS) + "}", help="the level the desk listens at as a restart starts, which only hands passes, beside --restarted: the one the run before's desk was at; a start that is no restart listens at off")
     running.add_argument("--model", help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
@@ -256,18 +262,18 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
                 # fetches a voice, so no other starts the keychain's reader; once there is a log, which tells of it.
                 from hands.voice.library import hub_token
 
-                if (token := hub_token(Children(clock, audit_log.record), os.environ)) is not None:
+                if (token := hub_token(children_on(clock, audit_log.record), os.environ)) is not None:
                     os.environ["HF_TOKEN"] = token
                 # [LAW:one-source-of-truth] the live environment, not a copy of it: a restart is execv in this process, so
                 # what the start and every weigh of an edit judge is what the restart runs in.
-                return run_daemon(clock, processes, home, pin, machine, os.environ, audit_log, handover, arguments.model, arguments.level)
+                return run_daemon(clock, processes, indicators, children_on, home, pin, machine, os.environ, audit_log, handover, arguments.model, arguments.level)
             case "tmux-status":
                 return show_segment(clock, processes, home)
             case _:
-                return commanded(clock, processes, home, pin, machine, release, audit_log.record, arguments)
+                return commanded(clock, processes, children_on, pseudoterminals_on, home, pin, machine, release, audit_log.record, arguments)
 
 
-def handed_over(parser: argparse.ArgumentParser, indicator: int | None, level: Level | None) -> Handover | None:
+def handed_over(parser: argparse.ArgumentParser, indicator: Pid | None, level: Level | None) -> Handover | None:
     """[LAW:parse-dont-validate] `hands run`'s --restarted and --level as the handover from the run before: none on a
     start that is no restart, which listens at off. Exits 2 for a level with no restart."""
     match indicator, level:
@@ -282,6 +288,15 @@ def handed_over(parser: argparse.ArgumentParser, indicator: int | None, level: L
             return Handover(shown, "off")
         case int() as shown, str() as named:
             return Handover(shown, named)
+
+
+def indicator_pid(text: str) -> Pid:
+    """[LAW:parse-dont-validate] --restarted's value as the pid of the indicator the run before showed, which this run
+    signals: never 0 or negative, a signal to either being one to a whole group of processes."""
+    try:
+        return parse_pid(int(text))
+    except (ValueError, Rejected) as error:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a process id") from error
 
 
 def listening_level(text: str) -> Level:
@@ -302,7 +317,7 @@ def model_flag(text: str) -> OfferedModel:
         raise Rejected(f"--model: {error}") from error
 
 
-def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
+def run_daemon(clock: Clock, processes: Processes, indicators: Indicators, children_on: ChildrenOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -340,7 +355,7 @@ def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, 
                 refuse(cannot, held)
                 return 1
             try:
-                ran: Literal["quit"] | Handover | CannotStart = run_here(clock, processes, home, pin, machine, environment, handover, after_crash, settings, heart, audit_log, run_start)
+                ran: Literal["quit"] | Handover | CannotStart = run_here(clock, processes, indicators, children_on, home, pin, machine, environment, handover, after_crash, settings, heart, audit_log, run_start)
             except* CannotStart as cannot:
                 # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
                 # refused once, and said so even where another error raised with it is raised on past this block.
@@ -361,7 +376,7 @@ def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, 
                     execv(invocation(home, "run", *next_run.arguments(), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
+def commanded(clock: Clock, processes: Processes, children_on: ChildrenOn, pseudoterminals_on: PseudoterminalsOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -373,7 +388,7 @@ def commanded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, m
     with wide.unit("hands.command", record, wide.begun(clock)):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        ended = dispatch(clock, processes, home, pin, machine, release, arguments, record)
+        ended = dispatch(clock, processes, children_on, pseudoterminals_on, home, pin, machine, release, arguments, record)
         wide.annotate(exit_code=exits.code_of(ended))
         match ended:
             case exits.Failed(code=code, why=why):
@@ -401,10 +416,10 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
+def dispatch(clock: Clock, processes: Processes, children_on: ChildrenOn, pseudoterminals_on: PseudoterminalsOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
-    # What starts the command's children: on its clock, each child's event recorded with its own.
-    children = Children(clock, record)
+    # What runs the command's children: on its clock, each child's event recorded with its own.
+    children = children_on(clock, record)
     match arguments.command:
         case "status":
             return report(clock, processes, home)
@@ -436,7 +451,7 @@ def dispatch(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, ma
             # Imported here so that no other command loads aiortc.
             from hands.daemon.smoke import run_smoke
 
-            return run_smoke(children, processes, home)
+            return run_smoke(children, pseudoterminals_on(clock, record), processes, home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -545,18 +560,19 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-def run_here(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
+def run_here(clock: Clock, processes: Processes, indicators: Indicators, children_on: ChildrenOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
     """hands run in this process, on what the run before handed over if it was one, until it is told to stop: a quit, or
     a restart and what it hands the next run.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
     heart.beat("starting", None, 0, listening=False, degraded=())
+    run_start.heard(previous_indicator=None if handover is None else indicators.retire(handover.indicator, clock))
     # [LAW:dataflow-not-control-flow] every run shows itself through an indicator it started, on the code it runs: one
     # kept across a restart would judge this run's heartbeat by the code the run before had.
-    run_start.heard(previous_indicator=None if handover is None else retire(handover.indicator, clock))
-    shown = start_indicator(home)
-    threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
+    shown = indicators.show(home)
+    # [LAW:nothing-unseen] the pid a restart hands on to be retired, so the start says which indicator it showed.
+    run_start.heard(indicator=shown)
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, clock)
     # [LAW:one-source-of-truth] the one owner of the level the desk listens at, made before the run and read after it, so a
@@ -565,7 +581,7 @@ def run_here(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, ma
     levels = Levels(starts_at(handover))
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, processes, home, pin, machine, environment, settings, heart, record, exports.degraded, after_crash, run_start, levels, levels), levels, heart, exports.degraded, lambda: edited(home, pin, machine, environment, record, settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, processes, children_on, home, pin, machine, environment, settings, heart, record, exports.degraded, after_crash, run_start, levels, levels), levels, heart, exports.degraded, lambda: edited(home, pin, machine, environment, record, settings, clock), record, run_start, clock))
     match ending:
         case "quit":
             return "quit"
@@ -654,7 +670,7 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> Run:
+def loaded(clock: Clock, processes: Processes, children_on: ChildrenOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -666,7 +682,9 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, mach
     mlxthread.call(memory.limit_cache)
 
     path = environment.get("PATH", "")
-    children = Children(clock, record)
+    # [LAW:one-source-of-truth] the run's one children, on its clock, each child's event recorded with the run's: what
+    # its terminals, its screen and its configure are built on here, and the run itself runs on.
+    children = children_on(clock, record)
     # [LAW:effects-at-boundaries] the run's one adapter of the user's tmux servers, found on the run's PATH once; its
     # fritters' and the Mac's screen's are built with the run.
     terminals = tmux.on_path(children, path)
@@ -683,84 +701,7 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, mach
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, processes, home, path, True, reached, running, partial(keyboards, terminals, processes)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, terminals, FritterSockets(), LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, machine, run_start, OwnModel(home, pin, machine, environment, settings), clock, listening, driving)
-
-
-def start_indicator(home: Home) -> int:
-    """The menu-bar indicator for this run, in a process of its own: AppKit wants a main thread, and this one is the daemon's."""
-    argv = invocation(home, "indicator", "--parent", str(os.getpid()))
-    # [LAW:single-enforcer] exception: started apart from the runner, which holds a child to a caller's limit, since the
-    # indicator runs as long as the run does and ends itself once the run that started it is gone (menubar.show), however the
-    # run ended; a session of its own keeps the terminal's Ctrl-C and hangup from ending it first, before it has said so.
-    # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are. A restart
-    # keeps the pid, so the indicator stays a child of the run after it, which ends it by that pid (retire).
-    return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
-
-
-# What became of the indicator the run before a restart showed: ended as this run asked, killed by it once it had not
-# within the grace, found exited on its own and said, or reaped already by the run before, which said so as it did.
-type Retired = Literal["ended", "killed", "exited", "reaped", "unreaped"]
-
-# How long the indicator has to end once asked before its process group is killed.
-RETIRE_GRACE_SECONDS = 1.0
-
-
-def retire(indicator: int, clock: Clock, grace: float = RETIRE_GRACE_SECONDS) -> Retired:
-    """End the indicator the run before a restart showed, so the one this run starts is the only one in the menu bar."""
-    try:
-        exited, status = os.waitpid(indicator, os.WNOHANG)
-    except ChildProcessError:
-        return "reaped"
-    if exited:
-        said_exited(status)
-        return "exited"
-    # Still this process's child and unreaped, so the pid is the indicator's and no other process's. Its group goes
-    # with it, the notices it was posting included, as hands.sessions.child kills the group of a child it started.
-    signalled(indicator, signal.SIGTERM)
-    statuses: queue.SimpleQueue[int] = queue.SimpleQueue()
-    threading.Thread(target=lambda: statuses.put(os.waitpid(indicator, 0)[1]), name="retire", daemon=True).start()
-    try:
-        ended = clock.take(statuses, grace)
-    except queue.Empty:
-        signalled(indicator, signal.SIGKILL)
-        try:
-            ended = clock.take(statuses, child.KILL_GRACE_SECONDS)
-        except queue.Empty:
-            # [LAW:no-silent-failure] killed, and not dead: the start goes on without it, and its event says so.
-            logger.error(f"killed the menu-bar indicator ({indicator}), and it was still not reaped {child.KILL_GRACE_SECONDS:.1f}s later")
-            return "unreaped"
-    # [LAW:no-silent-failure] the status says how it ended, not the asking: one that crashed as it was asked is said.
-    code = os.waitstatus_to_exitcode(ended)
-    if code in (0, -signal.SIGTERM):
-        return "ended"
-    if code == -signal.SIGKILL:
-        logger.info(f"killed the menu-bar indicator ({indicator}) and everything it started, because it had not ended {grace:.1f}s after it was asked to")
-        return "killed"
-    said_exited(ended)
-    return "exited"
-
-
-def signalled(group: int, signum: signal.Signals) -> None:
-    """Send `signum` to the process group `group` leads, where any of it has yet to exit."""
-    try:
-        # [LAW:effects-at-boundaries] exception: the indicator, a child of this run, is signalled through the machine,
-        # not Children, until Children holds it (part 3 of promptctl-testing-c3u.avj).
-        os.killpg(group, signum)
-    except (ProcessLookupError, PermissionError):
-        # Every process in the group had exited: gone, ProcessLookupError; exited and not yet reaped, macOS says
-        # PermissionError. The wait that follows reaps the leader all the same.
-        pass
-
-
-def reap(shown: int) -> None:
-    """Wait on the indicator, so one that exits early is reaped and said, not left a zombie under the run."""
-    # It exits of its own accord only once the run is gone, so an exit this process lives to see is a failure.
-    _, status = os.waitpid(shown, 0)
-    said_exited(status)
-
-
-def said_exited(status: int) -> None:
-    logger.error(f"the menu-bar indicator exited ({os.waitstatus_to_exitcode(status)}) while hands runs; hands is not shown in the menu bar")
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, children, terminals, FritterSockets(), LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, machine, run_start, OwnModel(home, pin, machine, environment, settings), listening, driving)
 
 
 def report(clock: Clock, processes: Processes, home: Home) -> exits.Exit:

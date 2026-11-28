@@ -14,7 +14,7 @@ import tempfile
 import threading
 import traceback
 import weakref
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -49,15 +49,16 @@ from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
-from hands.sessions import child
-from hands.sessions.child import Children
+from hands.sessions.child import ChildrenOn, SpawnedChildren
+from hands.sessions.pseudoterminal import SpawnedPseudoterminals
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions, untyped
 from hands.sessions.registry import unread as reads_no_panes
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import library, streaming, transcription
+from hands.voice import streaming, transcription
 from hands.voice.mlxthread import OnMLX
+from claudelogin import auth_status
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 from fixtures import pins
@@ -239,68 +240,24 @@ def taken(errors: list[str]) -> list[str]:
 new_sessions = partial(Sessions, record=lambda _: None, typist=untyped, keyboards=reads_no_panes)
 
 
-def children_on(clock: Clock) -> Children:
-    """[LAW:locality-or-seam] what starts a test's children, on the clock the test names, its events let go: a test about
-    a child's event builds its own `Children` with the emit it reads."""
-    return Children(clock, lambda _: None)
+def spawned_on(clock: Clock) -> SpawnedChildren:
+    """The real SpawnedChildren, which starts processes, for an `outside` test: on the clock the test names, its events let go. A
+    test of what hands makes of a run hands its code a FakeChildren (tests/fakechildren.py), and a test about a child's
+    event builds its own SpawnedChildren with the emit it reads."""
+    return SpawnedChildren(clock, lambda _: None)
+
+
+def spawned_terminals(clock: Clock) -> SpawnedPseudoterminals:
+    """The real SpawnedPseudoterminals, which open terminals and start processes, for an `outside` test, as spawned_on's
+    children: a test of what hands makes of a program on a terminal hands its code a FakePseudoterminals
+    (tests/fakepseudoterminals.py)."""
+    return SpawnedPseudoterminals(spawned_on(clock))
 
 
 def shell_without_hands_settings() -> dict[str, str]:
     """The environment the tests run in, less any `HANDS_*` the developer's shell exports: the start's preflight refuses
     one, so a test of what a start passes does not take it from the shell."""
     return {name: value for name, value in os.environ.items() if not name.startswith("HANDS_")}
-
-
-@dataclass(frozen=True)
-class Unstarting(Children):
-    """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real
-    process through a fake that forgot one."""
-
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
-        raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
-
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
-        raise AssertionError(f"{type(self).__name__} does not answer a blocking run of {argv[0]}")
-
-    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: child.Stdio) -> child.Running | child.NeverStarted:
-        raise AssertionError(f"{type(self).__name__} does not answer a start of {argv[0]}")
-
-
-@dataclass(frozen=True)
-class Answering(Unstarting):
-    """Every run ends in `outcome`, as a test of what its caller makes of one names, and its argv is kept in `asked`."""
-
-    outcome: child.Outcome
-    asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
-
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
-        # Every run ends the same, whatever it is handed: the environment is no part of the answer.
-        return self.run_blocking(*argv, limit=limit, cwd=cwd)
-
-    def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
-        self.asked.append(argv)
-        return self.outcome
-
-
-@dataclass(frozen=True)
-class Faked(Unstarting):
-    """Each run is answered by `answer`, the fake of the program a test stands in for."""
-
-    answer: Callable[..., Awaitable[child.Outcome]]
-
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
-        # The program a test stands in for is handed the environment a real start hands it.
-        return await self.answer(*argv, limit=limit, cwd=cwd, env=env.handed if isinstance(env, child.Traced) else env)
-
-
-def exited(code: int, out: bytes = b"", err: bytes = b"") -> child.Ran:
-    """A child that ran and exited `code`, having written `out` and `err`."""
-    return child.Ran(child.Exited(code), child.Captured(out), child.Captured(err))
-
-
-def answering(outcome: child.Outcome) -> Answering:
-    """Children every run of which ends in `outcome`."""
-    return Answering(SYSTEM, lambda _: None, outcome)
 
 
 def model_facts(load: WideEvent) -> dict[str, Fact]:
@@ -336,11 +293,12 @@ class RealWall(VirtualClock):
         return SYSTEM.wall()
 
 
-def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None = None, baselining: float = BASELINING, patience: float = PATIENCE) -> D:
+def patient[D: Deltas](kind: type[D], record: Record, on: ChildrenOn, clock: VirtualClock | None = None, baselining: float = BASELINING, patience: float = PATIENCE) -> D:
     """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a baseline or a reading found,
     never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
-    spends it; a git that never ends is ended by the suite's timeout."""
-    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, clock=clock or RealWall())
+    spends it; a git that never ends is ended by the suite's timeout. Its git and gh are the children `on` makes, on that
+    clock: SpawnedChildren's in an `outside` test, a fake's (fakechildren.Programs) in any other."""
+    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, children=on(clock or RealWall(), record))
 
 
 async def settled(steps: int = 100) -> None:
@@ -452,20 +410,6 @@ class Pairs:
 _FETCHED = streaming.fetched
 # [LAW:no-shared-mutable-globals] the suite's one owner of the pairs it loads.
 PAIRS = Pairs()
-
-
-# The reader the fixture below replaces, taken before any test runs: the one test about the question checks it.
-KEYCHAIN_READER = library._keychain_token  # pyright: ignore[reportPrivateUsage]
-
-
-@pytest.fixture(autouse=True)
-def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
-    about but the one that checks the question, on KEYCHAIN_READER."""
-    def absent(_children: Children) -> library.Absent:
-        return library.Absent()
-
-    monkeypatch.setattr(library, "_keychain_token", absent)
 
 
 @pytest.fixture(autouse=True)
@@ -841,6 +785,10 @@ def pin(config_dir: Path, script: Path) -> pinned.Pin:
     return made
 
 
+# What `claude auth status` prints for a brain logged in on claude.ai.
+LOGGED_IN = auth_status(True).encode()
+
+
 def laid_out(home: Home) -> Path:
     """Lays `home` out as one the start's preflight passes on pins.LAID_OUT: its brain onboarded on settings that keep the
     syncs out, and in its pinned claude's place the script that only leaves a mark. The mark's path, which exists once
@@ -882,6 +830,8 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
 import datetime, itertools, json, os, select, signal, subprocess, sys, termios, threading, time, tty, urllib.request, uuid
+sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+from claudelogin import auth_status
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -902,12 +852,10 @@ if sys.argv[1:3] == ["auth", "login"] or first_run:
 if sys.argv[1:3] == ["auth", "status"]:
     console = os.path.exists(login) and "--console" in json.load(open(login))["argv"]
     method = "api_key" if console else os.environ.get("AUTH_METHOD", "claude.ai")
-    holder = {{"claude.ai": {{"email": "brain@example.com"}}, "api_key": {{"email": "brain@example.com", "apiKeySource": "/login managed key"}}, "oauth_token": {{}}}}[method]
-    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": method, "apiProvider": os.environ.get("API_PROVIDER", "firstParty"), **holder}}))
+    print(auth_status(os.environ["LOGGED_IN"] == "1" or os.path.exists(login), method, os.environ.get("API_PROVIDER", "firstParty")))
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
 session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
-sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
 import turns
 # Where Claude Code keeps the session's transcript, and the file it keeps its status in, under its config directory.
 transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
