@@ -20,8 +20,9 @@ not a layer: whether an outside test proves an adapter, a contract or the assemb
 workflows (below) are cut by what a run costs, not by those layers.
 
 A wait the OS cannot refuse, a `time.sleep` or a timer the loop runs out, stays in the unit layer. `tests/clockwatch.py`
-owns it: its `UNMOVED` lists the modules that still reach the machine's time, and a module comes off it by moving onto a
-`VirtualClock`.
+owns it: its `UNMOVED` lists the modules that still reach the machine's time. Those in `TO_MOVE` come off it by moving
+onto a `VirtualClock`. Those in `PERMANENT` hold hands to a real party that runs on the machine's time, each with its
+reason, and mark all their tests `outside`.
 
 ## The real pair, and its recordings
 

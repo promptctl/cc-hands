@@ -1,10 +1,11 @@
 """The runtime record of what test modules reach of the machine's time, and its verdict against UNMOVED."""
 
+import ast
 from pathlib import Path
 
 import pytest
 
-from clockwatch import verdict
+from clockwatch import PERMANENT, TO_MOVE, verdict
 
 SAMPLE = """
 import datetime, threading, time, uuid
@@ -75,6 +76,25 @@ def test_a_module_unmoved_does_not_hold_fails_any_run_and_one_never_reached_only
     unmoved = frozenset({"test_b.py", "test_c.py"})
     assert verdict(record, unmoved, whole=False) == ({"test_a.py": {"time.sleep"}}, set())
     assert verdict(record, unmoved, whole=True) == ({"test_a.py": {"time.sleep"}}, {"test_c.py"})
+
+
+def test_a_module_held_for_good_is_never_to_move_and_runs_none_of_its_tests_in_the_unit_layer() -> None:
+    # A module mark reaches every test in the module: one held for good that kept a unit test would take it off the watch.
+    assert TO_MOVE.isdisjoint(PERMANENT)
+    assert [module for module in PERMANENT if "pytest.mark.outside" not in marks(Path(__file__).parent / module)] == []
+
+
+def marks(module: Path) -> set[str]:
+    """The marks `module`'s pytestmark puts on every test in it."""
+    for statement in ast.parse(module.read_text()).body:
+        match statement:
+            case ast.Assign(targets=[ast.Name(id="pytestmark")], value=ast.List(elts=each) | ast.Tuple(elts=each)):
+                return {ast.unparse(mark) for mark in each}
+            case ast.Assign(targets=[ast.Name(id="pytestmark")], value=mark):
+                return {ast.unparse(mark)}
+            case _:
+                pass
+    return set()
 
 
 @pytest.mark.outside

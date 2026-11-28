@@ -38,14 +38,9 @@ from test_clock_boundary import offenders, reached, written
 CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 
 # Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it
-# advances. test_pinned_brain.py, test_session_contract_pinned.py and test_terminal_contract_pinned.py are not among
-# those to move: they run a real Claude Code, and nothing tells them when it has done what they wait on; nor is
-# test_terminals_contract_tmux.py, whose tmux server and programs say only by what they leave that they are up;
-# nor is test_launchservices.py, which reads the app in front from the real lsappinfo, a child bounded on the machine's time;
-# nor are test_pages.py and test_phonewakepage.py, whose verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it; nor is
-# test_proxy_connect.py, whose clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
-# subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
-UNMOVED = frozenset({
+# advances. Which facilities a module reaches is not recorded: a library reaches some only on a race, as subprocess's
+# communicate sleeps only while its child still runs, and a module is moved whole or not at all.
+TO_MOVE = frozenset({
     "conftest.py",
     "fixtures/standin_daemon.py",
     "fixtures/watched_run.py",
@@ -78,7 +73,6 @@ UNMOVED = frozenset({
     "test_gallerypage.py",
     "test_hermetic.py",
     "test_input_tools.py",
-    "test_launchservices.py",
     "test_library.py",
     "test_liveness.py",
     "test_microphone.py",
@@ -89,21 +83,16 @@ UNMOVED = frozenset({
     "test_offline.py",
     "test_otlp.py",
     "test_own_model.py",
-    "test_pages.py",
     "test_patience.py",
     "test_phone.py",
     "test_phone_listening.py",
     "test_phonepage.py",
     "test_phonewake.py",
-    "test_phonewakepage.py",
     "test_pinned.py",
-    "test_pinned_brain.py",
     "test_pinnedfile_served.py",
     "test_playback.py",
-    "test_terminals_contract_tmux.py",
     "test_progress.py",
     "test_proxy.py",
-    "test_proxy_connect.py",
     "test_read_session.py",
     "test_readiness.py",
     "test_recall.py",
@@ -113,7 +102,6 @@ UNMOVED = frozenset({
     "test_render.py",
     "test_restart.py",
     "test_sentences.py",
-    "test_session_contract_pinned.py",
     "test_shim.py",
     "test_shortcut.py",
     "test_smoke.py",
@@ -131,7 +119,6 @@ UNMOVED = frozenset({
     "test_tail.py",
     "test_talking_over.py",
     "test_tap.py",
-    "test_terminal_contract_pinned.py",
     "test_timeouts.py",
     "test_tool_runs.py",
     "test_transcript.py",
@@ -153,6 +140,26 @@ UNMOVED = frozenset({
     "test_wrapper.py",
     "timeouts.py",
 })  # fmt: skip
+
+REAL_CLAUDE_CODE = "it runs a real Claude Code, and nothing tells it when Claude Code has done what it waits on"
+REAL_CHROME = "its verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it"
+
+# [LAW:no-ambient-temporal-coupling] exception: test modules that hold hands to a real party, which runs on the machine's
+# time, each with why a clock the test advances cannot stand in for it. They are never moved, and each marks all its
+# tests outside, so none runs in the unit layer (tests/test_clockwatch.py checks both).
+PERMANENT = {
+    "test_launchservices_lsappinfo.py": "it reads the app in front from the real lsappinfo, a child that runs in real time, so only the machine's time ends its limit on one that hangs",
+    "test_pages.py": REAL_CHROME,
+    "test_phonewakepage.py": REAL_CHROME,
+    "test_pinned_brain.py": REAL_CLAUDE_CODE,
+    "test_proxy_connect.py": "its clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it",
+    "test_session_contract_pinned.py": REAL_CLAUDE_CODE,
+    "test_terminal_contract_pinned.py": REAL_CLAUDE_CODE,
+    "test_terminals_contract_tmux.py": "its tmux server and programs say only by what they leave that they are up",
+}  # fmt: skip
+
+# Every module that may reach the machine's time: a run that sees any other reach it fails.
+UNMOVED = TO_MOVE | frozenset(PERMANENT)
 
 # Facilities the code scan finds in tests/, as it names them.
 SCANNED = frozenset({"datetime.datetime.now()", "datetime.datetime.utcnow()", "datetime.datetime.today()", "datetime.date.today()", ".acquire(timeout=)", ".acquire(seconds)", ".get(timeout=)"})
