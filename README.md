@@ -254,10 +254,10 @@ the whole record either way, and each batch sent is an `Exported` line in it, na
 collector did not take them, why.
 
 hands talks through a harness it drives, never a model API called with a key: `claude`, the brain, is one long-lived
-Claude Code of hands' own, on any login Claude Code takes from Anthropic, on Claude Sonnet 5.5 unless `model` names
-another hands offers: `claude-sonnet-5-5`, `claude-opus-5-5`, or `claude-fable-5-1`. Its requests go through hands'
-proxy, and it reaches the sessions through hands' tools over MCP (`src/hands/brain/`). It takes no key; its login
-lives in `~/.hands/brain`, and it does not start without one.
+Claude Code of hands' own, on any login Claude Code takes from Anthropic, on the one of the models hands offers that
+`model` names: `claude-sonnet-5-5`, the default, `claude-opus-5-5`, or `claude-fable-5-1`. Its requests go through
+hands' proxy, and it reaches the sessions through hands' tools over MCP (`src/hands/brain/`). It takes no key; its
+login lives in `~/.hands/brain`, and it does not start without one.
 It runs one Claude Code release, the version `src/hands/brain/pinned.py` names, from hands' own copy in
 `~/.hands/brain/pinned-claude`, never the `claude` your sessions run, which your install updates; it moves only with a
 hands release that moves that pin. `hands install-brain` fetches it from Anthropic's release downloads, checked against

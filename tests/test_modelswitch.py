@@ -5,7 +5,8 @@ import pytest
 
 from hands.core.playback import Labelled
 from hands.sessions.payload import Rejected
-from hands.voice.modelswitch import BargedIn, OfferedModel, Switch, Switches
+from hands.voice.modelswitch import BargedIn, Switch, Switches
+from hands.voice.offeredmodels import OfferedModel
 
 
 class Hearing:

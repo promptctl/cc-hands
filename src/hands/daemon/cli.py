@@ -42,7 +42,7 @@ from hands.threads import off_loop
 from hands.visible import VISIBLE
 from hands.voice import summarising
 from hands.voice.listening import LEVELS, Driving, Level, Levels, Listened, Listening, parse_level
-from hands.voice.modelswitch import OfferedModel, parse_model
+from hands.voice.offeredmodels import OfferedModel, parse_model
 from hands.voice.portaudio import Listed, Lists, default_input, default_output, listing
 
 
@@ -215,7 +215,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
     running = commands.add_parser("run", help="run the daemon in this terminal, with its menu-bar indicator beside it")
     running.add_argument("--restarted", type=int, metavar="INDICATOR_PID", help="this run is a restart, which only hands passes: it is no crash, and the menu-bar indicator INDICATOR_PID the run before showed is ended for one this run starts")
     running.add_argument("--level", type=listening_level, metavar="{" + ",".join(LEVELS) + "}", help="the level the desk listens at as a restart starts, which only hands passes, beside --restarted: the one the run before's desk was at; a start that is no restart listens at off")
-    running.add_argument("--model", type=model_id, help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
+    running.add_argument("--model", help="the model to run on in place of the one config.toml names, kept across every restart of this run; a model chosen by voice is refused while it holds")
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     checking = commands.add_parser("check", help="list each step of the README's install, ✓ done, ✗ missing with the command that fixes it, or ? when it could not be looked at: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the brain's login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     checking.add_argument("-v", "--verbose", action="store_true", help="say each step in full beneath its line, every running session among them")
@@ -292,15 +292,17 @@ def listening_level(text: str) -> Level:
         raise argparse.ArgumentTypeError(str(error)) from error
 
 
-def model_id(text: str) -> OfferedModel:
-    """[LAW:parse-dont-validate] --model's value as the model hands runs on that it names."""
+def model_flag(text: str) -> OfferedModel:
+    """[LAW:parse-dont-validate] --model's value as the model hands runs on that it names; raises Rejected naming the
+    flag, never the file. [LAW:nothing-unseen] parsed at the door, not by argparse, so a model refused is the start's own
+    refusal and on its event: a restart carries the run's --model across an update to a release that may not offer it."""
     try:
-        return parse_model(text.strip())
+        return parse_model(text)
     except Rejected as error:
-        raise argparse.ArgumentTypeError(str(error)) from error
+        raise Rejected(f"--model: {error}") from error
 
 
-def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: OfferedModel | None, level_flag: Level | None) -> int:
+def run_daemon(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], audit_log: audit.AuditLog, handover: Handover | None, model: str | None, level_flag: Level | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -447,7 +449,7 @@ def dispatch(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, ma
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
 
-def door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: OfferedModel | None, run_start: Start) -> Settings:
+def door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant and the
     settings it starts on. CannotStart where either is missing. What the home's files and the environment refuse is the start's
     preflight's to say, a step of its own once the run has its heartbeat (hands.daemon.preflight), and said here beside settings
@@ -465,7 +467,7 @@ def door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: M
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
     # an edit to them all take these.
     try:
-        return load(home, model)
+        return load(home, None if model is None else model_flag(model))
     except Rejected as error:
         checked = preflight.preflight(home, pin, machine, environment)
         run_start.heard(**checked.facts())

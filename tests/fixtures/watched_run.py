@@ -26,7 +26,6 @@ from hands.clock import Clock
 from hands.daemon import cli, watchdog
 from hands.daemon.config import Config, Settings
 from hands.daemon.starting import CannotStart, Handover, Start
-from hands.voice.modelswitch import OfferedModel
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.kernel import KERNEL
@@ -52,16 +51,16 @@ def hung(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machin
     stuck()
 
 
-def stalled_at_the_door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: OfferedModel | None, run_start: Start) -> Settings:
+def stalled_at_the_door(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     stuck()
 
 
-def opened(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: OfferedModel | None, run_start: Start) -> Settings:
+def opened(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     """The door, opened onto settings the stood-in run never reads."""
-    return Settings(None, Config(), model)
+    return Settings(None, Config(), None if model is None else cli.model_flag(model))
 
 
-def refused(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: OfferedModel | None, run_start: Start) -> Settings:
+def refused(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     raise CannotStart("refused for the test")
 
 

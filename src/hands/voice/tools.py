@@ -18,7 +18,8 @@ from typing import Literal, TypedDict
 from loguru import logger
 
 from hands.clock import Clock
-from hands.voice.modelswitch import OfferedModel, OwnModel, chosen
+from hands.voice.modelswitch import OwnModel, chosen
+from hands.voice.offeredmodels import OfferedModel
 from hands.voice.tool import Answer, Result, Tool, read_back, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft

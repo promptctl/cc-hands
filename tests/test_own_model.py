@@ -23,7 +23,8 @@ from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.playback import hands_says
-from hands.voice.modelswitch import OFFERED_MODELS, OfferedModel, Switches
+from hands.voice.modelswitch import Switches
+from hands.voice.offeredmodels import OFFERED_MODELS, OfferedModel
 from hands.voice.player import Marker, Markers, Player
 from hands.voice.tool import After, Answer, Called, Effect, Tool, audited, result_of
 from hands.sessions.wide import WideEvent

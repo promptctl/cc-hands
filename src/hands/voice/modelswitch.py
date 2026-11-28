@@ -8,23 +8,13 @@ gallery page (`hands.voice.gallerypage`) import it, so none depends on another.
 import functools
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, get_args
+from typing import Protocol
 
 from hands.core.playback import Labelled, hands_says
-from hands.sessions.payload import Rejected, one_of
+from hands.sessions.payload import Rejected
 from hands.threads import off_loop
+from hands.voice.offeredmodels import OfferedModel
 from hands.voice.tool import After, Result
-
-
-# [LAW:types-are-the-program] the models hands runs on, as one type: the file, --model, the brain's tool and the phone's
-# page each take only these, and the tool's schema shows the brain them.
-OfferedModel = Literal["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"]
-OFFERED_MODELS: tuple[OfferedModel, ...] = get_args(OfferedModel)
-
-
-def parse_model(text: str) -> OfferedModel:
-    """The model hands runs on that `text` names; raises Rejected naming the ones it runs on."""
-    return one_of(text, OFFERED_MODELS, "hands runs Claude on")
 
 
 class Weighed(Protocol):

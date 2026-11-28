@@ -24,7 +24,8 @@ from hands.sessions.wide import annotate, fail
 from hands.voice.listening import LEVELS, Level, Listening, parse_level
 from hands.voice.keyed import keyed
 from hands.voice.longpoll import page_left, version_of, waited
-from hands.voice.modelswitch import OFFERED_MODELS, OfferedModel, OwnModel, Switches, chosen, parse_model
+from hands.voice.modelswitch import OwnModel, Switches, chosen
+from hands.voice.offeredmodels import OFFERED_MODELS, OfferedModel, parse_model
 from hands.voice.answered import answered_then
 from hands.voice.trigger import described
 from hands.voice.library import Found

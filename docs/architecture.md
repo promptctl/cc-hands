@@ -2734,7 +2734,7 @@ variant with a real alternative or it does not exist. The fields:
 | key | what it names |
 |---|---|
 | `[llm] backend` | `claude`, the brain: the default, and the one harness hands drives so far; a model API called with a key is never one |
-| `[llm] model` | the model, one of those hands offers (`OfferedModel`, hands.voice.modelswitch) |
+| `[llm] model` | the model, one of those hands offers (`OfferedModel`, hands.voice.offeredmodels) |
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
 | `[talk] personality` | how hands comes across, in the user's words: a section of the conversational model's instruction, last before its closing words, so it sets tone and never what hands does |
 | `[talk] wake_word` | what the `wake word` trigger listens for: one of openWakeWord's own (Hey Jarvis, the default, Hey Mycroft, Hey Rhasspy, Alexa), or with `wake_word_model` the phrase the user's model was trained on |

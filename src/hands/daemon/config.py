@@ -3,7 +3,7 @@ run runs starts the run again, on the file as edited.
 
     [llm]
     backend = "claude"           # the brain, a Claude Code of hands' own: the default, and the one there is
-    model = "claude-sonnet-5-5"  # one of OFFERED_MODELS (hands.voice.modelswitch)
+    model = "claude-sonnet-5-5"  # one of OFFERED_MODELS (hands.voice.offeredmodels)
 
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
@@ -51,7 +51,7 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
-from hands.voice.modelswitch import OfferedModel, parse_model
+from hands.voice.offeredmodels import OfferedModel, parse_model
 from hands.voice.voicechoice import Chosen, SampleLine, parse_voice
 from hands.voice.wakemodels import PRETRAINED
 from hands.voice.wakeword import Pretrained, Trained, Word
@@ -189,14 +189,12 @@ class OwnModel:
             raise Rejected(f"hands was started with --model {self._running.model}, which it keeps over {self._home.config} until it is started without it")
         if model == self.running():
             raise Rejected(f"hands runs on {model} already")
-        # The file is taken whole first, on `model` as a start takes it on --model, so the edit is only ever made to
-        # settings a start would take, and a file whose one fault is its model is one the edit mends. One that does not
-        # parse is refused beside the home's other refusals. A file that names `model` already, saved since the start,
-        # needs no refusal of its own: `edited` weighs bytes it has not taken each time it looks, so it takes them, and a
-        # start it would refuse is refused below.
+        # [LAW:single-enforcer] the bytes the choice writes are the bytes weighed, as the next start reads them, as
+        # SampleLines.keep weighs its own; one a start would refuse is refused beside the home's other refusals.
         try:
             held = _readable(self._home, _held(self._home))
-            _settings(self._home, held, model)
+            edited = _with_model(self._home, held, model)
+            _settings(self._home, edited, None)
         except Rejected as error:
             raise Rejected("; ".join(beside(preflight(self._home, self._pin, self._machine, self._environment), error))) from error
         # [LAW:escape-local-minima] exception: a login lost since the start passes here, until promptctl-phone-app-9d9y.h4s.
@@ -204,7 +202,7 @@ class OwnModel:
             case Refused(refusals=refusals):
                 raise Rejected("; ".join(refusals))
             case Startable():
-                return ModelChoice(model, partial(_keep, self._home, held, _with_model(held, model)))
+                return ModelChoice(model, partial(_keep, self._home, held, edited))
 
 
 @dataclass(frozen=True)
@@ -225,8 +223,10 @@ class ModelChoice:
         self.write()
 
 
-def _with_model(held: bytes | None, model: OfferedModel) -> bytes:
-    # Only read once `_settings` has taken the file, so it is TOML and [llm], where there is one, is a table.
+def _with_model(home: Home, held: bytes | None, model: OfferedModel) -> bytes:
+    # Only a file that is TOML, its [llm] a table where there is one, has a model to set; one that is not is refused
+    # naming the file.
+    _file(home, held, lambda text: _table(_toml(text), "llm"))
     document = tomlkit.parse(b"" if held is None else held)
     llm = cast(dict[str, object], document.setdefault("llm", tomlkit.table()))
     llm["model"] = model

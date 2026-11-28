@@ -30,7 +30,7 @@ from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.starting import CannotStart, Ended, Handover, QuitKey, Signalled, Start, Stop, Failing, start
 from hands.voice.desk import Desk, Loaded, Resting
 from hands.voice.listening import Driving, Level, Levels, Listening
-from hands.voice.modelswitch import OFFERED_MODELS, OfferedModel
+from hands.voice.offeredmodels import OFFERED_MODELS, OfferedModel
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import Entry, SettingsEdited
@@ -213,6 +213,12 @@ def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
             config.parse(f'[llm]\nbackend = "claude"\nmodel = "{model}"\n')
 
 
+def test_the_readme_names_the_models_hands_offers_as_they_are_offered() -> None:
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    [named] = re.findall(r"the models hands offers that\s+`model` names: ([^.]*)\.", readme)
+    assert tuple(re.findall(r"`(claude-[^`]+)`", named)) == OFFERED_MODELS
+
+
 def test_a_model_flag_outranks_the_files_on_the_files_backend(tmp_path: Path) -> None:
     home = Home(tmp_path)
     assert config.load(home, "claude-opus-5-5") == config.Settings(None, Config(llm=Claude(model="claude-opus-5-5")), "claude-opus-5-5")
@@ -224,12 +230,25 @@ def test_a_model_flag_outranks_the_files_on_the_files_backend(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("given", ["  ", "opus"])
-def test_a_model_flag_hands_does_not_offer_is_refused_as_the_command_line_is_parsed_naming_the_flag_not_the_file(tmp_path: Path, capsys: pytest.CaptureFixture[str], given: str) -> None:
-    Home(tmp_path).config.write_text('[llm]\nbackend = "claude"\n')
-    with pytest.raises(SystemExit) as exited:
-        cli.main(["--home", str(tmp_path), "run", "--model", given], machine=UNMANAGED, processes=processes())
-    assert exited.value.code == 2
-    assert f"argument --model: hands runs Claude on {', '.join(OFFERED_MODELS)}, not {given.strip()!r}\n" in capsys.readouterr().err
+def test_a_model_flag_hands_does_not_offer_refuses_the_start_on_its_event_naming_the_flag_not_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], given: str) -> None:
+    # A restart carries the run's --model onto the release an update brings, which may not offer it: the refusal is the
+    # start's own, on record for a launcher nobody watches.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    laid_out(home)
+    home.config.write_text('[llm]\nbackend = "claude"\n')
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+
+    def logged_in(*_: object) -> Account:
+        return Account("claude.ai", "brain@example.com")
+
+    monkeypatch.setattr(process, "logged_in", logged_in)
+    assert cli.main(["--home", str(home.root), "run", "--model", given], pin=LAID_OUT, machine=UNMANAGED, processes=processes()) == 1
+    reason = f"--model: hands runs Claude on {', '.join(OFFERED_MODELS)}, not {given.strip()!r}; then run hands again"
+    assert capsys.readouterr().err == f"hands: {reason}\n"
+    [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
+    assert (refused["outcome"], refused["error"], refused["facts"]["model_flag"]) == ("failed", f"CannotStart: {reason}", given)
 
 
 def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_settings_are_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -238,7 +257,7 @@ def test_a_start_says_the_model_flag_it_was_given_though_refused_before_the_sett
     home = Home(tmp_path)
     monkeypatch.setattr(talkkey, "granted", lambda: False)
     monkeypatch.setattr(talkkey, "ask", lambda: None)
-    for given in ((), ("--model", " claude-opus-5-5 ")):
+    for given in ((), ("--model", "claude-opus-5-5")):
         assert cli.main(["--home", str(home.root), "run", *given], machine=UNMANAGED, processes=processes()) == 1
     capsys.readouterr()
     starts = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
@@ -255,8 +274,8 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     # The level each run's owner held as it loaded: what nothing listens at yet, and what a restart then would carry.
     started: list[tuple[Level, Level]] = []
 
-    def door(_home: Home, _pin: pinned.Pin, _machine: configdir.Machine, _environment: Mapping[str, str], model: OfferedModel | None, _run_start: Start) -> config.Settings:
-        return config.Settings(None, Config(), model)
+    def door(_home: Home, _pin: pinned.Pin, _machine: configdir.Machine, _environment: Mapping[str, str], model: str | None, _run_start: Start) -> config.Settings:
+        return config.Settings(None, Config(), None if model is None else cli.model_flag(model))
 
     class Execed(Exception):
         pass
