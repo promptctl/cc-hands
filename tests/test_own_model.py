@@ -120,12 +120,13 @@ def test_a_model_on_a_home_a_start_would_refuse_is_refused_before_it_is_written(
     assert home.config.read_text() == SPOKEN_FILE
 
 
-def test_a_model_chosen_on_a_file_that_is_not_toml_is_refused_naming_the_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("held", "refused"), [("[llm\n", "not TOML"), ('llm = "claude"\n', "llm should be a table")])
+def test_a_model_chosen_on_a_file_it_cannot_be_set_in_is_refused_naming_the_file(tmp_path: Path, held: str, refused: str) -> None:
     home = Home(tmp_path)
-    home.config.write_text("[llm\n")
-    with pytest.raises(Rejected, match=f"^{home.config}: not TOML"):
+    home.config.write_text(held)
+    with pytest.raises(Rejected, match=f"^{home.config}: {refused}"):
         _own(home).weigh("claude-opus-5-5")
-    assert home.config.read_text() == "[llm\n"
+    assert home.config.read_text() == held
 
 
 def test_a_save_by_hand_after_the_choice_was_weighed_is_not_written_over(tmp_path: Path) -> None:

@@ -41,6 +41,7 @@ from typing import cast
 from urllib.parse import urlsplit
 
 import tomlkit
+from tomlkit.exceptions import ParseError
 
 from hands.brain import configdir, pinned
 from hands.clock import Clock
@@ -224,13 +225,20 @@ class ModelChoice:
 
 
 def _with_model(home: Home, held: bytes | None, model: OfferedModel) -> bytes:
-    # Only a file that is TOML, its [llm] a table where there is one, has a model to set; one that is not is refused
-    # naming the file.
-    _file(home, held, lambda text: _table(_toml(text), "llm"))
-    document = tomlkit.parse(b"" if held is None else held)
-    llm = cast(dict[str, object], document.setdefault("llm", tomlkit.table()))
+    document, llm = _file(home, held, partial(_opened, name="llm"))
     llm["model"] = model
     return tomlkit.dumps(document).encode()
+
+
+def _opened(text: str, name: str) -> tuple[tomlkit.TOMLDocument, dict[str, object]]:
+    """The file as an edit takes it, its every other line kept as written, and its table `name`, made where it has none;
+    raises Rejected where it is not TOML or `name` is no table, so an edit is made only to a file it can be made to."""
+    try:
+        document = tomlkit.parse(text)
+    except ParseError as error:
+        raise Rejected(f"not TOML: {error}") from error
+    document.setdefault(name, tomlkit.table())
+    return document, cast(dict[str, object], _table(document, name))
 
 
 # [LAW:single-enforcer] held by every write of a config.toml, whichever choice makes it, so no two pass `_keep`'s check
@@ -361,17 +369,15 @@ class SampleLines:
         # settings a start would take.
         _, kept = _file(self._home, held, partial(_crossed, model=self._running.model))
         key = kept[voice].key if voice in kept else str(voice)
-        edited = _with_line(held, key, line.strip())
+        edited = _with_line(self._home, held, key, line.strip())
         # What is written is taken as a start takes it, so the file never holds a key the next start refuses.
         _settings(self._home, edited, self._running.model)
         _keep(self._home, held, edited)
         return SampleLine(key, line.strip())
 
 
-def _with_line(held: bytes | None, key: str, line: str) -> bytes:
-    # Only read once `_crossed` has taken the file, so it is TOML and [sample_lines], where there is one, is a table.
-    document = tomlkit.parse(b"" if held is None else held)
-    lines = cast(dict[str, object], document.setdefault("sample_lines", tomlkit.table()))
+def _with_line(home: Home, held: bytes | None, key: str, line: str) -> bytes:
+    document, lines = _file(home, held, partial(_opened, name="sample_lines"))
     if line:
         # Set in place, so a line edited keeps its place in the table.
         lines[key] = line
