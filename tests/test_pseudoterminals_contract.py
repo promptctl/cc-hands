@@ -1,13 +1,11 @@
 """The pseudoterminals contract (pseudoterminalcontract.py), kept by FakePseudoterminals."""
 
-import errno
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from fakechildren import NOT_THERE, Refused
-from fakepseudoterminals import Asked, FakePseudoterminals, Shows
+from fakepseudoterminals import NOT_FOUND, NOT_RUNNABLE, Asked, FakePseudoterminals, Shows
 from pseudoterminalcontract import VARIABLE, PseudoterminalsContract
 
 
@@ -40,11 +38,11 @@ class FakeWorld:
         return name
 
     def unfound(self) -> str:
-        self.fake.programs["absent"] = NOT_THERE
+        self.fake.programs["absent"] = NOT_FOUND
         return "absent"
 
     def unrunnable(self, name: str) -> str:
-        self.fake.programs[name] = Refused(errno.EACCES)
+        self.fake.programs[name] = NOT_RUNNABLE
         return name
 
 
@@ -63,7 +61,7 @@ async def test_a_start_of_a_program_the_test_stands_in_for_none_of_is_the_tests_
 
 
 async def test_each_start_is_kept_as_its_program_is_handed_it(tmp_path: Path) -> None:
-    fake = FakePseudoterminals({"claude": NOT_THERE, "sh": Shows(lambda _asked: "")})
+    fake = FakePseudoterminals({"claude": NOT_FOUND, "sh": Shows(lambda _asked: "")})
     await fake.start(["claude", "--print"], tmp_path, {"HOME": "/h"})
     await fake.start(["sh"], tmp_path, {})
     assert fake.asked == [

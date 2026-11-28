@@ -4,12 +4,11 @@ The brain and the smoke test's working session both run so; what each runs, and 
 is theirs to say.
 
 [LAW:effects-at-boundaries] `Pseudoterminals` is the way hands runs a program so: `SpawnedPseudoterminals` on the
-processes SpawnedChildren starts, built at the root (hands.daemon.cli.entry), and tests/fakepseudoterminals.py in
-tests, the two held to one contract (tests/pseudoterminalcontract.py).
+processes SpawnedChildren starts, named only at the root and where an exception is marked (test_children_boundary.py),
+and tests/fakepseudoterminals.py in tests, the two held to one contract (tests/pseudoterminalcontract.py).
 """
 
 import asyncio
-import errno
 import fcntl
 import os
 import pty
@@ -26,7 +25,7 @@ from typing import Protocol
 from hands.core.session import ESCAPES
 from hands.clock import Clock
 from hands.sessions import wide
-from hands.sessions.child import Ending, Lost, NeverStarted, Running, SpawnedChildren, Terminal, Unreaped
+from hands.sessions.child import Command, Ending, Lost, NeverStarted, Running, SpawnedChildren, Terminal, Unreaped
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -103,8 +102,10 @@ class Pseudoterminals(Protocol):
     """What runs a program on a pseudo-terminal of hands' own, as a terminal emulator runs one."""
 
     async def start(self, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
-        """Run `argv` in `cwd` and `environment`, its TERM a terminal's: never started where its program is not on the
-        environment's PATH, or the OS would not start it."""
+        """Run `argv` in `cwd` and `environment`, its TERM a terminal's, as a terminal's shell runs a command: a program
+        the shell cannot run is said on the terminal, which ends 127 where it is not there and 126 where it cannot be
+        run. Never started where the OS would not start the terminal's shell, in a directory that is not there among
+        them."""
         ...
 
 
@@ -144,51 +145,30 @@ class SpawnedPseudoterminals:
     children: SpawnedChildren
 
     async def start(self, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
-        match _found(argv[0], environment):
-            case str() as program:
-                return await _on_terminal(self.children, [program, *argv[1:]], cwd, environment)
-            case refused:
-                return refused
-
-
-def _found(program: str, environment: Mapping[str, str]) -> str | NeverStarted:
-    """`program` as a start of it finds it, as execvp does: itself where it names a path, else the first of its name on
-    `environment`'s PATH that may be run. [LAW:no-silent-failure] the shell that takes the terminal for its session runs
-    whatever follows it, so a program it could not run is refused here, with the error the OS refuses a start of it
-    with, and never seen as a shell exiting 127."""
-    candidates = [program] if os.sep in program else [os.path.join(folder, program) for folder in os.get_exec_path(dict(environment))]
-    for candidate in candidates:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    # As execvp refuses: EACCES where one is there that may not be run, else ENOENT.
-    code = errno.EACCES if any(os.path.exists(candidate) for candidate in candidates) else errno.ENOENT
-    # [LAW:one-source-of-truth] the OSError the OS's code makes, FileNotFoundError for ENOENT among them.
-    return NeverStarted(OSError(code, os.strerror(code), program))
-
-
-async def _on_terminal(children: SpawnedChildren, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode | NeverStarted:
-    """Run `argv` in `cwd` and `environment` on a pseudo-terminal of hands' own, as a terminal emulator runs a program."""
-    master, slave = pty.openpty()
-    closed: queue.SimpleQueue[None] = queue.SimpleQueue()
-    try:
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-        # [LAW:no-ambient-temporal-coupling] read before the child starts, so nothing that can fail comes between its
-        # start and the read of its terminal; the read closes the master once no process holds the slave.
-        terminal = _Terminal(master, closed)
-    except BaseException:
-        os.close(master)
-        os.close(slave)
-        raise
-    try:
-        started = children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": TERM}, Terminal(slave, closed))
-    finally:
-        # The child holds its own: the read ends once it, and whatever it started, have let go of theirs.
-        os.close(slave)
-    match started:
-        case NeverStarted():
-            return started
-        case Running():
-            return _Held(started, terminal)
+        # [LAW:single-enforcer] the program's own command refused as a run of it is, an empty one among them, which the
+        # shell it runs under would take as nothing to run. Whether it can be run is the shell's exec's to say, alone.
+        Command(tuple(argv), cwd, environment)
+        master, slave = pty.openpty()
+        closed: queue.SimpleQueue[None] = queue.SimpleQueue()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+            # [LAW:no-ambient-temporal-coupling] read before the child starts, so nothing that can fail comes between its
+            # start and the read of its terminal; the read closes the master once no process holds the slave.
+            terminal = _Terminal(master, closed)
+        except BaseException:
+            os.close(master)
+            os.close(slave)
+            raise
+        try:
+            started = self.children.start(_holding_terminal(os.ttyname(slave), argv), cwd, {**environment, "TERM": TERM}, Terminal(slave, closed))
+        finally:
+            # The child holds its own: the read ends once it, and whatever it started, have let go of theirs.
+            os.close(slave)
+        match started:
+            case NeverStarted():
+                return started
+            case Running():
+                return _Held(started, terminal)
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:

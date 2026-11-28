@@ -154,10 +154,10 @@ def _at_once(asked: Asked, answer: Answer) -> Outcome:
             return outcome
 
 
-def never_started(refused: Refused, program: str) -> NeverStarted:
-    """A start of `program` the OS refused, as `refused` says: [LAW:one-source-of-truth] with the OSError the OS's code
-    makes, FileNotFoundError for ENOENT among them."""
-    return NeverStarted(OSError(refused.errno, os.strerror(refused.errno), program))
+def never_started(refused: Refused, named: str) -> NeverStarted:
+    """A start the OS refused, as `refused` says, naming the file `named` it could not have: [LAW:one-source-of-truth]
+    with the OSError the OS's code makes, FileNotFoundError for ENOENT among them."""
+    return NeverStarted(OSError(refused.errno, os.strerror(refused.errno), named))
 
 
 def _killed(limit: float, out: bytes, err: bytes) -> Ran:

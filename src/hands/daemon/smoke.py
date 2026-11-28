@@ -387,7 +387,12 @@ async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -
         # Read beside the daemon, as its sweep reads them, not from its registry; a file being written is read again
         # at the next poll.
         running, _ = live(smoked.processes, home)
-        return joined(running, session.pid, smoked.processes.table())
+        if (member := joined(running, session.pid, smoked.processes.table())) is not None:
+            return member
+        # [LAW:no-silent-failure] a session that ended unjoined never joins: said at once, with how it ended.
+        if session.exit.done():
+            raise NotReached("joined", f"`{claude}` started in {folder} {child.said(session.exit.result())} before it joined hands; it showed:\n{session.shown()}")
+        return None
 
     member = await until(
         smoked.clock, "joined", JOIN_SECONDS, found,

@@ -1,7 +1,8 @@
 """The contract every Pseudoterminals keeps, run against the fake (test_pseudoterminals_contract.py) and
 SpawnedPseudoterminals, on real terminals (test_pseudoterminals_contract_spawned.py): a program shows what it drew and
 ends as it exited, run in the directory and the environment it was given, on a terminal's TERM; one that runs on is
-stopped when asked; and a program that is not there, or cannot be run, never starts."""
+stopped when asked; a program that is not there, or cannot be run, is said so on the terminal, which ends as a shell
+does; and a terminal in a directory that is not there never starts."""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -81,16 +82,21 @@ class PseudoterminalsContract:
         assert await session.stop() == Stopped(Stop(STOP_SECONDS))
         assert await session.exit == Stopped(Stop(STOP_SECONDS))
 
-    async def test_a_program_that_is_not_there_never_starts(self, world: World) -> None:
-        match await world.pseudoterminals.start([world.unfound()], world.folder, world.environment):
-            case NeverStarted(error=FileNotFoundError()):
-                pass
-            case other:
-                pytest.fail(f"started as {other}")
+    async def test_a_program_that_is_not_there_is_said_so_and_its_terminal_ends_127(self, world: World) -> None:
+        program = world.unfound()
+        session = await started(world, program)
+        assert await session.exit == Exited(127)
+        assert program in session.shown()
 
-    async def test_a_program_that_cannot_be_run_never_starts(self, world: World) -> None:
-        match await world.pseudoterminals.start([world.unrunnable("unrunnable")], world.folder, world.environment):
-            case NeverStarted(error=PermissionError()):
+    async def test_a_program_that_cannot_be_run_is_said_so_and_its_terminal_ends_126(self, world: World) -> None:
+        program = world.unrunnable("unrunnable")
+        session = await started(world, program)
+        assert await session.exit == Exited(126)
+        assert program in session.shown()
+
+    async def test_a_terminal_in_a_directory_that_is_not_there_never_starts(self, world: World) -> None:
+        match await world.pseudoterminals.start([world.program("draws", "", 0)], world.folder / "gone", world.environment):
+            case NeverStarted(error=FileNotFoundError()):
                 pass
             case other:
                 pytest.fail(f"started as {other}")

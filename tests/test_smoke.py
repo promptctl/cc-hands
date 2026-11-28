@@ -16,9 +16,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from fakechildren import NOT_THERE
 from fakeparties import main_on_fakes
-from fakepseudoterminals import FakePseudoterminals
+from fakepseudoterminals import FakePseudoterminals, Shows
 from hands.clock import SYSTEM
 from hands.core.effects import Fritter, Summarise, Text, Type, ToldByStop
 from hands.core.session import PromptId, PromptText, SessionId
@@ -271,17 +270,17 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
     async def synthesized(_children: Children, _text: str) -> bytes:
         return b""
 
-    # The stand-in claude is refused, as one that is not there is, so the run stops at joined.
-    terminals = FakePseudoterminals({str(real): NOT_THERE})
+    # The stand-in claude exits at once, so the run stops at joined.
+    terminals = FakePseudoterminals({str(real): Shows(lambda _asked: "a stand-in", 0)})
     monkeypatch.setattr(smoke, "_synthesized", synthesized)
     assert main_on_fakes(["--home", str(home.root), "smoke"], processes=up(now), pseudoterminals_on=lambda _clock, _emit: terminals) == 1
-    return capsys.readouterr().out.splitlines()[-1], [dict(asked.environment) for asked in terminals.asked]
+    [failed] = [line for line in capsys.readouterr().out.splitlines() if line.startswith("FAILED")]
+    return failed, [dict(asked.environment) for asked in terminals.asked]
 
 
 def stopped_by_the_stand_in(tmp_path: Path) -> str:
-    """The line a run stand_in_run made ends on, once it has started its claude."""
-    claude = tmp_path / "real" / "claude"
-    return f"FAILED joined: {claude} could not be started: [Errno 2] No such file or directory: '{claude}'"
+    """The line a run stand_in_run made fails with, once it has started its claude."""
+    return f"FAILED joined: `{tmp_path / 'real' / 'claude'}` started in {(tmp_path / 'home' / FOLDER).resolve()} exited 0 before it joined hands; it showed:"
 
 
 def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:

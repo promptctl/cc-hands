@@ -1,23 +1,27 @@
-"""hands starts its children through SpawnedChildren, and only a composition root names it, binding it as what makes
-every command's children: so every other module, and every test of one, runs on whatever children it is given
-(tests/fakechildren.py)."""
+"""hands starts its children through SpawnedChildren, and the programs it runs on terminals of its own through
+SpawnedPseudoterminals, and only a composition root names either, binding it as what makes every command's: so every
+other module, and every test of one, runs on whatever children and terminals it is given (tests/fakechildren.py,
+tests/fakepseudoterminals.py)."""
 
 import ast
 from pathlib import Path
+
+import pytest
 
 import hands
 from imports import imported, qualified
 from test_processes_boundary import EXCEPTION, marked
 
 SPAWNED = "hands.sessions.child.SpawnedChildren"
-# Where SpawnedChildren is named: the root every command goes through.
+# The real adapters that start processes, each named only at the root every command goes through.
+ADAPTERS = (SPAWNED, "hands.sessions.pseudoterminal.SpawnedPseudoterminals")
 ROOT = "daemon/cli.py"
 
 
-def names(root: Path) -> dict[str, list[int]]:
-    """Each module under the package `root` that names SpawnedChildren, but in a type or where it is marked as the
+def names(root: Path, adapter: str) -> dict[str, list[int]]:
+    """Each module under the package `root` that names `adapter`, qualified, but in a type or where it is marked as the
     exception it is, by its path from `root`, with the lines it names it on: a module that builds one, or hands the class
-    on to build them, makes children of its own."""
+    on to build them, starts processes of its own."""
 
     def found(path: Path) -> list[int]:
         source = path.read_text()
@@ -26,7 +30,7 @@ def names(root: Path) -> dict[str, list[int]]:
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         # A type names what a value is, and makes nothing.
         typed = {id(node) for annotation in annotations(tree) for node in ast.walk(annotation)}
-        uses = (node for node in ast.walk(tree) if isinstance(node, ast.Name | ast.Attribute) and id(node) not in typed and qualified(node, named) == SPAWNED)
+        uses = (node for node in ast.walk(tree) if isinstance(node, ast.Name | ast.Attribute) and id(node) not in typed and qualified(node, named) == adapter)
         return sorted(use.lineno for use in uses if not marked(use, parents, source.splitlines()))
 
     return {path.relative_to(root).as_posix(): lines for path in sorted(root.rglob("*.py")) if (lines := found(path))}
@@ -46,8 +50,9 @@ def annotations(tree: ast.Module) -> list[ast.expr]:
     return found
 
 
-def test_only_the_root_names_spawned_children() -> None:
-    assert list(names(Path(hands.__file__).parent)) == [ROOT]
+@pytest.mark.parametrize("adapter", ADAPTERS)
+def test_only_the_root_names_an_adapter_that_starts_processes(adapter: str) -> None:
+    assert list(names(Path(hands.__file__).parent, adapter)) == [ROOT]
 
 
 def test_the_check_finds_each_unmarked_naming_that_makes_children(tmp_path: Path) -> None:
@@ -62,4 +67,4 @@ def test_the_check_finds_each_unmarked_naming_that_makes_children(tmp_path: Path
         "typed.py": "from hands.sessions.child import SpawnedChildren\ndef f(spawned: SpawnedChildren) -> SpawnedChildren: ...\nkept: SpawnedChildren\n",
     }.items():
         (root / "sessions" / name).write_text(source)
-    assert names(root) == {"sessions/aliased.py": [2], "sessions/bare.py": [2], "sessions/handed.py": [2], "sessions/relative.py": [3]}
+    assert names(root, SPAWNED) == {"sessions/aliased.py": [2], "sessions/bare.py": [2], "sessions/handed.py": [2], "sessions/relative.py": [3]}

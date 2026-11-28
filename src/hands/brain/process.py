@@ -2149,10 +2149,10 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
         by = clock.now() + START_SECONDS
         try:
-            # [LAW:effects-at-boundaries] exception: the brain builds the children it runs tmux with and starts its pane's
-            # client on, where it is to be handed them, until promptctl-testing-c3u.fhu.
-            spawned = SpawnedChildren(clock, record)
-            running = await in_tmux(spawned, SpawnedPseudoterminals(spawned), station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
+            # [LAW:effects-at-boundaries] exception: the brain builds the children it runs tmux with and the terminals it
+            # starts its pane's client on, where it is to be handed them, until promptctl-testing-c3u.fhu.
+            terminals = SpawnedPseudoterminals(spawned := SpawnedChildren(clock, record))
+            running = await in_tmux(spawned, terminals, station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper, shell = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)
