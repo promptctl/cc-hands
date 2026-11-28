@@ -6,7 +6,7 @@
 //
 // The phone's key reaches it in its address's fragment, as it reaches a page, so it asks hands through hands.js as a page does.
 
-import { asked, askedForBytes, patiently, unanswered, wording } from "/hands.js";
+import { PAGE_OPEN, asked, askedForBytes, patiently, unanswered, wording } from "/hands.js";
 import { BANDS, EMBEDDING_SIZE, MEL_WINDOW, RATE, resampler, wakeStream } from "/wakestream.js";
 
 // The models by the role each plays in wakeStream's steps, which is the name hands serves each by.
@@ -26,20 +26,20 @@ function settingsOf(body) {
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
 
-// What may pass is waited for and never given up on (`patiently`): on a cold first run `/wake/settings` waits on the models'
-// fetch for longer than any one request is given, and a fetch that failed is fetched again as hands is next asked, while a
-// `failed` is final, so a page that gave up there could only be recovered by reloading it. Each wait is a `waiting` with
-// why, and its end a `waiting` with no `why`.
+// What may pass is waited for and never given up on (`patiently`), for as long as the page is open, which is the worker's
+// life: on a cold first run `/wake/settings` waits on the models' fetch for longer than any one request is given, and a
+// fetch that failed is fetched again as hands is next asked, while a `failed` is final, so a page that gave up there could
+// only be recovered by reloading it. Each wait is a `waiting` with why, and its end a `waiting` with no `why`.
 const waitingFor = why => postMessage({ kind: "waiting", why });
 
 async function fileOf(path) {
-  const outcome = await patiently(() => askedForBytes(path), waitingFor);
+  const outcome = await patiently(PAGE_OPEN, signal => askedForBytes(signal, path), waitingFor);
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   return outcome.body;
 }
 
 async function load() {
-  const outcome = await patiently(() => asked("GET", "/wake/settings"), waitingFor);
+  const outcome = await patiently(PAGE_OPEN, signal => asked(signal, "GET", "/wake/settings"), waitingFor);
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   const settings = settingsOf(outcome.body);
   const ort = await import(settings.runtime);

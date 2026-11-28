@@ -444,3 +444,13 @@ class NotTyped[I: Input]:
     session: SessionId
     input: I
     reason: str
+
+
+@dataclass(frozen=True)
+class MaybeTyped[I: Input]:
+    """The session's writer was handed the input and never said whether it typed it: it may be in the session, where
+    typing it again would type it twice. `reason` says why no answer came."""
+
+    session: SessionId
+    input: I
+    reason: str

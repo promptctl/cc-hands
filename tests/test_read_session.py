@@ -342,6 +342,17 @@ async def test_the_turn_a_running_session_is_on_is_not_summarised_until_it_is_do
     assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1"]
 
 
+async def test_a_turn_opened_at_the_prompt_before_busy_is_read_is_not_summarised_as_if_it_were_over(tmp_path: Path) -> None:
+    """The listing says such a session is working, and the reading says so too, so half a turn is not summarised for good."""
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("".join(f"{record}\n" for record in hour(turns=2, steps=3)))
+    sessions = await at_prompt(await joined(VirtualClock(), transcript))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p2"), text="do task 2"))
+
+    answer = await summaries(sessions, SummaryStore(Summaries(tmp_path / "summaries.db")))
+    assert answer["working"] is True and answer["unsummarised"] == 1
+
+
 async def test_a_session_at_its_prompt_while_a_subagent_works_in_the_background_has_its_last_turn_summarised(tmp_path: Path) -> None:
     """Claude Code says busy while the subagent works, but the turn that launched it was told: it is over."""
     transcript = tmp_path / "s1.jsonl"

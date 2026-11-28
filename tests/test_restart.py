@@ -27,6 +27,7 @@ from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.wide import WideEvent
+from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import processes
 
 NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
@@ -372,7 +373,7 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
     monkeypatch.setattr(cli, "start_indicator", start_indicator)
     monkeypatch.setattr(cli, "reap", kept)
     monkeypatch.setattr(cli, "loaded", loaded)
-    assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)], processes=processes()) == 0
+    assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)], machine=UNMANAGED, processes=processes()) == 0
     assert steps == ["retired", "started"]
     with pytest.raises(ChildProcessError):
         os.waitpid(previous, os.WNOHANG)

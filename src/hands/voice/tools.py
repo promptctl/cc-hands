@@ -24,21 +24,19 @@ from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
-from hands.core.progress import Doing, said
-from hands.core.session import Blocker, Membership, CommandName, Opened, Held, Idle, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
-from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
+from hands.core.session import Membership, CommandName, KEYSTROKES, PromptText, RequestId, Resolution, Session, SessionId, Staged
 from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
 from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
-from hands.core.spoken import counted
+from hands.core.standing import phase, spoken_state, standing_of
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.processes import Processes
-from hands.sessions.child import Children
 from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, Lit, LitFailed, Untracked
-from hands.sessions import catchup, closesession, startsession, tmux
+from hands.sessions import catchup, closesession, panes, startsession
+from hands.sessions.terminals import Terminals
 from hands.sessions.audit import Record
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Rejected
@@ -46,7 +44,6 @@ from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions import attention as settings
-from hands.core import status
 from hands.core.place import Modality
 from hands.voice.listening import Level, Listening
 from hands.voice.trigger import PhoneLevel, described, described_at_phone
@@ -78,14 +75,14 @@ _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 
 def acts(
-    sessions: Sessions, processes: Processes, store: SummaryStore, home: Home, recounts: Recounts, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: OwnModel, voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str],
+    sessions: Sessions, terminals: Terminals, processes: Processes, store: SummaryStore, home: Home, recounts: Recounts, switch: Callable[[Modality], None], levels: Listening, at_phone: Callable[[], PhoneLevel | None], wake: Word, own: OwnModel, voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str],
     record: Record,
 ) -> list[Tool[Answer]]:
     """hands' own tools, in the order its schema lists them, each the act alone: [LAW:types-are-the-program] built with
     no player, no refocus and no cue, so none can speak a voice turn's line, wait on a heard line, or move the focus. A
     room act still sounds in the room, for any caller: hear_voices says voices, use_voice changes the voice hands speaks
     in, and Spotify plays. Every tool reads time on `sessions.clock`, the run's one clock. `environment` is the run's,
-    which says where tmux keeps its sockets and where tmux is.
+    which says where tmux keeps its sockets.
 
     [LAW:one-source-of-truth] the daemon serves the brain these through its `BrainDoor`, and the intermediary's eval
     (tests/test_intermediary.py) judges the prompt against them served the same way, so a tool added here is one the
@@ -93,14 +90,14 @@ def acts(
     """
     overlays = Overlays(home)
     return [
-        list_sessions_tool(sessions, processes, overlays, home, environment),
+        list_sessions_tool(sessions, terminals, processes, overlays, home, environment),
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts),
         expand_tool(sessions, recounts),
         *backlog_tools(sessions, store, Lit(sessions.children, environment)),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
-        read_screen_tool(sessions, processes, environment),
+        read_screen_tool(sessions, terminals, processes, environment),
         set_overlay_tool(sessions, overlays),
         *permission_tools(sessions),
         catch_up_tool(sessions, home),
@@ -112,12 +109,12 @@ def acts(
         *spotify_tools(spotify.Player(functools.partial(spotify.osascript, sessions.children)), catalogue),
         # A session is started by the daemon, in the environment hands was started in, which is the user's, and is started
         # once the registry holds it, so the brain can stage for it at once; it is closed once the registry no longer does.
-        start_session_tool(sessions.clock, processes, home, record, environment, sessions.live_members),
+        start_session_tool(sessions.clock, terminals, processes, home, record, environment, sessions.live_members),
         close_session_tool(processes, home, record, sessions),
     ]
 
 
-def list_sessions_tool(sessions: Sessions, processes: Processes, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool[Result]:
+def list_sessions_tool(sessions: Sessions, terminals: Terminals, processes: Processes, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool[Result]:
     async def list_sessions() -> Result:
         """List the running Claude Code sessions by name, what each is doing, and the permission mode each is in.
 
@@ -135,9 +132,9 @@ def list_sessions_tool(sessions: Sessions, processes: Processes, overlays: Overl
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
         listings = sessions.live()
-        panes, focus = await asyncio.gather(tmux.panes(sessions.children, processes, [listing.session.membership.pid for listing in listings], environment), _focus(home))
+        in_panes, focus = await asyncio.gather(panes.panes(terminals, processes, [listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
-            "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
+            "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, in_panes, strict=True)],
             "focus": focus,
         }
 
@@ -145,7 +142,7 @@ def list_sessions_tool(sessions: Sessions, processes: Processes, overlays: Overl
 
 
 
-def read_screen_tool(sessions: Sessions, processes: Processes, environment: Mapping[str, str]) -> Tool[Result]:
+def read_screen_tool(sessions: Sessions, terminals: Terminals, processes: Processes, environment: Mapping[str, str]) -> Tool[Result]:
     async def read_screen(session: str) -> Result:
         """What a session's terminal shows now, as text, read off the tmux pane it runs in.
 
@@ -161,10 +158,10 @@ def read_screen_tool(sessions: Sessions, processes: Processes, environment: Mapp
         live = sessions.live_session(id)
         if live is None:
             return {"error": f"no session {session} is running: list_sessions names the ones that are"}
-        [pane] = await tmux.panes(sessions.children, processes, [live.membership.pid], environment)
+        [pane] = await panes.panes(terminals, processes, [live.membership.pid], environment)
         match pane:
             case Pane(socket=socket, id=pane_id):
-                match await tmux.shown(sessions.children, environment, socket, pane_id):
+                match await terminals.shown(socket, pane_id):
                     case str(screen):
                         return {"screen": screen, "tmux": _in_pane(pane)}
                     case Unanswered(reason=reason):
@@ -246,12 +243,10 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
         end = len(spans) if before == 0 else before - 1
         start = max(0, end - TURNS_PAGE)
         live = sessions.live_session(member.id)
-        # [LAW:one-source-of-truth] whether a session's last turn is over is the registry's to say: the file cannot tell
-        # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
-        # status has not been read yet may be mid-turn, and a summary of half a turn would be kept for good. One whose
-        # only work is subagents in the background is at its prompt too, though Claude Code says busy.
-        delegates = live is not None and delegating(live)
-        over = live is None or isinstance(live.state, Idle) or delegates
+        # [LAW:one-source-of-truth] the file cannot tell a turn that ended from one waiting on a long call, so whether
+        # the last turn is over is the standing's to say: a summary of half a turn would be kept for good.
+        stands = None if live is None else standing_of(live)
+        over = phase(stands) in ("ended", "over")
         entries: list[dict[str, object]] = []
         due: list[Due] = []
         for number in range(start + 1, end + 1):
@@ -267,7 +262,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool[Result]]
             "turns": entries,
             "earlier": start,
             "unsummarised": len(due),
-            "working": live is not None and isinstance(live.state, Running) and not delegates,
+            "working": phase(stands) == "mid-turn",
         }
 
     async def read_turn(session: str, turn: int, since: str = "") -> Result:
@@ -479,64 +474,9 @@ def describe_listing(listing: Listing[Session]) -> dict[str, str]:
     return {
         "id": listing.session.membership.id,
         "name": identifier(listing),
-        "state": _spoken_state(listing.session),
+        "state": spoken_state(listing.session),
         "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
     }
-
-
-def _spoken_state(session: Session) -> str:
-    # The dialog on its screen is the first it asked; the rest are queued beneath it.
-    match (next(iter(session.dialogs), None), session.state, session.turn):
-        case (Held(on=on), _, _):
-            # Said by what it asks on its screen, though the status saying it waits may not have been read yet.
-            return _waiting_on(on)
-        case (None, Running(status=Busy()), Opened(latest=Doing() as latest)):
-            # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
-            # notes are this listing at the tail of its every request.
-            return f"working; the last thing it set out to do: {said((latest,))}"
-        case (None, Idle(status=status.Idle()), Opened()):
-            # A turn opened at its prompt, before the status that says it is busy is read.
-            return "working"
-        case (None, _, _) if delegating(session):
-            # No turn runs: a prompt typed at it runs at once, and each subagent's report opens a turn of its own.
-            return f"idle, with {counted(len(session.background), 'subagent')} it started in the background still working"
-        case (None, state, _):
-            return _stated(state)
-
-
-def _stated(state: SessionState) -> str:
-    match state:
-        case Unreported():
-            return "not reported yet"
-        case Idle(status=Shell()):
-            # No turn runs: it does nothing until that task ends and its notification opens one.
-            return "idle, with a shell command it started in the background still running"
-        case Idle():
-            return "idle"
-        case Running(status=going):
-            return _running(going)
-
-
-def _running(going: Going) -> str:
-    match going:
-        case Waiting(reason=UnknownReason(name=name)):
-            return f"waiting at a dialog: {name}"
-        case Waiting(reason=reason):
-            return f"waiting at a dialog: {reason}"
-        case Busy():
-            return "working"
-        case Unknown(name=name):
-            return f"in a state hands does not know: {name}"
-
-
-def _waiting_on(on: Blocker) -> str:
-    match on:
-        case Permission(tool=tool):
-            return f"waiting for permission to use {tool}"
-        case Question():
-            return "waiting for the user to answer its question"
-        case Plan():
-            return "waiting for the user to approve its plan"
 
 
 def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool[Result]:
@@ -555,7 +495,7 @@ def tell_turn_tool(sessions: Sessions, recounts: Recounts) -> Tool[Result]:
         if live is None:
             return {"error": f"no running session has the id {id!r}; take one from list_sessions"}
         name = spoken_name(sessions, id)
-        now = _spoken_state(live)
+        now = spoken_state(live)
         match recounts.of(id):
             case None:
                 # [LAW:no-silent-failure] said as what it is, never as a turn that did nothing.
@@ -1000,7 +940,7 @@ async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind
     return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
-def start_session_tool(clock: Clock, processes: Processes, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool[Result]:
+def start_session_tool(clock: Clock, terminals: Terminals, processes: Processes, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool[Result]:
     """[LAW:nothing-unseen] each start is its own session.start event, inside the call's."""
 
     async def start_session(folder: str, model: str = "") -> Result:
@@ -1013,7 +953,7 @@ def start_session_tool(clock: Clock, processes: Processes, home: Home, record: R
             model: The model it starts on, as the user named it (opus, sonnet, haiku, or a model id). Empty for Claude Code's own default.
         """
         try:
-            started = await startsession.start(home, Children(clock, record), processes, record, Path(folder), model or None, environment, members)
+            started = await startsession.start(home, clock, terminals, processes, record, Path(folder), model or None, environment, members)
         except startsession.NotStarted as why:
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}
@@ -1033,7 +973,7 @@ def close_session_tool(processes: Processes, home: Home, record: Record, session
                     return {"closed": name}
                 case closesession.LeftRunning(session=found):
                     # [LAW:one-source-of-truth] what it was found doing, as list_sessions says it.
-                    return {"left_running": name, "state": _spoken_state(found)}
+                    return {"left_running": name, "state": spoken_state(found)}
         except closesession.NotClosed as why:
             return {"error": str(why)}
 

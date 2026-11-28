@@ -1,6 +1,6 @@
 {
   "name": "hands",
-  "description": "The skills hands gives its brain, each made for one of the brain's jobs.",
+  "description": "The skills hands gives its brain, each made for one of the brain's jobs, and the brain's report to hands of the model it runs on.",
   "author": {
     "name": "Brandon Fryslie"
   }

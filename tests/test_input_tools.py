@@ -19,8 +19,8 @@ from hands.core.session import CommandName, Membership, PromptId, PromptText, Re
 from hands.core.turn import AgentId
 from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
-from hands.sessions.typing import Untyped
-from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
+from hands.sessions.terminals import Unconfirmed, Untyped
+from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, TypingUnconfirmed, tail
 from hands.sessions.wide import begun, unit
 from hands.sessions.registry import Sessions
 from hands.voice.modelswitch import Switches
@@ -236,6 +236,37 @@ async def test_a_send_fritter_could_not_type_is_said_with_the_draft_it_was(tmp_p
     assert [entry for entry in recorded if isinstance(entry, TypingFailed)] == [TypingFailed(typing.effect, "fritter did not type into session s1: cannot write to the session")]
 
 
+async def test_a_send_fritter_never_answered_for_is_said_to_have_maybe_been_sent_so_it_is_not_sent_twice(tmp_path: Path) -> None:
+    def unanswered(_: Type[Input]) -> None:
+        raise Unconfirmed("the fritter wrapping 4242 was asked to type and never said whether it did: timed out")
+
+    recorded: list[Entry] = []
+    sessions, id = await wrapped(tmp_path, unanswered, recorded.append)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    assert await call(tools, "send_draft", session=id) == {
+        "readback": "The draft for cc-hands may have been sent, and is no longer staged: the fritter wrapping 4242 was asked to type and "
+        "never said whether it did: timed out. Read cc-hands before sending it again, which may send it twice. It said: run the tests"
+    }
+    # The log pairs the send with its unknown end, which is how recall tells a send that may have arrived.
+    [typing] = [entry for entry in recorded if isinstance(entry, Typing)]
+    assert [entry for entry in recorded if isinstance(entry, TypingUnconfirmed | TypingFailed)] == [TypingUnconfirmed(typing.effect, "the fritter wrapping 4242 was asked to type and never said whether it did: timed out")]
+
+
+async def test_a_send_cancelled_while_it_is_typed_is_logged_as_maybe_typed_and_stays_cancelled(tmp_path: Path) -> None:
+    def cancelled(_: Type[Input]) -> None:
+        raise asyncio.CancelledError
+
+    recorded: list[Entry] = []
+    sessions, id = await wrapped(tmp_path, cancelled, recorded.append)
+    tools = draft_tools(sessions)
+    await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
+    with pytest.raises(asyncio.CancelledError):
+        await call(tools, "send_draft", session=id)
+    [typing] = [entry for entry in recorded if isinstance(entry, Typing)]
+    assert [entry for entry in recorded if isinstance(entry, TypingUnconfirmed | TypingFailed)] == [TypingUnconfirmed(typing.effect, "the typing was stopped before its writer said whether it typed: CancelledError()")]
+
+
 async def test_a_session_nobody_wrapped_is_refused_by_name_and_its_draft_survives(tmp_path: Path) -> None:
     sessions, id = await joined(tmp_path)
     tools = draft_tools(sessions)
@@ -316,12 +347,14 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await call(tools, "send_draft", session=id)
     written = [json.loads(line) for line in tail(path, 1000)[0]]
-    assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
-    assert written[-2]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
+    # Written before it is typed, and its end after: here, that its typist said it typed it.
+    assert [kind(line) for line in written][-3:] == ["Typing", "TypingConfirmed", "tool.run"]
+    assert written[-3]["effect"] == written[-2]["effect"]
+    assert written[-3]["effect"]["input"] == {"type": "Text", "prompt": "run the tests"}
     # Which writer typed it: the fritter that wrapped the session, or tmux in its pane.
-    assert written[-2]["effect"]["writer"] == {"type": "Fritter", "socket": str(tmp_path / "f.sock"), "pid": 4242}
+    assert written[-3]["effect"]["writer"] == {"type": "Fritter", "socket": str(tmp_path / "f.sock"), "pid": 4242}
     # What was typed is joined to the call that typed it by the call's span.
-    assert written[-2]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "send_draft"
+    assert written[-3]["span"]["span_id"] == written[-1]["span_id"] and written[-1]["facts"]["tool"] == "send_draft"
 
 
 async def test_a_command_with_blank_arguments_is_typed_without_them(tmp_path: Path) -> None:
@@ -377,6 +410,17 @@ async def test_a_command_fritter_could_not_type_is_said_with_why(tmp_path: Path)
     }
 
 
+async def test_a_command_tmux_never_answered_for_is_said_to_have_maybe_been_typed(tmp_path: Path) -> None:
+    def unanswered(_: Type[Input]) -> None:
+        raise Unconfirmed("tmux at /tmp/tmux-501/default was asked to type into pane %3 and never said whether it did: tmux was killed")
+
+    sessions, id = await wrapped(tmp_path, unanswered)
+    assert await call(keyboard_tools(sessions), "send_command", session=id, command="compact") == {
+        "readback": "/compact may have been typed into cc-hands: tmux at /tmp/tmux-501/default was asked to type into pane %3 and never said "
+        "whether it did: tmux was killed. Read cc-hands before typing it again."
+    }
+
+
 async def test_a_session_at_a_permission_dialog_is_sent_no_command(tmp_path: Path) -> None:
     typed: list[Type[Input]] = []
     sessions, id = await wrapped(tmp_path, typed.append)
@@ -420,8 +464,8 @@ async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path)
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
     await call([audited(SYSTEM, tool, record) for tool in keyboard_tools(sessions)], "send_command", session=id, command="compact")
     written = [json.loads(line) for line in tail(path, 1000)[0]]
-    assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
-    assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}
+    assert [kind(line) for line in written][-3:] == ["Typing", "TypingConfirmed", "tool.run"]
+    assert written[-3]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}
 
 
 async def test_an_act_served_in_a_voice_turn_says_hands_is_acting_as_it_is_called_and_answers_as_before(tmp_path: Path) -> None:

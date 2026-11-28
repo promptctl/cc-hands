@@ -1,6 +1,6 @@
 """What hands relies on of lit's writes and its export, as one contract held to two parties: the fake lit the unit layer
 plays (FakeLit in tests/test_backlogpage.py), in `make check`, and lit itself, in a workspace of its own, in the outside
-tier. The cases are written once, here, through hands' own adapter (hands.sessions.backlog), and each holder runs all of
+tests. The cases are written once, here, through hands' own adapter (hands.sessions.backlog), and each holder runs all of
 them against its own `project`, through its own `children`, so each asserts the same of both: that is what holds the fake to lit. A claim lit no
 longer keeps fails the run against lit, and the fake is changed to match.
 

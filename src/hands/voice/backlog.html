@@ -83,7 +83,7 @@
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
 <script type="module">
-import {asked, unanswered} from "/hands.js";
+import {PAGE_OPEN, asked, unanswered} from "/hands.js";
 
 const project = new URLSearchParams(location.search).get("project");
 const tree = document.getElementById("tree");
@@ -140,8 +140,8 @@ function answer(outcome, unknown) {
   if (outcome.kind === "answered") return outcome.body;
   throw new Error(`${outcome.kind === "lost" ? unknown : ""}${unanswered(outcome)}`);
 }
-const got = async path => answer(await asked("GET", path), "");
-const changed = async (path, sent, unknown) => answer(await asked("POST", path, sent), unknown);
+const got = async path => answer(await asked(PAGE_OPEN, "GET", path), "");
+const changed = async (path, sent, unknown) => answer(await asked(PAGE_OPEN, "POST", path, sent), unknown);
 
 // A job in its turn whose own outcome is its caller's: inTurn's queue goes on to the next job whatever this one meets.
 function turned(work) {

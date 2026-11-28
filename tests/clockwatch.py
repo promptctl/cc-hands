@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import CodeType
@@ -40,8 +40,9 @@ CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 # Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it
 # advances. test_pinned_brain.py, test_session_contract_pinned.py and test_terminal_contract_pinned.py are not among
 # those to move: they run a real Claude Code, and nothing tells them when it has done what they wait on; nor is
-# test_processes_contract_kernel.py, whose children's exec and exit the kernel's table alone says, polled on the machine's
-# time; nor are test_pages.py and test_phonewakepage.py, whose verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
+# test_terminals_contract_tmux.py, whose tmux server and programs say only by what they leave that they are up;
+# nor are test_pages.py and test_phonewakepage.py, whose verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it; nor is
+# test_proxy_connect.py, whose clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
 UNMOVED = frozenset({
     "conftest.py",
@@ -97,9 +98,10 @@ UNMOVED = frozenset({
     "test_pinned_brain.py",
     "test_pinnedfile_served.py",
     "test_playback.py",
-    "test_processes_contract_kernel.py",
+    "test_terminals_contract_tmux.py",
     "test_progress.py",
     "test_proxy.py",
+    "test_proxy_connect.py",
     "test_read_session.py",
     "test_readiness.py",
     "test_recall.py",
@@ -168,10 +170,14 @@ GIVEN = {"time.localtime": 0, "time.gmtime": 0, "time.ctime": 0, "time.asctime":
 # Waits handed their seconds at a place or by a keyword, which wait on none when handed none: a sleep of none is a yield.
 POLLED = {"time.sleep": (0, "secs"), "threading.Timer": (1, "interval"), "SystemClock.sleep": (1, "seconds"), "SystemClock.sleep_blocking": (1, "seconds"), "SystemClock.take": (2, "seconds")}
 
-# Waits that block on a C lock's timeout and read no Python clock, each with the place its timeout is passed. Every `acquire(timeout=)` is the scan's: Lock and RLock are C types no attribute reaches.
+# Waits handed a timeout, each with the place its timeout is passed: one reach when it waits, and none when it polls with
+# a timeout of none, whatever clock it reads inside, as a Semaphore's reads Python's even to poll, which is how a thread
+# pool asks whether a worker is idle. Every `acquire(timeout=)` of a Lock or an RLock is the scan's: they are C types no
+# attribute reaches.
 TIMED: dict[str, tuple[type, str, int, str]] = {
     "threading.Event.wait": (threading.Event, "wait", 0, "timeout"),
     "threading.Condition.wait": (threading.Condition, "wait", 0, "timeout"),
+    "threading.Semaphore.acquire": (threading.Semaphore, "acquire", 1, "timeout"),
     "threading.Thread.join": (threading.Thread, "join", 0, "timeout"),
 }  # fmt: skip
 
@@ -335,8 +341,9 @@ class Watch:
         # An xfail ran, and its report says skipped.
         self._skipped |= report.skipped and not hasattr(report, "wasxfail")
 
-    def pytest_deselected(self) -> None:
-        self._deselected = True
+    def pytest_deselected(self, items: Sequence[pytest.Item]) -> None:
+        # [LAW:dataflow-not-control-flow] what the hook carries decides, not that it fired: a run that deselects nothing may say so.
+        self._deselected |= bool(items)
 
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
         # The whole suite ran when every test module did, each test in it neither skipped nor deselected.

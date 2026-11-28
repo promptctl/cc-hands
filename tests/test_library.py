@@ -31,6 +31,7 @@ from hands.voice.player import Player
 from hands.voice.voices import Voices, source
 from hands.voice.voicechoice import DEFAULT, LibraryVoice, chosen, parse_voice
 from hands.daemon.run import CannotStart
+from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import processes
 
 LIBRARY_FILES = ["vctk/p225_023_enhanced.wav", "vctk/p226_023_enhanced.wav", "alba-mackenna/casual.wav", "alba-mackenna/casual.wav.1e68beda@240.safetensors"]
@@ -300,7 +301,7 @@ def test_the_daemons_run_starts_with_the_keychains_token_in_the_environment_the_
 
     monkeypatch.setattr(library, "_keychain_token", held)
     monkeypatch.setattr(cli, "run_daemon", run_daemon)
-    assert cli.main(["--home", str(tmp_path / "home"), "run"], processes=processes()) == 0
+    assert cli.main(["--home", str(tmp_path / "home"), "run"], machine=UNMANAGED, processes=processes()) == 0
     assert ran == ["from-the-keychain"]
 
 
@@ -311,7 +312,7 @@ def test_a_command_but_the_run_reads_no_keychain(tmp_path: Path, monkeypatch: py
         raise AssertionError("a command that fetches no voice read the keychain")
 
     monkeypatch.setattr(library, "_keychain_token", unread)
-    assert cli.main(["--home", str(tmp_path / "home"), "status"], processes=processes()) == 1
+    assert cli.main(["--home", str(tmp_path / "home"), "status"], machine=UNMANAGED, processes=processes()) == 1
 
 
 def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,5 +326,5 @@ def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(library, "_keychain_token", record)
     with pytest.raises(SystemExit):
-        cli.main(["--help"], processes=processes())
+        cli.main(["--help"], machine=UNMANAGED, processes=processes())
     assert reads == []

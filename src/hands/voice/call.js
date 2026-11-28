@@ -1,109 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<title>hands</title>
-<style>
-  :root {
-    --bg: #f4f2ee; --fg: #1d1c1a; --muted: #6b6862; --ring: #d9d5cd;
-    --idle: #2f2d2a; --live: #c2410c; --bad: #b91c1c;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #141312; --fg: #eeebe6; --muted: #9a958d; --ring: #2c2a27; --idle: #e9e5de; --live: #f97316; --bad: #f87171; }
-  }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; }
-  /* The body grows past the screen with the brain's calls listed, so the top of it is never centred out of reach. */
-  html { height: 100%; }
-  body { min-height: 100%; }
-  body {
-    background: var(--bg); color: var(--fg);
-    font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
-    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
-    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
-  }
-  #talk {
-    width: min(68vw, 300px); aspect-ratio: 1; border-radius: 50%;
-    border: 10px solid var(--ring); background: var(--idle); color: var(--bg);
-    font: inherit; font-weight: 600; font-size: 22px; line-height: 1.2; letter-spacing: .02em;
-    touch-action: none; cursor: pointer; transition: transform .08s, background .08s;
-  }
-  #talk:disabled { opacity: .35; cursor: default; }
-  #talk.held { background: var(--live); transform: scale(.96); }
-  #told { color: var(--muted); text-align: center; max-width: 30ch; }
-  #told p { margin: 0; min-height: 1.4em; }
-  #state.bad, #wake-note.bad { color: var(--bad); }
-  #count { font-variant-numeric: tabular-nums; }
-  /* One small toggle in the corner: the dot is filled while the wake word is on. */
-  #wake {
-    position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: 12px; display: flex; align-items: center; gap: 6px;
-    font: inherit; font-size: 13px; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px;
-    padding: 4px 10px; cursor: pointer;
-  }
-  #wake .dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); }
-  #wake[aria-pressed="true"] .dot { background: var(--live); border-color: var(--live); }
-  #wake-note:empty { display: none; }
-  #shown { font: inherit; color: var(--muted); background: none; border: 1px solid var(--ring); border-radius: 999px; padding: 6px 16px; cursor: pointer; }
-  #conversation { color: var(--muted); }
-  #transcript {
-    width: min(100%, 36rem); max-height: 38vh; overflow-y: auto; margin: 0; padding: 0 4px;
-    user-select: text; -webkit-user-select: text;
-  }
-  #transcript p { margin: 0 0 10px; }
-  #transcript:empty::before { content: "Nothing said yet."; color: var(--muted); }
-  #transcript .user { color: var(--muted); text-align: right; }
-  /* hands' words not yet reached are faint; the one being said is marked; those cut off are struck through. */
-  #transcript .ahead { opacity: .45; }
-  #transcript .now { background: var(--ring); border-radius: 3px; }
-  #transcript .unheard { opacity: .45; text-decoration: line-through; }
-  #brain { width: min(100%, 36rem); border-top: 1px solid var(--ring); padding-top: 10px; }
-  #brain-head { display: flex; align-items: center; justify-content: space-between; column-gap: 12px; }
-  #doing { margin: 0; font-weight: 600; }
-  #doing .for { color: var(--muted); font-weight: 400; }
-  #calls { list-style: none; margin: 4px 0 0; padding: 0; }
-  #calls li { margin: 6px 0 0; }
-  #calls .tool { font-size: 15px; font-weight: 600; margin: 0; }
-  /* An input runs as long as the call made it: three lines of it, so the Stop never scrolls away. */
-  #calls .input { margin: 0; color: var(--muted); font: 13px/1.35 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
-  #calls .input.bad, #brain-said.bad { color: var(--bad); }
-  #stop { font: inherit; font-weight: 600; font-size: 16px; line-height: 1; color: var(--bg); background: var(--bad); border: 0; border-radius: 999px; padding: 12px 20px; cursor: pointer; }
-  #stop:disabled { opacity: .45; cursor: default; }
-  #brain-said { color: var(--muted); font-size: 15px; margin: 6px 0 0; }
-  #brain-said:empty { display: none; }
-</style>
-</head>
-<body>
-<!-- Whether the wake word may open a turn: on unless the user turned it off, before Connect or after. -->
-<button id="wake" type="button" aria-pressed="true"><span class="dot" aria-hidden="true"></span>Phone wake word</button>
-<button id="talk" type="button">Connect</button>
-<!-- The count changes ten times a second, so it sits outside the live region: a screen reader says each line once. -->
-<div id="told">
-  <p id="state" role="status" aria-live="polite"></p>
-  <p id="wake-note" role="status" aria-live="polite"></p>
-  <p id="count" aria-hidden="true"></p>
-</div>
-<button id="shown" type="button" aria-controls="transcript" aria-expanded="false">Show transcript</button>
-<!-- The whole conversation, tools and all, with a box to type in: the address carries the key on as this one does. A
-     page of its own, so a call on this one goes on while it is read. -->
-<a id="conversation" href="/conversation" target="_blank" rel="noopener">Conversation</a>
-<!-- The voices hands speaks in, each heard and chosen, and hands' own options, on a page of its own under the same key. -->
-<a id="gallery" href="/gallery" target="_blank" rel="noopener">Voices and options</a>
-<!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
-<section id="transcript" aria-label="Transcript" hidden></section>
-<!-- What the brain is doing now, as hands hears it on the wire: idle, thinking, or the calls it is running, each with
-     its input, and how long; and one Stop that ends the brain's turn, as Escape at its keyboard does. Nothing here
-     reaches a working session. -->
-<section id="brain" aria-label="The brain">
-  <div id="brain-head"><p id="doing" role="status" aria-live="polite"></p><button id="stop" type="button" disabled>Stop</button></div>
-  <ul id="calls"></ul>
-  <p id="brain-said" role="status" aria-live="polite"></p>
-</section>
-<audio id="out" autoplay playsinline></audio>
-<script type="module">
-import {asked, carriesKey, handsNow, reading, unanswered, wording} from "/hands.js";
+// The call: the shell's own (app.html), run once as the document loads and never mounted or unmounted, so a move between
+// the app's views is no move of the call's. It takes the elements of the shell's strip by id, and the transcript the Call view
+// (views/call.js) shows: the call writes it whether that view is shown or not.
+import {PAGE_OPEN, asked, carriesKey, wording} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
@@ -121,18 +19,7 @@ const wakeButton = document.getElementById("wake");
 const wakeNote = document.getElementById("wake-note");
 const count = document.getElementById("count");
 const out = document.getElementById("out");
-const shown = document.getElementById("shown");
 const transcript = document.getElementById("transcript");
-const doing = document.getElementById("doing");
-const calls = document.getElementById("calls");
-const stopButton = document.getElementById("stop");
-const brainSaid = document.getElementById("brain-said");
-// hands answers a Stop at once: one unanswered for this long went to an address the phone can no longer reach. What a
-// Stop said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the brain
-// stands from then on.
-const STOP_MS = 10000, SAID_MS = 30000;
-document.getElementById("conversation").href = `/conversation${location.hash}`;
-document.getElementById("gallery").href = `/gallery${location.hash}`;
 
 // Every render quantum of the microphone goes to the page as it is captured; whatever is sent in comes back out after
 // every block captured before it, which is how a release is sent only once the words said before it have been.
@@ -632,7 +519,7 @@ async function connect(claim) {
       if (pc.iceGatheringState === "complete") return done();
       pc.addEventListener("icegatheringstatechange", () => pc.iceGatheringState === "complete" && done());
     });
-    const outcome = await asked("POST", "/offer", {sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}, OFFER_MS);
+    const outcome = await asked(PAGE_OPEN, "POST", "/offer", {sdp: pc.localDescription.sdp, type: "offer", rate: audio.sampleRate, page: PAGE, claim}, OFFER_MS);
     if (made.ended) return;
     // hands declines a call made again while another page has the phone: that page is the one in the user's hand. What may
     // pass (`transient`), as hands is restarted, is dialled again; a refusal of the page's key or its offer never passes.
@@ -731,19 +618,6 @@ function up() {
   call.release();
 }
 
-// The transcript is hidden until asked for, and stays as this phone last left it.
-function showTranscript(open) {
-  transcript.hidden = !open;
-  shown.setAttribute("aria-expanded", String(open));
-  shown.textContent = open ? "Hide transcript" : "Show transcript";
-  if (open) transcript.scrollTop = transcript.scrollHeight;
-}
-try { showTranscript(localStorage.getItem("transcript") === "shown"); } catch { showTranscript(false); }
-shown.addEventListener("click", () => {
-  showTranscript(transcript.hidden);
-  try { localStorage.setItem("transcript", transcript.hidden ? "hidden" : "shown"); } catch { /* kept for this page only */ }
-});
-
 talk.addEventListener("pointerdown", down);
 talk.addEventListener("pointerup", up);
 talk.addEventListener("pointercancel", up);
@@ -760,79 +634,3 @@ drawWake();
 drawNote();
 // One closed hangs up.
 addEventListener("pagehide", () => end("This page hung up."));
-
-// The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
-// the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again.
-let work = {doing: "idle", calls: []};
-let stopping = false;
-let said = null;
-let unread = null;
-
-function sayOfBrain(text, bad = false) { brainSaid.textContent = text; brainSaid.classList.toggle("bad", bad); }
-
-// The line that says what the brain is doing, and for how long: redrawn each second, as the time is.
-function drawDoing() {
-  const now = handsNow();
-  const [first, ...rest] = work.calls;
-  const [what, since] = work.doing !== "working" ? ["Idle", null]
-    : first === undefined ? ["Thinking", work.since]
-    : [rest.length ? `Running ${rest.length + 1} calls` : `Running ${first.tool}`, first.since];
-  doing.textContent = what;
-  if (since !== null) doing.append(Object.assign(document.createElement("span"), {className: "for", textContent: ` · ${Math.max(0, Math.round(now - since))} s`}));
-}
-
-// A call's input as a glance reads it: its values, each a line, as the call gave them.
-function inputOf(call) {
-  return "unreadable" in call ? `input could not be read: ${call.unreadable}`
-    : Object.values(call.input).map((value) => typeof value === "string" ? value : JSON.stringify(value)).join("\n");
-}
-
-// [LAW:dataflow-not-control-flow] the whole section is drawn the same way whatever the brain is doing: its calls are
-// whatever it is running, none at all while it is idle or thinking.
-function drawBrain() {
-  drawDoing();
-  calls.replaceChildren(...work.calls.map((call) => {
-    const item = document.createElement("li");
-    item.append(
-      Object.assign(document.createElement("p"), {className: "tool", textContent: call.tool}),
-      Object.assign(document.createElement("p"), {className: `input${"unreadable" in call ? " bad" : ""}`, textContent: inputOf(call)}),
-    );
-    return item;
-  }));
-  stopButton.disabled = stopping || work.doing !== "working";
-  const told = said ?? unread ?? {text: "", bad: false};
-  sayOfBrain(told.text, told.bad);
-}
-
-// Stop ends the turn the page shows, and that turn alone: one the brain went on to after it is never stopped by it.
-stopButton.addEventListener("click", async () => {
-  stopping = true;
-  drawBrain();
-  try {
-    const outcome = await asked("POST", "/brain/stop", {turn: work.turn}, STOP_MS);
-    sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
-  } catch (error) {
-    sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
-  } finally {
-    stopping = false;
-    drawBrain();
-  }
-});
-
-// What a Stop said, taken away SAID_MS later unless a later Stop has said something since.
-function sayOfStop(stopSaid) {
-  said = stopSaid;
-  setTimeout(() => { if (said === stopSaid) { said = null; drawBrain(); } }, SAID_MS);
-}
-
-drawBrain();
-setInterval(drawDoing, 1000);
-// The brain is read for as long as the page is open.
-reading("/brain", shown => {
-  work = shown;
-  unread = null;
-  drawBrain();
-}, why => { unread = {text: `Could not read the brain: ${why}`, bad: true}; drawBrain(); });
-</script>
-</body>
-</html>

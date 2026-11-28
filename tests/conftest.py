@@ -52,7 +52,8 @@ from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.sessions.home import Home
-from hands.sessions.registry import Sessions
+from hands.sessions.registry import Sessions, untyped
+from hands.sessions.registry import unread as reads_no_panes
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
@@ -61,6 +62,7 @@ from fetches import Fetches, fetched_apart
 from fixtures import pins
 import offline
 import clockwatch
+import shards
 import timeouts
 
 
@@ -95,6 +97,7 @@ CALLED = pytest.StashKey[pytest.TestReport]()
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--layer", choices=LAYERS, help="hold the run to the unit layer (tests/offline.py): `unit` runs the tests not marked outside, `audit` those that are, each expected to be refused")
+    parser.addoption("--shard", type=shards.Shard.parse, default=shards.WHOLE, metavar="K/N", help="run the Kth of N shards of the tests this run would run (tests/shards.py): CI's jobs each run one, and the N of them are the whole")
     parser.addoption("--record-decodes", action="store_true", help="a test that passes on the real pair writes the recording of the run it made (tests/recordings.py)")
 
 
@@ -227,7 +230,7 @@ def taken(errors: list[str]) -> list[str]:
 # A test passes, by the constructor's own names, what its behavior rests on: the clock it runs on, the audit it reads,
 # its typist or sinks. The clock has no default: a test on the machine's clock names SYSTEM, where the clock boundary
 # sees it. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
-new_sessions = partial(Sessions, record=lambda _: None)
+new_sessions = partial(Sessions, record=lambda _: None, typist=untyped, keyboards=reads_no_panes)
 
 
 def children_on(clock: Clock) -> Children:
@@ -247,7 +250,7 @@ class Unstarting(Children):
     """Children none of which is started: an entry point a fake does not answer refuses, so no test starts a real
     process through a fake that forgot one."""
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
         raise AssertionError(f"{type(self).__name__} does not answer a run of {argv[0]}")
 
     def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> child.Outcome:
@@ -264,7 +267,7 @@ class Answering(Unstarting):
     outcome: child.Outcome
     asked: list[tuple[str, ...]] = field(default_factory=list[tuple[str, ...]])
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
         # Every run ends the same, whatever it is handed: the environment is no part of the answer.
         return self.run_blocking(*argv, limit=limit, cwd=cwd)
 
@@ -279,7 +282,7 @@ class Faked(Unstarting):
 
     answer: Callable[..., Awaitable[child.Outcome]]
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None) -> child.Outcome:
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | child.Traced | None = None, given: bytes | None = None) -> child.Outcome:
         # The program a test stands in for is handed the environment a real start hands it.
         return await self.answer(*argv, limit=limit, cwd=cwd, env=env.handed if isinstance(env, child.Traced) else env)
 
@@ -591,6 +594,11 @@ def pytest_configure(config: pytest.Config) -> None:
     if config.getoption("layer", None) == "audit":
         config.option.timeout = AUDIT_TIMEOUT
     config.pluginmanager.register(timeouts, "timeouts")
+    # The cost file prices the unit layer's tests and no others', so the unit layer is what the plugin cuts, and `make check` is a cut of 1 of 1 through it: a cost file it never read would be one only CI's jobs find broken.
+    if config.getoption("layer", None) == "unit":
+        config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard", shards.WHOLE)), shards.Costs.load(shards.COSTS)), "shards")
+    elif config.getoption("shard", shards.WHOLE) != shards.WHOLE:
+        raise pytest.UsageError("--shard cuts the unit layer, which the cost file prices: run it with --layer=unit")
     clockwatch.register(config, clockwatch.UNMOVED)
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")
@@ -936,6 +944,12 @@ stated("idle")
 # Claude Code starts its session before it takes a prompt, the start answered first.
 if "SessionStart" in hooks:
     post("SessionStart", source="resume" if "--resume" in sys.argv else "startup")
+# Then it raises its session.start, which hands' plugin answers with the model and the context Claude Code has counted
+# (src/hands/brain/plugin/hooks/report.js): none, as before any reply, so the report has no tokens.
+report = json.loads(sys.argv[sys.argv.index("--settings") + 1])["env"].get("HANDS_SESSION_START") if "--settings" in sys.argv else None
+if report:
+    reported = {{"model": sys.argv[sys.argv.index("--model") + 1]}}
+    urllib.request.urlopen(urllib.request.Request(report, json.dumps(reported).encode(), {{"Content-Type": "application/json"}}), timeout=30).read()
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h")
 pending, box, turn, turn_text, prompts = b"", "", None, "", 0

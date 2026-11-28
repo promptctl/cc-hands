@@ -17,7 +17,7 @@ import time
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from hands.core.status import Stamp
 
@@ -145,16 +145,26 @@ class SystemClock:
 SYSTEM = SystemClock()
 
 
-async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout: float) -> None:
+async def wait_all(clock: Clock, futures: Collection[asyncio.Future[Any]], timeout: float) -> None:
     """`asyncio.wait(futures, timeout=timeout)` on `clock`: until every one of `futures` is done or `timeout` has passed,
     cancelling none of them, so what is still running when the time is up runs on for whoever reads it next."""
+    await _waited(clock, futures, timeout, "ALL_COMPLETED")
+
+
+async def wait_first(clock: Clock, futures: Collection[asyncio.Future[Any]], timeout: float) -> None:
+    """As `wait_all`, until the first of `futures` is done or `timeout` has passed."""
+    await _waited(clock, futures, timeout, "FIRST_COMPLETED")
+
+
+async def _waited(clock: Clock, futures: Collection[asyncio.Future[Any]], timeout: float, until: Literal["ALL_COMPLETED", "FIRST_COMPLETED"]) -> None:
+    # [LAW:one-source-of-truth] the two waits differ only in when `asyncio.wait` returns; how either ends is said here.
     import asyncio
 
     from hands.tasks import cancel_and_wait
 
     # The sleep is asked first: a clock that raises as it is asked leaves nothing of the wait begun.
     timer = asyncio.ensure_future(clock.sleep(timeout))
-    every = asyncio.ensure_future(asyncio.wait(futures))
+    every = asyncio.ensure_future(asyncio.wait(futures, return_when=until))
     try:
         await asyncio.wait((every, timer), return_when=asyncio.FIRST_COMPLETED)
     except GeneratorExit:
@@ -168,7 +178,8 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
     # Both over before this returns, so nothing of the wait outlives it.
     await cancel_and_wait(every, timer)
     # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait that raised
-    # (on no futures at all, as `asyncio.wait` does) is never everything done.
+    # (on no futures at all, as `asyncio.wait` does) is that mistake, never the wait over. A future that ended in failure is
+    # done, as `asyncio.wait` counts it: what it raised is its reader's.
     for side in (every, timer):
         if not side.cancelled():
             side.result()

@@ -4,20 +4,24 @@ outside any session, and the session that joined hands named."""
 import asyncio
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from itertools import count
 from pathlib import Path
 from typing import Any
 
-import pytest
-from fakeprocesses import Running, processes
+from conftest import children_on
+from fakeprocesses import FakeProcesses, Running, processes
+from faketerminals import DEAD, FakePane, FakeServer, FakeTerminals, Wedged
 
 from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
-from hands.sessions.membership import parse_membership
-from hands.sessions.startsession import SESSION_GIVEN, as_from_a_terminal, descends
+from hands.sessions.startsession import JOIN_SECONDS, LOOK_SECONDS, SESSION_GIVEN, SETTINGS, as_from_a_terminal, descends
+from hands.sessions.terminals import Terminals
+from hands.sessions.tmux import NoTmux, TmuxTerminals
+from hands.virtualclock import VirtualClock
 from hands.voice.tool import Result
 from hands.voice.tools import start_session_tool
 
@@ -29,23 +33,52 @@ def home_in(tmp_path: Path) -> Home:
     return home
 
 
-def members(home: Home) -> list[Membership]:
-    """The home's sessions as the registry holds them once each has written its membership."""
-    return [parse_membership(SessionId(path.stem), path.read_bytes()) for path in sorted(home.memberships.glob("*.json"))]
+class Starts:
+    """What a start reaches, as a test sets it up: the terminals a window opens in, the processes, the sessions that have
+    joined hands, and the clock the start waits for one on."""
 
+    def __init__(self, home: Home, opened: Callable[["Starts", FakePane, Sequence[str], Mapping[str, str]], None] | None = None) -> None:
+        self.home = home
+        self.clock = VirtualClock()
+        self.processes: FakeProcesses = processes()
+        self.members: list[Membership] = []
+        # What each window opened ran, and the environment it was opened with.
+        self.ran: list[tuple[Sequence[str], Mapping[str, str]]] = []
+        self.fake = FakeTerminals(opened=self._opened)
+        self.terminals: Terminals = self.fake
+        self._then = opened
+        self._joining = count(9000)
 
-def start(home: Home, folder: Path, model: str = "", environment: Mapping[str, str] = os.environ) -> dict[str, Any]:
-    """The tool called as the model calls it, in the environment hands was started in."""
-    start_session = start_session_tool(SYSTEM, processes(), home, AuditLog(home.audit, clock=datetime.now).record, environment, lambda: members(home))
+    def _opened(self, pane: FakePane, command: Sequence[str], environment: Mapping[str, str]) -> None:
+        self.ran.append((command, environment))
+        self.processes.add(Running(pane.pid, terminal=None))
+        if self._then is not None:
+            self._then(self, pane, command, environment)
 
-    async def called() -> Result:
-        return await start_session.body(folder=str(folder), model=model)
+    def joins(self, pane: FakePane, fritter: bool = True) -> None:
+        """A session joins hands from a process the pane's process started, under fritter or not."""
+        pid = next(self._joining)
+        self.processes.add(Running(pid, parent=pane.pid))
+        self.members.append(Membership(SessionId(f"s{pane.id[1:]}"), pid, Path("/code"), Path("/code/t.jsonl"), Path("/tmp/f.sock") if fritter else None))
 
-    return dict(asyncio.run(called()))
+    async def start(self, folder: Path, model: str = "", environment: Mapping[str, str] = os.environ) -> dict[str, Any]:
+        """The tool called as the model calls it, in the environment hands was started in."""
+        start_session = start_session_tool(self.clock, self.terminals, self.processes, self.home, AuditLog(self.home.audit, clock=datetime.now).record, environment, lambda: self.members)
+
+        async def called() -> Result:
+            return await start_session.body(folder=str(folder), model=model)
+
+        return dict(await called())
 
 
 def started(home: Home) -> list[dict[str, Any]]:
     return [line for line in map(json.loads, segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "session.start"]
+
+
+def folder_in(tmp_path: Path) -> Path:
+    folder = tmp_path / "billing"
+    folder.mkdir()
+    return folder
 
 
 def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling() -> None:
@@ -53,16 +86,17 @@ def test_a_process_descends_from_itself_and_what_it_started_never_from_a_sibling
     assert [descends(pid, 10, table) for pid in (10, 11, 12, 20, 1, 99)] == [True, True, True, False, False, False]
 
 
-def test_a_folder_that_is_not_there_is_a_symlink_loop_or_is_not_a_whole_path_is_said(tmp_path: Path) -> None:
-    home = home_in(tmp_path)
+async def test_a_folder_that_is_not_there_is_a_symlink_loop_or_is_not_a_whole_path_is_said(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path))
     loop = tmp_path / "loop"
     loop.symlink_to(loop)
     for folder in (tmp_path / "nowhere", loop):
-        assert f"there is no folder {folder}" in start(home, folder)["error"]
+        assert f"there is no folder {folder}" in (await starts.start(folder))["error"]
     # Never the daemon's own working directory.
     for folder in (Path("billing"), Path("")):
-        assert f"{folder} is no absolute folder, nor one from ~" in start(home, folder)["error"]
-    assert [event["outcome"] for event in started(home)] == ["failed"] * 4
+        assert f"{folder} is no absolute folder, nor one from ~" in (await starts.start(folder))["error"]
+    assert [event["outcome"] for event in started(starts.home)] == ["failed"] * 4
+    assert starts.ran == []
 
 
 def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_own_setup() -> None:
@@ -77,48 +111,97 @@ def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_o
     assert as_from_a_terminal({**inside, **users}) == {**users, "HTTPS_PROXY": "http://proxy.lan:3128"}
 
 
-def test_a_session_started_where_no_tmux_is_on_path_answers_that_it_was_not_started(tmp_path: Path) -> None:
-    home = home_in(tmp_path)
-    folder = tmp_path / "billing"
-    folder.mkdir()
-    # A PATH that holds no tmux, given whole, so the lookup never falls back to this process's own.
-    empty = tmp_path / "bin"
-    empty.mkdir()
-    reason = "there is no tmux on PATH, and hands starts a session in a tmux window"
-    assert start(home, folder, environment={"PATH": str(empty)}) == {"error": reason}
-    [event] = started(home)
+async def test_a_session_is_started_in_a_window_of_the_tmux_session_named_for_its_folder_and_named_once_it_joins(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path), lambda starts, pane, _command, _environment: starts.joins(pane))
+    folder = folder_in(tmp_path)
+    inside = {"PATH": "/usr/bin", "CLAUDECODE": "1", "HF_TOKEN": "a-hub-token"}
+    assert await starts.start(folder, "opus", inside) == {"session": "s0", "tmux_session": "billing", "pane": "%0"}
+    assert await starts.start(folder, environment=inside) == {"session": "s1", "tmux_session": "billing", "pane": "%1"}
+    [(command, environment), _] = starts.ran
+    # The window is handed the home its session reports to, and runs hands' own claude as from a terminal outside any
+    # session, trusting its project's MCP servers, whose dialog would hold it before it joined.
+    [server] = starts.fake.servers.values()
+    assert [pane.environment for pane in server.panes] == [{"HANDS_HOME": str(starts.home.root)}] * 2
+    assert list(command[-4:]) == ["claude", "--settings", '{"enableAllProjectMcpServers": true}', "--model=opus"]
+    assert environment == {"PATH": "/usr/bin"}
+    # The start's event says which settings its session was launched with.
+    assert [(event["facts"]["made_tmux_session"], event["facts"]["session"], event["facts"]["settings"]) for event in started(starts.home)] == [(True, "s0", SETTINGS), (False, "s1", SETTINGS)]
+
+
+async def test_a_session_started_where_no_tmux_is_on_path_answers_that_it_was_not_started(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path))
+    starts.terminals = NoTmux("no tmux is on the PATH /nowhere")
+    reason = "hands starts a session in a tmux window, and none was opened: no tmux is on the PATH /nowhere"
+    assert await starts.start(folder_in(tmp_path)) == {"error": reason}
+    [event] = started(starts.home)
     assert (event["outcome"], event["error"]) == ("failed", f"NotStarted: {reason}")
 
 
-@pytest.mark.outside
-def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = home_in(tmp_path)
-    folder = tmp_path / "billing"
-    folder.mkdir()
+async def test_a_claude_that_ends_before_it_joins_is_said_with_what_its_pane_showed_or_that_its_window_closed(tmp_path: Path) -> None:
+    def dies(starts: Starts, pane: FakePane, _command: Sequence[str], _environment: Mapping[str, str]) -> None:
+        pane.screen = "error: unknown option '--settings'"
+        pane.end()
+
+    def closes(starts: Starts, pane: FakePane, _command: Sequence[str], _environment: Mapping[str, str]) -> None:
+        [server] = starts.fake.servers.values()
+        server.close(pane)
+
+    folder = folder_in(tmp_path)
+    # What it said as it ended is told, though tmux's notice that it is dead took its screen.
+    assert (await Starts(home_in(tmp_path / "dies"), dies).start(folder))["error"] == f"`claude` in {folder} ended before it joined hands; the last of what tmux pane %0 drew:\nerror: unknown option '--settings'\n{DEAD} (signal kill)"
+    assert (await Starts(home_in(tmp_path / "closes"), closes).start(folder))["error"] == f"`claude` in {folder} ended before it joined hands, and its window closed with it"
+
+
+async def test_a_claude_still_running_unjoined_once_its_time_is_up_is_said_with_what_its_pane_shows(tmp_path: Path) -> None:
+    def holds(starts: Starts, pane: FakePane, _command: Sequence[str], _environment: Mapping[str, str]) -> None:
+        pane.screen = "Do you trust the files in this folder?"
+
+    starts = Starts(home_in(tmp_path), holds)
+    folder = folder_in(tmp_path)
+    started_at = starts.clock.at
+    answer = asyncio.ensure_future(starts.start(folder))
+    # Looked at once every LOOK_SECONDS, until the time to join is past: the look after that says so.
+    while starts.clock.at - started_at <= JOIN_SECONDS:
+        await starts.clock.sleeping(starts.clock.at + LOOK_SECONDS)
+        starts.clock.advance(LOOK_SECONDS)
+    assert (await answer)["error"] == f"`claude` in {folder} has not joined hands in 30 seconds, and is still running in tmux pane %0, which shows:\nDo you trust the files in this folder?"
+
+
+async def test_a_session_that_joins_outside_fritter_is_said_to_be_one_hands_cannot_type_into(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path), lambda starts, pane, _command, _environment: starts.joins(pane, fritter=False))
+    error = (await starts.start(folder_in(tmp_path)))["error"]
+    assert error.startswith("session s0 joined hands in tmux pane %0, but not under fritter, so hands cannot type into it")
+
+
+async def test_a_session_whose_tmux_could_not_be_started_answers_that_it_was_not_started(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path))
     # Found on PATH, and no program the OS will run: its interpreter is not there.
     tmux = tmp_path / "bin" / "tmux"
     tmux.parent.mkdir()
     tmux.write_text("#!/nonexistent/hands-no-such-shell\n")
     tmux.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmux.parent}:{os.environ['PATH']}")
-    answer = start(home, folder)
-    assert answer.keys() == {"error"} and answer["error"].startswith("tmux new-session could not be started: ")
+    starts.terminals = TmuxTerminals(children_on(SYSTEM), tmux)
+    answer = await starts.start(folder_in(tmp_path), environment={"PATH": "/usr/bin", "TMUX_TMPDIR": str(tmp_path)})
+    assert answer.keys() == {"error"}
+    assert answer["error"].startswith("hands starts a session in a tmux window, and none was opened: tmux could not be started: ")
 
 
-@pytest.mark.outside
-def test_a_session_is_started_trusting_its_projects_mcp_servers_whose_dialog_would_hold_it_unjoined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = home_in(tmp_path)
-    folder = tmp_path / "billing"
-    folder.mkdir()
-    # A tmux that writes down what it was asked to run, then refuses it.
-    asked = tmp_path / "asked"
-    tmux = tmp_path / "bin" / "tmux"
-    tmux.parent.mkdir()
-    tmux.write_text(f"#!/bin/sh\nprintf '%s\\0' \"$@\" > {asked}\necho 'no server' >&2\nexit 1\n")
-    tmux.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmux.parent}:{os.environ['PATH']}")
-    assert "tmux could not make session billing: no server" in start(home, folder, "opus")["error"]
-    command = asked.read_text().split("\0")
-    given = command[command.index("claude") + 1:-1]
-    assert given == ["--settings", '{"enableAllProjectMcpServers": true}', "--model=opus"]
-    assert [event["facts"]["settings"] for event in started(home)] == ['{"enableAllProjectMcpServers": true}']
+async def test_a_tmux_that_gives_no_answer_to_the_opening_is_said_to_maybe_have_opened_the_window(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path))
+    environment = {"PATH": "/usr/bin", "TMUX_TMPDIR": str(tmp_path)}
+    starts.fake.servers[tmp_path / f"tmux-{starts.processes.user}" / "default"] = FakeServer(answering=Wedged("did not exit in 5.0 s, so it was killed"))
+    reason = "hands starts a session in a tmux window, and tmux did not say whether it opened one, so `claude` may be starting in tmux session billing now"
+    assert (await starts.start(folder_in(tmp_path), environment=environment))["error"].startswith(reason)
+    assert starts.ran == []
+
+
+async def test_a_session_is_started_in_the_server_the_tmux_it_was_started_inside_names(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path), lambda starts, pane, _command, _environment: starts.joins(pane))
+    await starts.start(folder_in(tmp_path), environment={"PATH": "/usr/bin", "TMUX": "/srv/tmux/work,100,0"})
+    assert list(starts.fake.servers) == [Path("/srv/tmux/work")]
+
+
+async def test_a_folder_with_no_name_to_give_its_tmux_session_is_said(tmp_path: Path) -> None:
+    starts = Starts(home_in(tmp_path))
+    assert (await starts.start(Path("/")))["error"] == "/ has no name to give the tmux session a session there is started in: give a folder inside it"
+    assert starts.ran == []

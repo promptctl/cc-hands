@@ -21,6 +21,7 @@ from hands.sessions.audit import segment
 from hands.sessions.home import Home
 from hands.sessions.processes import Processes
 from hands.voice import phoneaddress
+from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import Running, processes
 
 
@@ -31,9 +32,9 @@ def events(home: Home) -> list[dict[str, Any]]:
 def test_a_command_that_exits_zero_and_one_that_exits_nonzero_each_leave_one_event(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     # No heartbeat: hands has never run here, which `hands status` says by exiting 1.
-    assert main(["--home", str(home.root), "status"], processes=processes()) == 1
+    assert main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes()) == 1
     said = capsys.readouterr().out.rstrip()
-    assert main(["--home", str(home.root), "recall"], processes=processes()) == 0
+    assert main(["--home", str(home.root), "recall"], machine=UNMANAGED, processes=processes()) == 0
     capsys.readouterr()
 
     status, recall, command = events(home)
@@ -56,7 +57,7 @@ def test_a_status_of_a_daemon_that_is_up_carries_its_heartbeat(tmp_path: Path, c
     # A daemon running since before its heartbeat began.
     daemon = 4000
     heartbeat.Heart(home.status, daemon, now, heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM).beat("running", None, 1, listening=True, degraded=())
-    assert main(["--home", str(home.root), "status"], processes=processes(Running(daemon))) == 0
+    assert main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes(Running(daemon))) == 0
     capsys.readouterr()
     [command] = events(home)
     assert (command["outcome"], command["facts"]["exit_code"]) == ("ok", 0)
@@ -69,14 +70,14 @@ def test_a_status_of_a_daemon_that_is_up_carries_its_heartbeat(tmp_path: Path, c
 def test_a_tmux_status_line_refreshing_writes_nothing_to_the_audit_log(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     for _ in range(3):
-        assert main(["--home", str(home.root), "tmux-status"], processes=processes()) == 0
+        assert main(["--home", str(home.root), "tmux-status"], machine=UNMANAGED, processes=processes()) == 0
     capsys.readouterr()
     assert not segment(home.audit, 0).exists()
 
 
 def test_arguments_are_on_the_event_as_parsed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
-    assert main(["--home", str(home.root), "recall", "token", "helper", "-n", "3"], processes=processes()) == 0
+    assert main(["--home", str(home.root), "recall", "token", "helper", "-n", "3"], machine=UNMANAGED, processes=processes()) == 0
     capsys.readouterr()
     [command] = [event for event in events(home) if event["event"] == "hands.command"]
     assert command["facts"] == {"command": "recall", "home": str(home.root), "arguments.home": str(home.root), "arguments.words": ["token", "helper"], "arguments.most": 3, "exit_code": 0}
@@ -89,7 +90,7 @@ def test_a_phone_with_no_address_a_phone_reaches_fails_saying_so(tmp_path: Path,
     monkeypatch.setattr(phoneaddress, "tailnet_name", untailed)
     monkeypatch.setattr(phoneaddress, "lan_addresses", list[str])
     home = Home(tmp_path / "home")
-    assert main(["--home", str(home.root), "phone"], processes=processes()) == 1
+    assert main(["--home", str(home.root), "phone"], machine=UNMANAGED, processes=processes()) == 1
     assert capsys.readouterr().err.endswith("hands: this machine has no address a phone can reach.\n")
     [command] = events(home)
     assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "failed", "exited 1: this machine has no address a phone can reach.")
@@ -103,7 +104,7 @@ def test_a_command_that_raises_is_a_failed_event_with_no_exit_code(tmp_path: Pat
 
     monkeypatch.setattr(cli, "report", full_disk)
     with pytest.raises(OSError, match="No space left"):
-        main(["--home", str(home.root), "status"], processes=processes())
+        main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes())
     [command] = events(home)
     assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "failed", "OSError: [Errno 28] No space left on device")
     assert command["facts"] == {"command": "status", "home": str(home.root), "arguments.home": str(home.root)}
@@ -113,7 +114,7 @@ def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.C
     home = Home(tmp_path / "home")
     # Nothing installed, neither hands nor Claude Code, so what the check finds is the same on every machine.
     monkeypatch.setenv("PATH", SYSTEM_PATH)
-    code = main(["--home", str(home.root), "check", "-v"], processes=processes())
+    code = main(["--home", str(home.root), "check", "-v"], machine=UNMANAGED, processes=processes())
     # A finding's indented lines continue the one above them: its mark and step, then what is said of it in full.
     printed = [block.split("\n") for block in re.split(r"\n(?! )", capsys.readouterr().out.rstrip("\n"))]
     # Beside the event of each child the check asked.
@@ -129,7 +130,7 @@ def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.C
 def test_the_home_a_command_ran_on_is_on_its_event_wherever_it_came_from(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     monkeypatch.setenv("HANDS_HOME", str(home.root))
-    assert main(["status"], processes=processes()) == 1
+    assert main(["status"], machine=UNMANAGED, processes=processes()) == 1
     capsys.readouterr()
     [command] = events(home)
     assert (command["facts"]["home"], command["facts"]["arguments.home"]) == (str(home.root), None)
@@ -148,7 +149,7 @@ def test_a_restart_with_nothing_running_says_what_the_heartbeat_said(tmp_path: P
         return answer
 
     monkeypatch.setattr(cli, "detach", detach)
-    assert main(["--home", str(home.root), "restart"], processes=processes()) == 1
+    assert main(["--home", str(home.root), "restart"], machine=UNMANAGED, processes=processes()) == 1
     capsys.readouterr()
     [command] = events(home)
     assert (command["outcome"], command["facts"]["outcome"]) == ("failed", {"type": "NotRunning", "verdict": {"type": "NeverRan", "path": str(home.status)}})
@@ -163,7 +164,7 @@ def test_a_command_on_a_home_whose_log_cannot_be_made_still_runs(tmp_path: Path,
     sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING")
     try:
         # [LAW:nothing-unseen] a telemetry failure is telemetry: warned of, and the command answers as it would.
-        assert main(["--home", str(home.root), "status"], processes=processes()) == 1
+        assert main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes()) == 1
     finally:
         logger.remove(sink)
         home.root.chmod(0o700)
@@ -191,7 +192,7 @@ def test_a_command_logs_to_every_sink_there_was_before_it_and_leaves_them_as_the
     before = sinks()
     try:
         with patch("hands.daemon.cli.report", warned):
-            assert main(["--home", str(home.root), "status"], processes=processes()) == 0
+            assert main(["--home", str(home.root), "status"], machine=UNMANAGED, processes=processes()) == 0
         after = sinks()
     finally:
         logger.remove(sink)

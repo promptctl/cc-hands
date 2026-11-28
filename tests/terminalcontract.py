@@ -14,11 +14,11 @@ from typing import Protocol
 import pytest
 
 from hands.brain.process import SUBMIT
-from hands.sessions.tmux import KEYS
+from hands.sessions.tmux import tmux_key
 
 # [LAW:one-source-of-truth] the brain's submit chord, as tmux names the key: the one hands types, whose Claude Code name
 # hands binds in the brain's keybindings.json at every start.
-CHORD = KEYS[SUBMIT]
+CHORD = tmux_key(SUBMIT)
 # What the permission dialog of a command Claude Code will not run unless allowed asks: the claim both parties are held to.
 QUESTION = "Do you want to proceed?"
 

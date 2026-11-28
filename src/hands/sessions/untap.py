@@ -1,4 +1,5 @@
-"""What fritter's tap replaces in a session's environment, and how what the session runs is given it back.
+"""What fritter's tap replaces in a session's environment, and how what the session runs is given it back; and the same
+mark set by hands for its brain, whose HTTPS proxy is hands' own proxy.
 
 A tapped session reaches its API with fritter as its proxy, trusting the authority fritter answers the API's host with
 (fritter/intercept). Both end with the session, so what is given back here is not left with them: a claude run inside it
@@ -17,7 +18,22 @@ TRUST = "NODE_EXTRA_CA_CERTS"
 # each proxy variable, each NO_PROXY empty, and in TRUST a file holding its authority. Go's list, restated where Python
 # cannot import it, and held to the real fritter by tests/test_untap.py. It keeps each one's earlier value in
 # FRITTER_OUTER_<name>.
-REPLACED = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", TRUST)
+PROXIES = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+EXEMPT = ("NO_PROXY", "no_proxy")
+REPLACED = (*PROXIES, *EXEMPT, TRUST)
+
+# The base URL a Claude Code reaches in the API's place, a gateway's.
+BASE_URL = "ANTHROPIC_BASE_URL"
+
+# [LAW:one-source-of-truth] what decides where a Claude Code's requests to the API go, each by what it would do set over
+# the way hands gives the brain: its proxy and the certificates it trusts, which a tap replaces, and the base URL it
+# would reach in the API's place.
+ROUTING: dict[str, str] = {
+    **dict.fromkeys(PROXIES, "would send the brain's requests around hands' proxy"),
+    **dict.fromkeys(EXEMPT, "would override which hosts skip hands' proxy"),
+    TRUST: "would replace the trust hands gives the brain, its proxy's authority among it",
+    BASE_URL: "would make Claude Code a gateway's client in place of Anthropic's API's",
+}
 
 
 def _outer(name: str) -> str:
@@ -26,12 +42,20 @@ def _outer(name: str) -> str:
 
 def tapped(environ: Mapping[str, str]) -> bool:
     """Whether environ is a tapped session's, its proxy still the tap's: one set again since is what it was set to."""
-    return bool(tap := environ.get("FRITTER_TAP")) and environ.get("HTTPS_PROXY") == tap
+    return bool(address := environ.get("FRITTER_TAP")) and environ.get("HTTPS_PROXY") == address
 
 
 # What fritter keeps of a tap beside what it replaced: never left behind, tapped or not, so a tap's earlier values are
 # never given back to a session they were not taken from.
 KEPT = ("FRITTER_TAP", *map(_outer, REPLACED))
+
+
+def tap(environ: Mapping[str, str], proxy: str, trust: str, exempt: str) -> dict[str, str]:
+    """What a client started from `environ` is given to reach the world through the proxy at `proxy`, trusting the file
+    `trust`, every host `exempt` names reached directly: in the mark fritter's tap leaves, so `untapped` and
+    `untap_script` give what the client runs what `environ` held before."""
+    given = {**dict.fromkeys(PROXIES, proxy), **dict.fromkeys(EXEMPT, exempt), TRUST: trust}
+    return {"FRITTER_TAP": proxy, **given, **{_outer(name): environ[name] for name in REPLACED if name in environ}}
 
 
 def untapped(environ: Mapping[str, str]) -> dict[str, str]:

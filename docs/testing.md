@@ -17,7 +17,7 @@ test. The hold is what makes an unmarked test unit, and it is checked on every `
 
 Everything else is marked `outside` (a module's `pytestmark` or a test's decorator). The mark names what the test needs,
 not a layer: whether an outside test proves an adapter, a contract or the assembled system is not this mark's to say. CI's
-tiers (below) are cut by what a run costs, not by those layers.
+workflows (below) are cut by what a run costs, not by those layers.
 
 A wait the OS cannot refuse, a `time.sleep` or a timer the loop runs out, stays in the unit layer. `tests/clockwatch.py`
 owns it: its `UNMOVED` lists the modules that still reach the machine's time, and a module comes off it by moving onto a
@@ -52,15 +52,29 @@ real adapter, hands.sessions.kernel's `KERNEL`, only a composition root imports 
 brain's reads of its own pane's processes are the exception left, each marked, until promptctl-testing-c3u.fhu. A test of
 what hands makes of the process table gives its code a fake table, tests/fakeprocesses.py, whose rows hold the facts the
 kernel answers from: which file each process has open as its stdin and stdout, and which call the kernel refuses about it.
-What hands relies on of the kernel is a contract, tests/processescontract.py, run against the fake in `make check`
-(test_processes_contract.py) and against the kernel, on children the test starts, `outside`
-(test_processes_contract_kernel.py). A claim the kernel stops keeping fails the second, and the fake is changed to match.
+The `hands check` diagnostic uses this host's terminal processes to find Claude runs that may have missed registration.
+Registered sessions are identified by the session ID reported by their hooks. In `tests/test_process_discovery.py` the
+process host supplies the executable for a relative invocation, and a process can exit between listing and inspection.
+Session readiness, pane routing, liveness and close-session tests cover how those callers use process information.
+
+## The user's terminals and the Mac's screen
+
+The daemon reads and types into the user's tmux panes through `Terminals`, types into fritters through `Fritters` (both
+hands.sessions.terminals), and reads which app is in front through `Screen` (hands.sessions.screen). Their real
+adapters, hands.sessions.tmux's `TmuxTerminals`, hands.sessions.typing's `FritterSockets` and
+hands.sessions.launchservices' `LaunchServices`, only a composition root imports (tests/test_terminals_boundary.py); the
+brain's tmux and fritter on its own pane are the exception left, until promptctl-testing-c3u.fhu.
+Which servers may hold a session's pane, and which pane it is, is hands' own logic over Terminals and Processes
+(hands.sessions.panes), tested on tests/faketerminals.py: tmux servers, their panes and clients as values, and what a
+session's program read of what was typed into it. What hands relies on of tmux and fritter is a contract,
+tests/terminalscontract.py, run against the fake in `make check` (test_terminals_contract.py) and against a tmux server of
+the test's own and the fritter this checkout carries, `outside` (test_terminals_contract_tmux.py).
 
 ## The phone's pages
 
 tests/test_pages.py runs each phone page's own code in the installed Google Chrome, driven by Playwright, against
 `phonepage.phone_pages`, the routes hands serves the phone, on the route tests' fakes. Chrome must be installed, as it is
-on GitHub's macos-15 runner image, which CI's `rest` tier runs on: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
+on GitHub's macos-15 runner image, which outside.yml's `rest` job runs on: one that is missing fails the test. Every page test ends by failing on any uncaught error or `console.error`
 its pages made, whether the test passed or not.
 
 A page test that needs speech as the microphone is tests/test_phonewakepage.py's kind. The page's `getUserMedia` is replaced by an
@@ -72,20 +86,31 @@ holds a fetch, or fails one, does it with Playwright's `route`, not a fake in th
 
 ## The commands
 
-- `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.
+- `make check`: the unit layer (`make check-unit`) and the type checks, `pyright` and wake-training's (`make check-types`). Run it on every turn.
 - `make check-pair`: the real pair's cases, the `outside` tests in tests/test_streaming.py, with no hold. They load the speech
   models.
 - `make check-rest`: every other `outside` test with no hold, then fritter's Go tests and wake-training's suite.
 - `make audit`: the `outside` tests under the same hold, each expected to be refused. One that is not does not need its
   mark; run it when a test moves down.
 
-## CI's tiers
+## Where CI runs the suite
 
-`.github/workflows/test.yml` runs `make check`, `make check-pair` and `make check-rest` as the matrix `unit`, `pair` and `rest`, in
-parallel, and the check `test` passes when all three did. Together they are the whole suite: `check` takes the tests not marked
-`outside`, and the other two the ones that are, split by module. The tiers are cut by what a run costs, not by laws:testing's
-layers: the pair has one of its own because it is proven in full every run and is the longest. Green on `make check` is not green
-on CI, which also runs the `outside` tests, fritter's Go tests and wake-training's suite.
+A job's 5 minutes hold about 100 s of tests: a macOS job spends 95 s before its first test, on the runner, the tools, the
+locked environment and pytest's collection, and a job that loads the speech models 50 to 100 s more restoring their cache. A
+Free plan runs 5 macOS jobs at once, shared by every PR, the merge queue and master. So the suite is on two paths.
+
+`.github/workflows/test.yml`, every PR and the merge queue, ends inside 5 minutes: `make check-unit` as the shards of its
+`unit` matrix, and `make check-types`, which tests/test_workflows.py holds to the macOS runners one wave of a Free plan has.
+Each shard is `pytest --shard=K/N` (tests/shards.py): the tests the Kth of N holds, packed to equal seconds from what each test cost on CI (tests/shard-costs.json), the same cut in every job. The
+cost file is made from the jobs' logs, which print each test's cost (tests/costs.py); tests/shards.py says how. A stale file
+loses no test: it unbalances the shards, and each prints what it was packed at beside what it cost, and the slow tests and
+setups the file does not name. Each also records a digest of the test ids it collected, and the check `test` passes when all
+of the jobs did and the shards' digests are one: a test is in exactly one shard when they collected the same.
+
+`.github/workflows/outside.yml`, daily and on request, runs what `test` leaves out: `make check-pair` and `make check-rest`,
+the tests marked `outside`, fritter's Go tests and wake-training's suite. They are about 1,800 s of tests and each job spends
+150 s before its first, so held to 5 minutes they would be 60 jobs and more against the 5 runners; they are not on the path a
+merge waits on. The check `outside` passes when both did.
 
 ## Placing a new test
 

@@ -272,6 +272,8 @@ there; then, on a brain Claude Code has not finished its first run on, it runs t
 runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it,
 it logs the brain in again, or onto another account: a Claude plan, or with `hands login --console` an Anthropic Console
 key. Either way it says which account the brain holds after, and how it is logged in.
+On a Console key the brain runs with `CLAUDE_CODE_ENTRYPOINT=sdk-cli`, as the Agent SDK's CLI does; on a Claude plan
+hands leaves Claude Code to name itself, whatever entrypoint hands' own shell holds.
 Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
 `~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
 own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.
@@ -474,8 +476,8 @@ uv run hands phone                      # the addresses a phone opens the talk p
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
 make check                              # the unit layer (tests that need nothing outside the process) and pyright; docs/testing.md
-make check-pair                         # the real streaming pair's cases, which load the speech models: CI's `pair` tier, run by name
-make check-rest                         # every other test that needs the outside, fritter's Go tests and wake-training's suite: CI's `rest` tier
+make check-pair                         # the real streaming pair's cases, which load the speech models: outside.yml's `pair` job, run by name
+make check-rest                         # every other test that needs the outside, fritter's Go tests and wake-training's suite: outside.yml's `rest` job
                                         # each test run holds itself offline in macOS's sandbox (tests/offline.py), hands' once its fetches are done, so it needs macOS 15 or later
 ```
 

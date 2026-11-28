@@ -10,6 +10,7 @@ by voice are the same change.
 
 import json
 from dataclasses import dataclass
+from functools import partial
 from importlib import resources
 from typing import Protocol, TypedDict, cast, get_args
 
@@ -22,7 +23,7 @@ from hands.sessions.payload import Rejected, one_of
 from hands.sessions.wide import annotate, fail
 from hands.voice.listening import LEVELS, Level, Listening, parse_level
 from hands.voice.keyed import keyed
-from hands.voice.longpoll import version_of, waited
+from hands.voice.longpoll import page_left, version_of, waited
 from hands.voice.modelswitch import OwnModel, Switches, chosen
 from hands.voice.answered import answered_then
 from hands.voice.trigger import described
@@ -150,7 +151,7 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
     # brings up, are on the page by the next answer.
     @keyed(clock, "gallery.read", record, key)
     async def read_state(request: web.Request) -> web.Response:
-        read = await waited(clock, look, request.query.get("seen"))
+        read = await waited(clock, look, request.query.get("seen"), partial(page_left, request))
         state = read["shown"]
         annotate(speaking_in=state["speaking_in"], level=state["level"], modality=state["modality"], running_on=state["running_on"])
         return web.json_response(read)

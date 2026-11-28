@@ -21,7 +21,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import get_args
 
-from hands.brain import pinned
+from hands.brain import configdir, pinned
 from hands.brain.configdir import Unstartable
 from hands.core.effects import Fritter
 from hands.core.stopfailure import LOGIN_EXPIRY, LOGIN_RENEWAL
@@ -78,7 +78,7 @@ class Unknown:
 
 Finding = Ready | Missing | Unknown
 
-# The tmux pane whose keys reach each of a list of processes, as `hands.sessions.tmux.keyboards` reads it.
+# The tmux pane whose keys reach each of a list of processes, as `hands.sessions.panes.keyboards` reads it.
 Keyboards = Callable[[Sequence[int]], list[Keyboard]]
 
 # `claude plugin list` answers in a quarter of a second; one that has not answered in this long is not going to.
@@ -162,7 +162,7 @@ def installed(children: Children, path: str) -> Finding:
     return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs its `hands-shim` for the plugin in every session")
 
 
-def configured(children: Children, home: Home, pin: pinned.Pin, environment: Mapping[str, str], running: heartbeat.Verdict) -> Finding:
+def configured(children: Children, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], running: heartbeat.Verdict) -> Finding:
     """Whether hands would start on its settings and its home's files, its brain on `pin`, and the brain has the login it
     reaches its model with: as the brain of `running`, hands' heartbeat now, last said of it, where it said it expired."""
     try:
@@ -170,10 +170,10 @@ def configured(children: Children, home: Home, pin: pinned.Pin, environment: Map
     except Rejected as error:
         # The refusal names the file and what is wrong with it, so it is the detail, beside every other refusal of the
         # start, each naming its own fix, and the line names the file to mend.
-        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(preflight(home, pin, environment), error))}", f"correct {home.config}")
+        return Missing("settings unreadable", f"hands cannot read its settings: {'; '.join(beside(preflight(home, pin, machine, environment), error))}", f"correct {home.config}")
     # [LAW:single-enforcer] the start's own preflight, so what a start would refuse is said here in its words, every
     # refusal at once, and the login beside them wherever the brain's own config directory runs one.
-    checked = preflight(home, pin, environment)
+    checked = preflight(home, pin, machine, environment)
     match checked.verdict:
         case Startable(brain=brain):
             refusals: tuple[str, ...] = ()

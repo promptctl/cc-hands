@@ -117,6 +117,14 @@ def test_an_xfail_does_not_keep_the_whole_suite_from_proving_an_entry_stale(pyte
 
 
 @pytest.mark.outside
+def test_a_run_that_says_it_deselected_nothing_is_still_the_whole_suite(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    hooks = "\ndef pytest_collection_modifyitems(config, items):\n    config.hook.pytest_deselected(items=[])\n"
+    result = run(pytester, monkeypatch, hooks=hooks, unmoved="frozenset({'test_quiet.py'})", test_quiet="def test_waits_on_nothing():\n    pass\n")
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    assert "test_quiet.py" in result.outlines
+
+
+@pytest.mark.outside
 def test_code_a_test_writes_for_another_interpreter_is_charged_to_it(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     lines = reached(pytester, monkeypatch, test_child='import subprocess, sys\n\ndef test_spawns():\n    subprocess.run([sys.executable, "-c", "import time"], check=True)\n')
     assert any(line.startswith("test_child.py: ") and "'time'" in line for line in lines)
@@ -147,6 +155,16 @@ def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pyte
     lines = reached(pytester, monkeypatch, helper=helper, test_user=user)
     assert "test_user.py: ['time.strftime']" in lines
     assert not any(line.startswith("helper.py") for line in lines)
+
+
+@pytest.mark.outside
+def test_a_semaphore_polled_is_no_reach_whatever_clock_it_reads_and_one_waited_on_is_one(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A thread pool polls one so to ask whether a worker is idle, as `asyncio.to_thread` has it do.
+    polls = "import threading\n\ndef test_polls():\n    threading.Semaphore(0).acquire(timeout=0)\n"
+    waits = "import threading\n\ndef test_waits():\n    threading.Semaphore(0).acquire(True, 0.001)\n"
+    lines = reached(pytester, monkeypatch, test_polls=polls, test_waits=waits)
+    assert "test_waits.py: ['.acquire(seconds)', 'threading.Semaphore.acquire']" in lines
+    assert not any(line.startswith("test_polls.py") for line in lines)
 
 
 @pytest.mark.outside

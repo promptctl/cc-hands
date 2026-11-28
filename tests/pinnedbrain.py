@@ -28,8 +28,9 @@ from hands.brain.mcp import SERVER_NAME
 from hands.brain.process import starting_settings, workdir
 from hands.clock import SYSTEM
 from hands.core.attention import Attention
+from hands.core.runningon import RunningOn
 from hands.core.session import Runnable
-from hands.core.wire import SIDE_QUESTION_OPENING, Sent
+from hands.core.wire import SIDE_QUESTION_OPENING, Exchanged, Observed, Sent
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
 from hands.sessions.home import Home
@@ -47,11 +48,14 @@ from hands.voice.summaries import SummaryStore
 from hands.voice.player import Player
 from hands.voice.braindoor import BrainDoor, stay_silent_tool
 from hands.sessions.wide import WideEvent
+from fixtures.fakemachine import UNMANAGED
 
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang. The one wait the pinned Claude
 # Code's screen forces: nothing tells a test its screen changed, so it is read until it shows what the test waits for.
 PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
+# A proxy nothing listens at: port 1 on loopback.
+DEAD = "http://127.0.0.1:1"
 # What only the brain's own turns carry, among every request its Claude Code makes: hands' tools offered to the model.
 # A title or a summary Claude Code asks for beside a turn carries the user's words too, but none of hands' tools.
 TURN = f"mcp__{SERVER_NAME}__{stay_silent_tool().tool.name}"
@@ -143,14 +147,17 @@ class Hands:
     # What hands' voice pipeline is handed, as the user aggregator hands it on.
     queue: Callable[[Frame], Awaitable[None]]
     recorded: list[Entry]
-    # Every request the brain sent, as it left hands' proxy for the mock.
+    # Every request the brain sent, as it left hands' proxy for the mock, and each exchange's end as the proxy recorded it.
     sent: list[Sent]
+    exchanged: list[Exchanged]
     # What the run keeps beside the pipeline: the brain itself, its turns, its context.
     watches: list[asyncio.Task[None]]
     # What the pipeline raised, which the system channel would say.
     errors: list[ErrorFrame]
     # The directory the brain works in, where what it makes is made.
     workdir: Path
+    # The model the brain runs on and the context it has used, as its start found them.
+    running_on: RunningOn
 
     async def until(self, what: Callable[[], bool]) -> None:
         patience = asyncio.timeout(PATIENCE_SECONDS)
@@ -206,7 +213,7 @@ class Hands:
         """A tmux command run against the brain's pane, as a terminal attached to it types: tmux writes the keys to the
         pane, and the pane's fritter forwards them to Claude Code byte for byte."""
         claude = self._claude()
-        ran = await ran_at(children_on(SYSTEM), claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
+        ran = await ran_at(children_on(SYSTEM), Path(claude._tmux), claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
         assert isinstance(ran, TmuxExit) and ran.code == 0, ran
 
     async def keyed(self, *keys: str) -> None:
@@ -223,7 +230,7 @@ class Hands:
 
 def _runnable(brain: Path) -> Runnable:
     """What the start's preflight passes the brain on `brain` with, as it reads it."""
-    match configdir.runnable(configdir.read(brain, pinned.PIN)):
+    match configdir.runnable(configdir.read(brain, pinned.PIN, UNMANAGED)):
         case Runnable() as ran:
             return ran
         case refused:
@@ -240,26 +247,41 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     placed(brain, pinned.PIN, claude_code)
     recorded: list[Entry] = []
     sent: list[Sent] = []
-    wire = Wire(SYSTEM, lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
+    exchanged: list[Exchanged] = []
+
+    def record(observed: Observed) -> None:
+        match observed:
+            case Sent():
+                sent.append(observed)
+            case Exchanged():
+                exchanged.append(observed)
+            case _:
+                pass
+
+    wire = Wire(SYSTEM, record)
+    home = tmp_path / "home"
+    home.mkdir()
+    # Every other host Claude Code calls is reached through the mock, and nothing reaches past it: the mock is hands'
+    # environment's HTTPS proxy, which hands' proxy tunnels the brain's other hosts through, and its authority one hands'
+    # environment trusts, which the brain is given to trust beside the proxy's.
+    # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
+    # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
+    # ALL_PROXY, which hands does not replace for the brain, names a proxy nothing listens at: a Claude Code that took it
+    # over the HTTPS_PROXY hands gives it would reach no API at all (docs/claude-code-behavior.md).
+    environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "ALL_PROXY": DEAD, "all_proxy": DEAD, "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
     # [LAW:effects-at-boundaries] the change from the run's own wiring, beside the pinned claude: the upstream hands' proxy
     # forwards to.
-    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=SYSTEM)
+    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, SYSTEM, environment, tmp_path / "trusted.pem", recorded.append)
     try:
-        home = tmp_path / "home"
-        home.mkdir()
-        # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
-        # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
-        # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
-        environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
         refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
         config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT, brain=_runnable(brain)), voice=voicechoice.DEFAULT)
         out = Spoken()
         store = SummaryStore(Summaries(tmp_path / "summaries.db"))
-        async with mind(SYSTEM, config, [], BrainDoor({}, [stay_silent_tool()], Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
+        async with mind(SYSTEM, config, [], BrainDoor({}, [stay_silent_tool()], Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.through, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:
-                    yield Hands(minded.llm, out, run.worker.queue_frame, recorded, sent, watches, run.errors, workdir(brain))
+                    yield Hands(minded.llm, out, run.worker.queue_frame, recorded, sent, exchanged, watches, run.errors, workdir(brain), minded.running_on)
                 finally:
                     for watch in watches:
                         watch.cancel()

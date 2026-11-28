@@ -17,10 +17,12 @@ import pytest
 from hands.virtualclock import VirtualClock
 
 from hands.brain import process
+from hands.brain.configdir import Unstartable
 from hands.sessions.reader import Reader
 from hands.brain.session import BrainSession
 from hands.brain.process import BROKEN, EXIT_SECONDS, INTERRUPT_SECONDS, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Untaken, _listen, _Turn  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, HookReply, Submitted, Summarise, ToldByRecord, ToldByStop, TurnEnding
+from hands.core.runningon import RunningOn
 from hands.core.stopfailure import LoginExpired, StopFailed
 from hands.sessions.hooks import hook_output
 from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
@@ -41,9 +43,10 @@ from hands.core.wire import MainTurn, Sent
 from hands.sessions.wide import WideEvent, begun, here, unit
 from hands.core.trace import Span
 from claudescreen import ClaudeScreen
-from hands.sessions.tmux import KEYS
-from hands.sessions.typing import Untyped
+from hands.sessions.tmux import tmux_key
+from hands.sessions.terminals import Untyped
 from terminalcontract import CHORD
+from fixtures.fakemachine import UNMANAGED
 
 # [LAW:no-silent-failure] an error hands logs that a test does not take fails it (`errors`).
 pytestmark = pytest.mark.usefixtures("errors")
@@ -791,7 +794,7 @@ class _Keys:
         self.pressed.append(key)
         if key in self.before:
             self.before[key]()
-        self.claude_code.key(KEYS[key])
+        self.claude_code.key(tmux_key(key))
 
     async def stop(self) -> None:
         self.exit.set_result(0)
@@ -1016,7 +1019,7 @@ async def test_hands_check_says_the_login_the_running_brain_reported_expired_unt
     def checked() -> readiness.Finding:
         heart.beat("running", None, 0, listening=False, degraded=run._login(brain.login))  # pyright: ignore[reportPrivateUsage]
         # Judged as `look` judges the hands it finds running, on the brain's own clock.
-        return readiness.configured(Unstarting(clock, lambda _: None), home, LAID_OUT, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
+        return readiness.configured(Unstarting(clock, lambda _: None), home, LAID_OUT, UNMANAGED, {}, heartbeat.judge(home.status, heartbeat.read(home.status), clock.wall(), alive=True))
 
     _took(brain, "n1", NOTICE)
     _told(brain, "n1", ("n1",), ending=ToldByStop("Done.", REFRESH_REFUSED))
@@ -1247,6 +1250,139 @@ async def test_a_start_that_does_not_parse_is_one_event_and_leaves_the_brain_adr
         brain._adrift.result()  # pyright: ignore[reportPrivateUsage]
     [adrift] = taken(errors)
     assert adrift.startswith("the brain is adrift: the brain's SessionStart hook does not parse")
+
+
+async def _broken_reading(_reader: Reader) -> None:
+    raise OSError(5, "Input/output error")
+
+
+def _starting(clock: VirtualClock, config_dir: Path, reading: Callable[[Reader], Awaitable[None]] = _unread) -> tuple[asyncio.Future[None], Brain, "_Keys"]:
+    """A brain built as its launch builds it, waiting on its own start for START_SECONDS from now on `clock`."""
+    brain, keys = _built(clock, config_dir=config_dir, reading=reading)
+    return asyncio.ensure_future(brain.started(clock.now() + process.START_SECONDS)), brain, keys
+
+
+# Each ending but the deadline ends the wait with the clock where it stood, as nothing here moves it. hands failing to read
+# the brain is no conversation that cannot come up, which its launch would let go.
+@pytest.mark.parametrize("reading", [_unread, _broken_reading])
+async def test_a_launch_is_up_the_moment_claude_code_posts_its_start_however_hands_reads_it(tmp_path: Path, reading: Callable[[Reader], Awaitable[None]]) -> None:
+    starting, brain, _ = _starting(VirtualClock(), tmp_path, reading)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
+    await until(starting.done)
+    starting.result()
+
+
+async def test_a_launch_whose_start_does_not_parse_fails_the_moment_it_is_posted(tmp_path: Path, errors: list[str]) -> None:
+    starting, brain, _ = _starting(VirtualClock(), tmp_path)
+    await brain.posted("SessionStart", b"{not json")
+    await until(starting.done)
+    with pytest.raises(Unstartable, match="SessionStart hook does not parse"):
+        starting.result()
+    assert len(taken(errors)) == 1
+
+
+async def test_a_launch_whose_claude_code_ends_before_its_start_fails_the_moment_it_ends(tmp_path: Path) -> None:
+    starting, _, keys = _starting(VirtualClock(), tmp_path)
+    keys.exit.set_result(1)
+    await until(starting.done)
+    with pytest.raises(Unstartable, match=f"{re.escape(process.exited(1))} while the brain's Claude Code had posted no start of its session;"):
+        starting.result()
+
+
+async def test_a_launch_that_fails_says_hands_reading_of_it_failed_too(tmp_path: Path) -> None:
+    starting, _, keys = _starting(VirtualClock(), tmp_path, _broken_reading)
+    keys.exit.set_result(1)
+    await until(starting.done)
+    with pytest.raises(Unstartable, match=re.escape(f"{process.exited(1)} while hands' reading of the brain had failed (OSError: [Errno 5] Input/output error), and the brain's Claude Code had posted no start of its session;")) as unstartable:
+        starting.result()
+    # Its frames are the launch's to keep, with the reader's where it failed.
+    assert isinstance(unstartable.value.__cause__, OSError)
+
+
+async def test_a_brain_whose_reading_failed_raises_it_to_whoever_waits_on_it_while_it_runs(tmp_path: Path) -> None:
+    brain, _ = _built(VirtualClock(), config_dir=tmp_path, reading=_broken_reading)
+    with pytest.raises(OSError, match="Input/output error"):
+        await brain.exited()
+
+
+async def test_a_launch_that_hears_nothing_fails_at_its_deadline(tmp_path: Path) -> None:
+    clock = VirtualClock()
+    starting, _, _ = _starting(clock, tmp_path)
+    await clock.sleeping(process.START_SECONDS)
+    assert not starting.done()
+    clock.advance_to(process.START_SECONDS)
+    with pytest.raises(Unstartable, match=f"posted no start of its session after {process.START_SECONDS:.0f}s"):
+        await starting
+
+
+def _report(**fields: object) -> bytes:
+    """The report hands' plugin posts as the brain's session starts (plugin/hooks/report.js)."""
+    return json.dumps(fields).encode()
+
+
+async def _reporting(clock: VirtualClock, config_dir: Path) -> tuple[asyncio.Future[RunningOn | process.Unreported], Brain, "_Keys"]:
+    """A brain whose start is applied, waiting on its plugin's report for START_SECONDS from now on `clock`."""
+    starting, brain, keys = _starting(clock, config_dir)
+    await brain.posted("SessionStart", _session_hook("SessionStart", "b1", source="startup"))
+    await starting
+    return asyncio.ensure_future(brain.reported(clock.now() + process.START_SECONDS)), brain, keys
+
+
+# The count is the session's own, whatever window its model has, and a count of zero is a count.
+@pytest.mark.parametrize(("tokens", "used"), [(45_231, 45_231), (0, 0)])
+async def test_the_context_used_is_the_count_claude_code_reported_never_the_window(tmp_path: Path, tokens: int, used: int) -> None:
+    clock = VirtualClock()
+    reporting, brain, _ = await _reporting(clock, tmp_path)
+    assert await brain.posted(process.SESSION_START, _report(model="claude-opus-5-5", tokens=tokens, window=1_000_000)) == {}
+    assert await reporting == RunningOn("claude-opus-5-5", used) and clock.now() == 0.0
+
+
+async def test_a_report_with_no_count_is_the_model_with_its_context_used_not_known(tmp_path: Path) -> None:
+    # Claude Code counts no context before a reply has used any, and answers the window alone.
+    reporting, brain, _ = await _reporting(VirtualClock(), tmp_path)
+    await brain.posted(process.SESSION_START, _report(model="claude-opus-5-5"))
+    assert await reporting == RunningOn("claude-opus-5-5", None)
+
+
+async def test_a_brain_whose_plugin_reports_nothing_has_no_report_at_its_deadline(tmp_path: Path, errors: list[str]) -> None:
+    clock = VirtualClock()
+    reporting, _, _ = await _reporting(clock, tmp_path)
+    await clock.sleeping(process.START_SECONDS)
+    assert not reporting.done()
+    clock.advance_to(process.START_SECONDS)
+    assert await reporting == "late"
+    assert taken(errors) == ["the brain's Claude Code reported no model or context used by its launch's deadline: hands' plugin posted no session.start"]
+
+
+async def test_a_brain_whose_claude_code_ends_before_it_reports_is_unstartable_at_once(tmp_path: Path) -> None:
+    # A brain gone is no brain up, whatever its start had applied: the launch fails saying so, not its deadline.
+    clock = VirtualClock()
+    reporting, _, keys = await _reporting(clock, tmp_path)
+    keys.exit.set_result(1)
+    with pytest.raises(Unstartable, match="while hands' plugin had posted no session.start"):
+        await reporting
+    assert clock.now() == 0.0
+
+
+async def test_a_brain_adrift_before_it_reports_is_unstartable_at_once(tmp_path: Path, errors: list[str]) -> None:
+    # A brain answering nobody is no brain up, as `started` says of one adrift before its start.
+    clock = VirtualClock()
+    reporting, brain, _ = await _reporting(clock, tmp_path)
+    await brain.posted("SessionStart", b"{not json")
+    with pytest.raises(Unstartable, match="SessionStart hook does not parse"):
+        await reporting
+    assert clock.now() == 0.0
+    taken(errors)
+
+
+async def test_a_report_that_does_not_parse_is_no_report_and_a_later_one_changes_nothing(tmp_path: Path, errors: list[str]) -> None:
+    clock = VirtualClock()
+    reporting, brain, _ = await _reporting(clock, tmp_path)
+    assert await brain.posted(process.SESSION_START, _report(tokens=45_231)) == {}
+    # A report again, as a respawn of the plugin's worker raises one, changes nothing of what the start found.
+    await brain.posted(process.SESSION_START, _report(model="claude-opus-5-5", tokens=45_231))
+    assert await reporting == "unparsed" and clock.now() == 0.0
+    assert taken(errors) == ["the brain's report of its model and context used does not parse: missing field 'model'"]
 
 
 async def test_a_start_from_a_source_hands_does_not_know_still_moves_the_brain(tmp_path: Path, errors: list[str]) -> None:

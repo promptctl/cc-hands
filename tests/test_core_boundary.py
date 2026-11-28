@@ -8,8 +8,9 @@ import hands.core
 # An allow-list rather than a list of the four names the architecture calls out, so a module that reaches the
 # world is caught the first time one is imported rather than the first time someone remembers to name it.
 # `json` and `re` are here because they only transform values: a step's input is rendered as JSON, and a test
-# runner's output is read by pattern. `hashlib` likewise: the summary store's key is a digest of what it keys.
-ALLOWED = ("collections.abc", "dataclasses", "hashlib", "hmac", "json", "pathlib", "re", "typing", "hands.core")
+# runner's output is read by pattern. `urllib.parse` likewise: a URL's host is read off its text. `hashlib` likewise: the summary store's key is a digest of what it keys.
+# `base64` likewise: the proxy's credential is written as the Basic credentials a Proxy-Authorization carries.
+ALLOWED = ("base64", "collections.abc", "dataclasses", "hashlib", "hmac", "json", "pathlib", "re", "typing", "urllib.parse", "hands.core")
 
 
 def imported(source: str) -> set[str]:

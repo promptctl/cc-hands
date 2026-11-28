@@ -6,17 +6,68 @@ one change of rule: nothing it cannot read is defaulted into something it can. A
 `Unparsed`, and a reply built from one is `Garbled`, never a message missing a part.
 """
 
+import base64
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Literal, cast, get_args
 
 from hands.core.session import PromptId, SessionId
 from hands.core.trace import Span
 
-# Where Claude Code reaches the API when nothing says otherwise.
-UPSTREAM = "https://api.anthropic.com"
+# The host Claude Code reaches the API at when nothing says otherwise, and where.
+API_HOST = "api.anthropic.com"
+UPSTREAM = f"https://{API_HOST}"
+
+
+# The user of the credential a client of hands' proxy is given in its url.
+PROXY_USER = "hands"
+
+
+def proxy_authorization(password: str) -> str:
+    """[LAW:one-source-of-truth] the run's credential of `password` as a Proxy-Authorization carries it: Basic
+    credentials of PROXY_USER (RFC 7617), as a client writes them from its proxy url's userinfo."""
+    return "Basic " + base64.b64encode(f"{PROXY_USER}:{password}".encode()).decode()
+
+
+@dataclass(frozen=True)
+class ThroughProxy:
+    """How a client reaches the API with hands' proxy as its HTTPS proxy: the proxy's address, its host and port as a
+    URL's authority writes them; the run's credential, the password the client's proxy url carries, which it sends as
+    its Proxy-Authorization; and the file of the certificates it is to trust, the proxy's authority and those hands'
+    own environment trusts."""
+
+    address: str
+    # Kept out of the repr: the credential is what keeps any other process on the machine from the proxy's tunnels.
+    password: str = field(repr=False)
+    trust: Path
+
+    @property
+    def origin(self) -> str:
+        """The proxy's own origin, which a request posted to in origin form is the API's, as hands' side questions are."""
+        return f"http://{self.address}"
+
+    @property
+    def url(self) -> str:
+        """The url a client is given as its HTTPS proxy, the credential in its userinfo (RFC 3986 §3.2.1)."""
+        return f"http://{PROXY_USER}:{self.password}@{self.address}"
+
+    @property
+    def authorization(self) -> str:
+        """The Proxy-Authorization a request posted to `origin` presents the run's credential in, as a client given
+        `url` as its proxy sends it."""
+        return proxy_authorization(self.password)
+
+
+@dataclass(frozen=True)
+class Direct:
+    """How a client reaches the API with no proxy of hands' between, in the environment it was started in."""
+
+
+# [LAW:types-are-the-program] how a Claude Code of hands' own reaches the API, which whoever starts it says.
+ApiRoute = ThroughProxy | Direct
 
 # ── What a request is ────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -25,9 +76,10 @@ UPSTREAM = "https://api.anthropic.com"
 class MainTurn:
     """The session's own loop asking the model for its next step: the one kind of request whose reply is the session speaking.
 
-    `prompt` is the turn it asks for, the id its hooks carry as prompt_id; None when the request names none. Claude Code
-    names it only when its ANTHROPIC_BASE_URL is Anthropic's API: a session given a gateway, and the brain
-    through hands' proxy, name none.
+    `prompt` is the turn it asks for, the id its hooks carry as prompt_id, sent as `cc_prompt_id`; None when the request
+    names none. Claude Code names it only when it takes itself to be reaching Anthropic's own API: a session given a
+    gateway in ANTHROPIC_BASE_URL names none. The brain names it: it reaches https://api.anthropic.com with hands' proxy
+    as its HTTPS proxy, which ends its TLS (`hands.sessions.connect`).
     """
 
     prompt: PromptId | None
@@ -92,6 +144,11 @@ BILLING_OPENING = "x-anthropic-billing-header:"
 # The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
 # for every Claude Code it starts: derived from the request's querySource in its services/api/client.ts.
 CLASS_HEADER = "x-claude-code-request-class"
+# The headers Claude Code carries its login in: the OAuth token of a Claude plan, which it renews before each request it
+# builds, or the key of an Anthropic Console account. It sends one of them, never both.
+AUTHORIZATION_HEADER = "authorization"
+API_KEY_HEADER = "x-api-key"
+LOGIN_HEADERS = (AUTHORIZATION_HEADER, API_KEY_HEADER)
 
 
 _ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
@@ -495,9 +552,32 @@ def named_class(headers: Mapping[str, str]) -> str | None:
     return _header(headers, CLASS_HEADER)
 
 
+def login_of(headers: Iterable[tuple[str, str]]) -> tuple[str, str] | None:
+    """The login a request carries, as the lowercase name of the header it is in and its value; None from one that carries
+    none, an empty one included."""
+    pairs = tuple(headers)
+    return next(((name, value) for name in LOGIN_HEADERS if (value := _first(pairs, name))), None)
+
+
+def with_login(headers: tuple[tuple[str, str], ...], login: tuple[str, str]) -> tuple[tuple[str, str], ...]:
+    """`headers` carrying `login` and no other: the client's own, in whichever header, is replaced, so a request is never
+    sent with a login of each kind."""
+    return (*((given, value) for given, value in headers if given.lower() not in LOGIN_HEADERS), login)
+
+
+def with_header(headers: tuple[tuple[str, str], ...], name: str, value: str) -> tuple[tuple[str, str], ...]:
+    """`headers` with `name`, a lowercase name, set to `value`: the client's own header of it, whatever casing it named it
+    in, replaced, or one added where it sent none."""
+    return (*((given, current) for given, current in headers if given.lower() != name), (name, value))
+
+
 def _header(headers: Mapping[str, str], name: str) -> str | None:
     """A header's value by its lowercase name, since HTTP names are case-insensitive whatever mapping carried them."""
-    return next((value for given, value in headers.items() if given.lower() == name), None)
+    return _first(headers.items(), name)
+
+
+def _first(headers: Iterable[tuple[str, str]], name: str) -> str | None:
+    return next((value for given, value in headers if given.lower() == name), None)
 
 
 # ── The stream back ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1210,12 +1290,16 @@ class Sent:
 class Received:
     """A request the proxy received, whichever way it is answered: its path, its end-to-end headers, and the bytes its
     conversation goes on from, sent upstream with hands' changes made or, for one hands answers itself, as the client
-    sent them. Its headers carry the client's credentials, so it is heard and never recorded."""
+    sent them. Its headers carry the credentials it was sent with, the client's or, for a request hands built, the ones hands
+    gave it, so it is heard and never recorded."""
 
     exchange: str
     path: str
     headers: tuple[tuple[str, str], ...]
     body: bytes
+    # Whether hands wrote the whole request (a side question): its headers carry the credential hands gave it, never one
+    # the client sent. Named at every construction: a request left unnamed is taken for the client's.
+    built: bool
 
 
 @dataclass(frozen=True)

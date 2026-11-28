@@ -9,6 +9,7 @@ the Makefile's targets writes its own, which CI's cost report is given.
 """
 
 import json
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -17,6 +18,12 @@ from typing import Any
 
 # [LAW:one-source-of-truth] where the suite writes its log. pyproject's addopts spells this path, and test_costs.py holds the two to each other.
 REPORT_LOG = Path(".pytest_cache/report-log.jsonl")
+# [LAW:single-enforcer] a test's row of the report below, and the one reader of it: a line of a job's log, whatever CI put before it.
+ROW = re.compile(r"(\d+\.\d{3}) +(\d+\.\d{3}) +(\d+\.\d{3}) +(\d+\.\d{3})  (\S+\.py::.*)$")
+
+
+def module(test: str) -> str:
+    return test.partition("::")[0]
 
 
 @dataclass(frozen=True)
@@ -35,7 +42,7 @@ class Cost:
 
     @property
     def module(self) -> str:
-        return self.test.partition("::")[0]
+        return module(self.test)
 
 
 def seconds(costs: list[Cost]) -> float:
@@ -62,6 +69,12 @@ def report(log: str) -> str:
     lines += ["", f"{'total':>9} {'setup':>9} {'call':>9} {'teardown':>9}  test"]
     lines += [f"{cost.total:9.3f} {cost.setup:9.3f} {cost.call:9.3f} {cost.teardown:9.3f}  {cost.test}" for cost in costs]
     return "\n".join(lines) + "\n"
+
+
+def rows(text: str) -> list[Cost]:
+    """The tests a text holds the report's rows of, which is what a job's log is: the other lines, and the rows a log
+    that stopped short never printed, are not read."""
+    return [Cost(found[5], float(found[2]), float(found[3]), float(found[4])) for line in text.splitlines() if (found := ROW.search(line))]
 
 
 if __name__ == "__main__":

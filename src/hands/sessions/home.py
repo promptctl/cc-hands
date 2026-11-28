@@ -22,6 +22,12 @@ class Home:
         return self.root / "wire.sock"
 
     @property
+    def trust(self) -> Path:
+        """The certificates the brain trusts, hands' proxy's authority among them, written by the daemon's proxy as it
+        starts (`hands.sessions.authority`)."""
+        return self.root / "trusted.pem"
+
+    @property
     def status(self) -> Path:
         """The heartbeat, written by the daemon alone."""
         return self.root / "status.json"

@@ -24,7 +24,7 @@ from conftest import unprimed
 from hands.brain import pinned
 from hands.core.session import PinnedClaude, Runnable
 from hands.virtualclock import VirtualClock
-from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
+from hands.core.spoken import Leak, spoken, spoken_count, spoken_model, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -407,6 +407,25 @@ def test_a_small_count_is_the_word_a_listener_hears() -> None:
     assert [spoken_count(n) for n in (0, 1, 2, 12)] == ["no", "one", "two", "twelve"]
     # Past the table a digit is read correctly and read shorter, and "forty-seven files" buys nothing.
     assert spoken_count(47) == "47"
+
+
+@pytest.mark.parametrize(
+    ("model", "said"),
+    [
+        ("claude-opus-5-5", "Opus 5.5"),
+        ("claude-fable-5-1", "Fable 5.1"),
+        ("claude-sonnet-5", "Sonnet 5"),
+        # A snapshot's date, and the variant Claude Code marks in brackets, are no part of the model's name.
+        ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+        ("claude-sonnet-4-20250514", "Sonnet 4"),
+        ("claude-opus-5-5[1m]", "Opus 5.5"),
+        # An id of another form is the model's name all the same.
+        ("claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022"),
+        ("us.anthropic.claude-opus-5-5-v1:0", "us.anthropic.claude-opus-5-5-v1:0"),
+    ],
+)
+def test_a_claude_model_is_said_by_its_name(model: str, said: str) -> None:
+    assert spoken_model(model) == said
 
 
 def _chunks(reply: str) -> list[str]:

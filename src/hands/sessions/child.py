@@ -33,7 +33,7 @@ from functools import partial
 from pathlib import Path
 from typing import IO, Literal, Protocol
 
-from hands.clock import Clock, wait
+from hands.clock import Clock, wait_all
 from hands.sessions import wide
 from hands.threads import tell
 
@@ -452,7 +452,7 @@ async def _awaited[T](policy: _Policy, child: _Supervised, ended: asyncio.Future
                     child.signal(step)
                 case _Wait(seconds=seconds):
                     try:
-                        await wait(clock, (ended,), seconds)
+                        await wait_all(clock, (ended,), seconds)
                     except GeneratorExit:
                         # A coroutine being closed cannot wait: its child is killed with its group, and its thread reaps it.
                         child.signal(Kill(Cancelled()))
@@ -550,14 +550,14 @@ class Children:
     clock: Clock
     emit: Callable[[wide.WideEvent], None]
 
-    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None) -> Outcome:
-        """Run `argv` to its end, within `limit`, from a coroutine: raises ValueError for a command no OS can be
-        handed or a limit that is no time, and what ended the wait early, once it is killed."""
+    async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None, given: bytes | None = None) -> Outcome:
+        """Run `argv` to its end, within `limit`, from a coroutine, `given` on its stdin, or none: raises ValueError for
+        a command no OS can be handed or a limit that is no time, and what ended the wait early, once it is killed."""
         bound = Limit(limit)
         loop = asyncio.get_running_loop()
         ended: asyncio.Future[Ran | Lost] = loop.create_future()
         began, handed = _as(env, self.clock)
-        started = self._captured(began, Command(argv, cwd, handed), limit, lambda result: tell(loop, ended.set_result, result))
+        started = self._captured(began, Command(argv, cwd, handed), limit, lambda result: tell(loop, ended.set_result, result), given)
         if isinstance(started, NeverStarted):
             return started
         return await _awaited(_bounded(bound), started, ended, self.clock)
@@ -582,12 +582,15 @@ class Children:
         started = self._spawned(Command(tuple(argv), cwd, env), _streams(stdio), wide.begun(self.clock), None, finish, lambda result: tell(loop, ended.set_result, result))
         return started if isinstance(started, NeverStarted) else Running(started.pid, ended, started, self.clock)
 
-    def _captured(self, began: wide.Begun, parsed: Command, limit: float, settle: Callable[[Ran | Lost], None]) -> _Supervised | NeverStarted:
-        """`parsed` started as `began` with its outputs to files hands reads once it is reaped, and `settle` given what it wrote."""
-        with ExitStack() as unstarted:
+    def _captured(self, began: wide.Begun, parsed: Command, limit: float, settle: Callable[[Ran | Lost], None], given: bytes | None = None) -> _Supervised | NeverStarted:
+        """`parsed` started as `began` with `given` on its stdin, or none, and its outputs to files hands reads once it is
+        reaped, and `settle` given what it wrote."""
+        # The file `given` is read from is the child's own once it is started: hands' is closed on every path.
+        with ExitStack() as unstarted, ExitStack() as handing:
             try:
                 out = unstarted.enter_context(tempfile.TemporaryFile())
                 err = unstarted.enter_context(tempfile.TemporaryFile())
+                stdin = subprocess.DEVNULL if given is None else _holding(handing.enter_context(tempfile.TemporaryFile()), given)
             except OSError as error:
                 return self._never(began, parsed, limit, error)
 
@@ -599,7 +602,7 @@ class Children:
                     return Lost(f"it wrote more than the {CAPTURE_BYTES} bytes hands reads of its output"), sizes
                 return Ran(ended, Captured(wrote), Captured(complained)), sizes
 
-            started = self._spawned(parsed, (subprocess.DEVNULL, out, err), began, limit, finish, settle)
+            started = self._spawned(parsed, (stdin, out, err), began, limit, finish, settle)
             if not isinstance(started, NeverStarted):
                 # The files are the child's thread's from here, and it closes them once it has read them.
                 unstarted.pop_all()
@@ -701,6 +704,13 @@ def _streams(stdio: Stdio) -> tuple[int, int, int]:
             return slave, slave, slave
         case Null():
             return subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL
+
+
+def _holding(file: IO[bytes], given: bytes) -> IO[bytes]:
+    """`file`, holding `given`, to be read from its start."""
+    file.write(given)
+    file.seek(0)
+    return file
 
 
 def _read(output: IO[bytes]) -> tuple[bytes, bool]:

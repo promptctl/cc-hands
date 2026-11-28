@@ -24,7 +24,8 @@ from hands.sessions.audit import AuditLog
 from hands.sessions.home import Home
 from hands.sessions.kernel import KERNEL
 from hands.sessions.liveness import sweep
-from hands.sessions.registry import Sessions
+from hands.sessions.registry import Sessions, unread, untyped
+from fakemachine import UNMANAGED
 import pins
 
 
@@ -37,7 +38,7 @@ def main() -> None:
     settings = load(home)
 
     async def run(stop: Stop) -> Ended:
-        sessions = Sessions(clock=SYSTEM, record=audit.record)
+        sessions = Sessions(clock=SYSTEM, record=audit.record, typist=untyped, keyboards=unread)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(KERNEL, home, sessions, frozenset())
         beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heart.period.total_seconds(), SYSTEM))
@@ -47,7 +48,7 @@ def main() -> None:
         beating.cancel()
         return Ended(None, sessions.live_count())
 
-    match asyncio.run(launch(lambda: run, Levels("off"), heart, lambda: (), lambda: edited(home, pins.LAID_OUT, {}, audit.record, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
+    match asyncio.run(launch(lambda: run, Levels("off"), heart, lambda: (), lambda: edited(home, pins.LAID_OUT, UNMANAGED, {}, audit.record, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
         case "quit":
             return
         case "restart":

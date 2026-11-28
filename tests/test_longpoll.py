@@ -24,13 +24,13 @@ class Shown:
         return version_of(self.text), self.text
 
 
-async def read(clock: VirtualClock, look: Callable[[], Awaitable[tuple[str, str]]], seen: str | None) -> tuple[Read[str, str] | BaseException, WideEvent]:
+async def read(clock: VirtualClock, look: Callable[[], Awaitable[tuple[str, str]]], seen: str | None, gone: Callable[[], bool] = lambda: False) -> tuple[Read[str, str] | BaseException, WideEvent]:
     """What the read answers, or what it raised, and the event of the unit it ran in."""
     recorded: list[WideEvent] = []
     answered: Read[str, str] | BaseException
     try:
         with unit("page.read", recorded.append, begun(clock)):
-            answered = await waited(clock, look, seen)
+            answered = await waited(clock, look, seen, gone)
     except Exception as error:
         answered = error
     [event] = recorded
@@ -71,6 +71,16 @@ async def test_a_page_that_has_seen_what_is_shown_is_answered_with_it_unchanged_
     answered, event = await reading
     assert answered == Read(seen=version_of("charles"), waits=WAIT_SECONDS, now=clock.wall().timestamp(), shown="charles")
     assert (event.facts["waited_ms"], event.facts["changed"]) == (WAIT_SECONDS * 1000, False)
+
+
+async def test_a_page_that_leaves_while_its_read_waits_ends_the_wait_at_the_next_look_and_the_event_says_so() -> None:
+    clock, shown, left = VirtualClock(), Shown("charles"), [False]
+    reading = asyncio.create_task(read(clock, shown.look, version_of("charles"), lambda: left[0]))
+    await clock.sleeping(POLL_SECONDS)
+    left[0] = True
+    clock.advance(POLL_SECONDS)
+    _, event = await reading
+    assert (event.facts["looks"], event.facts["waited_ms"], event.facts["changed"], event.facts["page_left"]) == (2, POLL_SECONDS * 1000, False, True)
 
 
 async def test_a_look_that_fails_partway_through_the_wait_says_how_far_the_wait_had_come() -> None:

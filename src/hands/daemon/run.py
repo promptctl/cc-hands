@@ -33,26 +33,29 @@ from pipecat.workers.runner import WorkerRunner
 from hands.clock import Clock, dashed
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
 from hands.sessions.backlog import Lit
-from hands.sessions import heartbeat, tmux
+from hands.sessions import heartbeat, panes
 from hands.sessions.child import Children
-from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
+from hands.core.runningon import RunningOn
 from hands.core.stopfailure import LoginExpired
-from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Received, Sent
+from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Received, Sent, ThroughProxy
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.processes import Processes
+from hands.sessions.screen import Screen
+from hands.sessions.terminals import Fritters, Terminals, type_into
 from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.summaries import Summaries
+from hands.sessions.authority import Uninterceptable
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
 from hands.sessions.server import serve_display, serve_hooks
@@ -114,7 +117,7 @@ from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
 from hands.brain.session import BrainSession
-from hands.brain import pinned
+from hands.brain import configdir, pinned
 from hands.brain.configdir import Unstartable
 from hands.brain.process import Brain, Launch, Station, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
@@ -206,17 +209,19 @@ class Mind:
     # [LAW:dataflow-not-control-flow] how the brain degrades hands now, as the heartbeat says it: its login, where its
     # turns last said it expired (`Brain.login`).
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]]
+    # The model the brain runs on and the context it has used, as its start found them, which hands says as it starts.
+    running_on: RunningOn
 
 
-async def front_now(sessions: Sessions, processes: Processes, environment: Mapping[str, str]) -> InFront:
+async def front_now(screen: Screen, terminals: Terminals, processes: Processes, sessions: Sessions, environment: Mapping[str, str]) -> InFront:
     """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await read_front(sessions.children, processes, running, environment)
+    return await read_front(screen, terminals, processes, running, environment)
 
 
 @asynccontextmanager
 async def mind(
-    clock: Clock, config: VoiceConfig, tools: Sequence[Tool[Answer]], turn: BrainDoor, tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    clock: Clock, config: VoiceConfig, tools: Sequence[Tool[Answer]], turn: BrainDoor, tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, through: ThroughProxy, wire: Wire, store: Store,
     log: Path, hands: str, record: Record, environment: Mapping[str, str], next_barge_in: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
@@ -234,15 +239,16 @@ async def mind(
     served = turn.serve([*tools, usage_tool(usage)])
     server = await serve_mcp(clock, [each.tool for each in served], record, spans)
     try:
-        station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
+        station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, through, environment)
         try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
+            up = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk, llm.brain), session, record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
+        brain = up.brain
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        asides = Asides(clock, proxy_url, Newest(session), record)
+        asides = Asides(clock, through, Newest(session), record)
         try:
             stage = BrainStage(brain, served, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
@@ -250,7 +256,7 @@ async def mind(
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                 # A summary is as long as its reply makes it: only its time is the summary's own.
                 # The brain's stage notes each turn of the user's itself, as it types it.
-                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login))
+                yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout), lambda: _login(brain.login), up.running_on)
         finally:
             await asides.close()
             await brain.stop()
@@ -274,10 +280,11 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, heart: heartbeat.Heart, record: Record,
-    degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
+    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, terminals: Terminals, fritters: Fritters, screen: Screen, home: Home,
+    heart: heartbeat.Heart, record: Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     pin: pinned.Pin,
+    machine: configdir.Machine,
     run_start: Start,
     own: OwnModel,
     clock: Clock,
@@ -299,10 +306,9 @@ async def run(
         deltas = Deltas(record, environment, clock)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
-        children = Children(clock, record)
         sessions = Sessions(
             clock=clock, record=record, changes=deltas, names=names,
-            typist=partial(type_into, children, environment), keyboards=partial(tmux.keyboards, children, processes, environment=environment),
+            typist=partial(type_into, terminals, fritters), keyboards=partial(panes.keyboards, terminals, processes, environment=environment),
         )
         # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
         # before each turn's hook is applied.
@@ -313,10 +319,15 @@ async def run(
         run_start.heard(hooks=home.socket)
         logged = wire_to(record)
         wire = Wire(clock, logged)
-        proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=clock)
+        try:
+            proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock, environment, home.trust, record)
+        except Uninterceptable as error:
+            # [LAW:no-silent-failure] the brain reaches the API through hands' proxy or not at all.
+            raise CannotStart(f"hands' proxy cannot serve the brain's way to the API: {error}") from error
         held.push_async_callback(proxy.close)
-        # The url a Claude Code process's ANTHROPIC_BASE_URL is set to.
-        run_start.heard(proxy=proxy.url, upstream=UPSTREAM)
+        # The proxy's origin, which the brain's HTTPS_PROXY names with the run's credential, never recorded; and the file
+        # its NODE_EXTRA_CA_CERTS names.
+        run_start.heard(proxy=proxy.through.origin, trust=proxy.through.trust, upstream=UPSTREAM)
         tap = await serve_tap(home.wire, tap_observer(logged, sessions.hear), record, clock=clock)
         held.push_async_callback(tap.close)
         run_start.heard(tap=home.wire)
@@ -339,19 +350,19 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        read = await start(lambda: configured(configure, survey, processes, home, pin, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
+        read = await start(lambda: configured(configure, survey, processes, home, pin, machine, environment, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if read is not None:
             config = read.voice
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), config.voice, SampleLines(home, read.settings))
-            tools = acts(sessions, processes, store, home, recounts, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, record)
+            tools = acts(sessions, terminals, processes, store, home, recounts, key.switch, listening, lambda: key.gate.at_phone, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, record)
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             # [LAW:single-enforcer] one owner of a switch under way, whether the user asks by voice or on the page.
             switches = Switches(player)
             gallery = Gallery(voices=voice_choices, levels=listening, desk=key, own=own, switches=switches, wake=config.wake, models=CLAUDE_MODELS)
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(sessions, processes, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_door(sessions, home, player, refocus, lambda: quiet_cues.owe(WORKING), switches), lambda: as_sent(sessions, home), lambda: front_now(screen, terminals, processes, sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.through, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
@@ -364,7 +375,7 @@ async def run(
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
-async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, pin: pinned.Pin, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
+async def configured(configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], sessions: Sessions, run_start: Start) -> Configured:
     """The configuration, once the sessions already running are listed and what hands is missing has been said;
     CannotStart once it has been said, where hands cannot run on the settings."""
     # A restart is back where it was before anything slow: every session with a file and a running process is listed.
@@ -372,7 +383,7 @@ async def configured(configure: Callable[[preflight.Preflight], Configured], sur
     # [LAW:single-enforcer] the start's one preflight, the same the weighs of an edit call, before the login, the one
     # refusal only a Claude Code can say. [LAW:no-ambient-temporal-coupling] its facts reach the start's event here, on
     # the loop that owns it, never from the thread it ran on.
-    checked = await off_loop(partial(preflight.preflight, home, pin, environment), "the start's preflight")
+    checked = await off_loop(partial(preflight.preflight, home, pin, machine, environment), "the start's preflight")
     run_start.heard(**checked.facts())
     read = await off_loop(lambda: _attempted(partial(configure, checked)), "the configuration read")
     # [LAW:single-enforcer] the backend is said as the configuration reached it, never its key or login read twice; and
@@ -428,7 +439,7 @@ async def converse(
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
     channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, children=Children(clock, record)), record, clock)
-    listen(voice, channel, after_crash)
+    listen(voice, channel, after_crash, minded.running_on)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
     # [LAW:single-enforcer] one owner of the wake word's models and one of the runtime the phone runs them on: the desk and
@@ -598,7 +609,7 @@ def wire_to(record: Record) -> Callable[[Observed], None]:
                 # Heard as it happens by what speaks from the wire; the exchange's line already holds the request's kind and the whole reply.
                 pass
             case Received():
-                # Its headers carry the client's credentials: what side questions fork from, never written down.
+                # Its headers carry the credentials it was sent with: what side questions fork from, never written down.
                 pass
 
     return observe
