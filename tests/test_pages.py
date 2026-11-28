@@ -715,7 +715,9 @@ async def test_the_brain_read_waiting_at_hands_ends_as_the_call_view_is_left_and
     await patiently(lambda: hands.ended.count("/brain") == 2, lambda: len(hands.ended))
     assert hands.requests.count("/brain") == 2
     await page.get_by_role("link", name="Call").click()
-    await patiently(lambda: hands.requests.count("/brain") == 3, lambda: len(hands.requests))
+    # Shown again, the view reads as it did first: a read answered at once, and the next waiting at hands.
+    await patiently(lambda: hands.requests.count("/brain") == 4, lambda: len(hands.requests))
+    assert hands.ended.count("/brain") == 3
 
 
 # The button's shape as the Call view draws it from the scroll (views/call.js, "The button that melts into the bar" in
