@@ -60,8 +60,9 @@ async def test_a_word_the_user_trained_is_heard_with_their_file_where_they_keep_
 
 async def test_a_word_the_user_trained_whose_model_is_not_there_is_unserved_naming_it(tmp_path: Path) -> None:
     missing = tmp_path / "mine" / "hey_hands.onnx"
-    with pytest.raises(Unserved, match=f"no wake word model at {missing}"):
+    with pytest.raises(Unserved, match=f"no wake word model at {missing}") as unserved:
         await WakeModels(tmp_path / "models", VirtualClock(), Fetching()).ensured(Trained("Hey Hands", missing))
+    assert not unserved.value.passing
 
 
 @pytest.mark.parametrize("failure", [OSError("the network is down"), Mismatch("embedding_model.onnx at openWakeWord v0.5.1 is aaa, not the bbb pinned")])

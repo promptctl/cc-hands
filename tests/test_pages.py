@@ -31,7 +31,7 @@ from hands.voice.milestone import ClipDiscarded, ClipOpened, TurnUnopened
 from hands.voice.phone import CallLeft, Phone
 from hands.voice.phoneaddress import keyed_address, phone_key
 from hands.voice.phonepage import APP_PATHS, ROW, phone_pages
-from hands.voice.pinnedfile import Fetch, Kept, Pin, Release
+from hands.voice.pinnedfile import Fetch, Kept, Mismatch, Pin, Release
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.transcript import Heard
@@ -565,11 +565,23 @@ def unreachable(_models: Path) -> Fetch:
     return Unreachable()
 
 
+class NotPinned:
+    """A fetch whose bytes are not the ones pinned."""
+
+    async def __call__(self, directory: Path, pin: Pin, stop: threading.Event) -> Kept:
+        raise Mismatch(f"{pin.name} at {pin.at} is aaa, not the {pin.digest} pinned")
+
+
+def not_pinned(_models: Path) -> Fetch:
+    return NotPinned()
+
+
 @pytest.mark.parametrize("wake_models", [unreachable], indirect=True)
-async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_cannot_listen_in_hands_words(browser: Opened, hands: Hands) -> None:
+async def test_models_hands_cannot_fetch_reach_the_page_as_why_it_waits_in_hands_words(browser: Opened, hands: Hands) -> None:
     page = await browser.open(hands.address("/"))
     await detecting(page)
-    assert await page.evaluate("events") == [{"kind": "failed", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
+    # Waited on, not given up: hands fetches again as it is next asked (`patiently`, tests/test_handsjs.py).
+    assert await page.evaluate("events") == [{"kind": "waiting", "why": "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down"}]
 
 
 @pytest.mark.quarantined("promptctl-testing-c3u.sm9", until="2026-11-29")

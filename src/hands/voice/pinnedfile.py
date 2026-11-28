@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import os
 import threading
+import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -112,7 +113,25 @@ async def fetched_off_the_loop(directory: Path, pin: Pin, stop: threading.Event)
 
 class Unserved(Exception):
     """A file hands runs or serves that cannot be had, and why: it could not be fetched, is not the one pinned, or is not
-    there."""
+    there. `passing` says whether asking again may change it: a fetch that failed on its way may come the next time, and
+    bytes that are not the ones pinned, or a file that is not there, would be the same."""
+
+    def __init__(self, why: str, passing: bool) -> None:
+        super().__init__(why)
+        self.passing = passing
+
+
+def _passing(error: OSError | HTTPException) -> bool:
+    """Whether a fetch that failed with `error` may come the next time: the network's failures, a read cut short, one that
+    took too long, and a server's own failure (a 5xx, or a 429 that says to wait) may pass; a server's refusal of the
+    address (any other 4xx) and a directory hands may not write would be the same again."""
+    match error:
+        case urllib.error.HTTPError(code=code):
+            return code >= 500 or code == 429
+        case PermissionError() | FileExistsError():
+            return False
+        case _:
+            return True
 
 
 class Release:
@@ -141,9 +160,12 @@ class Release:
             try:
                 self._directory.mkdir(parents=True, exist_ok=True)
                 kept = await self._within_deadline(pin)
-            # A fetch's failures are its own: the directory's, the network's, a read cut short, one that took too long, and a file that is not the one pinned.
-            except (OSError, HTTPException, Mismatch) as error:
-                raise Unserved(f"hands cannot get {pin.at}'s {pin.name}: {error}") from error
+            # A fetch's failures are its own: the directory's, the network's, the server's, a read cut short, one that took
+            # too long, and a file that is not the one pinned.
+            except (OSError, HTTPException) as error:
+                raise Unserved(f"hands cannot get {pin.at}'s {pin.name}: {error}", passing=_passing(error)) from error
+            except Mismatch as error:
+                raise Unserved(f"hands cannot get {pin.at}'s {pin.name}: {error}", passing=False) from error
             self._held[pin] = kept.path
             return kept
 

@@ -83,7 +83,7 @@ class Page:
 
     def __init__(self, fragment: str = "#the%20key") -> None:
         self._js = JsModule(
-            "hands.js", "PAGE_OPEN, asked, askedForBytes, unanswered, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
+            "hands.js", "PAGE_OPEN, asked, askedForBytes, unanswered, patiently, reading, handsNow, carriesKey, ANSWER_MS, CROSSING_MS", f"var location = {{hash: {json.dumps(fragment)}}};{BROWSER}"
         )
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
         self.crossing_ms = cast(int, self._js.eval("CROSSING_MS"))
@@ -131,11 +131,12 @@ def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: P
 
 @pytest.mark.parametrize(("settled", "outcome"), [
     ('answer(202, "")', {"kind": "answered", "body": None}),
-    ('answer(400, "the page sends {voice: ...}")', {"kind": "refused", "status": 400, "text": "the page sends {voice: ...}"}),
-    ('answer(503, "")', {"kind": "refused", "status": 503, "text": "hands refused with 503"}),
-    ('cutOff("network reset")', {"kind": "lost", "why": "hands' answer was cut off: network reset"}),
-    ('lose("TimeoutError")', {"kind": "lost", "why": "hands did not answer within 60 s"}),
-    ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
+    ('answer(400, "the page sends {voice: ...}")', {"kind": "refused", "status": 400, "transient": False, "text": "the page sends {voice: ...}"}),
+    ('answer(503, "")', {"kind": "refused", "status": 503, "transient": True, "text": "hands refused with 503"}),
+    ('answer(500, "no wake word model at /m.onnx")', {"kind": "refused", "status": 500, "transient": False, "text": "no wake word model at /m.onnx"}),
+    ('cutOff("network reset")', {"kind": "lost", "transient": True, "why": "hands' answer was cut off: network reset"}),
+    ('lose("TimeoutError")', {"kind": "lost", "transient": True, "why": "hands did not answer within 60 s"}),
+    ('lose("TypeError")', {"kind": "lost", "transient": True, "why": "hands is out of reach: lost"}),
 ])
 def test_what_came_of_a_request_hands_took_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
     page.run('var outcome; asked(PAGE_OPEN, "GET", "/state").then(said => { outcome = said; })')
@@ -152,9 +153,10 @@ def test_a_file_is_asked_for_with_the_key_and_answered_as_its_bytes(page: Page) 
 
 
 @pytest.mark.parametrize(("settled", "outcome"), [
-    ("answerBytes(503, [1, 2])", {"kind": "refused", "status": 503, "text": "refused in words"}),
-    ('cutOffBytes("network reset")', {"kind": "lost", "why": "hands' answer was cut off: network reset"}),
-    ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
+    ("answerBytes(503, [1, 2])", {"kind": "refused", "status": 503, "transient": True, "text": "refused in words"}),
+    ('cutOffBytes("network reset")', {"kind": "lost", "transient": True, "why": "hands' answer was cut off: network reset"}),
+    ('lose("TimeoutError")', {"kind": "lost", "transient": True, "why": "hands did not answer within 60 s"}),
+    ('lose("TypeError")', {"kind": "lost", "transient": True, "why": "hands is out of reach: lost"}),
 ])
 def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
     page.run('var outcome; askedForBytes(PAGE_OPEN, "/wake/models/word.onnx").then(said => { outcome = said; })')
@@ -162,12 +164,57 @@ def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(pag
     assert page.seen("outcome") == outcome
 
 
-def test_an_answer_that_is_not_json_is_lost_with_why(page: Page) -> None:
+PATIENTLY = 'var outcome, waits = []; patiently(PAGE_OPEN, why => waits.push(why), asked, "GET", "/wake/settings").then(said => { outcome = said; })'
+
+
+def test_a_request_hands_does_not_answer_in_time_is_asked_again_after_a_pause_saying_why_until_hands_answers(page: Page) -> None:
+    page.run(PATIENTLY)
+    page.run('lose("TimeoutError")')
+    # Nothing is asked until the pause is over.
+    assert (page.seen("waits"), page.asking(), page.timers()) == (["hands did not answer within 60 s"], [], [2000])
+    page.run("fire()")
+    assert [asked.path for asked in page.asking()] == ["/wake/settings"]
+    page.answer(200, '{"phrase": "hey jarvis"}')
+    # The wait is over once hands answers, and said to be.
+    assert (page.seen("waits"), page.seen("outcome")) == (["hands did not answer within 60 s", None], {"kind": "answered", "body": {"phrase": "hey jarvis"}})
+
+
+def test_a_request_hands_could_not_answer_now_is_asked_again_after_a_pause_saying_hands_words(page: Page) -> None:
+    page.run(PATIENTLY)
+    # As a cold first run whose fetch of the models failed: hands fetches again as it is next asked.
+    page.answer(503, "hands could not fetch the word's model")
+    assert (page.seen("waits"), page.asking(), page.timers()) == (["hands could not fetch the word's model"], [], [2000])
+    page.run("fire()")
+    assert [asked.path for asked in page.asking()] == ["/wake/settings"]
+
+
+FINAL = pytest.mark.parametrize(("status", "text"), [
+    (401, "this page's address is missing the phone's key"),
+    (404, "Not Found"),
+    (500, "hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: it is aaa, not the bbb pinned"),
+])
+
+
+@FINAL
+def test_a_request_refused_as_what_asking_again_would_not_change_is_hands_word_and_is_not_asked_again(page: Page, status: int, text: str) -> None:
+    page.run(PATIENTLY)
+    page.answer(status, text)
+    assert (page.seen("waits"), page.asking(), page.timers()) == ([], [], [])
+    assert page.seen("outcome") == {"kind": "refused", "status": status, "transient": False, "text": text}
+
+
+def test_an_answer_that_is_not_json_is_lost_with_why_and_would_come_again_the_same(page: Page) -> None:
     page.run('var outcome; asked(PAGE_OPEN, "GET", "/state").then(said => { outcome = said; })')
     page.answer(200, "<html>")
-    outcome = cast(dict[str, str], page.seen("outcome"))
+    outcome = cast(dict[str, object], page.seen("outcome"))
     # The rest of why is the browser's own words for what it could not parse.
-    assert (outcome["kind"], outcome["why"].startswith("hands' answer is not one this page reads: ")) == ("lost", True)
+    assert (outcome["kind"], outcome["transient"], str(outcome["why"]).startswith("hands' answer is not one this page reads: ")) == ("lost", False, True)
+
+
+def test_an_answer_patiently_cannot_read_is_not_asked_again(page: Page) -> None:
+    page.run(PATIENTLY)
+    page.answer(200, "<html>")
+    assert (page.seen("waits"), page.asking(), page.timers()) == ([], [], [])
 
 
 def test_a_read_asks_at_once_then_says_what_it_saw_bounded_by_the_wait_hands_said(reading: Page) -> None:
@@ -204,11 +251,17 @@ def test_a_read_refused_for_any_other_reason_than_the_key_is_read_again(reading:
     assert (reading.seen("unread"), reading.timers()) == (["hands is restarting; reading it again…"], [2000])
 
 
-@pytest.mark.parametrize(("status", "text"), [(401, "this page's address is missing the phone's key"), (404, "Not Found")])
-def test_a_read_refused_as_the_pages_own_mistake_stops_with_hands_words(reading: Page, status: int, text: str) -> None:
+@FINAL
+def test_a_read_refused_as_what_asking_again_would_not_change_stops_with_hands_words(reading: Page, status: int, text: str) -> None:
     reading.answer(status, text)
     assert reading.seen("unread") == [text]
     assert (reading.asking(), reading.timers()) == ([], [])
+
+
+def test_a_read_whose_answer_is_not_json_stops_the_reading_and_says_why(reading: Page) -> None:
+    reading.answer(200, "<html>")
+    [why] = cast(list[str], reading.seen("unread"))
+    assert (why.startswith("hands' answer is not one this page reads: "), reading.asking(), reading.timers()) == (True, [], [])
 
 
 @pytest.mark.parametrize("answer", [
@@ -274,4 +327,14 @@ def test_a_request_its_asker_leaves_is_left_and_never_answered_as_hands_lost_it(
     page.run(f'{LEAVING} var outcome = "pending"; asked(leaving.signal, "GET", "/state").then(said => {{ outcome = said; }})')
     assert [asked.path for asked in page.asking()] == ["/state"]
     page.run("leaving.abort()")
-    assert (page.asking(), page.seen("outcome")) == ([], {"kind": "left"})
+    assert (page.asking(), page.seen("outcome")) == ([], {"kind": "left", "transient": False})
+
+
+def test_an_asker_that_leaves_while_patiently_waits_ends_the_pause_and_is_asked_for_nothing_more(page: Page) -> None:
+    page.run(f'{LEAVING} var outcome, waits = []; patiently(leaving.signal, why => waits.push(why), asked, "GET", "/wake/settings").then(said => {{ outcome = said; }})')
+    page.run('lose("TypeError")')
+    assert page.timers() == [2000]
+    page.run("leaving.abort()")
+    # The ask after the pause is made on the left signal, so it never reaches hands, and it is `left`, which is final.
+    assert (page.asking(), page.timers(), page.seen("outcome")) == ([], [], {"kind": "left", "transient": False})
+    assert page.seen("waits") == ["hands is out of reach: lost", None]

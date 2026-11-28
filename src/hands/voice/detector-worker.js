@@ -1,12 +1,12 @@
 // The wake word's models, run on the phone in a worker (hands.voice.phonewake serves it at /detector-worker.js): the Mac's own
 // three, on ONNX Runtime Web's WebAssembly build, one thread. detector.js starts it with the rate of the audio it will be
 // given; it answers `ready` with the word it listens for, `heard` with a score each time it hears it and how many seconds of
-// audio it had been given by then, `waiting` with why each time hands gave it no answer and it asks again (and with none once hands answers), and `failed` with
+// audio it had been given by then, `waiting` with why each time it asks hands again (and with none once the wait is over), and `failed` with
 // why when it cannot listen. Nothing it loads comes from any site but hands.
 //
 // The phone's key reaches it in its address's fragment, as it reaches a page, so it asks hands through hands.js as a page does.
 
-import { AGAIN_MS, PAGE_OPEN, asked, askedForBytes, pause, unanswered, wording } from "/hands.js";
+import { PAGE_OPEN, asked, askedForBytes, patiently, unanswered, wording } from "/hands.js";
 import { BANDS, EMBEDDING_SIZE, MEL_WINDOW, RATE, resampler, wakeStream } from "/wakestream.js";
 
 // The models by the role each plays in wakeStream's steps, which is the name hands serves each by.
@@ -26,32 +26,21 @@ function settingsOf(body) {
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
 
-// hands that did not answer, or could not be reached, is waited for and never given up on: on a cold first run `/wake/settings`
-// waits on the models' fetch for longer than any one request is given, and a `failed` is final, so a page that gave up there
-// could only be recovered by reloading it. A refusal is hands' word and fails as it is: hands refuses a model it cannot fetch,
-// and says why, which asking again would not change. A wait is over when hands answers, said as a `waiting` with no `why`.
-async function patiently(ask) {
-  let waited = false;
-  for (;;) {
-    const outcome = await ask();
-    if (outcome.kind !== "lost") {
-      if (waited) postMessage({ kind: "waiting", why: null });
-      return outcome;
-    }
-    waited = true;
-    postMessage({ kind: "waiting", why: outcome.why });
-    await pause(AGAIN_MS, PAGE_OPEN);
-  }
-}
+// What may pass is waited for and never given up on (`patiently`), for as long as the worker lives: it asks on PAGE_OPEN,
+// and ends only as detector.js terminates it. On a cold first run `/wake/settings` waits on the models' fetch for longer
+// than any one request is given, and a fetch that failed is fetched again as hands is next asked, while a `failed` is
+// final, so a page that gave up there could only be recovered by reloading it. Each wait is a `waiting` with why, and its
+// end a `waiting` with no `why`.
+const waitingFor = why => postMessage({ kind: "waiting", why });
 
 async function fileOf(path) {
-  const outcome = await patiently(() => askedForBytes(PAGE_OPEN, path));
+  const outcome = await patiently(PAGE_OPEN, waitingFor, askedForBytes, path);
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   return outcome.body;
 }
 
 async function load() {
-  const outcome = await patiently(() => asked(PAGE_OPEN, "GET", "/wake/settings"));
+  const outcome = await patiently(PAGE_OPEN, waitingFor, asked, "GET", "/wake/settings");
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   const settings = settingsOf(outcome.body);
   const ort = await import(settings.runtime);

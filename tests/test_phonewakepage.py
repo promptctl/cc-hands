@@ -5,6 +5,7 @@ at hands: the gate the phone moves and the clips a real clip owner cuts from the
 
 import asyncio
 import base64
+import re
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from functools import partial
@@ -16,7 +17,7 @@ from conftest import events, running
 from playwright.async_api import Page, Route, expect
 from speech import spoken
 from test_clipowner import Heeding, Scripted
-from test_pages import IN_PASSING, PHRASE, Hands, Opened, browser, chrome, hands, unreachable, wake_models  # pyright: ignore[reportUnusedImport]  (fixtures, found by their names)
+from test_pages import IN_PASSING, PHRASE, Hands, Opened, browser, chrome, hands, not_pinned, wake_models  # pyright: ignore[reportUnusedImport]  (fixtures, found by their names)
 
 from hands.clock import SYSTEM
 from hands.voice.clipowner import ClipOwner
@@ -346,10 +347,12 @@ async def test_holding_the_button_during_a_wakes_turn_sends_it_and_opens_the_but
         await until(lambda: not hands.gate.gate.turn_open)
 
 
-@pytest.mark.parametrize("wake_models", [unreachable], indirect=True)
+# Bytes that are not the ones pinned would be the same asked for again (a fetch that fails on its way is waited on:
+# tests/test_pages.py).
+@pytest.mark.parametrize("wake_models", [not_pinned], indirect=True)
 async def test_a_detector_that_cannot_load_is_said_with_why_and_told_to_hands_and_the_button_works(browser: Opened, hands: Hands) -> None:
     page = await connected(browser, hands)
-    await expect(page.locator("#wake-note")).to_have_text("The wake word is not listening: hands cannot get openWakeWord v0.5.1's melspectrogram.onnx: the network is down.")
+    await expect(page.locator("#wake-note")).to_have_text(re.compile(r"^The wake word is not listening: hands cannot get openWakeWord v0\.5\.1's melspectrogram\.onnx: melspectrogram\.onnx at openWakeWord v0\.5\.1 is aaa, not the \w+ pinned\.$"))
     await expect(page.locator("#state")).to_have_text(LOADING)
     [failed] = events(hands.recorded, "phone.detector")
     assert failed.outcome == "failed" and failed.facts["state"] == "failed" and "melspectrogram.onnx" in str(failed.error)
@@ -371,7 +374,8 @@ async def test_a_hands_that_does_not_answer_for_the_detector_is_waited_on_and_th
     await browser.context.route("**/wake/settings", lose_the_first)
     await browser.context.route("**/wake/models/melspectrogram", partial(held_open, models_come_in))
     page = await connected(browser, hands)
-    await expect(page.locator("#wake-note")).to_contain_text("The wake word is waiting on hands")
+    # Lost, as a request past the page's bound is too, and waited on the same (`patiently`, tests/test_handsjs.py).
+    await expect(page.locator("#wake-note")).to_have_text(re.compile(r"The wake word is waiting on hands: hands is out of reach: \S"))
     # hands answered: the models still coming in is no wait on hands, and the page does not go on saying it is.
     await expect(page.locator("#wake-note")).to_have_text("")
     await expect(page.locator("#state")).to_have_text(LOADING)
@@ -502,21 +506,3 @@ async def test_a_browser_with_no_screen_wake_lock_says_the_screen_may_sleep_and_
     await until(lambda: bool(events(hands.recorded, "phone.screen")))
     [unkept] = events(hands.recorded, "phone.screen")
     assert unkept.outcome == "failed" and unkept.facts["state"] == "unkept" and unkept.error == "this browser has no screen wake lock"
-
-
-async def test_a_hands_that_answers_after_the_pages_sixty_seconds_is_waited_on_not_given_up_on(browser: Opened, hands: Hands) -> None:
-    # The page's bound on an answer is its own 60 s on the browser's clock, which nothing here can advance, so this one is held that long.
-    held = list[str]()
-
-    async def hold_the_first(route: Route) -> None:
-        if held:
-            await route.continue_()
-        else:
-            held.append(route.request.url)
-            await asyncio.Event().wait()
-
-    await browser.context.route("**/wake/settings", hold_the_first)
-    page = await connected(browser, hands)
-    await expect(page.locator("#wake-note")).to_contain_text("hands did not answer within 60 s", timeout=90_000)
-    await expect(page.locator("#state")).to_have_text(LISTENING, timeout=30_000)
-    assert len(held) == 1

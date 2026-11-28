@@ -92,5 +92,5 @@ class WakeModels:
                 own_path = model
         # [LAW:single-enforcer] the one judge of whether a model is there to be heard with, whoever's it is.
         if not own_path.is_file():
-            raise Unserved(f"no wake word model at {own_path}")
+            raise Unserved(f"no wake word model at {own_path}", passing=False)
         return Ensured(Files(melspectrogram.path, embedding.path, own_path), {pin.name: got.how for pin, got in kept})

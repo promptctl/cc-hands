@@ -5,6 +5,7 @@ tests/test_pinnedfile_served.py's."""
 import asyncio
 import hashlib
 import urllib.error
+from email.message import Message
 from http.client import IncompleteRead
 from pathlib import Path
 
@@ -90,20 +91,26 @@ async def test_a_held_file_that_has_gone_from_the_directory_is_fetched_again(tmp
     assert len(fetching.calls) == 2
 
 
-@pytest.mark.parametrize("failure", [
-    Mismatch("second.bin at release 2 is aaa, not the bbb pinned"),
-    urllib.error.URLError("the network is down"),
-    IncompleteRead(b"", 10),
-    PermissionError("the directory is read-only"),
-    TimeoutError("took too long"),
+# Bytes that are not the pinned ones, an address the server refuses, and a directory hands may not write would be the
+# same fetched again; the network's failures, a read cut short, one that took too long, and the server's own may pass.
+@pytest.mark.parametrize(("failure", "passing"), [
+    (Mismatch("second.bin at release 2 is aaa, not the bbb pinned"), False),
+    (urllib.error.HTTPError("https://example.invalid/second.bin", 404, "Not Found", Message(), None), False),
+    (PermissionError("the directory is read-only"), False),
+    (urllib.error.URLError("the network is down"), True),
+    (urllib.error.HTTPError("https://example.invalid/second.bin", 503, "Service Unavailable", Message(), None), True),
+    (urllib.error.HTTPError("https://example.invalid/second.bin", 429, "Too Many Requests", Message(), None), True),
+    (IncompleteRead(b"", 10), True),
+    (TimeoutError("took too long"), True),
 ])
-async def test_a_fetch_that_fails_is_unserved_with_the_reason_and_the_next_ask_fetches_again(tmp_path: Path, failure: Exception) -> None:
+async def test_a_fetch_that_fails_is_unserved_with_the_reason_and_whether_it_may_pass_and_the_next_ask_fetches_again(tmp_path: Path, failure: Exception, passing: bool) -> None:
     fetching = Fetching()
     release = Release(tmp_path, VirtualClock(), fetching)
     fetching.failure = failure
     with pytest.raises(Unserved) as unserved:
         await release.path(SECOND)
     assert (str(unserved.value).startswith("hands cannot get release 2's second.bin: "), str(failure) in str(unserved.value)) == (True, True)
+    assert unserved.value.passing is passing
     fetching.failure = None
     assert (await release.path(SECOND)).path == tmp_path / "second.bin"
     assert len(fetching.calls) == 2
