@@ -8,7 +8,7 @@ a verdict, as a model is held evaluating, gives the other's work while it is hel
 
 import asyncio
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -16,7 +16,6 @@ from typing import Literal
 
 import numpy as np
 import pytest
-from conftest import patiently
 from pipecat.audio.turn.smart_turn import base_smart_turn
 
 from hands.sessions.wide import WideEvent
@@ -69,10 +68,11 @@ class Port:
         return SimpleNamespace(prediction=0, probability=0.0)
 
 
-def moved(ports: Ports) -> tuple[int, int]:
-    """What a wait here sees move: the steps the ports took, and the MLX work waiting. A wait says only that a step came,
-    and the test asserts what it was."""
-    return len(ports.seen), mlxthread.waiting()
+async def until(done: Callable[[], bool]) -> None:
+    """Until `done` holds, looked at again each turn of the loop, on no clock: `done` says only that a step came, and the
+    test asserts what it was, so a step that went wrong fails there, and a wait that never ends is the suite's timeout's."""
+    while not done():
+        await asyncio.sleep(0)
 
 
 @pytest.fixture
@@ -101,12 +101,12 @@ async def test_the_desks_and_the_phones_smart_turn_loading_as_hands_starts_run_o
     loads = list[asyncio.Task[None]]()
     try:
         loads.append(asyncio.create_task(loaded("desk.loaded", events)))
-        await patiently(lambda: len(ports.seen) >= 2, lambda: moved(ports))
+        await until(lambda: len(ports.seen) >= 2)
         assert ports.seen == [("loaded", 0), ("in", 0)]
         # Nothing else waits for the MLX thread, so the work that comes to wait next is the phone's load.
         assert mlxthread.waiting() == 0
         loads.append(asyncio.create_task(loaded("phone.loaded", events)))
-        await patiently(lambda: mlxthread.waiting() == 1 or len(ports.seen) > 2, lambda: moved(ports))
+        await until(lambda: mlxthread.waiting() == 1 or len(ports.seen) > 2)
         assert ports.seen == [("loaded", 0), ("in", 0)]
     finally:
         let_go.set()
@@ -129,11 +129,11 @@ async def test_a_verdict_asked_while_the_other_analyzers_is_inside_mlx_waits_for
             models.heard(SPEECH, True)
         try:
             judging.append(asyncio.create_task(desk.judge()))
-            await patiently(lambda: len(ports.seen) > warmed, lambda: moved(ports))
+            await until(lambda: len(ports.seen) > warmed)
             assert ports.seen[warmed:] == [("in", 0)]
             assert mlxthread.waiting() == 0
             judging.append(asyncio.create_task(phone.judge()))
-            await patiently(lambda: mlxthread.waiting() == 1 or len(ports.seen) > warmed + 1, lambda: moved(ports))
+            await until(lambda: mlxthread.waiting() == 1 or len(ports.seen) > warmed + 1)
             assert ports.seen[warmed:] == [("in", 0)]
         finally:
             let_go.set()
