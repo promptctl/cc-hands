@@ -66,7 +66,6 @@ TO_MOVE = frozenset({
     "test_devices.py",
     "test_display.py",
     "test_echoscore.py",
-    "test_engaged_models.py",
     "test_filing.py",
     "test_focus.py",
     "test_front.py",
@@ -134,8 +133,6 @@ TO_MOVE = frozenset({
     "test_wake.py",
     "test_watchdog.py",
     "test_whisper.py",
-    "test_whisper_recorded.py",
-    "test_whisper_takes.py",
     "test_wide.py",
     "test_wrapper.py",
     "timeouts.py",
@@ -143,11 +140,13 @@ TO_MOVE = frozenset({
 
 REAL_CLAUDE_CODE = "it runs a real Claude Code, and nothing tells it when Claude Code has done what it waits on"
 REAL_CHROME = "its verdict waits on a real Chrome drawing the pages on the machine's time, as the routes behind them run on it"
+REAL_WHISPER = "numba compiles the real Whisper's word timing as the model loads, and times each compile by the machine's clock"
 
-# [LAW:no-ambient-temporal-coupling] exception: test modules that hold hands to a real party, which runs on the machine's
-# time, each with why a clock the test advances cannot stand in for it. They are never moved, and each marks all its
-# tests outside, so none runs in the unit layer (tests/test_clockwatch.py checks both).
+# [LAW:no-ambient-temporal-coupling] exception: test modules that test hands against a real party that runs on the
+# machine's time, each with why a clock the test advances cannot stand in for it. They are never moved, and a run that
+# collects a test of one not marked outside fails: the unit layer would run it, off the watch.
 PERMANENT = {
+    "test_engaged_models.py": "Smart Turn's own code reads the machine's time as it takes audio",
     "test_launchservices_lsappinfo.py": "it reads the app in front from the real lsappinfo, a child that runs in real time, so only the machine's time ends its limit on one that hangs",
     "test_pages.py": REAL_CHROME,
     "test_phonewakepage.py": REAL_CHROME,
@@ -156,6 +155,8 @@ PERMANENT = {
     "test_session_contract_pinned.py": REAL_CLAUDE_CODE,
     "test_terminal_contract_pinned.py": REAL_CLAUDE_CODE,
     "test_terminals_contract_tmux.py": "its tmux server and programs say only by what they leave that they are up",
+    "test_whisper_recorded.py": REAL_WHISPER,
+    "test_whisper_takes.py": REAL_WHISPER,
 }  # fmt: skip
 
 # Every module that may reach the machine's time: a run that sees any other reach it fails.
@@ -196,9 +197,12 @@ ORIGIN: contextvars.ContextVar[str] = contextvars.ContextVar("clockwatch.origin"
 class Watch:
     """The record of one run: each module under `tests` with the facilities its run reached."""
 
-    def __init__(self, tests: Path, patch: pytest.MonkeyPatch, unmoved: frozenset[str]) -> None:
+    def __init__(self, tests: Path, patch: pytest.MonkeyPatch, unmoved: frozenset[str], permanent: frozenset[str]) -> None:
         self.tests = tests
         self.unmoved = unmoved
+        self.permanent = permanent
+        # Each test collected from a module held for good that is not marked outside, so the unit layer would run it.
+        self.unmarked: list[str] = []
         self._patch = patch
         self._originals: dict[int, Callable[..., object]] = {}
         self._within = threading.local()
@@ -346,6 +350,12 @@ class Watch:
         finally:
             ORIGIN.reset(token)
 
+    def pytest_itemcollected(self, item: pytest.Item) -> None:
+        # [LAW:single-enforcer] outside as conftest's `layered` reads it, of every test collected, a layer's run deselecting it
+        # or not: a test of a module held for good that the unit layer would run is off the watch with the module.
+        if item.path.is_relative_to(self.tests) and item.path.relative_to(self.tests).as_posix() in self.permanent and item.get_closest_marker("outside") is None:
+            self.unmarked.append(item.nodeid)
+
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         # An xfail ran, and its report says skipped.
         self._skipped |= report.skipped and not hasattr(report, "wasxfail")
@@ -362,7 +372,7 @@ class Watch:
             self.record[module] |= found
         self.new, self.stale = verdict({module: found for module, found in dict(self.record).items() if found}, self.unmoved, whole)
         # Only a run that would pass fails for the watch: an interrupted or empty one keeps its own status.
-        if (self.new or self.stale) and session.exitstatus == pytest.ExitCode.OK:
+        if (self.new or self.stale or self.unmarked) and session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
@@ -373,6 +383,10 @@ class Watch:
         if self.stale:
             terminalreporter.section("in UNMOVED, never reached the machine's time", red=True)
             terminalreporter.line(", ".join(sorted(self.stale)))
+        if self.unmarked:
+            terminalreporter.section("in PERMANENT, not marked outside (tests/clockwatch.py)", red=True)
+            for test in self.unmarked:
+                terminalreporter.line(test)
 
 
 def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:
@@ -404,9 +418,9 @@ def scanned(tests: Path) -> dict[str, set[str]]:
     return {module: facilities for module, facilities in found.items() if facilities}
 
 
-def register(config: pytest.Config, unmoved: frozenset[str]) -> None:
+def register(config: pytest.Config, unmoved: frozenset[str], permanent: frozenset[str]) -> None:
     patch = pytest.MonkeyPatch()
     config.add_cleanup(patch.undo)
-    watch = Watch(config.rootpath.resolve() / "tests", patch, unmoved)
+    watch = Watch(config.rootpath.resolve() / "tests", patch, unmoved, permanent)
     watch.install()
     config.pluginmanager.register(watch, "clockwatch")

@@ -599,7 +599,7 @@ def pytest_configure(config: pytest.Config) -> None:
         config.pluginmanager.register(shards.Sharding(cast(shards.Shard, config.getoption("shard", shards.WHOLE)), shards.Costs.load(shards.COSTS)), "shards")
     elif config.getoption("shard", shards.WHOLE) != shards.WHOLE:
         raise pytest.UsageError("--shard cuts the unit layer, which the cost file prices: run it with --layer=unit")
-    clockwatch.register(config, clockwatch.UNMOVED)
+    clockwatch.register(config, clockwatch.UNMOVED, frozenset(clockwatch.PERMANENT))
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")
     if claude := shutil.which("claude", path=SYSTEM_PATH):

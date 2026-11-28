@@ -1,6 +1,5 @@
 """The runtime record of what test modules reach of the machine's time, and its verdict against UNMOVED."""
 
-import ast
 from pathlib import Path
 
 import pytest
@@ -39,10 +38,10 @@ def test_a_thread_hands_started_carries_the_test_that_started_it():
 """
 
 
-def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, *args: str, unmoved: str = "frozenset()", hooks: str = "", **modules: str) -> pytest.RunResult:
+def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, *args: str, unmoved: str = "frozenset()", permanent: str = "frozenset()", hooks: str = "", **modules: str) -> pytest.RunResult:
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parent))
     pytester.makepyfile(**{f"tests/{name}": source for name, source in modules.items()})
-    pytester.makepyfile(**{"tests/conftest": f"import clockwatch\n\ndef pytest_configure(config):\n    clockwatch.register(config, {unmoved})\n{hooks}"})
+    pytester.makepyfile(**{"tests/conftest": f"import clockwatch\n\ndef pytest_configure(config):\n    clockwatch.register(config, {unmoved}, {permanent})\n{hooks}"})
     return pytester.runpytest_subprocess("tests", "-p", "no:randomly", *args)
 
 
@@ -78,23 +77,22 @@ def test_a_module_unmoved_does_not_hold_fails_any_run_and_one_never_reached_only
     assert verdict(record, unmoved, whole=True) == ({"test_a.py": {"time.sleep"}}, {"test_c.py"})
 
 
-def test_a_module_held_for_good_is_never_to_move_and_runs_none_of_its_tests_in_the_unit_layer() -> None:
-    # A module mark reaches every test in the module: one held for good that kept a unit test would take it off the watch.
-    assert TO_MOVE.isdisjoint(PERMANENT)
-    assert [module for module in PERMANENT if "pytest.mark.outside" not in marks(Path(__file__).parent / module)] == []
+def test_no_module_is_held_both_to_move_and_for_good() -> None:
+    assert TO_MOVE & PERMANENT.keys() == set()
 
 
-def marks(module: Path) -> set[str]:
-    """The marks `module`'s pytestmark puts on every test in it."""
-    for statement in ast.parse(module.read_text()).body:
-        match statement:
-            case ast.Assign(targets=[ast.Name(id="pytestmark")], value=ast.List(elts=each) | ast.Tuple(elts=each)):
-                return {ast.unparse(mark) for mark in each}
-            case ast.Assign(targets=[ast.Name(id="pytestmark")], value=mark):
-                return {ast.unparse(mark)}
-            case _:
-                pass
-    return set()
+@pytest.mark.outside
+def test_a_test_of_a_module_held_for_good_that_the_unit_layer_would_run_fails_the_run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    marked = "import pytest\n\n@pytest.mark.outside\ndef test_outside():\n    pass\n"
+    modules = {
+        "test_module_marked": "import pytest\n\npytestmark = pytest.mark.outside\n\ndef test_outside():\n    pass\n",
+        "test_each_marked": marked,
+        "test_mixed": f"{marked}\n\ndef test_unit():\n    pass\n",
+    }
+    result = run(pytester, monkeypatch, permanent=repr(frozenset(f"{name}.py" for name in modules)), **modules)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    assert "tests/test_mixed.py::test_unit" in result.outlines
+    assert not {f"tests/{name}.py::test_outside" for name in modules} & set(result.outlines)
 
 
 @pytest.mark.outside
