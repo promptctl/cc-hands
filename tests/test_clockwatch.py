@@ -38,12 +38,15 @@ def test_a_thread_hands_started_carries_the_test_that_started_it():
     thread.join()
 """
 
+# What needs the outside in a run's own suite, given to the watch as conftest gives it `needs_the_outside`.
+OUTSIDE = "lambda item: item.get_closest_marker('outside') is not None"
 
-def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, *args: str, to_move: str = "frozenset()", permanent: str = "{}", hooks: str = "", **modules: str) -> pytest.RunResult:
+
+def run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, *args: str, to_move: str = "frozenset()", permanent: str = "{}", hooks: str = "", at: str = "tests", **modules: str) -> pytest.RunResult:
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parent))
     pytester.makepyfile(**{f"tests/{name}": source for name, source in modules.items()})
-    pytester.makepyfile(**{"tests/conftest": f"import clockwatch\n\ndef pytest_configure(config):\n    clockwatch.register(config, {to_move}, {permanent})\n{hooks}"})
-    return pytester.runpytest_subprocess("tests", "-p", "no:randomly", *args)
+    pytester.makepyfile(**{"tests/conftest": f"import clockwatch\n\ndef pytest_configure(config):\n    clockwatch.register(config, {to_move}, {permanent}, {OUTSIDE})\n{hooks}"})
+    return pytester.runpytest_subprocess(at, "-p", "no:randomly", *args)
 
 
 def reached(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, **modules: str) -> list[str]:
@@ -71,11 +74,11 @@ def test_a_thread_that_outlives_its_test_is_charged_to_the_test_that_started_it(
     assert not any(line.startswith("test_two.py") for line in lines)
 
 
-def test_a_module_unmoved_does_not_hold_fails_any_run_and_one_never_reached_only_the_whole_suite() -> None:
+def test_a_module_not_held_that_reaches_fails_any_run_and_a_held_one_that_never_does_only_the_whole_suite() -> None:
     record = {"test_a.py": {"time.sleep"}, "test_b.py": {"time.monotonic"}}
-    unmoved = frozenset({"test_b.py", "test_c.py"})
-    assert verdict(record, unmoved, whole=False) == ({"test_a.py": {"time.sleep"}}, set())
-    assert verdict(record, unmoved, whole=True) == ({"test_a.py": {"time.sleep"}}, {"test_c.py"})
+    held = frozenset({"test_b.py", "test_c.py"})
+    assert verdict(record, held, whole=False) == ({"test_a.py": {"time.sleep"}}, set())
+    assert verdict(record, held, whole=True) == ({"test_a.py": {"time.sleep"}}, {"test_c.py"})
 
 
 @pytest.mark.outside
@@ -87,16 +90,25 @@ def test_a_module_held_both_to_move_and_for_good_stops_the_run_before_any_test(p
 
 @pytest.mark.outside
 def test_a_test_of_a_module_held_for_good_that_the_unit_layer_would_run_fails_the_run(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
-    marked = "import pytest\n\n@pytest.mark.outside\ndef test_outside():\n    pass\n"
-    modules = {
-        "test_module_marked": "import pytest\n\npytestmark = pytest.mark.outside\n\ndef test_outside():\n    pass\n",
-        "test_each_marked": marked,
-        "test_mixed": f"{marked}\n\ndef test_unit():\n    pass\n",
-    }
+    # Each reaches the machine's time, as a module held for good does, so the run is whole and none of them is stale.
+    reaching = "import time\n\nimport pytest\n\n"
+    marked = f"{reaching}@pytest.mark.outside\ndef test_outside():\n    time.monotonic()\n"
+    held = {"test_module_marked": f"{reaching}pytestmark = pytest.mark.outside\n\ndef test_outside():\n    time.monotonic()\n", "test_each_marked": marked}
+    assert run(pytester, monkeypatch, permanent=repr({f"{name}.py": "a party" for name in held}), **held).ret == pytest.ExitCode.OK
+    modules = {**held, "test_mixed": f"{marked}\n\ndef test_unit():\n    time.monotonic()\n"}
     result = run(pytester, monkeypatch, permanent=repr({f"{name}.py": "a party" for name in modules}), **modules)
     assert result.ret == pytest.ExitCode.TESTS_FAILED
     assert result.outlines[result.outlines.index("test_mixed.py, held for good: a party") + 1] == "tests/test_mixed.py::test_unit"
     assert not {f"tests/{name}.py::test_outside" for name in modules} & set(result.outlines)
+
+
+@pytest.mark.outside
+def test_a_run_through_a_symlink_to_the_checkout_is_watched_as_one_through_its_path(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    link = pytester.path.parent / f"{pytester.path.name}-link"
+    link.symlink_to(pytester.path)
+    result = run(pytester, monkeypatch, "--rootdir", str(link), at=str(link / "tests"), test_waits="import time\n\ndef test_waits():\n    time.monotonic()\n")
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    assert any(line.startswith("test_waits.py: ") for line in result.outlines)
 
 
 @pytest.mark.outside
@@ -192,7 +204,7 @@ def test_a_semaphore_polled_is_no_reach_whatever_clock_it_reads_and_one_waited_o
 @pytest.mark.outside
 def test_a_shared_fixture_torn_down_after_a_test_is_charged_to_the_harness_and_not_the_test(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     # This repo's timeouts.py, run from the run's own tests/ and registered as its conftest does.
-    hooks = "\nimport timeouts\n\ndef pytest_configure(config):\n    config.pluginmanager.register(timeouts, 'timeouts')\n    clockwatch.register(config, frozenset({'timeouts.py'}), {})\n"
+    hooks = "\nimport timeouts\n\ndef pytest_configure(config):\n    config.pluginmanager.register(timeouts, 'timeouts')\n    clockwatch.register(config, frozenset({'timeouts.py'}), {}, " + OUTSIDE + ")\n"
     shared = "import pytest\n\n@pytest.fixture(scope='module')\ndef shared():\n    yield\n\ndef test_uses(shared):\n    pass\n"
     timeouts = (Path(__file__).parent / "timeouts.py").read_text()
     result = run(pytester, monkeypatch, "--timeout", "60", hooks=hooks, timeouts=timeouts, test_quiet=shared)

@@ -194,11 +194,12 @@ ORIGIN: contextvars.ContextVar[str] = contextvars.ContextVar("clockwatch.origin"
 class Watch:
     """The record of one run: each module under `tests` with the facilities its run reached."""
 
-    def __init__(self, tests: Path, patch: pytest.MonkeyPatch, to_move: frozenset[str], permanent: Mapping[str, str]) -> None:
+    def __init__(self, tests: Path, patch: pytest.MonkeyPatch, to_move: frozenset[str], permanent: Mapping[str, str], outside: Callable[[pytest.Item], bool]) -> None:
         self.tests = tests
-        # Every module that may reach the machine's time: a run that sees any other reach it fails.
-        self.unmoved = to_move | permanent.keys()
+        # Every module that may reach the machine's time, held to move or for good: a run that sees any other reach it fails.
+        self.held = to_move.union(permanent)
         self.permanent = permanent
+        self.outside = outside
         # Each module held for good with the tests collected from it that are not marked outside, which the unit layer runs.
         self.unmarked: defaultdict[str, list[str]] = defaultdict(list)
         self._patch = patch
@@ -352,9 +353,9 @@ class Watch:
             ORIGIN.reset(token)
 
     def pytest_itemcollected(self, item: pytest.Item) -> None:
-        # [LAW:one-source-of-truth] the outside mark conftest's `layered` selects the unit layer by, read as it reads it, of
-        # every test collected, a layer's run deselecting it or not: one the unit layer runs is off the watch with its module.
-        if (module := self._of(item)) is not None and module in self.permanent and item.get_closest_marker("outside") is None:
+        # [LAW:single-enforcer] which tests need the outside is the layer's to say, by the one predicate it selects on, asked
+        # of every test collected, a layer's run deselecting it or not: one the unit layer runs is off the watch with its module.
+        if (module := self._of(item)) is not None and module in self.permanent and not self.outside(item):
             self.unmarked[module].append(item.nodeid)
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
@@ -371,7 +372,7 @@ class Watch:
         whole = session.exitstatus == 0 and not self._skipped and not self._deselected and modules <= self._ran
         for module, found in scanned(self.tests).items():
             self.record[module] |= found
-        self.new, self.stale = verdict({module: found for module, found in dict(self.record).items() if found}, self.unmoved, whole)
+        self.new, self.stale = verdict({module: found for module, found in dict(self.record).items() if found}, self.held, whole)
         # Only a run that would pass fails for the watch: an interrupted or empty one keeps its own status.
         if (self.new or self.stale or self.unmarked) and session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
@@ -391,11 +392,11 @@ class Watch:
                 terminalreporter.line("\n".join(tests))
 
 
-def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:
-    """Each module a run saw reach the machine's time that `unmoved` does not hold, with what it reached, and, from a run
-    of the whole suite, each it holds that never did. A part of the suite sees only its part's reaches, so only the whole
+def verdict(record: dict[str, set[str]], held: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:
+    """Each module a run saw reach the machine's time that is not `held`, with what it reached, and, from a run of the
+    whole suite, each held that never did. A part of the suite sees only its part's reaches, so only the whole
     can prove an entry stale."""
-    return {module: found for module, found in record.items() if module not in unmoved}, set(unmoved - record.keys()) if whole else set()
+    return {module: found for module, found in record.items() if module not in held}, set(held - record.keys()) if whole else set()
 
 
 def layers(function: Callable[..., object]) -> Iterator[CodeType]:
@@ -420,11 +421,15 @@ def scanned(tests: Path) -> dict[str, set[str]]:
     return {module: facilities for module, facilities in found.items() if facilities}
 
 
-def register(config: pytest.Config, to_move: frozenset[str], permanent: Mapping[str, str]) -> None:
+def register(config: pytest.Config, to_move: frozenset[str], permanent: Mapping[str, str], outside: Callable[[pytest.Item], bool]) -> None:
+    """The watch on this run, holding the modules `to_move` and the ones `permanent` holds for good, whose tests must each be
+    one `outside` says needs the outside."""
     if both := sorted(to_move & permanent.keys()):
         raise pytest.UsageError(f"held both to move and for good (tests/clockwatch.py): {both}")
     patch = pytest.MonkeyPatch()
     config.add_cleanup(patch.undo)
-    watch = Watch(config.rootpath.resolve() / "tests", patch, to_move, permanent)
+    # [LAW:one-source-of-truth] the path as pytest spells it, the spelling of every item and frame the watch is asked about:
+    # through a symlink to the checkout, a resolved one would match none of them.
+    watch = Watch(config.rootpath / "tests", patch, to_move, permanent, outside)
     watch.install()
     config.pluginmanager.register(watch, "clockwatch")
