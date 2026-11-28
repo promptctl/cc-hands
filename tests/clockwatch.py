@@ -437,6 +437,6 @@ def register(config: pytest.Config, to_move: frozenset[str], permanent: Mapping[
         raise pytest.UsageError(f"held both to move and for good (tests/clockwatch.py): {both}")
     patch = pytest.MonkeyPatch()
     config.add_cleanup(patch.undo)
-    watch = Watch(real(config.rootpath) / "tests", patch, to_move, permanent, outside)
+    watch = Watch(real(config.rootpath / "tests"), patch, to_move, permanent, outside)
     watch.install()
     config.pluginmanager.register(watch, "clockwatch")
