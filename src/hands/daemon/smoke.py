@@ -41,11 +41,11 @@ from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.processes import Processes
 from hands.sessions import audit, heartbeat
 from hands.sessions import child
-from hands.sessions.child import Children, NeverStarted, Starter
+from hands.sessions.child import Children, NeverStarted
 from hands.sessions.home import HOME_VARIABLE, Home
 from hands.sessions.liveness import live
 from hands.sessions.payload import Rejected
-from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
+from hands.sessions.pseudoterminal import ClaudeCode, Pseudoterminals
 from hands.sessions.wide import annotate
 from hands.sessions.wrapper import EVERY_RUN
 from hands.threads import off_loop
@@ -257,7 +257,8 @@ class Run:
     home: Home
     word: str
     offset: int
-    children: Starter
+    children: Children
+    pseudoterminals: Pseudoterminals
     processes: Processes
     lines: list[Line] = field(default_factory=list[Line])
     began: float = field(init=False)
@@ -295,14 +296,14 @@ async def until[T](clock: Clock, stage: Stage, seconds: float, found: Callable[[
     return seen
 
 
-async def smoke(children: Starter, processes: Processes, home: Home, environment: Mapping[str, str]) -> Exit:
+async def smoke(children: Children, pseudoterminals: Pseudoterminals, processes: Processes, home: Home, environment: Mapping[str, str]) -> Exit:
     """Run the test, printing each stage as it is reached; 0 once every stage is, and the first that is not, failed."""
     # Picked by the clock's randomness, so a run on a seeded clock picks the same word every time.
     word = WORDS[int(children.clock.token(4), 16) % len(WORDS)]
     folder = (home.root / FOLDER).resolve()
     annotate(word=word, folder=folder)
     _, offset = audit.tail(home.audit, 0)
-    smoked = Run(home, word, offset, children, processes)
+    smoked = Run(home, word, offset, children, pseudoterminals, processes)
     try:
         await _stages(smoked, folder, environment)
     except NotReached as missed:
@@ -353,11 +354,11 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     # The claude on PATH, the shim or not, is started as hands starts every claude: its auto-updater off.
-    match await on_terminal(smoked.children, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, HOME_VARIABLE: str(home.root)}):
-        case ClaudeCode() as session:
-            pass
+    match await smoked.pseudoterminals.start([claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, HOME_VARIABLE: str(home.root)}):
         case NeverStarted(error=error):
             raise NotReached("joined", f"{claude} could not be started: {error}")
+        case session:
+            pass
     try:
         member = await _joined(smoked, folder, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
@@ -513,6 +514,6 @@ async def _synthesized(children: Children, text: str) -> bytes:
             return read.readframes(read.getnframes())
 
 
-def run_smoke(children: Starter, processes: Processes, home: Home) -> Exit:
+def run_smoke(children: Children, pseudoterminals: Pseudoterminals, processes: Processes, home: Home) -> Exit:
     """`hands smoke`, as the CLI runs it."""
-    return asyncio.run(smoke(children, processes, home, os.environ))
+    return asyncio.run(smoke(children, pseudoterminals, processes, home, os.environ))

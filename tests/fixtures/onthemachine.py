@@ -11,4 +11,4 @@ from hands.daemon import cli
 def main_on_the_machine(argv: Sequence[str], clock: Clock) -> int:
     """[LAW:locality-or-seam] the one place a fixture's command meets the root's real parties, as tests/fakeparties.py
     is the one place a test's meets their fakes."""
-    return cli.main(argv, clock, processes=cli.KERNEL, indicators=cli.SpawnedIndicators(), machine=UNMANAGED, children_on=cli.SpawnedChildren, starter_on=cli.SpawnedChildren)
+    return cli.main(argv, clock, processes=cli.KERNEL, indicators=cli.SpawnedIndicators(), machine=UNMANAGED, children_on=cli.SpawnedChildren, pseudoterminals_on=cli.spawned_pseudoterminals)

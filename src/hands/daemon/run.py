@@ -34,7 +34,7 @@ from hands.clock import Clock, dashed
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, SampleLines, Settings
 from hands.sessions.backlog import Lit
 from hands.sessions import heartbeat, panes
-from hands.sessions.child import Children, ChildrenOn
+from hands.sessions.child import Children
 from hands.daemon.notify import post_notification
 from hands.sessions.home import Home
 from hands.core.front import InFront
@@ -280,31 +280,30 @@ async def outlived(brain: Brain) -> None:
 
 
 async def run(
-    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, children_on: ChildrenOn, terminals: Terminals, fritters: Fritters, screen: Screen, home: Home,
+    configure: Callable[[preflight.Preflight], Configured], survey: Callable[[Configured | CannotStart], None], processes: Processes, children: Children, terminals: Terminals, fritters: Fritters, screen: Screen, home: Home,
     heart: heartbeat.Heart, record: Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     pin: pinned.Pin,
     machine: configdir.Machine,
     run_start: Start,
     own: OwnModel,
-    clock: Clock,
     listening: Listening,
     driving: Driving,
 ) -> Ended:
-    """[LAW:effects-at-boundaries] `clock` is the one clock every part of the run reads time, ids, and randomness from,
-    its children's limits among them: `children_on` makes them on it.
+    """[LAW:effects-at-boundaries] `children` runs every child the run runs, and its clock is the one clock every part of
+    the run reads time, ids, and randomness from: the run's clock is its children's, and the parties handed in built on
+    them, its terminals, its screen and its configure, are on it too, so no part of the run is on another.
 
     [LAW:one-source-of-truth] `listening` and `driving` are the one owner of the level the desk listens at
     (`hands.voice.listening.Levels`), made before the run so a restart reads the level last chosen whatever the run
     reached: the tools and the pages read and ask through `listening`, and the desk's driver, handed `driving`, steps the
     level the run starts at and every one after.
     """
+    clock = children.clock
     voice: Voice | None = None
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
     # that raised still lets go of the socket and of every permission hook waiting on it.
     async with AsyncExitStack() as held:
-        # What runs every child the run runs, on its one clock, each child's event recorded with the run's.
-        children = children_on(clock, record)
         # What each turn changed in the repository it ran in, which no transcript record need name.
         deltas = Deltas(record, environment, children)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.

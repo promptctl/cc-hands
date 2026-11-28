@@ -1,19 +1,17 @@
 """Children as values: the programs a test stands in for, each answering the runs of it, and no process started
-(hands.sessions.child.Children). tests/childrencontract.py holds it to SpawnedChildren. A child started to run on, on a
-terminal, is SpawnedChildren's alone: on a terminal a missing program is a shell that starts and exits 127, where a run's
-is never started, so only a process the OS runs answers a start as SpawnedChildren does."""
+(hands.sessions.child.Children). tests/childrencontract.py holds it to SpawnedChildren."""
 
 import asyncio
 import errno
 import os
 import queue
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from hands.clock import Clock, wait_all
 from hands.sessions import wide
-from hands.sessions.child import Captured, Command, Exited, Kill, Killed, Limit, Lost, NeverStarted, Outcome, Ran, Running, Stdio, Traced, Unreaped
+from hands.sessions.child import Captured, Command, Exited, Kill, Killed, Limit, Lost, NeverStarted, Outcome, Ran, Traced, Unreaped
 from hands.tasks import cancel_and_wait
 
 
@@ -121,9 +119,6 @@ class FakeChildren:
             case Answers():
                 raise AssertionError(f"{asked.argv[0]} answers a run in a coroutine, which a blocking run cannot wait on: give it as the Answer it ends in")
 
-    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
-        raise AssertionError(f"a fake starts no child to run on, as {argv[0]!r}: a test of what starts one is SpawnedChildren's, outside")
-
     def _asked(self, asked: Asked) -> tuple[Asked, Program]:
         self.asked.append(asked)
         if (program := self.programs.get(asked.argv[0])) is None:
@@ -153,11 +148,16 @@ class Programs:
 def _at_once(asked: Asked, answer: Answer) -> Outcome:
     """The outcome of a run that ends as `answer` says."""
     match answer:
-        case Refused(errno=code):
-            # [LAW:one-source-of-truth] the OSError the OS's code makes, FileNotFoundError for ENOENT among them.
-            return NeverStarted(OSError(code, os.strerror(code), asked.argv[0]))
+        case Refused():
+            return never_started(answer, asked.argv[0])
         case outcome:
             return outcome
+
+
+def never_started(refused: Refused, program: str) -> NeverStarted:
+    """A start of `program` the OS refused, as `refused` says: [LAW:one-source-of-truth] with the OSError the OS's code
+    makes, FileNotFoundError for ENOENT among them."""
+    return NeverStarted(OSError(refused.errno, os.strerror(refused.errno), program))
 
 
 def _killed(limit: float, out: bytes, err: bytes) -> Ran:

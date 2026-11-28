@@ -560,26 +560,18 @@ class Children(Protocol):
         ...
 
 
-class Starter(Children, Protocol):
-    """[LAW:types-are-the-program] Children that also start a child to run on with no limit of its own, as a terminal's
-    program does: SpawnedChildren alone, so code that runs its children to their ends takes Children, which a fake can be."""
-
-    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
-        """Start `argv` to run until it ends or is stopped, from a coroutine."""
-        ...
-
-
 # [LAW:effects-at-boundaries] what makes the Children a unit runs on, on the unit's own clock and with its children's
 # events leaving through the unit's own emit: SpawnedChildren itself, bound at the root (hands.daemon.cli.entry), and a
 # fake's maker in tests. A unit given one has one clock, its own, for its children too.
 type ChildrenOn = Callable[[Clock, Callable[[wide.WideEvent], None]], Children]
-type StarterOn = Callable[[Clock, Callable[[wide.WideEvent], None]], Starter]
 
 
 @dataclass(frozen=True)
 class SpawnedChildren:
-    """The Starter hands runs on: each child a process the OS starts, made from its caller's one clock, which measures
-    every child's limit, and the edge its caller's events leave through, which its children's events leave through too."""
+    """The Children hands runs on: each child a process the OS starts, made from its caller's one clock, which measures
+    every child's limit, and the edge its caller's events leave through, which its children's events leave through too.
+    It also starts a child to run on with no limit of its own, on a terminal, which only hands.sessions.pseudoterminal's
+    real adapter asks of it."""
 
     clock: Clock
     emit: Callable[[wide.WideEvent], None]
@@ -603,6 +595,7 @@ class SpawnedChildren:
         return _waited(_bounded(bound), started, ended, self.clock)
 
     def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
+        """Start `argv` to run until it ends or is stopped, from a coroutine."""
         loop = asyncio.get_running_loop()
         ended: asyncio.Future[Ending | Lost] = loop.create_future()
 

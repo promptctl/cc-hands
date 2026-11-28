@@ -16,11 +16,14 @@ from typing import Any
 import numpy as np
 import pytest
 
+from fakechildren import NOT_THERE
 from fakeparties import main_on_fakes
-from hands.clock import SYSTEM, Clock
+from fakepseudoterminals import FakePseudoterminals
+from hands.clock import SYSTEM
 from hands.core.effects import Fritter, Summarise, Text, Type, ToldByStop
 from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
+from hands.sessions.child import Children
 from hands.sessions.startsession import joined
 from hands.sessions.liveness import live
 from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
@@ -265,29 +268,27 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
 
     monkeypatch.setattr(transcription, "load", unloaded)
 
-    async def synthesized(_clock: Clock, _text: str) -> bytes:
+    async def synthesized(_children: Children, _text: str) -> bytes:
         return b""
 
-    started: list[dict[str, str]] = []
-
-    async def on_terminal(_clock: object, _argv: list[str], _cwd: Path, environment: dict[str, str]) -> None:
-        started.append(environment)
-        raise NotReached("joined", "the test's stand-in claude is not started")
-
+    # The stand-in claude is refused, as one that is not there is, so the run stops at joined.
+    terminals = FakePseudoterminals({str(real): NOT_THERE})
     monkeypatch.setattr(smoke, "_synthesized", synthesized)
-    monkeypatch.setattr(smoke, "on_terminal", on_terminal)
-    assert main_on_fakes(["--home", str(home.root), "smoke"], processes=up(now)) == 1
-    return capsys.readouterr().out.splitlines()[-1], started
+    assert main_on_fakes(["--home", str(home.root), "smoke"], processes=up(now), pseudoterminals_on=lambda _clock, _emit: terminals) == 1
+    return capsys.readouterr().out.splitlines()[-1], [dict(asked.environment) for asked in terminals.asked]
 
 
-STOPPED_BY_THE_STAND_IN = "FAILED joined: the test's stand-in claude is not started"
+def stopped_by_the_stand_in(tmp_path: Path) -> str:
+    """The line a run stand_in_run made ends on, once it has started its claude."""
+    claude = tmp_path / "real" / "claude"
+    return f"FAILED joined: {claude} could not be started: [Errno 2] No such file or directory: '{claude}'"
 
 
 def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     # The claude on PATH here is no shim, so nothing but the smoke run itself switches its auto-updater off.
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     last, started = stand_in_run(tmp_path, capsys, monkeypatch, tmp_path / "elsewhere", datetime.now(UTC).timestamp())
-    assert last == STOPPED_BY_THE_STAND_IN
+    assert last == stopped_by_the_stand_in(tmp_path)
     [environment] = started
     assert environment["DISABLE_AUTOUPDATER"] == "1"
 
@@ -318,4 +319,4 @@ def test_a_session_hands_does_not_call_smoke_does_not_stop_the_run(
     # A file written before CLAUDE started names a claude that has exited and whose pid was handed out
     # again; a live session in a folder of another name is called by that name.
     last, _ = stand_in_run(tmp_path, capsys, monkeypatch, tmp_path / folder, datetime.now(UTC).timestamp() - ago)
-    assert last == STOPPED_BY_THE_STAND_IN
+    assert last == stopped_by_the_stand_in(tmp_path)

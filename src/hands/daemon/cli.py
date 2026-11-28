@@ -27,12 +27,13 @@ from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Res
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, Handover, SettingsEdited, Signalled, Start, Stop, execv, invocation, refuse, start, starts_at
 from hands.tasks import cancel_and_wait
 from hands.core.tmux import Keyboard
-from hands.sessions.child import Children, ChildrenOn, SpawnedChildren, StarterOn
+from hands.sessions.child import Children, ChildrenOn, SpawnedChildren
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, panes, recall, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.kernel import KERNEL
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
+from hands.sessions.pseudoterminal import PseudoterminalsOn, SpawnedPseudoterminals
 from hands.sessions.processes import Pid, Processes, parse_pid
 from hands.sessions.terminals import Terminals
 from hands.sessions import tmux
@@ -194,18 +195,24 @@ def show_phone(children: Children, home: Home) -> exits.Exit:
     return 0
 
 
+def spawned_pseudoterminals(clock: Clock, emit: Callable[[wide.WideEvent], None]) -> SpawnedPseudoterminals:
+    """The pseudo-terminals hands runs a program on, each on a process SpawnedChildren starts, on the unit's clock and
+    with its events leaving through the unit's emit."""
+    return SpawnedPseudoterminals(SpawnedChildren(clock, emit))
+
+
 def entry() -> int:
     """The `hands` script: loguru's default sink, DEBUG on stderr, let go of once as the process starts, so what it prints
     is the terminal's that `logging_to` sets up; then the command its arguments name."""
     logger.remove(0)
-    return main(processes=KERNEL, indicators=SpawnedIndicators(), machine=configdir.this_machine(), children_on=SpawnedChildren, starter_on=SpawnedChildren)
+    return main(processes=KERNEL, indicators=SpawnedIndicators(), machine=configdir.this_machine(), children_on=SpawnedChildren, pseudoterminals_on=spawned_pseudoterminals)
 
 
 # [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, the pin of the Claude
 # Code its brain runs, where `hands install-brain` fetches that pin's builds from, the processes every command reads and
-# signals, what shows a run's indicator, the Mac whose Claude Code policy the brain runs under, and what makes the
-# children each command runs, a terminal's among them, each bound here for every command.
-def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE, *, processes: Processes, indicators: Indicators, machine: configdir.Machine, children_on: ChildrenOn, starter_on: StarterOn) -> int:
+# signals, what shows a run's indicator, the Mac whose Claude Code policy the brain runs under, what makes the children
+# each command runs, and what makes the pseudo-terminals a command runs a program on, each bound here for every command.
+def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.Pin = pinned.PIN, release: pinned.Source = pinned.RELEASE, *, processes: Processes, indicators: Indicators, machine: configdir.Machine, children_on: ChildrenOn, pseudoterminals_on: PseudoterminalsOn) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -262,7 +269,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM, pin: pinned.P
             case "tmux-status":
                 return show_segment(clock, processes, home)
             case _:
-                return commanded(clock, processes, children_on, starter_on, home, pin, machine, release, audit_log.record, arguments)
+                return commanded(clock, processes, children_on, pseudoterminals_on, home, pin, machine, release, audit_log.record, arguments)
 
 
 def handed_over(parser: argparse.ArgumentParser, indicator: Pid | None, level: Level | None) -> Handover | None:
@@ -366,7 +373,7 @@ def run_daemon(clock: Clock, processes: Processes, indicators: Indicators, child
                     execv(invocation(home, "run", *next_run.arguments(), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(clock: Clock, processes: Processes, children_on: ChildrenOn, starter_on: StarterOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
+def commanded(clock: Clock, processes: Processes, children_on: ChildrenOn, pseudoterminals_on: PseudoterminalsOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, record: audit.Record, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -378,7 +385,7 @@ def commanded(clock: Clock, processes: Processes, children_on: ChildrenOn, start
     with wide.unit("hands.command", record, wide.begun(clock)):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        ended = dispatch(clock, processes, children_on, starter_on, home, pin, machine, release, arguments, record)
+        ended = dispatch(clock, processes, children_on, pseudoterminals_on, home, pin, machine, release, arguments, record)
         wide.annotate(exit_code=exits.code_of(ended))
         match ended:
             case exits.Failed(code=code, why=why):
@@ -406,7 +413,7 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(clock: Clock, processes: Processes, children_on: ChildrenOn, starter_on: StarterOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
+def dispatch(clock: Clock, processes: Processes, children_on: ChildrenOn, pseudoterminals_on: PseudoterminalsOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, release: pinned.Source, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
     # What runs the command's children: on its clock, each child's event recorded with its own.
     children = children_on(clock, record)
@@ -441,7 +448,7 @@ def dispatch(clock: Clock, processes: Processes, children_on: ChildrenOn, starte
             # Imported here so that no other command loads aiortc.
             from hands.daemon.smoke import run_smoke
 
-            return run_smoke(starter_on(clock, record), processes, home)
+            return run_smoke(children, pseudoterminals_on(clock, record), processes, home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -672,6 +679,8 @@ def loaded(clock: Clock, processes: Processes, children_on: ChildrenOn, home: Ho
     mlxthread.call(memory.limit_cache)
 
     path = environment.get("PATH", "")
+    # [LAW:one-source-of-truth] the run's one children, on its clock, each child's event recorded with the run's: what
+    # its terminals, its screen and its configure are built on here, and the run itself runs on.
     children = children_on(clock, record)
     # [LAW:effects-at-boundaries] the run's one adapter of the user's tmux servers, found on the run's PATH once; its
     # fritters' and the Mac's screen's are built with the run.
@@ -689,7 +698,7 @@ def loaded(clock: Clock, processes: Processes, children_on: ChildrenOn, home: Ho
                 reached = readiness.unstartable(str(error))
         survey(readiness.check(children, processes, home, path, True, reached, running, partial(keyboards, terminals, processes)))
 
-    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, children_on, terminals, FritterSockets(), LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, machine, run_start, OwnModel(home, pin, machine, environment, settings), clock, listening, driving)
+    return lambda stop: run(partial(configured_from, children, home, settings), surveyed, processes, children, terminals, FritterSockets(), LaunchServices(children), home, heart, record, degraded, stop, after_crash, environment, pin, machine, run_start, OwnModel(home, pin, machine, environment, settings), listening, driving)
 
 
 def report(clock: Clock, processes: Processes, home: Home) -> exits.Exit:

@@ -50,6 +50,7 @@ from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions.child import ChildrenOn, SpawnedChildren
+from hands.sessions.pseudoterminal import SpawnedPseudoterminals
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions, untyped
 from hands.sessions.registry import unread as reads_no_panes
@@ -244,6 +245,13 @@ def spawned_on(clock: Clock) -> SpawnedChildren:
     test of what hands makes of a run hands its code a FakeChildren (tests/fakechildren.py), and a test about a child's
     event builds its own SpawnedChildren with the emit it reads."""
     return SpawnedChildren(clock, lambda _: None)
+
+
+def spawned_terminals(clock: Clock) -> SpawnedPseudoterminals:
+    """The real SpawnedPseudoterminals, which open terminals and start processes, for an `outside` test, as spawned_on's
+    children: a test of what hands makes of a program on a terminal hands its code a FakePseudoterminals
+    (tests/fakepseudoterminals.py)."""
+    return SpawnedPseudoterminals(spawned_on(clock))
 
 
 def shell_without_hands_settings() -> dict[str, str]:

@@ -66,8 +66,10 @@ of a program it was not given is the test's mistake, raised, so no test passes o
 test means to be missing is `NOT_THERE`. What hands relies on of a run is a contract, tests/childrencontract.py, run
 against the fake in `make check` (test_children_contract.py) and against SpawnedChildren, on scripts the test writes,
 `outside` (test_children_contract_spawned.py). An `outside` test hands its code SpawnedChildren itself, or conftest's
-`spawned_on`. A child run on with no limit of its own, on a terminal, takes a `Starter`, which SpawnedChildren alone is:
-a fake refuses every start. The menu-bar indicator each run shows is started
+`spawned_on`. A program run on a terminal of hands' own, the brain's tmux client and the smoke test's claude, is started
+through `Pseudoterminals` (hands.sessions.pseudoterminal), bound at the root as children are: tests give `main_on_fakes`
+tests/fakepseudoterminals.py, and tests/pseudoterminalcontract.py holds it to `SpawnedPseudoterminals`, on real terminals,
+`outside`. The menu-bar indicator each run shows is started
 and ended through `Indicators` (hands.daemon.indicatorprocess), apart from Children since it outlives the restart's exec;
 tests hand `cli.main` tests/fakeindicators.py, and test_restart.py holds the real one to real processes.
 

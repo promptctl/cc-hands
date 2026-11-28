@@ -146,13 +146,14 @@ REAL_WHISPER = "numba compiles the real Whisper's word timing as the model loads
 # machine's time, each with why a clock the test advances cannot stand in for it. They are never moved, and a run that
 # collects a test of one not marked outside fails: the unit layer would run it, off the watch.
 PERMANENT = {
-    "test_engaged_models.py": "Smart Turn's own code reads the machine's time as it takes audio",
     "test_children_contract_spawned.py": "its programs the OS runs, and SpawnedChildren kills at their limit, on the machine's time",
+    "test_engaged_models.py": "Smart Turn's own code reads the machine's time as it takes audio",
     "test_launchservices_lsappinfo.py": "it reads the app in front from the real lsappinfo, a child that runs in real time, so only the machine's time ends its limit on one that hangs",
     "test_pages.py": REAL_CHROME,
     "test_phonewakepage.py": REAL_CHROME,
     "test_pinned_brain.py": REAL_CLAUDE_CODE,
     "test_proxy_connect.py": "its clients verify the certificate the proxy's authority signs against the machine's own time, so the authority is made on it",
+    "test_pseudoterminals_contract_spawned.py": "its programs run on real terminals, and SpawnedChildren stops one within its grace, on the machine's time",
     "test_session_contract_pinned.py": "it shows a real Claude Code waits on an end's reply by holding the reply for seconds of the machine's time, the time Claude Code waits on",
     "test_terminal_contract_pinned.py": REAL_CLAUDE_CODE,
     "test_terminals_contract_tmux.py": "its tmux server and programs say only by what they leave that they are up",
