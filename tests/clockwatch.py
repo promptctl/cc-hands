@@ -217,16 +217,17 @@ class Watch:
         """The module `filename` is, relative to tests/; "" for a file outside it, and this one, that a test may have
         called into; None for pytest's and pluggy's, below which no test frame lies, since pytest calls every test."""
         if filename not in self._modules:
-            path = Path(filename)
+            path = real(Path(filename))
             self._modules[filename] = (
-                path.relative_to(self.tests).as_posix() if path.is_relative_to(self.tests) and path != Path(__file__)
+                path.relative_to(self.tests).as_posix() if path.is_relative_to(self.tests) and path != real(Path(__file__))
                 else None if {"_pytest", "pluggy"} & set(path.parts) else ""
             )  # fmt: skip
         return self._modules[filename]
 
     def _of(self, item: pytest.Item) -> str | None:
         """The module `item` was collected from, relative to tests/; None for one outside it."""
-        return item.path.relative_to(self.tests).as_posix() if item.path.is_relative_to(self.tests) else None
+        path = real(item.path)
+        return path.relative_to(self.tests).as_posix() if path.is_relative_to(self.tests) else None
 
     def _entered(self) -> tuple[str, bool] | None:
         """The innermost frame's module under tests/, and whether the code it runs in is the harness's: entered from
@@ -392,6 +393,14 @@ class Watch:
                 terminalreporter.line("\n".join(tests))
 
 
+def real(path: Path) -> Path:
+    """`path` with each symlink in it followed; the name of code with no file, as "<string>" is, is no path, and stays.
+
+    [LAW:one-source-of-truth] every path the watch compares is this one's, so a checkout a run reaches through a symlink,
+    by the paths it names or by its --rootdir, is one checkout, spelled as each is."""
+    return path.resolve() if path.is_absolute() else path
+
+
 def verdict(record: dict[str, set[str]], held: frozenset[str], whole: bool) -> tuple[dict[str, set[str]], set[str]]:
     """Each module a run saw reach the machine's time that is not `held`, with what it reached, and, from a run of the
     whole suite, each held that never did. A part of the suite sees only its part's reaches, so only the whole
@@ -428,8 +437,6 @@ def register(config: pytest.Config, to_move: frozenset[str], permanent: Mapping[
         raise pytest.UsageError(f"held both to move and for good (tests/clockwatch.py): {both}")
     patch = pytest.MonkeyPatch()
     config.add_cleanup(patch.undo)
-    # [LAW:one-source-of-truth] the path as pytest spells it, the spelling of every item and frame the watch is asked about:
-    # through a symlink to the checkout, a resolved one would match none of them.
-    watch = Watch(config.rootpath / "tests", patch, to_move, permanent, outside)
+    watch = Watch(real(config.rootpath) / "tests", patch, to_move, permanent, outside)
     watch.install()
     config.pluginmanager.register(watch, "clockwatch")

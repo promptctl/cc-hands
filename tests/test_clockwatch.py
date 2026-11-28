@@ -103,10 +103,12 @@ def test_a_test_of_a_module_held_for_good_that_the_unit_layer_would_run_fails_th
 
 
 @pytest.mark.outside
-def test_a_run_through_a_symlink_to_the_checkout_is_watched_as_one_through_its_path(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("through", [True, False], ids=["its-tests-named-through-the-link", "its-tests-named-by-their-own-path"])
+def test_a_run_whose_root_is_a_symlink_to_the_checkout_is_watched(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, through: bool) -> None:
+    # A checkout of its own for each: the code pytest rewrites and caches keeps the path it was first loaded by.
     link = pytester.path.parent / f"{pytester.path.name}-link"
     link.symlink_to(pytester.path)
-    result = run(pytester, monkeypatch, "--rootdir", str(link), at=str(link / "tests"), test_waits="import time\n\ndef test_waits():\n    time.monotonic()\n")
+    result = run(pytester, monkeypatch, "--rootdir", str(link), at=str(link / "tests") if through else "tests", test_waits="import time\n\ndef test_waits():\n    time.monotonic()\n")
     assert result.ret == pytest.ExitCode.TESTS_FAILED
     assert any(line.startswith("test_waits.py: ") for line in result.outlines)
 
