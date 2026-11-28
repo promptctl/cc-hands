@@ -56,7 +56,9 @@ function show() {
   try {
     mount(root, { path: location.pathname, query: new URLSearchParams(location.search) }, leaving.signal);
   } catch (error) {
-    // [LAW:no-silent-failure] a view that fails to mount says so where it was to be, as one that fails to load does.
+    // [LAW:no-silent-failure] a view that fails to mount says so where it was to be, as one that fails to load does, and is left
+    // as a view is: what it started before it threw ends, its scroll listener among it.
+    leaving.abort();
     said(`The app could not show ${location.pathname}: ${error.message}`, error);
   }
 }

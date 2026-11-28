@@ -770,6 +770,8 @@ async def test_the_call_view_opens_on_the_large_circle_which_holds_near_the_top_
     page = await on_the_call(browser, hands, screen=PHONE_SCREEN)
     assert await page.evaluate("scrollY") == 0
     # The call is drawn first as the circle: no frame of it was the bar.
+    # [LAW:no-ambient-temporal-coupling] the sampler records a frame once the page draws one with the call shown: wait for the first.
+    await page.wait_for_function("drawn.length > 0")
     drawn: list[float] = await page.evaluate("drawn")
     assert drawn and 64 not in drawn
     length = await page.evaluate("document.documentElement.scrollHeight")
@@ -860,6 +862,8 @@ async def test_every_view_but_the_call_shows_the_bar_from_its_first_frame_and_th
     await page.set_viewport_size(PHONE_SCREEN)
     await expect(page.locator("#sessions-note")).to_be_visible()
     # Every frame the call was drawn in, from the first, had the bar's button: none had the circle first.
+    # [LAW:no-ambient-temporal-coupling] the sampler records a frame once the page draws one with the call shown: wait for the first.
+    await page.wait_for_function("drawn.length > 0")
     drawn: list[float] = await page.evaluate("drawn")
     assert drawn and set(drawn) == {64}
     assert a_bar(await box_of(page.locator("#talk")))
