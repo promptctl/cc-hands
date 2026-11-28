@@ -14,6 +14,7 @@ from conftest import SYSTEM_PATH, executable
 from fakeparties import main_on_fakes
 from hands.sessions.audit import segment
 from hands.sessions.files import Unread
+from hands.sessions.child import SpawnedChildren
 from hands.sessions.home import Home
 from hands.sessions import wrapper
 from hands.sessions.wrapper import shim_script
@@ -203,14 +204,14 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
 
     monkeypatch.setenv("PATH", tools)
     # Installed, on a PATH that finds another claude first: the PATH's fix, and its own exit.
-    assert main_on_fakes(["--home", str(home.root), "install-fritter"]) == wrapper.Installing.UNFOUND
+    assert main_on_fakes(["--home", str(home.root), "install-fritter"], children_on=SpawnedChildren) == wrapper.Installing.UNFOUND
     said = capsys.readouterr().err
     assert f"`claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim" in said
     assert f'export PATH="{home.bin}:$PATH"' in said and "install-fritter" not in said
     first = (home.bin / "claude").read_bytes()
 
     monkeypatch.setenv("PATH", f"{home.bin}:{tools}")
-    assert main_on_fakes(["--home", str(home.root), "install-fritter"]) == 0
+    assert main_on_fakes(["--home", str(home.root), "install-fritter"], children_on=SpawnedChildren) == 0
     assert f"copied {wrapper.PACKAGED} to {home.fritter}" in (out := capsys.readouterr().out)
     assert f"`claude` on this PATH is hands' shim, {home.shim}" in out
     assert (home.bin / "claude").read_bytes() == first

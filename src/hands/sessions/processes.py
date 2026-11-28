@@ -17,12 +17,16 @@ import signal
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import NewType, Protocol
 
 from hands.sessions.payload import Rejected
 
 # The largest pid macOS hands out.
 PID_MAX = 99999
+
+# [LAW:types-are-the-program] a pid some process could have, as parse_pid alone makes one: never 0 or negative, which a
+# signal takes for a whole group of processes.
+Pid = NewType("Pid", int)
 
 # A process starts before it can write down that it is running, so its start is never later than that record. The
 # slack covers a wall clock stepped back between the two, not pid reuse, which on macOS does not come round in a second.
@@ -163,13 +167,13 @@ async def table_of(processes: Processes) -> dict[int, Process] | TableRefused:
         return TableRefused(f"the processes could not be read: {refused}")
 
 
-def parse_pid(number: int) -> int:
+def parse_pid(number: int) -> Pid:
     """A number read from a file, as a pid some process could have."""
     # [LAW:parse-dont-validate] refused here, so no pid a file names, the only pids hands signals, is 0 or negative: a
     # signal to either goes to a whole group of processes.
     if not 0 < number <= PID_MAX:
         raise Rejected(f"pid {number} is not a process id")
-    return number
+    return Pid(number)
 
 
 def still_running(pid: int, seen_at: float, starts: Mapping[int, float]) -> bool:

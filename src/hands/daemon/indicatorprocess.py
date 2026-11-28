@@ -15,6 +15,7 @@ from hands.clock import Clock
 from hands.daemon.starting import invocation
 from hands.sessions import child
 from hands.sessions.home import Home
+from hands.sessions.processes import Pid, parse_pid
 
 # What became of the indicator the run before a restart showed: ended as this run asked, killed by it once it had not
 # within the grace, found exited on its own and said, or reaped already by the run before, which said so as it did.
@@ -28,12 +29,12 @@ class Indicators(Protocol):
     """[LAW:effects-at-boundaries] what starts and ends the indicator each run shows: SpawnedIndicators, and a fake of it
     in tests (tests/fakeindicators.py)."""
 
-    def show(self, home: Home) -> int:
+    def show(self, home: Home) -> Pid:
         """The indicator for this run, started and waited on, so one that exits early is reaped and said: its pid, which
         a restart hands to the run after it."""
         ...
 
-    def retire(self, indicator: int, clock: Clock) -> Retired:
+    def retire(self, indicator: Pid, clock: Clock) -> Retired:
         """End the indicator the run before a restart showed, so the one this run starts is the only one in the menu bar."""
         ...
 
@@ -47,7 +48,7 @@ class SpawnedIndicators:
 
     grace: float = RETIRE_GRACE_SECONDS
 
-    def show(self, home: Home) -> int:
+    def show(self, home: Home) -> Pid:
         argv = invocation(home, "indicator", "--parent", str(os.getpid()))
         # [LAW:single-enforcer] exception: started, waited on and ended apart from hands.sessions.child, which cannot yet
         # hold a child across the restart's exec, until promptctl-testing-c3u.3pn. The indicator runs as long as the run
@@ -55,9 +56,9 @@ class SpawnedIndicators:
         # its own keeps the terminal's Ctrl-C and hangup from ending it first, before it has said so. Its output shares this terminal, so an indicator that fails is seen where the daemon's own are.
         shown = os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
         threading.Thread(target=_reap, args=(shown,), name="indicator", daemon=True).start()
-        return shown
+        return parse_pid(shown)
 
-    def retire(self, indicator: int, clock: Clock) -> Retired:
+    def retire(self, indicator: Pid, clock: Clock) -> Retired:
         try:
             exited, status = os.waitpid(indicator, os.WNOHANG)
         except ChildProcessError:

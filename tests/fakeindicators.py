@@ -3,6 +3,7 @@
 from hands.clock import Clock
 from hands.daemon.indicatorprocess import Retired
 from hands.sessions.home import Home
+from hands.sessions.processes import Pid, parse_pid
 
 # The pid the first indicator shown is given, and each after it the next.
 FIRST = 42
@@ -17,15 +18,15 @@ class FakeIndicators:
     def __init__(self, unshowable: OSError | None = None) -> None:
         self.unshowable = unshowable
         self.shown: list[Home] = []
-        self.retired: list[tuple[int, Retired]] = []
+        self.retired: list[tuple[Pid, Retired]] = []
 
-    def show(self, home: Home) -> int:
+    def show(self, home: Home) -> Pid:
         if self.unshowable is not None:
             raise self.unshowable
         self.shown.append(home)
-        return FIRST + len(self.shown) - 1
+        return parse_pid(FIRST + len(self.shown) - 1)
 
-    def retire(self, indicator: int, clock: Clock) -> Retired:
+    def retire(self, indicator: Pid, clock: Clock) -> Retired:
         # [LAW:one-source-of-truth] running is what was shown and is not yet retired.
         running = FIRST <= indicator < FIRST + len(self.shown) and all(pid != indicator for pid, _ in self.retired)
         became: Retired = "ended" if running else "reaped"

@@ -12,6 +12,7 @@ from loguru import logger
 from hands.virtualclock import VirtualClock
 from hands.core.events import CarriedOut, Continued, Dequeued, Interrupted, Launched, Progressed, Read, Removed, ReportedBack, Taken, Transcribed, Unqueued
 from hands.core.session import Membership, PromptId, RequestId, SessionId
+from hands.sessions.child import SpawnedChildren
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
 from hands.voice.tools import TURN_SUMMARY_BUDGET
 from hands.core.effects import Summarise, ToldByRecord, ToldByStop
@@ -1020,7 +1021,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
         subprocess.run(("git", "-C", str(root), *args), check=True)
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     sessions = new_sessions(clock=VirtualClock(), changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=transcript), "startup"))
     tails = Tails(sessions)

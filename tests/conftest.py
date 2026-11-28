@@ -49,14 +49,15 @@ from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import BASELINING, PATIENCE, Deltas
-from hands.sessions.child import Children, Runner
+from hands.sessions.child import ChildrenOn, SpawnedChildren
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions, untyped
 from hands.sessions.registry import unread as reads_no_panes
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import library, streaming, transcription
+from hands.voice import streaming, transcription
 from hands.voice.mlxthread import OnMLX
+from claudelogin import auth_status
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 from fixtures import pins
@@ -238,11 +239,11 @@ def taken(errors: list[str]) -> list[str]:
 new_sessions = partial(Sessions, record=lambda _: None, typist=untyped, keyboards=reads_no_panes)
 
 
-def runner_on(clock: Clock) -> Runner:
-    """The real Runner, which starts processes, for an `outside` test: on the clock the test names, its events let go. A
+def spawned_on(clock: Clock) -> SpawnedChildren:
+    """The real SpawnedChildren, which starts processes, for an `outside` test: on the clock the test names, its events let go. A
     test of what hands makes of a run hands its code a FakeChildren (tests/fakechildren.py), and a test about a child's
-    event builds its own Runner with the emit it reads."""
-    return Runner(clock, lambda _: None)
+    event builds its own SpawnedChildren with the emit it reads."""
+    return SpawnedChildren(clock, lambda _: None)
 
 
 def shell_without_hands_settings() -> dict[str, str]:
@@ -284,11 +285,12 @@ class RealWall(VirtualClock):
         return SYSTEM.wall()
 
 
-def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None = None, baselining: float = BASELINING, patience: float = PATIENCE) -> D:
+def patient[D: Deltas](kind: type[D], record: Record, on: ChildrenOn, clock: VirtualClock | None = None, baselining: float = BASELINING, patience: float = PATIENCE) -> D:
     """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a baseline or a reading found,
     never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
-    spends it; a git that never ends is ended by the suite's timeout."""
-    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, children=Runner(clock or RealWall(), record))
+    spends it; a git that never ends is ended by the suite's timeout. Its git and gh are the children `on` makes, on that
+    clock: SpawnedChildren's in an `outside` test, a fake's (fakechildren.Programs) in any other."""
+    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, children=on(clock or RealWall(), record))
 
 
 async def settled(steps: int = 100) -> None:
@@ -400,20 +402,6 @@ class Pairs:
 _FETCHED = streaming.fetched
 # [LAW:no-shared-mutable-globals] the suite's one owner of the pairs it loads.
 PAIRS = Pairs()
-
-
-# The reader the fixture below replaces, taken before any test runs: the one test about the question checks it.
-KEYCHAIN_READER = library._keychain_token  # pyright: ignore[reportPrivateUsage]
-
-
-@pytest.fixture(autouse=True)
-def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
-    about but the one that checks the question, on KEYCHAIN_READER."""
-    def absent(_children: Children) -> library.Absent:
-        return library.Absent()
-
-    monkeypatch.setattr(library, "_keychain_token", absent)
 
 
 @pytest.fixture(autouse=True)
@@ -790,7 +778,7 @@ def pin(config_dir: Path, script: Path) -> pinned.Pin:
 
 
 # What `claude auth status` prints for a brain logged in on claude.ai.
-LOGGED_IN = json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "brain@example.com"}).encode()
+LOGGED_IN = auth_status(True).encode()
 
 
 def laid_out(home: Home) -> Path:
@@ -834,6 +822,8 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
 import datetime, itertools, json, os, select, signal, subprocess, sys, termios, threading, time, tty, urllib.request, uuid
+sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+from claudelogin import auth_status
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -854,12 +844,10 @@ if sys.argv[1:3] == ["auth", "login"] or first_run:
 if sys.argv[1:3] == ["auth", "status"]:
     console = os.path.exists(login) and "--console" in json.load(open(login))["argv"]
     method = "api_key" if console else os.environ.get("AUTH_METHOD", "claude.ai")
-    holder = {{"claude.ai": {{"email": "brain@example.com"}}, "api_key": {{"email": "brain@example.com", "apiKeySource": "/login managed key"}}, "oauth_token": {{}}}}[method]
-    print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": method, "apiProvider": os.environ.get("API_PROVIDER", "firstParty"), **holder}}))
+    print(auth_status(os.environ["LOGGED_IN"] == "1" or os.path.exists(login), method, os.environ.get("API_PROVIDER", "firstParty")))
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
 session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
-sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
 import turns
 # Where Claude Code keeps the session's transcript, and the file it keeps its status in, under its config directory.
 transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")

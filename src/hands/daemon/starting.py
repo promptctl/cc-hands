@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Literal, NoReturn
 
 from hands.clock import Clock
+from hands.sessions.processes import Pid
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
 from hands.sessions.home import Home
@@ -39,7 +40,7 @@ class Handover:
     """What a run that restarts hands the next across the exec: the menu-bar indicator it showed, which the next ends for
     one of its own, and the level its desk was at, which the next one's starts at."""
 
-    indicator: int
+    indicator: Pid
     level: Level
 
     def arguments(self) -> tuple[str, ...]:
@@ -162,9 +163,9 @@ class Start:
     """A start of hands, from `hands run` holding its home to its pipeline reported started, or to what ended it first.
 
     Its one event, `hands.start`, is timed from the start's first moment, so its duration is how long hands took to be
-    ready. Its facts say which run it is (`pid`, `restarted`, `after_crash`, and what became of the `previous_indicator`
-    a restart replaced), which settings won, and what the run listens
-    on, each added as the step that learns it is taken, so a start that ended first says how far it got. It ends ok when
+    ready. Its facts say which run it is (`pid`, `restarted`, `after_crash`, the `indicator` it showed, which a restart
+    of it hands on, and what became of the `previous_indicator` a restart replaced), which settings won, and what the
+    run listens on, each added as the step that learns it is taken, so a start that ended first says how far it got. It ends ok when
     ready, failed with what raised (a CannotStart's reason, where it was refused), or cancelled, told to stop first.
 
     [LAW:nothing-unseen] no one body runs a start: it begins at the door, before the run's loop exists, and ends in the

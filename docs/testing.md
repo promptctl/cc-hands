@@ -58,14 +58,16 @@ Registered sessions are identified by the session ID reported by their hooks. In
 process host supplies the executable for a relative invocation, and a process can exit between listing and inspection.
 Session readiness, pane routing, liveness and close-session tests cover how those callers use process information.
 
-The programs hands runs, it runs through `Children` (hands.sessions.child), whose real adapter is the `Runner`, built
-in hands.daemon.cli alone (test_children_boundary.py). A test of what hands makes of a run gives its code
-tests/fakechildren.py, the programs it stands in for as values, kept in `asked`: a run of a program it was not given is
-the test's mistake, raised, so a test never holds on the sandbox's refusal of a start, and a program the test means to be
-missing is `NOT_THERE`. What hands relies on of a run is a contract, tests/childrencontract.py, run against the fake in
-`make check` (test_children_contract.py) and against the Runner, on scripts the test writes, `outside`
-(test_children_contract_runner.py), whose tests build theirs with conftest's `runner_on`. A child run on with no limit of
-its own, on a terminal, takes a `Starter`, which the Runner alone is. The menu-bar indicator each run shows is started
+The programs hands runs, it runs through `Children` (hands.sessions.child), whose real adapter is `SpawnedChildren`, named
+in hands.daemon.cli alone (test_children_boundary.py): `cli.main` is given what makes each command's children, on its
+clock, and a test gives it tests/fakechildren.py's `Programs` through tests/fakeparties.py's `main_on_fakes`. A test of
+what hands makes of a run gives its code a FakeChildren, the programs it stands in for as values, kept in `asked`: a run
+of a program it was not given is the test's mistake, raised, so no test passes on a run it never meant, and a program the
+test means to be missing is `NOT_THERE`. What hands relies on of a run is a contract, tests/childrencontract.py, run
+against the fake in `make check` (test_children_contract.py) and against SpawnedChildren, on scripts the test writes,
+`outside` (test_children_contract_spawned.py). An `outside` test hands its code SpawnedChildren itself, or conftest's
+`spawned_on`. A child run on with no limit of its own, on a terminal, takes a `Starter`, which SpawnedChildren alone is:
+a fake refuses every start. The menu-bar indicator each run shows is started
 and ended through `Indicators` (hands.daemon.indicatorprocess), apart from Children since it outlives the restart's exec;
 tests hand `cli.main` tests/fakeindicators.py, and test_restart.py holds the real one to real processes.
 

@@ -25,9 +25,10 @@ from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Record
 from hands.clock import SYSTEM
-from hands.sessions.child import Children
+from hands.sessions.child import Children, ChildrenOn, SpawnedChildren
 from hands.sessions.delta import BASELINING, HELD, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Baseline, Capture, Deltas, Standing, Unread
 from conftest import RealWall, new_sessions, patient
+from fakechildren import Programs, exited
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 
@@ -71,14 +72,19 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-async def turn(root: Path, work: object = None, record: list[Entry] | None = None) -> Delta:
-    """One turn: take the baseline of where the repository is, let `work` happen, then read what changed, writing its audit line to `record`."""
-    deltas = patient(Deltas, (record if record is not None else []).append)
+async def turn(on: ChildrenOn, root: Path, work: object = None, record: list[Entry] | None = None) -> Delta:
+    """One turn, its git the children `on` makes: take the baseline of where the repository is, let `work` happen, then read
+    what changed, writing its audit line to `record`."""
+    deltas = patient(Deltas, (record if record is not None else []).append, on)
     await deltas.snapshot(SID, root)
     if callable(work):
         work()
     await deltas.compare(SID, again=False)
     return await deltas.taken(SID)
+
+
+# git asked about a directory no repository holds, as it answers outside one and in a directory that is not there.
+OUTSIDE_A_REPOSITORY = exited(128, err=b"fatal: not a git repository (or any of the parent directories): .git\n")
 
 
 def readings(record: list[Entry]) -> list[WideEvent]:
@@ -90,7 +96,7 @@ def readings(record: list[Entry]) -> list[WideEvent]:
 async def test_a_turn_whose_only_change_came_from_a_shell_command_names_the_file_it_changed(tmp_path: Path) -> None:
     """The done bar. A formatter, a code generator, or a `sed` leaves no `Edited` step to name what it did."""
     root = repo(tmp_path)
-    delta = await turn(root, lambda: (root / "a.py").write_text("x = 1\ny = 2\n"))
+    delta = await turn(SpawnedChildren, root, lambda: (root / "a.py").write_text("x = 1\ny = 2\n"))
     assert [(file.path, file.added, file.removed) for file in delta.files] == [("a.py", 1, 0)]
     assert "y = 2" in delta.patch
     assert delta  # there is something to tell
@@ -100,7 +106,7 @@ async def test_a_turn_whose_only_change_came_from_a_shell_command_names_the_file
 async def test_a_file_a_turn_created_is_named_even_though_git_was_never_told_about_it(tmp_path: Path) -> None:
     """A code generator writes files nobody adds. `git stash create` holds none of them, which is why this does not use it."""
     root = repo(tmp_path)
-    delta = await turn(root, lambda: (root / "generated.py").write_text("# made by a generator\n"))
+    delta = await turn(SpawnedChildren, root, lambda: (root / "generated.py").write_text("# made by a generator\n"))
     assert [file.path for file in delta.files] == ["generated.py"]
 
 
@@ -110,7 +116,7 @@ async def test_a_file_the_repository_ignores_is_not_a_result(tmp_path: Path) -> 
     (root / ".gitignore").write_text("*.log\n")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "ignore logs")
-    delta = await turn(root, lambda: (root / "noise.log").write_text("chatter\n"))
+    delta = await turn(SpawnedChildren, root, lambda: (root / "noise.log").write_text("chatter\n"))
     assert delta.files == () and not delta
 
 
@@ -124,7 +130,7 @@ async def test_a_commit_the_turn_made_is_named_and_the_work_in_it_is_still_the_t
         git(root, "add", "-A")
         git(root, "commit", "-qm", "tidy up")
 
-    delta = await turn(root, commit)
+    delta = await turn(SpawnedChildren, root, commit)
     assert [commit.subject for commit in delta.commits] == ["tidy up"]
     assert [file.path for file in delta.files] == ["a.py"]
 
@@ -134,13 +140,13 @@ async def test_work_already_in_the_tree_before_the_turn_is_not_the_turn_s(tmp_pa
     """The baseline holds the working tree as it stood, so what was already changed is not reported as done now."""
     root = repo(tmp_path)
     (root / "a.py").write_text("x = 1\nleft over from before\n")
-    delta = await turn(root)
+    delta = await turn(SpawnedChildren, root)
     assert not delta and delta.files == ()
 
 
 @pytest.mark.outside
 async def test_a_turn_that_changed_nothing_has_nothing_to_tell(tmp_path: Path) -> None:
-    assert not await turn(repo(tmp_path))
+    assert not await turn(SpawnedChildren, repo(tmp_path))
 
 
 @pytest.mark.outside
@@ -158,7 +164,7 @@ async def test_reading_a_repository_leaves_it_exactly_as_it_was_found(tmp_path: 
     before = (git(root, "status", "--porcelain"), git(root, "rev-parse", "HEAD"), git(root, "stash", "list"), git(root, "diff"), git(root, "diff", "--cached"))
     index = (root / ".git" / "index").read_bytes()
 
-    await turn(root)
+    await turn(SpawnedChildren, root)
 
     assert (root / ".git" / "index").read_bytes() == index, "the repository's own index was written to"
     assert (git(root, "status", "--porcelain"), git(root, "rev-parse", "HEAD"), git(root, "stash", "list"), git(root, "diff"), git(root, "diff", "--cached")) == before
@@ -210,7 +216,7 @@ async def test_a_push_no_step_recorded_is_read_from_the_remote_tracking_ref_git_
         git(root, "commit", "-qam", "tidy")
         git(root, "push", "-q")
 
-    delta = await turn(root, push)
+    delta = await turn(SpawnedChildren, root, push)
     assert delta.changes == (Pushed(git(root, "branch", "--show-current")),)
 
 
@@ -223,7 +229,7 @@ async def test_a_fetch_moves_the_same_ref_and_is_not_heard_as_a_push(tmp_path: P
     git(other, "config", "user.name", "Test")
     git(other, "commit", "-q", "--allow-empty", "-m", "someone else")
     git(other, "push", "-q")
-    delta = await turn(root, lambda: git(root, "fetch", "-q"))
+    delta = await turn(SpawnedChildren, root, lambda: git(root, "fetch", "-q"))
     assert delta.changes == ()
 
 
@@ -231,7 +237,7 @@ async def test_a_fetch_moves_the_same_ref_and_is_not_heard_as_a_push(tmp_path: P
 async def test_a_branch_the_turn_made_is_read_from_the_branches_the_baseline_did_not_hold(tmp_path: Path) -> None:
     """`checkout -b` inside a compound command is the one Claude Code nearly never records."""
     root = repo(tmp_path)
-    delta = await turn(root, lambda: git(root, "checkout", "-q", "-b", "feature/narration"))
+    delta = await turn(SpawnedChildren, root, lambda: git(root, "checkout", "-q", "-b", "feature/narration"))
     assert delta.changes == (Branched("feature/narration", "created branch"),)
     assert delta  # a new branch alone is something to tell
 
@@ -252,7 +258,7 @@ async def test_a_pull_request_opened_from_a_branch_the_turn_pushed_is_read_from_
             f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(now)}"}}, {{"number": 3, "url": "https://x/3", "createdAt": "{stamp(before)}"}}]',
         )
 
-    delta = await turn(root, open_one)
+    delta = await turn(SpawnedChildren, root, open_one)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
     assert asked.read_text().split() == ["pr", "list", "--head", "fix", "--author", "@me", "--state", "all", "--json", "number,url,createdAt"]
 
@@ -266,7 +272,7 @@ async def test_the_forge_is_not_asked_about_a_turn_that_pushed_nothing(tmp_path:
         (root / "a.py").write_text("x = 2\n")
         git(root, "commit", "-qam", "tidy")
 
-    await turn(root, commit)
+    await turn(SpawnedChildren, root, commit)
     assert not asked.exists()
 
 
@@ -276,7 +282,7 @@ async def test_a_forge_that_answers_in_a_shape_hands_does_not_read_costs_the_pul
 ) -> None:
     root = published(tmp_path)
     forge(tmp_path, monkeypatch, "not json")
-    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
+    delta = await turn(SpawnedChildren, root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
 
 
@@ -314,7 +320,7 @@ async def test_a_branch_made_and_pushed_in_another_worktree_is_not_this_turns(tm
         git(root, "worktree", "add", "-q", "-b", "theirs", str(beside))
         git(beside, "push", "-q", "-u", "origin", "theirs")
 
-    delta = await turn(root, elsewhere)
+    delta = await turn(SpawnedChildren, root, elsewhere)
     assert delta.changes == ()
     assert not asked.exists()
 
@@ -324,7 +330,7 @@ async def test_checking_out_a_branch_the_remote_already_had_is_not_making_one(tm
     root = cloned(tmp_path)
     git(tmp_path / "work", "push", "-q", "origin", "HEAD:theirs")
     git(root, "fetch", "-q")
-    delta = await turn(root, lambda: git(root, "checkout", "-q", "theirs"))
+    delta = await turn(SpawnedChildren, root, lambda: git(root, "checkout", "-q", "theirs"))
     assert delta.changes == ()
 
 
@@ -334,7 +340,7 @@ async def test_renaming_a_branch_is_not_making_one(tmp_path: Path) -> None:
     root = repo(tmp_path)
     git(root, "checkout", "-q", "-b", "old")
     time.sleep(1.1)  # git logs to the second
-    delta = await turn(root, lambda: git(root, "branch", "-m", "old", "new"))
+    delta = await turn(SpawnedChildren, root, lambda: git(root, "branch", "-m", "old", "new"))
     assert delta.changes == ()
 
 
@@ -353,7 +359,7 @@ async def test_a_push_the_turn_followed_with_a_pull_is_still_a_push(tmp_path: Pa
         git(other, "push", "-q")
         git(root, "pull", "-q")
 
-    delta = await turn(root, push_then_pull)
+    delta = await turn(SpawnedChildren, root, push_then_pull)
     assert Pushed("fix") in delta.changes
 
 
@@ -369,7 +375,7 @@ async def test_one_branch_pushed_to_two_remotes_is_one_push_and_one_question(tmp
         git(root, "push", "-q", "origin", "fix")
         git(root, "push", "-q", "fork", "fix")
 
-    delta = await turn(root, push_twice)
+    delta = await turn(SpawnedChildren, root, push_twice)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
     assert len(asked.read_text().splitlines()) == 1
 
@@ -385,7 +391,7 @@ async def test_the_forge_is_not_asked_about_a_push_to_the_default_branch(tmp_pat
         git(root, "push", "-q")
 
     record: list[Entry] = []
-    delta = await turn(root, push, record)
+    delta = await turn(SpawnedChildren, root, push, record)
     assert delta.changes == (Pushed(git(root, "branch", "--show-current")),)
     assert not asked.exists()
     assert [event.facts["forge"] for event in readings(record)] == ["unasked"]
@@ -404,7 +410,7 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
 
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Deltas, record.append, clock)
+    deltas = patient(Deltas, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     commit_and_push()
     await deltas.compare(SID, again=False)
@@ -434,7 +440,7 @@ async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_fa
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
     record: list[Entry] = []
     try:
-        delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+        delta = await turn(SpawnedChildren, root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
     finally:
         logger.remove(sink)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
@@ -457,7 +463,7 @@ async def test_a_gh_that_could_not_be_started_is_told_apart_from_a_forge_that_re
     sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING")
     record: list[Entry] = []
     try:
-        delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+        delta = await turn(SpawnedChildren, root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
     finally:
         logger.remove(sink)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
@@ -474,7 +480,7 @@ async def test_a_gh_ended_by_a_signal_gave_no_answer_and_is_not_a_forge_that_ref
     (bin / "gh").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
     record: list[Entry] = []
-    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+    delta = await turn(SpawnedChildren, root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
     assert [event.facts["forge"] for event in readings(record)] == ["unanswered"]
     [gh] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "child.run" and Path(str(entry.facts["program"])).name == "gh"]
@@ -495,7 +501,7 @@ async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_p
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
     record: list[Entry] = []
     try:
-        delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
+        delta = await turn(SpawnedChildren, root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")), record)
     finally:
         logger.remove(sink)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
@@ -507,7 +513,7 @@ async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_p
 async def test_a_pull_request_stamped_with_no_zone_is_not_told_and_costs_nothing_else(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
     forge(tmp_path, monkeypatch, '[{"number": 7, "url": "https://x/7", "createdAt": "2099-01-01T00:00:00"}]')
-    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
+    delta = await turn(SpawnedChildren, root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
 
 
@@ -523,7 +529,7 @@ async def test_each_reading_is_one_audit_line_with_what_it_found_and_what_the_fo
         answering(tmp_path, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC))}"}}]')
 
     record: list[Entry] = []
-    await turn(root, open_one, record)
+    await turn(SpawnedChildren, root, open_one, record)
     [read] = readings(record)
     assert (read.outcome, read.counts) == ("ok", {"commits": 1, "files": 0, "git_unanswered": 0})
     assert (read.facts["session"], read.facts["reading"], read.facts["forge"]) == (SID, "read", "answered")
@@ -532,7 +538,8 @@ async def test_each_reading_is_one_audit_line_with_what_it_found_and_what_the_fo
 
 async def test_a_turn_outside_a_repository_is_one_unbaselined_reading_that_counts_nothing_and_asks_no_forge(tmp_path: Path) -> None:
     record: list[Entry] = []
-    await turn(tmp_path, None, record)
+    # A gh asked is the test's mistake: the fake stands in for none.
+    await turn(Programs({"git": OUTSIDE_A_REPOSITORY}), tmp_path, None, record)
     [read] = readings(record)
     assert (read.outcome, read.facts["reading"], read.counts) == ("ok", "unbaselined", {"commits": 0, "files": 0, "git_unanswered": 0})
     assert "forge" not in read.facts and "index" not in read.facts
@@ -542,7 +549,7 @@ async def test_a_turn_outside_a_repository_is_one_unbaselined_reading_that_count
 async def test_a_reading_says_which_index_its_snapshot_started_from_and_counts_zero_where_nothing_changed(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    await turn(root, None, record)
+    await turn(SpawnedChildren, root, None, record)
     [baseline] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
     [read] = readings(record)
     assert (baseline.outcome, baseline.facts) == ("ok", {"session": SID, "index": "copied", "baselined": True, "captures_seconds": 0.0})
@@ -558,7 +565,7 @@ async def test_a_repository_with_no_index_yet_is_snapshotted_from_an_empty_one_a
     git(tmp_path, "init", "-q", str(root))
     (root / "a.py").write_text("x = 1\n")
     record: list[Entry] = []
-    await turn(root, lambda: (root / "b.py").write_text("y = 2\n"), record)
+    await turn(SpawnedChildren, root, lambda: (root / "b.py").write_text("y = 2\n"), record)
     [baseline] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
     [read] = readings(record)
     assert baseline.facts["index"] == read.facts["index"] == "empty"
@@ -573,7 +580,7 @@ async def test_a_session_whose_directory_is_gone_is_not_logged_as_git_failing_to
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
     try:
-        await turn(tmp_path / "gone")
+        await turn(SpawnedChildren, tmp_path / "gone")
     finally:
         logger.remove(sink)
     assert errors == []
@@ -583,16 +590,17 @@ async def test_a_session_that_works_outside_a_repository_is_told_by_its_steps_al
     """[LAW:no-silent-failure] not every session is in a repository, and that is not a failure to report."""
     plain = tmp_path / "plain"
     plain.mkdir()
-    assert not await turn(plain, lambda: (plain / "a.txt").write_text("hello\n"))
+    assert not await turn(Programs({"git": OUTSIDE_A_REPOSITORY}), plain, lambda: (plain / "a.txt").write_text("hello\n"))
 
 
 async def test_a_directory_that_is_not_there_is_told_by_its_steps_alone(tmp_path: Path) -> None:
-    assert not await turn(tmp_path / "never-existed")
+    assert not await turn(Programs({"git": exited(128, err=b"fatal: cannot change to 'never-existed': No such file or directory\n")}), tmp_path / "never-existed")
 
 
 async def test_a_turn_stopping_with_no_baseline_before_it_reads_nothing(tmp_path: Path) -> None:
-    """The daemon started in the middle of a turn: there is no beginning to compare against, so there is no delta."""
-    deltas = patient(Deltas, lambda _entry: None)
+    """The daemon started in the middle of a turn: there is no beginning to compare against, so there is no delta, and no
+    git is asked: the fake stands in for none."""
+    deltas = patient(Deltas, lambda _entry: None, Programs())
     await deltas.compare(SID, again=False)
     assert not await deltas.taken(SID)
 
@@ -601,7 +609,7 @@ async def test_a_turn_stopping_with_no_baseline_before_it_reads_nothing(tmp_path
 async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     """A delta told is a delta spent; the next turn's is the next turn's."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
     await deltas.compare(SID, again=False)
@@ -620,7 +628,7 @@ async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path
     os.utime(root / "a.py", (second, second))
     git(root, "update-index", "--refresh")
     os.utime(root / ".git" / "index", (second, second))
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 3\n")
     os.utime(root / "a.py", (second, second))
@@ -631,7 +639,7 @@ async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path
 @pytest.mark.outside
 async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before(tmp_path: Path) -> None:
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
     await deltas.compare(SID, again=False)
@@ -648,7 +656,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
     """Another Stop hook blocked the first Stop and Claude went on, with no prompt to baseline from: the second part is read
     against where the first part's reading found the repository, so each change is told once."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first part\n")
     await deltas.compare(SID, again=False)
@@ -663,7 +671,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
 async def test_a_turn_no_prompt_baselined_is_not_read_against_where_the_turn_before_ended(tmp_path: Path) -> None:
     """Between the two, the user may have edited by hand or pulled for hours: none of it is this turn's."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("first turn\n")
     await deltas.compare(SID, again=False)
@@ -685,7 +693,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     from hands.core.session import Membership
 
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     sessions = new_sessions(clock=SYSTEM, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
 
@@ -706,7 +714,7 @@ async def test_a_baseline_that_would_cost_more_than_the_hook_can_afford_is_not_t
     """A prompt's hook waits on this one, and the shim gives up after two seconds and says it cannot reach
     the daemon — on every prompt and every stop. A repository too slow to baseline has its turn told without."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None, baselining=0.0)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren, baselining=0.0)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed\n")
     await deltas.compare(SID, again=False)
@@ -718,7 +726,7 @@ async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) ->
     """The turn's telling is queued right after this, and a reading that is slow, that fails, or whose hook
     gives up must cost the turn its delta and never its telling."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed by something\n")
     start = time.perf_counter()
@@ -735,13 +743,13 @@ SHUT_DOWN = """
 import asyncio, os, sys, time
 from pathlib import Path
 from hands.clock import SYSTEM
-from hands.sessions.child import Runner
+from hands.sessions.child import SpawnedChildren
 from hands.sessions.delta import Deltas
 
 root = Path(sys.argv[1])
 
 async def ends(after: float) -> None:
-    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, children=Runner(SYSTEM, lambda _entry: None))
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, children=SpawnedChildren(SYSTEM, lambda _entry: None))
     await deltas.snapshot("s", root)
     (root / "a.py").write_text(f"x = {after}\\n")
     await deltas.compare("s", again=False)
@@ -782,7 +790,7 @@ async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(
     """The narrator summarises one turn at a time and takes seconds over each, so a session can stop twice
     before the first is told. Told the newer delta, the first turn would be given results it never had."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
 
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
@@ -802,7 +810,7 @@ async def test_a_turn_that_stops_with_nothing_to_read_still_takes_its_place_in_t
     step. A stop that reads nothing must still leave something to take, or every later turn is told the one
     before's changes."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.compare(SID, again=False)  # no baseline: the daemon started in the middle of this turn
 
     await deltas.snapshot(SID, root)
@@ -856,7 +864,7 @@ async def test_a_repository_with_no_commit_yet_still_says_what_the_turn_did(tmp_
         git(root, "add", "-A")
         git(root, "commit", "-qm", "the very first commit")
 
-    delta = await turn(root, first)
+    delta = await turn(SpawnedChildren, root, first)
     assert [file.path for file in delta.files] == ["first.py"]
     assert [commit.subject for commit in delta.commits] == ["the very first commit"]
 
@@ -866,7 +874,7 @@ async def test_a_detached_head_is_read_like_any_other(tmp_path: Path) -> None:
     """What a bisect or a checkout of a bare sha leaves behind, which is a working state and not a broken one."""
     root = repo(tmp_path)
     git(root, "checkout", "-q", "--detach")
-    delta = await turn(root, lambda: (root / "b.py").write_text("y = 2\n"))
+    delta = await turn(SpawnedChildren, root, lambda: (root / "b.py").write_text("y = 2\n"))
     assert [file.path for file in delta.files] == ["b.py"]
 
 
@@ -886,7 +894,7 @@ async def test_a_baseline_that_ran_out_of_time_reading_where_it_stands_is_no_bas
 
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     # A repository whose tree takes everything the baseline was given, which is what a slow one really does. The deadline is
     # the only thing separating a repository with no commit from one git could not answer for, so this spends the baseline's
     # whole deadline rather than hand one command a shorter one.
@@ -916,7 +924,7 @@ class Unlocated(Deltas):
 async def test_a_snapshot_whose_index_git_would_not_locate_says_so_and_not_that_it_was_empty(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Unlocated, record.append)
+    deltas = patient(Unlocated, record.append, SpawnedChildren)
     await deltas.snapshot(SID, root)
     [baseline] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
     assert baseline.facts["index"] == "unlocated" and "index_error" not in baseline.facts
@@ -938,7 +946,7 @@ def piled(root: Path, count: int) -> None:
 async def test_a_turn_that_pulled_a_history_keeps_no_more_of_it_than_it_could_ever_say(tmp_path: Path) -> None:
     """A pull or a rebase brings commits by the hundred, and every one of them was held, whole, until told."""
     root = repo(tmp_path)
-    delta = await turn(root, lambda: piled(root, MOST_COMMITS + 5))
+    delta = await turn(SpawnedChildren, root, lambda: piled(root, MOST_COMMITS + 5))
     assert len(delta.commits) == MOST_COMMITS
 
 
@@ -953,7 +961,7 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
     """
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Deltas, record.append)
+    deltas = patient(Deltas, record.append, SpawnedChildren)
     for n in range(HELD + 2):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
@@ -991,7 +999,7 @@ class Endless(Deltas):
 async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Exploding, record.append)
+    deltas = patient(Exploding, record.append, SpawnedChildren)
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -1011,7 +1019,7 @@ async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_w
     """The tree side would otherwise run on after the reading ended, and add what it found to an event already written."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Unforged, record.append)
+    deltas = patient(Unforged, record.append, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("x = 2\n")
     await deltas.compare(SID, again=False)
@@ -1034,7 +1042,7 @@ class Halted(Deltas):
 async def test_a_reading_whose_one_side_is_cancelled_is_a_cancelled_reading_and_not_a_failed_one(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Halted, record.append)
+    deltas = patient(Halted, record.append, SpawnedChildren)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
@@ -1060,7 +1068,7 @@ async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it
     root = published(tmp_path)
     forge(tmp_path, monkeypatch, "[]")
     record: list[Entry] = []
-    deltas = patient(Unmade, record.append)
+    deltas = patient(Unmade, record.append, SpawnedChildren)
     await deltas.snapshot(SID, root)
     git(root, "checkout", "-q", "-b", "fix")
     git(root, "push", "-q", "-u", "origin", "fix")
@@ -1075,7 +1083,7 @@ async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it
 async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Endless, record.append)
+    deltas = patient(Endless, record.append, SpawnedChildren)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
@@ -1090,7 +1098,7 @@ async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(t
 async def test_a_reading_cancelled_before_it_ever_ran_leaves_no_capture_for_the_next_turn_to_wait_on(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Deltas, record.append)
+    deltas = patient(Deltas, record.append, SpawnedChildren)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
@@ -1137,7 +1145,7 @@ async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_com
         git(root, "commit", "-q", "--allow-empty", "-m", f"made long before this turn {n}")
     stood = (root / ".git" / "HEAD").read_text()
 
-    deltas = patient(Torn, lambda _entry: None)
+    deltas = patient(Torn, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / ".git" / "HEAD").write_text(stood)  # the checkout finished, and the repository reads again
     (root / "during.py").write_text("the turn's own work\n")
@@ -1149,7 +1157,7 @@ async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_com
 async def test_a_turn_that_changed_more_lines_than_can_be_kept_is_told_by_its_files(tmp_path: Path) -> None:
     """git hands back a whole diff before a character of it is cut, and a generated file has no other bound."""
     root = repo(tmp_path)
-    delta = await turn(root, lambda: (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10)))
+    delta = await turn(SpawnedChildren, root, lambda: (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10)))
     assert [file.path for file in delta.files] == ["generated.csv"]
     assert not delta.patch
 
@@ -1174,7 +1182,7 @@ async def test_a_commit_is_still_told_when_the_tree_it_left_behind_cannot_be_rea
     reading's deadline on a large repository — so the commits are read first and kept whatever the tree does.
     """
     root = repo(tmp_path)
-    deltas = patient(Blind, lambda _entry: None)
+    deltas = patient(Blind, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "b.py").write_text("y = 2\n")
     git(root, "add", "-A")
@@ -1206,7 +1214,7 @@ async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unre
     much is still told.
     """
     root = repo(tmp_path)
-    deltas = patient(Uncounted, lambda _entry: None)
+    deltas = patient(Uncounted, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "generated.csv").write_text("n,x\n" * (MOST_LINES + 10))
     git(root, "add", "-A")
@@ -1223,7 +1231,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     """The next prompt's hook landed before the record of p1's interrupt was read. p1 is compared there, before p2 is
     baselined, so p2 is told only what p2 changed."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     sessions = new_sessions(clock=SYSTEM, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
@@ -1244,7 +1252,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
 async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_changed(tmp_path: Path) -> None:
     """hands-status-bpp.44l: no prompt of its own baselines it, so p1's Stop does, while its hook holds Claude Code."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     sessions = new_sessions(clock=SYSTEM, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=0.5))
@@ -1343,7 +1351,7 @@ async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_l
     """The narrator waits its patience and no longer, and the reading it stopped waiting on is not its to end."""
     root = repo(tmp_path)
     clock = RealWall()
-    deltas = patient(Endless, lambda _entry: None, clock)
+    deltas = patient(Endless, lambda _entry: None, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     taking = asyncio.create_task(deltas.taken(SID))
@@ -1469,7 +1477,7 @@ async def test_the_next_prompt_waits_on_the_end_of_the_turn_before_it_so_each_tu
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
     ending = deltas.hold("standing")
@@ -1492,7 +1500,7 @@ async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
     git(root, "add", "-A")
@@ -1521,7 +1529,7 @@ async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_pa
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     first = deltas.hold("standing")
@@ -1545,7 +1553,7 @@ async def test_a_turn_no_hook_opened_has_no_capture_for_the_next_prompt_to_wait_
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
     ending = deltas.hold("standing")
@@ -1565,7 +1573,7 @@ async def test_a_turn_a_daemon_started_in_the_middle_of_has_no_capture_for_the_t
     """Its Stop, with words waiting behind it: it is compared, then the turn the words run as is baselined."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Deltas, record.append)
+    deltas = patient(Deltas, record.append, SpawnedChildren)
     await deltas.compare(SID, again=False)
     await deltas.snapshot(SID, root)
 
@@ -1577,7 +1585,7 @@ async def test_a_turn_a_daemon_started_in_the_middle_of_has_no_capture_for_the_t
 async def test_a_dropped_reading_has_no_capture_and_no_part_going_on_is_read_against_it(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Deltas, record.append)
+    deltas = patient(Deltas, record.append, SpawnedChildren)
     for n in range(HELD + 1):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
@@ -1599,7 +1607,7 @@ async def test_a_dropped_reading_has_no_capture_and_no_part_going_on_is_read_aga
 async def test_a_dropped_turn_spends_its_baseline_so_a_turn_after_it_no_prompt_baselined_reads_nothing(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Deltas, record.append)
+    deltas = patient(Deltas, record.append, SpawnedChildren)
     for n in range(HELD + 1):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
@@ -1618,7 +1626,7 @@ async def test_a_turn_no_prompt_baselined_takes_its_own_place_between_the_turns_
     """A telling takes the oldest place in the order, and that is all that pairs it with its turn: the turn with nothing
     to read takes one too, or it is handed the next turn's files."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
     await deltas.compare(SID, again=False)
@@ -1636,7 +1644,7 @@ async def test_dropped_turns_are_told_without_a_delta_and_the_turn_after_them_wi
     """The narrator tells one turn, which makes room, before the two dropped turns are told: each dropped turn still has
     its place, so the turn after them is not told as either."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, SpawnedChildren)
     for n in range(HELD + 2):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
@@ -1653,7 +1661,7 @@ async def test_dropped_turns_are_told_without_a_delta_and_the_turn_after_them_wi
 async def test_a_daemon_no_narrator_takes_from_holds_no_more_places_however_many_turns_stop(tmp_path: Path) -> None:
     """A daemon whose voice never loaded has no narrator, so no turn is ever taken: turns outside a repository, each
     unbaselined, take no more room for it than one does."""
-    deltas = patient(Deltas, lambda _entry: None)
+    deltas = patient(Deltas, lambda _entry: None, Programs({"git": OUTSIDE_A_REPOSITORY}))
     before = unread_places()
     for _ in range(100):
         await deltas.snapshot(SID, tmp_path)
@@ -1681,7 +1689,7 @@ async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_n
     git(other, "commit", "-q", "--allow-empty", "-m", "someone else's")
     git(other, "push", "-q")
     clock = RealWall()
-    deltas = patient(Stalled, lambda _entry: None, clock)
+    deltas = patient(Stalled, lambda _entry: None, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     git(root, "fetch", "-q")
     moving = deltas.hold("moved")
@@ -1710,7 +1718,7 @@ async def test_a_pull_request_opened_as_the_turn_ended_is_the_turns_on_a_forge_w
         # Stamped a second ahead of this machine as the turn ends, which is inside SKEW.
         answering(tmp_path, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC) + timedelta(seconds=1))}"}}]')
 
-    delta = await turn(root, open_one)
+    delta = await turn(SpawnedChildren, root, open_one)
     assert PullRequested(7, "https://x/7", "created") in delta.changes
 
 
@@ -1719,7 +1727,7 @@ async def test_a_pull_request_opened_after_the_turn_ended_is_not_the_turns(tmp_p
     """The forge is asked once the reading gets to it, by which time the next turn may have opened one from the same branch."""
     root = published(tmp_path)
     asked = forge(tmp_path, monkeypatch, f'[{{"number": 8, "url": "https://x/8", "createdAt": "{stamp(datetime.now(UTC) + timedelta(minutes=5))}"}}]')
-    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
+    delta = await turn(SpawnedChildren, root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
     assert asked.exists()
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
 
@@ -1740,7 +1748,7 @@ class Fallen(Deltas):
 async def test_a_capture_that_raised_is_waited_on_by_no_turn_after_it(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Fallen, record.append)
+    deltas = patient(Fallen, record.append, SpawnedChildren)
     await deltas.snapshot(SID, root)
     deltas.falls = True
     await deltas.compare(SID, again=False)
@@ -1759,7 +1767,7 @@ async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_agains
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     tree = deltas.hold("tree")
@@ -1785,7 +1793,7 @@ async def test_a_part_going_on_that_began_reading_before_the_next_turn_overtook_
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     tree = deltas.hold("tree")
@@ -1812,7 +1820,7 @@ async def test_a_capture_the_next_turn_overtook_is_not_waited_on_again(tmp_path:
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     ending = deltas.hold("standing")
     await deltas.compare(SID, again=False)
@@ -1833,7 +1841,7 @@ async def test_a_part_going_on_after_a_blocked_stop_captures_its_end_while_the_p
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
-    deltas = patient(Stalled, record.append, clock)
+    deltas = patient(Stalled, record.append, SpawnedChildren, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     tree = deltas.hold("tree")

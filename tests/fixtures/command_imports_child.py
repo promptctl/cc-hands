@@ -13,10 +13,9 @@ import sys
 from typing import TYPE_CHECKING
 
 from clocks import Interrupting
-from fakemachine import UNMANAGED
+from onthemachine import main_on_the_machine
 from standins import replace
 
-from hands.daemon import cli
 from hands.virtualclock import VirtualClock
 
 # Only what each command loads itself is loaded here: a stand-in's module is imported where the stand-in is put in place.
@@ -63,7 +62,7 @@ def main() -> None:
             pass
     # [LAW:dataflow-not-control-flow] every command on the one clock, so `log`, which follows until Ctrl-C, ends where any
     # command that waits would.
-    code = cli.main(["--home", home, command], Interrupting(VirtualClock()), machine=UNMANAGED, processes=cli.KERNEL, indicators=cli.SpawnedIndicators())
+    code = main_on_the_machine(["--home", home, command], Interrupting(VirtualClock()))
     with open(out, "w") as file:
         json.dump({"code": code, "loaded": sorted({module.split(".")[0] for module in sys.modules} & {"pipecat", "torch", "cryptography"})}, file)
 

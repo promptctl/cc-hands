@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 
 from childrencontract import VARIABLE, ChildrenContract
-from fakechildren import NOT_THERE, Answers, Asked, FakeChildren, Hung, Refused, exited
-from hands.sessions.child import Outcome
+from fakechildren import NOT_THERE, Answer, Answers, Asked, FakeChildren, Hung, Refused, exited
 from hands.virtualclock import VirtualClock
 
 
@@ -32,7 +31,7 @@ class Fake:
         return name
 
     def echoing(self, name: str) -> str:
-        async def echoes(asked: Asked) -> Outcome:
+        async def echoes(asked: Asked) -> Answer:
             env = asked.env or {}
             told = f"{asked.cwd}\n{env.get(VARIABLE, '')}\n{env.get('TRACEPARENT', '')}\n".encode()
             return exited(0, told + (asked.given or b""))

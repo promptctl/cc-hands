@@ -60,7 +60,7 @@ from hands.sessions.hookconfig import BRAIN_HOOKS, BRAIN_REPLY_BY_SECONDS, TAKE_
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import parse_pid
-from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, Runner, Starter, Unreaped, said
+from hands.sessions.child import Children, Exited, Lost, NeverStarted, Ran, SpawnedChildren, Starter, Unreaped, said
 from hands.sessions.files import replace_whole
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.core.tmux import Unanswered
@@ -652,7 +652,7 @@ def login(children: Children, config_dir: Path, pin: pinned.Pin, machine: config
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
     # [LAW:single-enforcer] exception: run in hands' own process group, the terminal's foreground job, so it reads the
-    # keyboard the person logging in types at; a session of its own, as the runner starts each child in, has no terminal.
+    # keyboard the person logging in types at; a session of its own, as SpawnedChildren starts each child in, has no terminal.
     import subprocess
 
     signed = subprocess.run([claude, *argv], cwd=workdir(config_dir), env=environment(config_dir, route, inherited))
@@ -2149,9 +2149,9 @@ async def start(clock: Clock, launch: Launch, session: BrainSession, record: Rec
         # [LAW:single-enforcer] one bound on the whole launch, from the spawn to its own start.
         by = clock.now() + START_SECONDS
         try:
-            # [LAW:effects-at-boundaries] exception: the brain builds the Runner it starts its pane with, where it is to
+            # [LAW:effects-at-boundaries] exception: the brain builds the SpawnedChildren it starts its pane with, where it is to
             # be handed one, until promptctl-testing-c3u.fhu.
-            running = await in_tmux(Runner(clock, record), station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
+            running = await in_tmux(SpawnedChildren(clock, record), station, launch.account, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, url)], sockets)
             annotate(tmux_session=brain_session(station.config_dir))
             typist, wrapper, shell = await _until(clock, running, by, partial(_typist, running, sockets))
             annotate(pid=wrapper)

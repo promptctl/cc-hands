@@ -20,9 +20,9 @@ from typing import Any, TextIO
 
 import pytest
 
-from conftest import runner_on, standin
+from conftest import spawned_on, standin
 from fakeparties import main_on_fakes
-from fakechildren import exited
+from fakechildren import Asked, FakeChildren, exited
 from fakeprocesses import FakeProcesses, Running, processes
 from hands.sessions.processes import Processes
 from hands.brain.process import PLUGIN
@@ -30,6 +30,7 @@ from hands.clock import Clock, SYSTEM
 from hands.daemon import cli, update
 from hands.daemon.restart import Outcome, Restarted, reply
 from hands.daemon.starting import invocation
+from hands.virtualclock import VirtualClock
 from hands.sessions import child
 from hands.sessions.child import Children
 from hands.daemon.update import Failed, Installed, Step, Taken, Unfinished
@@ -109,6 +110,13 @@ def expected(home: Home, work: Path) -> list[tuple[tuple[str, ...], Path]]:
 
 def events(home: Home) -> list[dict[str, Any]]:
     return [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line.get("event") == "hands.command"]
+
+
+def test_each_command_of_an_update_runs_where_no_git_asks_for_a_login(tmp_path: Path) -> None:
+    # The brain's terminal, where an update runs, has nobody at it: a fetch refused would wait on a prompt to its limit.
+    children = FakeChildren(VirtualClock(), {"git": exited(0, b"fetched\n")})
+    assert update.run(children, ["git", "fetch"], tmp_path, {"HOME": "/Users/someone"}, 30.0) == exited(0, b"fetched\n")
+    assert children.asked == [Asked(("git", "fetch"), tmp_path, {"HOME": "/Users/someone", "GIT_TERMINAL_PROMPT": "0"}, None, 30.0)]
 
 
 def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Path) -> None:
@@ -288,7 +296,6 @@ def test_an_update_of_a_checkout_that_fails_after_its_sync_says_the_checkout_is_
 # commands are stood in for, each logged to a file, so nothing is fetched or installed.
 CALLER = """
 import json, sys
-from hands.brain import configdir
 from hands.daemon import cli, update
 from hands.sessions import child
 
@@ -309,8 +316,9 @@ def run(children, argv, cwd, env, limit):
     return exited("")
 
 update.run = run
-# As hands' entry point starts it: an update reads no policy of the machine's, so the machine's own is named.
-sys.exit(cli.main(["--home", home, "update"], machine=configdir.this_machine(), processes=cli.KERNEL, indicators=cli.SpawnedIndicators()))
+# As hands' entry point starts it, on every party the entry binds.
+sys.argv[1:] = ["--home", home, "update"]
+sys.exit(cli.entry())
 """
 
 
@@ -590,7 +598,7 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
 @pytest.mark.outside
 def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> None:
     # A warning uv or git prints is never taken for the path or the commit the update reads.
-    ran = update.run(runner_on(SYSTEM), [sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ, 60)
+    ran = update.run(spawned_on(SYSTEM), [sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ, 60)
     assert ran == exited(0, b"/tools\n", b"warning: stale\n")
 
 

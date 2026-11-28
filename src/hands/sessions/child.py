@@ -22,7 +22,7 @@ import os
 import queue
 import select
 import signal
-# [LAW:single-enforcer] exception: the runner's own start, the one every other child of hands goes through.
+# [LAW:single-enforcer] exception: SpawnedChildren's own start, the one every other child of hands goes through.
 import subprocess
 import tempfile
 import threading
@@ -544,7 +544,7 @@ def _as(env: Mapping[str, str] | Traced | None, clock: Clock) -> tuple[wide.Begu
 
 class Children(Protocol):
     """[LAW:effects-at-boundaries] what runs hands' children to their ends, each one's limit measured on `clock`: the
-    Runner, and a fake of it in tests (tests/fakechildren.py), the two held to one contract (tests/childrencontract.py)."""
+    SpawnedChildren, and a fake of it in tests (tests/fakechildren.py), the two held to one contract (tests/childrencontract.py)."""
 
     @property
     def clock(self) -> Clock: ...
@@ -562,15 +562,22 @@ class Children(Protocol):
 
 class Starter(Children, Protocol):
     """[LAW:types-are-the-program] Children that also start a child to run on with no limit of its own, as a terminal's
-    program does: the Runner alone, so code that runs its children to their ends takes Children, which a fake can be."""
+    program does: SpawnedChildren alone, so code that runs its children to their ends takes Children, which a fake can be."""
 
     def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
         """Start `argv` to run until it ends or is stopped, from a coroutine."""
         ...
 
 
+# [LAW:effects-at-boundaries] what makes the Children a unit runs on, on the unit's own clock and with its children's
+# events leaving through the unit's own emit: SpawnedChildren itself, bound at the root (hands.daemon.cli.entry), and a
+# fake's maker in tests. A unit given one has one clock, its own, for its children too.
+type ChildrenOn = Callable[[Clock, Callable[[wide.WideEvent], None]], Children]
+type StarterOn = Callable[[Clock, Callable[[wide.WideEvent], None]], Starter]
+
+
 @dataclass(frozen=True)
-class Runner:
+class SpawnedChildren:
     """The Starter hands runs on: each child a process the OS starts, made from its caller's one clock, which measures
     every child's limit, and the edge its caller's events leave through, which its children's events leave through too."""
 

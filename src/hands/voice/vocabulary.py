@@ -49,7 +49,7 @@ class Lexicon:
 
     def __init__(self, sessions: Sessions, children: Children, home: Home, environment: Mapping[str, str], record: Record) -> None:
         self._sessions = sessions
-        # What runs git, on the clock the sessions' reads are timed on.
+        # What runs git, on the clock the reading is timed on.
         self._children = children
         self._home = home
         # The daemon's environment, which git is found and run in.
@@ -57,7 +57,7 @@ class Lexicon:
         self._record = record
 
     async def __call__(self) -> str | None:
-        clock = self._sessions.clock
+        clock = self._children.clock
         began = clock.now()
         # Read off the loop: a name is read from its session's transcript.
         listings = await asyncio.to_thread(self._sessions.live)

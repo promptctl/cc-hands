@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from conftest import SYSTEM_PATH
+from fakechildren import NOT_THERE, Programs
 from fakeparties import main_on_fakes
 from loguru import logger
 
@@ -113,7 +114,7 @@ def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.C
     home = Home(tmp_path / "home")
     # Nothing installed, neither hands nor Claude Code, so what the check finds is the same on every machine.
     monkeypatch.setenv("PATH", SYSTEM_PATH)
-    code = main_on_fakes(["--home", str(home.root), "check", "-v"])
+    code = main_on_fakes(["--home", str(home.root), "check", "-v"], children_on=Programs({"claude": NOT_THERE}))
     # A finding's indented lines continue the one above them: its mark and step, then what is said of it in full.
     printed = [block.split("\n") for block in re.split(r"\n(?! )", capsys.readouterr().out.rstrip("\n"))]
     # Beside the event of each child the check asked.

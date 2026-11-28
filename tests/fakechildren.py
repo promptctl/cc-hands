@@ -1,24 +1,27 @@
 """Children as values: the programs a test stands in for, each answering the runs of it, and no process started
-(hands.sessions.child.Children). tests/childrencontract.py holds it to the Runner."""
+(hands.sessions.child.Children). tests/childrencontract.py holds it to SpawnedChildren. A child started to run on, on a
+terminal, is SpawnedChildren's alone: on a terminal a missing program is a shell that starts and exits 127, where a run's
+is never started, so only a process the OS runs answers a start as SpawnedChildren does."""
 
 import asyncio
 import errno
 import os
 import queue
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from hands.clock import Clock, wait_all
-from hands.sessions.child import Captured, Command, Exited, Kill, Killed, Limit, Lost, NeverStarted, Outcome, Ran, Traced, Unreaped
+from hands.sessions import wide
+from hands.sessions.child import Captured, Command, Exited, Kill, Killed, Limit, Lost, NeverStarted, Outcome, Ran, Running, Stdio, Traced, Unreaped
 from hands.tasks import cancel_and_wait
 
 
 @dataclass(frozen=True)
 class Asked:
     """A run, as its program is handed it: its argv, the directory and the environment it runs in (a traced run's with
-    its TRACEPARENT), what is on its stdin, and the limit it is held to. [LAW:single-enforcer] refused as the Runner
-    refuses a run, by the same Command and Limit, so no run is asked that the Runner would not start."""
+    its TRACEPARENT), what is on its stdin, and the limit it is held to. [LAW:single-enforcer] refused as SpawnedChildren
+    refuses a run, by the same Command and Limit, so no run is asked that SpawnedChildren would not start."""
 
     argv: tuple[str, ...]
     cwd: Path | None
@@ -52,16 +55,21 @@ class Hung:
     err: bytes = b""
 
 
+# [LAW:one-source-of-truth] how a run of a program a test stands in for ends: a run that never started given by the errno
+# the OS refuses it with alone, so NeverStarted is the fake's to make, as the OS's refusal is SpawnedChildren's.
+type Answer = Ran | Unreaped | Lost | Refused
+
+
 @dataclass(frozen=True)
 class Answers:
-    """A program whose every run is the outcome `answer` makes of it, in the time the answer takes: killed at its limit
-    where the answer outlasts it, as the Runner kills a run."""
+    """A program whose every run ends as `answer` says of it, in the time the answer takes: killed at its limit where
+    the answer outlasts it, as SpawnedChildren kills a run."""
 
-    answer: Callable[[Asked], Awaitable[Outcome]]
+    answer: Callable[[Asked], Awaitable[Answer]]
 
 
-# A program a test stands in for: the outcome every run of it ends in, or one of the ways a program behaves above.
-type Program = Outcome | Refused | Hung | Answers
+# A program a test stands in for: how every run of it ends, or one of the ways a program behaves above.
+type Program = Answer | Hung | Answers
 
 
 def exited(code: int, out: bytes = b"", err: bytes = b"") -> Ran:
@@ -82,7 +90,7 @@ class FakeChildren:
     async def run(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | Traced | None = None, given: bytes | None = None) -> Outcome:
         asked, program = self._asked(Asked(argv, cwd, env.handed if isinstance(env, Traced) else env, given, limit))
         match program:
-            case Ran() | NeverStarted() | Unreaped() | Lost() | Refused():
+            case Ran() | Unreaped() | Lost() | Refused():
                 return _at_once(asked, program)
             case Hung(out=out, err=err):
                 await self.clock.sleep(limit)
@@ -92,7 +100,7 @@ class FakeChildren:
                 try:
                     await wait_all(self.clock, (answering,), limit)
                     if answering.done():
-                        return answering.result()
+                        return _at_once(asked, answering.result())
                 finally:
                     # Cancelled, or past its limit: what the program was doing is ended with its run.
                     await cancel_and_wait(answering)
@@ -101,17 +109,20 @@ class FakeChildren:
     def run_blocking(self, *argv: str, limit: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Outcome:
         asked, program = self._asked(Asked(argv, cwd, env, None, limit))
         match program:
-            case Ran() | NeverStarted() | Unreaped() | Lost() | Refused():
+            case Ran() | Unreaped() | Lost() | Refused():
                 return _at_once(asked, program)
             case Hung(out=out, err=err):
-                # The calling thread waits the limit out, as it does on the Runner: on a virtual clock, at once.
+                # The calling thread waits the limit out, as it does on SpawnedChildren: on a virtual clock, at once.
                 try:
                     self.clock.take(queue.SimpleQueue[None](), limit)
                 except queue.Empty:
                     pass
                 return _killed(limit, out, err)
             case Answers():
-                raise AssertionError(f"{asked.argv[0]} answers a run in a coroutine, which a blocking run cannot wait on: give it as the Outcome it ends in")
+                raise AssertionError(f"{asked.argv[0]} answers a run in a coroutine, which a blocking run cannot wait on: give it as the Answer it ends in")
+
+    def start(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str], stdio: Stdio) -> Running | NeverStarted:
+        raise AssertionError(f"a fake starts no child to run on, as {argv[0]!r}: a test of what starts one is SpawnedChildren's, outside")
 
     def _asked(self, asked: Asked) -> tuple[Asked, Program]:
         self.asked.append(asked)
@@ -120,9 +131,28 @@ class FakeChildren:
         return asked, program
 
 
-def _at_once(asked: Asked, program: Ran | NeverStarted | Unreaped | Lost | Refused) -> Outcome:
-    """The outcome of a run of a program that ends as it is run."""
-    match program:
+class Programs:
+    """[LAW:effects-at-boundaries] what makes each unit's children in a test, as SpawnedChildren is made at the root: a
+    FakeChildren on the unit's own clock, answering `programs`, each kept in `made`, oldest first."""
+
+    def __init__(self, programs: Mapping[str, Program] | None = None) -> None:
+        self.programs = dict(programs or {})
+        self.made: list[FakeChildren] = []
+
+    def __call__(self, clock: Clock, emit: Callable[[wide.WideEvent], None]) -> FakeChildren:
+        made = FakeChildren(clock, self.programs)
+        self.made.append(made)
+        return made
+
+    @property
+    def asked(self) -> list[Asked]:
+        """Every run the children it made were asked, theirs in the order they were made."""
+        return [asked for made in self.made for asked in made.asked]
+
+
+def _at_once(asked: Asked, answer: Answer) -> Outcome:
+    """The outcome of a run that ends as `answer` says."""
+    match answer:
         case Refused(errno=code):
             # [LAW:one-source-of-truth] the OSError the OS's code makes, FileNotFoundError for ENOENT among them.
             return NeverStarted(OSError(code, os.strerror(code), asked.argv[0]))

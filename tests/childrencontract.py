@@ -1,5 +1,5 @@
-"""The contract every Children keeps, run against the fake (test_children_contract.py) and the Runner, starting real
-programs (test_children_contract_runner.py): a run ends as its program did, handed what it was given, and held to its
+"""The contract every Children keeps, run against the fake (test_children_contract.py) and SpawnedChildren, starting real
+programs (test_children_contract_spawned.py): a run ends as its program did, handed what it was given, and held to its
 limit, with what it wrote by then; a program that is not there, or cannot be run, never starts; and what no OS can be
 handed is refused before anything runs."""
 

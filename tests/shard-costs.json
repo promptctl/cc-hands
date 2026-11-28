@@ -50,7 +50,7 @@
   "tests/test_attention.py::test_a_file_holding_anything_but_settings_is_refused_and_a_kind_never_written_is_at_its_default": 0.06,
   "tests/test_audit.py::test_the_log_never_holds_more_than_two_segments_of_the_bound": 0.07,
   "tests/test_audit.py::test_writers_in_many_threads_roll_one_log_with_no_segment_overlapping_another": 0.08,
-  "tests/test_child.py::test_hands_starts_no_child_but_through_the_runner_or_a_start_marked_with_its_owner": 1.45,
+  "tests/test_child.py::test_hands_starts_no_child_but_through_its_spawned_children_or_a_start_marked_with_its_owner": 1.45,
   "tests/test_ci_skips.py::test_a_module_skipped_in_ci_fails_the_run_with_its_reason": 0.12,
   "tests/test_clipowner.py::test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_queued_behind_a_hung_one_fails": 0.12,
   "tests/test_clipowner.py::test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_hears_on": 0.11,

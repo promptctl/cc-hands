@@ -21,7 +21,7 @@ import pytest
 from hands.clock import SYSTEM
 from hands.core.effects import Fritter, Writer
 from hands.core.tmux import Pane
-from hands.sessions.child import Runner
+from hands.sessions.child import SpawnedChildren
 from hands.sessions.panes import socket_directory
 from hands.sessions.terminals import Opened, Unopened, Untyped
 from hands.sessions.tmux import TYPING, TmuxExit, TmuxTerminals, ran_at
@@ -66,7 +66,7 @@ class Tmux:
         self._tmux = tmux
         # A server started with no config of the user's: none under this home, nor under its XDG one. Outside tmux.
         self._environment = {"PATH": os.environ["PATH"], "TMUX_TMPDIR": str(root), "HOME": str(root), "XDG_CONFIG_HOME": str(root), "TERM": "xterm-256color"}
-        self.terminals = TmuxTerminals(Runner(SYSTEM, lambda _: None), Path(tmux), PATIENT, PATIENT)
+        self.terminals = TmuxTerminals(SpawnedChildren(SYSTEM, lambda _: None), Path(tmux), PATIENT, PATIENT)
         self.fritters = FritterSockets(PATIENT)
         self._names = count()
         # Where each window's program records, by its pane, and each fritter's, by its address.
@@ -140,7 +140,7 @@ class Tmux:
         server = int(self._ask("display-message", "-p", "#{pid}").strip())
         os.kill(server, signal.SIGSTOP)
         self._stopped.append(server)
-        self.terminals = TmuxTerminals(Runner(SYSTEM, lambda _: None), Path(self._tmux), AT_ONCE, AT_ONCE)
+        self.terminals = TmuxTerminals(SpawnedChildren(SYSTEM, lambda _: None), Path(self._tmux), AT_ONCE, AT_ONCE)
 
     async def wrapped(self) -> Fritter:
         at = self._root / f"f{next(self._names)}"
@@ -244,7 +244,7 @@ class TestTmuxTerminals(TerminalsContract):
 async def test_tmux_stops_a_list_at_its_first_failure_having_printed_what_ran_before_it(world: Tmux) -> None:
     # What TmuxTerminals.type tells a typing that failed after a key from one that failed before any by: TYPING printed.
     window = await world.window("play")
-    tmux, children = shutil.which("tmux"), Runner(SYSTEM, lambda _: None)
+    tmux, children = shutil.which("tmux"), SpawnedChildren(SYSTEM, lambda _: None)
     assert tmux is not None
     partway = await ran_at(children, Path(tmux), world.socket, ["display-message", "-p", TYPING, ";", "paste-buffer", "-b", "hands-none", "-t", window.pane, ";", "send-keys", "-t", window.pane, "Enter"], PATIENT)
     before = await ran_at(children, Path(tmux), world.socket, ["send-keys", "-t", "%999999", "-l", "", ";", "display-message", "-p", TYPING], PATIENT)
@@ -264,7 +264,7 @@ async def test_tmux_opens_no_window_where_its_socket_directory_is_one_another_us
         shared.chmod(0o777)
         tmux = shutil.which("tmux")
         assert tmux is not None
-        match await TmuxTerminals(Runner(SYSTEM, lambda _: None), Path(tmux), PATIENT, PATIENT).open("work", root, ("true",), {}, {"PATH": os.environ["PATH"], "TMUX_TMPDIR": str(root), "HOME": str(root)}):
+        match await TmuxTerminals(SpawnedChildren(SYSTEM, lambda _: None), Path(tmux), PATIENT, PATIENT).open("work", root, ("true",), {}, {"PATH": os.environ["PATH"], "TMUX_TMPDIR": str(root), "HOME": str(root)}):
             case Unopened(reason=reason):
                 assert "unsafe permissions" in reason
             case other:

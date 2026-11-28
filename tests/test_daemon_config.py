@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import LOGGED_IN, runner_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
+from conftest import LOGGED_IN, spawned_on, laid_out, new_sessions, onboard, patiently, pin, shell_without_hands_settings
 from fakeparties import main_on_fakes
 from fakechildren import FakeChildren, exited
 from fixtures.fakemachine import UNMANAGED
@@ -39,7 +39,8 @@ from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.hookconfig import DISPLAY_PATH
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.sessions.processes import Processes
+from hands.sessions.child import ChildrenOn, SpawnedChildren
+from hands.sessions.processes import Processes, parse_pid
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
@@ -71,7 +72,7 @@ def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: P
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[talk]\npersonality = """\n  Dry and wry.\n"""\n')
-    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.personality == "Dry and wry."
+    assert run.configured_from(spawned_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.personality == "Dry and wry."
     # Left out, hands comes across as its own.
     assert config.parse("").personality is None
 
@@ -102,7 +103,7 @@ def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
-    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+    assert run.configured_from(spawned_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings())).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
 
 
 @pytest.mark.parametrize(
@@ -179,7 +180,7 @@ def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
     with pytest.raises(CannotStart, match="`hands login` gives it one"):
-        run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings()))
+        run.configured_from(spawned_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, shell_without_hands_settings()))
 
 
 def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file(tmp_path: Path) -> None:
@@ -195,8 +196,8 @@ def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(runner_on(SYSTEM), Claude(), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
-    assert backend(runner_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == "claude-opus-5-5"
+    assert backend(spawned_on(SYSTEM), Claude(), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)) == ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=home.brain, account=Account("claude.ai", "brain@example.com"), brain=Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
+    assert backend(spawned_on(SYSTEM), Claude(model="claude-opus-5-5"), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == "claude-opus-5-5"
 
 
 @pytest.mark.outside
@@ -204,7 +205,7 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fa
 def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
-    assert backend(runner_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == model
+    assert backend(spawned_on(SYSTEM), Claude(model=model), home, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None)).model == model
 
 
 def test_a_claude_model_not_on_offer_is_refused_as_the_file_is_parsed() -> None:
@@ -286,7 +287,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given_listening_at_t
     def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
-    def loaded(clock: Clock, _processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, _processes: Processes, _children_on: ChildrenOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start, listening: Listening, driving: Driving) -> cli.Run:
         loaded_on.append(settings.model)
         started.append((listening.level, driving.last_chosen))
 
@@ -343,7 +344,7 @@ def test_a_restart_naming_no_pid_an_indicator_could_have_is_refused_as_the_comma
 def test_a_restart_that_names_no_level_comes_back_at_off_as_one_exec_d_by_a_hands_from_before_the_level_was_carried() -> None:
     # The first restart onto this hands is exec'd by the one before it, which passed no --level: neither refused, which
     # would leave hands down, nor taken for a level given, since its start says level_flag None.
-    assert cli.handed_over(argparse.ArgumentParser(), 42, None) == Handover(42, "off")
+    assert cli.handed_over(argparse.ArgumentParser(), parse_pid(42), None) == Handover(parse_pid(42), "off")
     assert cli.handed_over(argparse.ArgumentParser(), None, None) is None
 
 
@@ -376,7 +377,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(Rejected, match="`hands login` gives it one"):
-        backend(runner_on(SYSTEM), Claude(), HOME, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
+        backend(spawned_on(SYSTEM), Claude(), HOME, os.environ, Runnable(PinnedClaude(fake_claude, pinned.PIN.version), None))
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
@@ -490,7 +491,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     levels = Levels("off")
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, processes(), runner_on(SYSTEM), FakeTerminals(), FakeFritters(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, UNMANAGED, run_start, config.OwnModel(home, LAID_OUT, UNMANAGED, {}, _NO_FILE), SYSTEM, levels, levels)
+            await run.run(refused, lambda _: None, processes(), SpawnedChildren, FakeTerminals(), FakeFritters(), FakeScreen(FrontUnread("no screen in tests")), home, heart, recorded.append, lambda: (), Stop(), False, {}, LAID_OUT, UNMANAGED, run_start, config.OwnModel(home, LAID_OUT, UNMANAGED, {}, _NO_FILE), SYSTEM, levels, levels)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -518,11 +519,11 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     # Exported in the process, so the refusal is of what `main` hands down to the run, not of an environment the test makes up.
     monkeypatch.setenv("HANDS_LLM", "claude")
 
-    def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
+    def loaded(clock: Clock, processes: Processes, children_on: ChildrenOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start, _listening: Listening, _driving: Driving) -> cli.Run:
         sessions = new_sessions(clock=SYSTEM, record=record)
 
         async def refused(stop: Stop) -> Ended:
-            configure = partial(run.configured_from, FakeChildren(clock), home, settings)
+            configure = partial(run.configured_from, children_on(clock, record), home, settings)
             await start(lambda: run.configured(configure, lambda _: None, processes, home, pin, UNMANAGED, environment, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
@@ -614,19 +615,19 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
     brain = pin(home.brain, fake_claude)
-    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "charles"
+    assert run.configured_from(spawned_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "charles"
     assert "charles" in _ORIGINS_OF_PREDEFINED_VOICES
     voicechoice.keep(home, voicechoice.parse_voice("Bill Boerst"))
-    assert run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "bill_boerst"
+    assert run.configured_from(spawned_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in)).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
     home.voice.write_text("zed\n")
     with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
-        run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
+        run.configured_from(spawned_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
     home.voice.mkdir()
     with pytest.raises(CannotStart, match=str(home.voice)):
-        run.configured_from(runner_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
+        run.configured_from(spawned_on(SYSTEM), home, config.load(home), preflight.preflight(home, brain, UNMANAGED, logged_in))
 
 
 # The settings of a run started with no file: every default.

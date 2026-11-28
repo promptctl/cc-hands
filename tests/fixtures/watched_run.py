@@ -18,18 +18,18 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, NoReturn
 
-from fakemachine import UNMANAGED
+from onthemachine import main_on_the_machine
 from standins import replace
 
 from hands.brain import configdir, pinned
-from hands.clock import Clock
+from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, watchdog
 from hands.daemon.config import Config, Settings
-from hands.daemon.indicatorprocess import Indicators, SpawnedIndicators
+from hands.daemon.indicatorprocess import Indicators
 from hands.daemon.starting import CannotStart, Handover, Start
 from hands.sessions import audit, heartbeat
+from hands.sessions.child import ChildrenOn
 from hands.sessions.home import Home
-from hands.sessions.kernel import KERNEL
 from hands.sessions.processes import Processes
 
 # How often `beats` kicks: a twentieth of the deadline, so only a stall of nearly all of it ends the run.
@@ -47,7 +47,7 @@ def stuck() -> NoReturn:
         time.sleep(0.05)
 
 
-def hung(clock: Clock, processes: Processes, indicators: Indicators, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
+def hung(clock: Clock, processes: Processes, indicators: Indicators, children_on: ChildrenOn, home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], handover: Handover | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> Literal["quit"] | Handover:
     heart.beat("starting", None, 0, listening=False, degraded=())
     stuck()
 
@@ -72,15 +72,15 @@ def main() -> None:
         case "hangs":
             replace(cli.door, opened)
             replace(cli.run_here, hung)
-            sys.exit(cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=KERNEL, indicators=SpawnedIndicators()))
+            sys.exit(main_on_the_machine(["--home", str(home.root), "run"], SYSTEM))
         case "stalls":
             replace(cli.door, stalled_at_the_door)
-            sys.exit(cli.main(["--home", str(home.root), "run"], machine=UNMANAGED, processes=KERNEL, indicators=SpawnedIndicators()))
+            sys.exit(main_on_the_machine(["--home", str(home.root), "run"], SYSTEM))
         case "returns":
             # A restart's run holds the heartbeat from the outset, so its refusal beats, and kicks the watchdog. The
             # indicator it names is launchd's pid, never this process's child, so no retire of it signals anything.
             replace(cli.door, refused)
-            code = cli.main(["--home", str(home.root), "run", "--restarted", "1"], machine=UNMANAGED, processes=KERNEL, indicators=SpawnedIndicators())
+            code = main_on_the_machine(["--home", str(home.root), "run", "--restarted", "1"], SYSTEM)
             time.sleep(deadline.total_seconds() * 2)
             sys.exit(10 + code)
         case "beats":
