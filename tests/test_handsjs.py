@@ -164,7 +164,7 @@ def test_what_came_of_a_request_for_a_file_is_one_of_the_same_three_outcomes(pag
     assert page.seen("outcome") == outcome
 
 
-PATIENTLY = 'var outcome, waits = []; patiently(PAGE_OPEN, signal => asked(signal, "GET", "/wake/settings"), why => waits.push(why)).then(said => { outcome = said; })'
+PATIENTLY = 'var outcome, waits = []; patiently(PAGE_OPEN, why => waits.push(why), asked, "GET", "/wake/settings").then(said => { outcome = said; })'
 
 
 def test_a_request_hands_does_not_answer_in_time_is_asked_again_after_a_pause_saying_why_until_hands_answers(page: Page) -> None:
@@ -331,7 +331,7 @@ def test_a_request_its_asker_leaves_is_left_and_never_answered_as_hands_lost_it(
 
 
 def test_an_asker_that_leaves_while_patiently_waits_ends_the_pause_and_is_asked_for_nothing_more(page: Page) -> None:
-    page.run(f'{LEAVING} var outcome, waits = []; patiently(leaving.signal, signal => asked(signal, "GET", "/wake/settings"), why => waits.push(why)).then(said => {{ outcome = said; }})')
+    page.run(f'{LEAVING} var outcome, waits = []; patiently(leaving.signal, why => waits.push(why), asked, "GET", "/wake/settings").then(said => {{ outcome = said; }})')
     page.run('lose("TypeError")')
     assert page.timers() == [2000]
     page.run("leaving.abort()")

@@ -26,20 +26,21 @@ function settingsOf(body) {
   return { phrase, threshold, keptSeconds: kept_seconds, runtime, models };
 }
 
-// What may pass is waited for and never given up on (`patiently`), for as long as the page is open, which is the worker's
-// life: on a cold first run `/wake/settings` waits on the models' fetch for longer than any one request is given, and a
-// fetch that failed is fetched again as hands is next asked, while a `failed` is final, so a page that gave up there could
-// only be recovered by reloading it. Each wait is a `waiting` with why, and its end a `waiting` with no `why`.
+// What may pass is waited for and never given up on (`patiently`), for as long as the worker lives: it asks on PAGE_OPEN,
+// and ends only as detector.js terminates it. On a cold first run `/wake/settings` waits on the models' fetch for longer
+// than any one request is given, and a fetch that failed is fetched again as hands is next asked, while a `failed` is
+// final, so a page that gave up there could only be recovered by reloading it. Each wait is a `waiting` with why, and its
+// end a `waiting` with no `why`.
 const waitingFor = why => postMessage({ kind: "waiting", why });
 
 async function fileOf(path) {
-  const outcome = await patiently(PAGE_OPEN, signal => askedForBytes(signal, path), waitingFor);
+  const outcome = await patiently(PAGE_OPEN, waitingFor, askedForBytes, path);
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   return outcome.body;
 }
 
 async function load() {
-  const outcome = await patiently(PAGE_OPEN, signal => asked(signal, "GET", "/wake/settings"), waitingFor);
+  const outcome = await patiently(PAGE_OPEN, waitingFor, asked, "GET", "/wake/settings");
   if (outcome.kind !== "answered") throw new Error(unanswered(outcome));
   const settings = settingsOf(outcome.body);
   const ort = await import(settings.runtime);

@@ -1,7 +1,8 @@
 // How every phone page asks hands (hands.voice.phonepage serves it at /hands.js), a module each page imports: one request,
-// whose outcome is hands' answer, hands' refusal in its own words, or no answer and why; a read of what a page shows, for
-// as long as the page is open; and hands' clock, as its reads last said it. Each page draws what it is answered and words
-// what came of its own choices; nothing else is a page's own.
+// whose outcome is hands' answer, hands' refusal in its own words, no answer and why, or that its asker left; a request
+// asked again for as long as what came of it may pass; a read of what a page shows, until whoever reads it leaves; and
+// hands' clock, as its reads last said it. Each page draws what it is answered and words what came of its own choices;
+// nothing else is a page's own.
 
 // The phone's key travels in the fragment, which the browser never sends with the page's own request. Whether it is the
 // phone's key is hands' to say, and a page opened without one is refused by hands in hands' words [LAW:single-enforcer]:
@@ -109,14 +110,14 @@ const pause = (ms, signal) => new Promise(done => {
   signal.addEventListener("abort", over);
 });
 
-// What `ask`, made with `signal`, comes to once asking again cannot change it: one that may pass (`transient`) is asked
-// again after a pause, for as long as it takes, with `waiting` told why each time and told null once the wait is over.
-// [LAW:one-source-of-truth] the signal each ask is made with is the one the pause ends on, so an asker that leaves mid-wait
-// is asked for nothing more: its next ask is `left`, which asking again cannot change.
-export async function patiently(signal, ask, waiting) {
+// What `ask(signal, ...args)` comes to once asking again cannot change it: one that may pass (`transient`) is asked again
+// after a pause, for as long as it takes, with `waiting` told why each time and told null once the wait is over, whatever
+// ended it, so every wait told is closed. [LAW:one-source-of-truth] `patiently` makes each ask with the signal its pause
+// ends on, so an asker that leaves mid-wait is asked for nothing more: its next ask is `left`, which is final.
+export async function patiently(signal, waiting, ask, ...args) {
   let waited = false;
   for (;;) {
-    const outcome = await ask(signal);
+    const outcome = await ask(signal, ...args);
     if (outcome.kind === "answered" || !outcome.transient) {
       if (waited) waiting(null);
       return outcome;
@@ -132,8 +133,8 @@ export async function patiently(signal, ask, waiting) {
 // `draw` is given what hands shows each time it changes, and `unread` why the page cannot show it, until it is drawn again.
 // `signal` is the lifetime of the view that reads, or the page's: aborted, it ends the read in flight, the connection to
 // hands with it, and starts no other, with nothing said to `unread`, as leaving the view is no failure to read.
-// A read that asking again cannot change (`transient`) ends the reading, saying why, as every read after it would come to
-// the same; one that may pass reads again after a pause, saying nothing was seen, so hands answers it at once and the
+// Any other read that asking again cannot change (`transient`) ends the reading, saying why, as every read after it would
+// come to the same; one that may pass reads again after a pause, saying nothing was seen, so hands answers it at once and the
 // page is drawn as soon as hands is back, whether a new run answers or the one that was there all along.
 export async function reading(signal, path, draw, unread) {
   try {
@@ -141,7 +142,6 @@ export async function reading(signal, path, draw, unread) {
     for (;;) {
       const outcome = await (last === null ? asked(signal, "GET", path, undefined, ANSWER_MS)
         : asked(signal, "GET", `${path}?seen=${encodeURIComponent(last.seen)}`, undefined, last.waits * 1000 + CROSSING_MS));
-      if (outcome.kind === "left") return;
       if (outcome.kind === "answered") {
         const read = readOf(outcome.body);
         ahead = read.now - Date.now() / 1000;
@@ -149,7 +149,7 @@ export async function reading(signal, path, draw, unread) {
         if (read.seen !== last?.seen) draw(read.shown);
         last = read;
       } else if (!outcome.transient) {
-        unread(unanswered(outcome));
+        if (outcome.kind !== "left") unread(unanswered(outcome));
         return;
       } else {
         unread(`${unanswered(outcome)}; reading it again…`);

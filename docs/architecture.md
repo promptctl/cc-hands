@@ -2270,12 +2270,15 @@ transcript the call writes, and its toggle, are the document's, shown while the 
 
 **Every phone page asks hands through one module, `/hands.js`** (`src/hands/voice/hands.js`, served
 by `hands.voice.phonepage`), which each page imports: a request whose outcome is hands' answer, its
-refusal, or no answer and why; and a read for as long as the page is open. Every read is answered
+refusal, no answer and why, or that its asker left; a request asked again for as long as what came
+of it may pass (`patiently`); and a read until whoever reads it leaves. Every read is answered
 as `hands.voice.longpoll.Read`, `{seen, waits, now, shown}`, built by `waited` alone: the version of
 what it shows, how long the page's next read waits at hands, which bounds that read on the page,
 the Mac's clock as hands answered, by which the phone's page times the brain's work, and what it
-shows. A read refused with a 4xx ends the page's reading; any other failure reads again with
-nothing seen. A read and a request take the signal of whoever makes them, a view's or `PAGE_OPEN`'s, as their first
+shows. Each outcome that is not an answer says whether asking again may change it (`transient`):
+hands' 503, and an answer that never came, may pass; any other refusal, and an answer the page
+cannot read, would come again the same. A read that may pass reads again with nothing seen, and
+any other ends the page's reading. A read and a request take the signal of whoever makes them, a view's or `PAGE_OPEN`'s, as their first
 argument: aborted, a read ends with nothing said and a request's outcome is `left`, neither a failure of hands' nor of the
 way to it. `tests/test_handsjs.py` runs the module in QuickJS.
 
