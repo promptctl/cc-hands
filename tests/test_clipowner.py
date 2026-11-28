@@ -304,9 +304,8 @@ async def test_a_listeners_work_after_its_clip_ends_is_a_hearing_of_its_own() ->
         assert (hearing.outcome, hearing.facts["clip"], hearing.facts["heard"], hearing.facts["barge_in"]) == ("ok", 1, "nothing", False)
 
 
-async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_hears_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(clipowner, "HEARING_SECONDS", 0.1)
-    hung = asyncio.Event()
+async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_hears_on() -> None:
+    clock, hung = VirtualClock(), asyncio.Event()
     answers: list[Hearing] = []
 
     async def never() -> Heard:
@@ -318,19 +317,19 @@ async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_
 
     answers += [never, words]
     listener = Heeding("hung", hearings=lambda _clip, _sound: (answers.pop(0),))
-    async with rigged(Scripted([None]), (listener,)) as rig:
+    async with rigged(Scripted([None]), (listener,), clock) as rig:
         down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
         await rig.frame(down, frame_of(3))
+        await run_out(rig, clock, answers)
         await rig.until(lambda: ("barge_in", 1, 0.0) in rig.seen.seen)
         failed, heard = rig.events("hearing")
         assert (failed.outcome, failed.error) == ("failed", "TimeoutError: ")
         assert heard.outcome == "ok"
 
 
-async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_queued_behind_a_hung_one_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(clipowner, "HEARING_SECONDS", 0.1)
-    hung = asyncio.Event()
+async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_queued_behind_a_hung_one_fails() -> None:
+    clock, hung = VirtualClock(), asyncio.Event()
     answers: list[Hearing] = []
 
     async def never() -> Heard:
@@ -344,16 +343,26 @@ async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_qu
 
     answers += [never, words]
     listener = Heeding("hung", hearings=lambda _clip, _sound: (answers.pop(0),))
-    async with rigged(Scripted([None]), (listener,)) as rig:
+    async with rigged(Scripted([None]), (listener,), clock) as rig:
         down = started(rig.gate, "engaged conversation")
         await rig.frame(down, frame_of(3))
         await rig.frame(down, frame_of(3))
+        await run_out(rig, clock, answers)
         await rig.until(lambda: len(rig.events("hearing")) == 2)
-        # Its minute ran out while it waited behind the hung one: its event says how long that was.
+        # Its minute ran out while it waited behind the hung one, as the hung one's did: its event says how long that was.
         hung_one, queued = rig.events("hearing")
         assert [event.error for event in (hung_one, queued)] == ["TimeoutError: "] * 2
-        assert queued.duration_ms >= 100
+        assert queued.duration_ms == clipowner.HEARING_SECONDS * 1000
         assert ("barge_in", 1, 0.0) not in rig.seen.seen
+
+
+async def run_out(rig: Rig, clock: VirtualClock, answers: list[Hearing]) -> None:
+    """The hung hearing's bound spent on `clock`, once the listener has returned every hearing in `answers`, each beginning
+    before the clock moves, and the first is inside its bound: a test moves the clock only once the deadline it spends is
+    being waited out [LAW:no-ambient-temporal-coupling]."""
+    await rig.until(lambda: not answers)
+    await clock.scheduled(clipowner.HEARING_SECONDS)
+    clock.advance(clipowner.HEARING_SECONDS)
 
 
 def at_48k(gate: Gate) -> Frame:
