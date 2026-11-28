@@ -43,7 +43,7 @@ from speech import RATE, quiet, spoken
 from test_backlogpage import LIT, Workspace, epic, real_lit, workspace  # pyright: ignore[reportUnusedImport]  (a fixture, found by its name)
 from test_brainpage import SLEEPING, Brain
 from test_conversationpage import a_log, set_trigger
-from test_gallerypage import MODELS, Desk, Listening, Own, Speaker, Voicing
+from test_gallerypage import Desk, Listening, Own, Speaker, Voicing
 
 pytestmark = pytest.mark.outside
 
@@ -107,7 +107,7 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
     async def typing(text: str) -> None:
         typed.append(text)
 
-    gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(VirtualClock())), wake=Pretrained(), models=MODELS)
+    gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(VirtualClock())), wake=Pretrained())
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
     pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
     requests = list[str]()

@@ -57,7 +57,7 @@ def stalled_at_the_door(home: Home, pin: pinned.Pin, machine: configdir.Machine,
 
 def opened(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:
     """The door, opened onto settings the stood-in run never reads."""
-    return Settings(None, Config(), model)
+    return Settings(None, Config(), None if model is None else cli.model_flag(model))
 
 
 def refused(home: Home, pin: pinned.Pin, machine: configdir.Machine, environment: Mapping[str, str], model: str | None, run_start: Start) -> Settings:

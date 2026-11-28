@@ -274,7 +274,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, SYSTEM, environment, tmp_path / "trusted.pem", recorded.append)
     try:
         refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
-        config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT, brain=_runnable(brain)), voice=voicechoice.DEFAULT)
+        config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=brain, account=ACCOUNT, brain=_runnable(brain)), voice=voicechoice.DEFAULT)
         out = Spoken()
         store = SummaryStore(Summaries(tmp_path / "summaries.db"))
         async with mind(SYSTEM, config, [], BrainDoor({}, [stay_silent_tool()], Home(tmp_path / "hands"), lambda: None, Switches(Player(lambda _entry: None))), lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.through, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:

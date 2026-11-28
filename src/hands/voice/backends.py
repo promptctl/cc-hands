@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hands.core.session import Runnable
+from hands.voice.offeredmodels import OfferedModel
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class ClaudeCodeBackend:
     """Claude through a slim Claude Code of hands' own, on whatever login `config_dir` holds (hands.brain)."""
 
     # No URL of its own: its requests go through hands' proxy, whose address is known only once the run has it listening.
-    model: str
+    model: OfferedModel
     config_dir: Path
     # The account its login held when the run started.
     account: Account

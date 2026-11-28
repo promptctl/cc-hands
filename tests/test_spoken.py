@@ -358,7 +358,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     voice = built.build_voice(
         clock,
         built.VoiceConfig(
-            llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(PinnedClaude(pinned.PIN.claude(tmp_path), pinned.PIN.version), None)),
+            llm=ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=tmp_path, account=Account("claude.ai", None), brain=Runnable(PinnedClaude(pinned.PIN.claude(tmp_path), pinned.PIN.version), None)),
             voice=voicechoice.Voice("cosette"),
         ),
         llm=FrameProcessor(),
