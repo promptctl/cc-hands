@@ -5,6 +5,7 @@ write to an audio device that is gone — would hold a stopped daemon open for a
 """
 
 import asyncio
+import concurrent.futures
 import contextlib
 import queue
 import threading
@@ -57,6 +58,11 @@ class SerialThread:
         """Whether this takes no more work: everything given before it was closed still runs."""
         return self._closed
 
+    @property
+    def waiting(self) -> int:
+        """How many pieces of work given wait behind the one running."""
+        return self._queue.qsize()
+
     def give(self, work: Callable[[], None]) -> None:
         """Queue work behind everything given before it, and return without waiting for it to run."""
         if self._closed:
@@ -82,6 +88,16 @@ class SerialThread:
         self.give(lambda: _settle(loop, settled, work))
         return settled
 
+    def call[T](self, work: Callable[[], T]) -> T:
+        """The result of work, once everything given before it has finished and it has run, waited for on the calling
+        thread, which is not an event loop's: a thread that cannot await waits here."""
+        if threading.current_thread() is self._thread:
+            # [LAW:no-silent-failure] work this thread runs waiting on work queued behind it would wait forever.
+            raise RuntimeError(f"work on {self._name} called for more work on {self._name}, which would wait for it forever")
+        done: concurrent.futures.Future[T] = concurrent.futures.Future()
+        self.give(lambda: _complete(done, work))
+        return done.result()
+
 
 def _settle[T](loop: asyncio.AbstractEventLoop, settled: asyncio.Future[T], work: Callable[[], T]) -> None:
     """Run work on this thread and settle the future with its outcome, on the loop that awaits it."""
@@ -98,6 +114,16 @@ def _settle[T](loop: asyncio.AbstractEventLoop, settled: asyncio.Future[T], work
             report()
 
     tell(loop, deliver)
+
+
+def _complete[T](done: concurrent.futures.Future[T], work: Callable[[], T]) -> None:
+    """Run work on this thread and complete `done` with its outcome, for the thread that waits on it."""
+    try:
+        result = work()
+    except BaseException as error:
+        done.set_exception(error)
+    else:
+        done.set_result(result)
 
 
 def tell[*Args](loop: asyncio.AbstractEventLoop, callback: Callable[[*Args], object], *args: *Args) -> None:

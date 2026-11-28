@@ -34,8 +34,8 @@ from pipecat.metrics.metrics import TurnMetricsData
 from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
-from hands.voice import loads, voiceturn
-from hands.threads import settles_off_loop
+from hands.voice import loads, mlxthread, voiceturn
+from hands.voice.mlxthread import OnMLX
 from hands.voice.clips import Trigger
 from hands.voice.desk import AnswerWindowClosed, AnswerWindowOpened, Anew, Chosen, Closer, Desk, Event, Keyed, Leveled, Made, ModelsLoaded, NoAnswerWindow, Served, Unopened, Woken, anew, hears, step, turn_of
 from hands.voice.handsvoice import HandsQuiet, HandsVoice
@@ -64,8 +64,9 @@ class Unported(Exception):
     """Smart Turn's port could not be fetched or loaded, and why."""
 
 
-def ported() -> Any:
-    """Smart Turn's MLX port, fetched into the hub's cache unless it is there already, with every weight loaded."""
+def ported(on: OnMLX) -> Any:
+    """Smart Turn's MLX port, fetched into the hub's cache unless it is there already, with every weight loaded, on the
+    MLX thread."""
     # mlx-audio ships no types.
     from mlx_audio.vad import load  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
@@ -85,19 +86,24 @@ class SmartTurn(BaseSmartTurn):
     judges it. The port is converted from the full-precision build, which Pipecat's benchmark puts ahead of the quantized
     one its own local analyzer runs on the CPU, and judges a segment in a fifth of the time."""
 
-    def __init__(self, clock: Clock, sample_rate: int) -> None:
+    def __init__(self, on: OnMLX, clock: Clock, sample_rate: int) -> None:
         super().__init__(sample_rate=sample_rate)
         self.set_sample_rate(sample_rate)
-        self._model = ported()
+        self._model = ported(on)
         # [LAW:no-ambient-temporal-coupling] a warm-up: the port builds its Metal kernels, and MLX its stream for the
-        # thread, on the first verdict there, so one is given on silence as it loads, on the thread every verdict runs on,
-        # and a person's first turn is judged at every turn's latency. The port pads or trims every segment to the same
+        # thread, on the first verdict there, so one is given on silence as it loads, on the MLX thread every verdict runs
+        # on, and a person's first turn is judged at every turn's latency. The port pads or trims every segment to the same
         # frames, so silence builds exactly the kernels every verdict runs.
         started = clock.now()
-        self._model_executor.submit(self._predict_endpoint, np.zeros(sample_rate, dtype=np.float32)).result()
+        self._verdict(on, np.zeros(sample_rate, dtype=np.float32))
         self.warmup_secs = clock.now() - started
 
     def _predict_endpoint(self, audio_array: np.ndarray) -> dict[str, Any]:
+        # Pipecat asks on its executor's thread, one of its own for each analyzer, which waits here while the MLX thread
+        # judges: the desk's and the phone's analyzers each have one.
+        return mlxthread.call(lambda on: self._verdict(on, audio_array))
+
+    def _verdict(self, on: OnMLX, audio_array: np.ndarray) -> dict[str, Any]:
         verdict = self._model.predict_endpoint(audio_array, sample_rate=self.sample_rate)
         return {"prediction": verdict.prediction, "probability": verdict.probability}
 
@@ -105,10 +111,10 @@ class SmartTurn(BaseSmartTurn):
 class Models:
     """Silero's voice activity detector, on the CPU as Pipecat ships it, and Smart Turn on MLX."""
 
-    def __init__(self, clock: Clock, sample_rate: int) -> None:
+    def __init__(self, on: OnMLX, clock: Clock, sample_rate: int) -> None:
         self._vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
         self._vad.set_sample_rate(sample_rate)
-        self._turn = SmartTurn(clock, sample_rate)
+        self._turn = SmartTurn(on, clock, sample_rate)
         # As Pipecat syncs it at each start: the speech Silero takes to be sure of is kept before the segment judged.
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
 
@@ -155,9 +161,9 @@ async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], Non
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
             # pause the detector ends speech at, as it was loaded with it, and how long Smart Turn's warm-up took.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
-            # On a thread of its own the process does not join at exit (hands.threads), as every model's load is; started
-            # inside the unit, so the load's time and growth are all on it.
-            loading = settles_off_loop(lambda: Models(clock, sample_rate), "Models")
+            # On the MLX thread, as every model's load is, which the process does not join at exit (hands.threads); given
+            # inside the unit, so the load's time and growth are all on it, the wait behind another model's work included.
+            loading = mlxthread.settles(lambda on: Models(on, clock, sample_rate))
             held.push_async_callback(_let_go, loading)
             models = await asyncio.shield(loading)
             annotate(vad_stop_secs=models.vad_stop_secs, smart_turn_warmup_secs=models.smart_turn_warmup_secs)

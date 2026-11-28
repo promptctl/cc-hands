@@ -18,6 +18,7 @@ from hands.voice.handsvoice import HandsQuiet, HandsSpeaking, HandsVoice
 from hands.voice.listening import Level, Levels
 from hands.voice.clips import Trigger
 from hands.voice.engaged import Hears, drive
+from hands.voice.mlxthread import OnMLX
 from hands.voice.turnlife import Ears
 from hands.voice import voiceturn
 from hands.voice.shortcut import KeyEvent, Move, Pressed, Released, Ripe
@@ -486,7 +487,7 @@ async def test_ears_that_cannot_be_loaded_fail_as_the_unit_they_were_loaded_for_
     named `phone.loaded`; the desk's is `desk.loaded`."""
 
     class Unloadable:
-        def __init__(self, clock: Clock, sample_rate: int) -> None:
+        def __init__(self, on: OnMLX, clock: Clock, sample_rate: int) -> None:
             raise OSError("no Smart Turn in the hub's cache, and no network")
 
     monkeypatch.setattr(engaged, "Models", Unloadable)

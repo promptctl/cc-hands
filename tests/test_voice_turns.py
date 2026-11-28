@@ -16,7 +16,6 @@ from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from functools import partial
 from typing import Literal
 
 import pytest
@@ -39,9 +38,9 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from conftest import events, model_facts, patiently, running, unprimed
 from hands.brain import pinned
 from hands.virtualclock import VirtualClock
-from hands.clock import Clock, SYSTEM
+from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Record, Replied, Transcribed, TurnStart, UserTurn
+from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, UserTurn
 from hands.voice import voicechoice
 from hands.sessions.wide import Fact, WideEvent, begun
 from hands.voice import pipeline as built
@@ -61,12 +60,12 @@ from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import clipowner, desk, dtln, shortcut, streaming, transcription, voiceturn, whisper
+from hands.voice import clipowner, desk, shortcut, streaming, voiceturn
 from hands.voice.desk import Act
 from hands.voice.clipowner import ClipOwner
 from hands.voice.shortcut import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.whisper import Whisper
-from test_microphone import Room
+from hands.voice.mlxthread import OnMLX
 from test_narrator import heard
 from test_playback import ended, spoken
 from hands.voice import voices
@@ -161,7 +160,7 @@ class Streamed:
     def __post_init__(self) -> None:
         self.flowing.set()
 
-    def decoded(self, samples: streaming.Samples) -> streaming.Decoded:
+    def decoded(self, on: OnMLX, samples: streaming.Samples) -> streaming.Decoded:
         assert self.flowing.wait(timeout=60), "the test never let the words through"
         self.fed += len(samples)
         if self.fed // streaming.FRAME == self.marked:
@@ -182,7 +181,7 @@ class Streamed:
         frames, self.marked = range(self.marked, self.fed // streaming.FRAME), self.fed // streaming.FRAME
         return streaming.Decoded((said,), tuple(streaming.Active(said.speaker, frame) for frame in frames))
 
-    def closed(self) -> streaming.Closed:
+    def closed(self, on: OnMLX) -> streaming.Closed:
         """No stream to close: every word is decoded as it is said."""
         return streaming.Closed(frozenset(), ())
 
@@ -306,7 +305,7 @@ async def rigged(
     primed: list[None] = []
     streamed = Streamed()
 
-    def load(_gating: int) -> Streamed:
+    def load(_on: OnMLX, _gating: int) -> Streamed:
         return streamed
 
     monkeypatch.setattr(streaming, "load", load)
@@ -348,30 +347,6 @@ async def rigged(
 async def test_pocket_tts_loading_as_the_voice_is_built_is_a_load_of_its_own(rig: Rig) -> None:
     [load] = events(rig.recorded, "tts.loaded")
     assert (load.outcome, model_facts(load)) == ("ok", {"voice": voicechoice.DEFAULT})
-
-
-async def test_whisper_finishes_warming_before_the_streaming_load_is_queued(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    startup: list[str] = []
-    recognizer = streaming.StreamingRecognizer
-
-    def warm_whisper() -> None:
-        startup.append("Whisper warmed")
-
-    def without_silero(_path: str) -> None:
-        pass
-
-    def queue_streaming(clock: Clock, model: Callable[[int], streaming.Session], record: Record) -> streaming.StreamingRecognizer:
-        # The worker may start as soon as construction queues its load.
-        startup.append("streaming load queued")
-        return recognizer(clock, model, record)
-
-    monkeypatch.setattr(transcription, "load", warm_whisper)
-    monkeypatch.setattr(whisper, "SileroOnnxModel", without_silero)
-    monkeypatch.setattr(dtln, "weights", lambda: (tmp_path / "mask", tmp_path / "refine"))
-    monkeypatch.setattr(built, "KeyedAudioTransport", partial(built.KeyedAudioTransport, echo=Room))
-    monkeypatch.setattr(streaming, "StreamingRecognizer", queue_streaming)
-    async with rigged(monkeypatch, tmp_path, FrameProcessor(), []):
-        assert startup == ["Whisper warmed", "streaming load queued"]
 
 
 async def test_a_spoken_clip_is_sent(rig: Rig) -> None:

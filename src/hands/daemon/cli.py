@@ -657,10 +657,10 @@ def loaded(clock: Clock, processes: Processes, home: Home, pin: pinned.Pin, mach
     from hands.daemon.run import Configured, configured_from, run
     from hands.sessions.launchservices import LaunchServices
     from hands.sessions.typing import FritterSockets
-    from hands.voice import memory
+    from hands.voice import memory, mlxthread
 
     # Before any model loads, so no buffer any of them frees is kept past the limit.
-    memory.limit_cache()
+    mlxthread.call(memory.limit_cache)
 
     path = environment.get("PATH", "")
     children = Children(clock, record)

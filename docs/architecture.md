@@ -1928,10 +1928,17 @@ on words nobody said. At the clip's end the session is fed silence until the dia
 committed the clip's last chunk, and every speaker's stream is closed on one chunk of silence as
 the model hears it, so a clip's last words are decoded in it and none in the next. Each
 clip the key sent or dropped settles as one of the listener's `hearing` events: its fate, and
-each speaker's words in it. The voice queues the pair's load after Whisper finishes warming up
-so the two MLX startup loads cannot overlap. The pair loads as the stream thread's first work
+each speaker's words in it. The pair loads as the first work the listener gives the MLX thread
 (`streaming.loaded`), so the voice can start while the pair loads and clips spoken meanwhile are
-heard behind it. Models that fail to load, or decoding that fails, fail the end of that
+heard behind it.
+
+MLX is not thread safe, so the process runs it on one thread (`hands.voice.mlxthread`): Whisper's
+load and every clip it transcribes, the pair's load and every chunk it decodes, both Smart Turns'
+loads and verdicts, the desk's and the phone's, and the memory sample's read of MLX's split. Each
+waits there behind the work given before it. A function that runs MLX takes the `OnMLX` that
+thread hands its work, so one called from any other thread does not type-check. Two threads in
+MLX at once killed the daemon with a null pointer read in `eval_impl`, as the desk's and the
+phone's Smart Turn warmed up together on threads of their own (promptctl-voice-oalb.8vn). Models that fail to load, or decoding that fails, fail the end of that
 clip and every clip's after it, with why.
 
 A turn's words are what Whisper hears of the clip, sent whole (`hands.voice.whisper`): the sound it hears has hands' own voice

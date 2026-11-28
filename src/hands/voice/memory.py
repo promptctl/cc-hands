@@ -21,6 +21,7 @@ from hands import footprint
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import Fact, annotate, begun, unit
+from hands.voice.mlxthread import OnMLX
 
 # The most MLX keeps cached of the Metal buffers its arrays free, in bytes.
 CACHE_LIMIT = 2**30
@@ -29,7 +30,7 @@ SAMPLE_SECONDS = 60.0
 SAMPLED = "memory.sampled"
 
 
-def limit_cache() -> int:
+def limit_cache(on: OnMLX) -> int:
     """Bound MLX's cache of freed buffers at CACHE_LIMIT, for every model the process runs on MLX, and say the bound
     it had before."""
     import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
@@ -37,15 +38,15 @@ def limit_cache() -> int:
     return mx.set_cache_limit(CACHE_LIMIT)
 
 
-def mlx_held() -> Mapping[str, float]:
+def mlx_held(on: OnMLX) -> Mapping[str, float]:
     """MLX's split of the GPU memory it holds: its live arrays, and its cache of freed buffers."""
     import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
 
     return {"mlx_active_mb": footprint.megabytes(mx.get_active_memory()), "mlx_cache_mb": footprint.megabytes(mx.get_cache_memory())}
 
 
-def sample(clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[], Mapping[str, Fact]] = mlx_held) -> None:
-    """One sample of the process's memory, as one event. A footprint the kernel refuses is on the event as
-    `footprint_error`."""
+def sample(on: OnMLX, clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[OnMLX], Mapping[str, Fact]] = mlx_held) -> None:
+    """One sample of the process's memory, as one event, taken on the MLX thread, which MLX's split is read on. A footprint
+    the kernel refuses is on the event as `footprint_error`."""
     with unit(SAMPLED, record, begun(clock)):
-        annotate(**footprint.size(footprint.measured(read)), **held())
+        annotate(**footprint.size(footprint.measured(read)), **held(on))

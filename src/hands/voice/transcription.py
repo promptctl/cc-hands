@@ -19,6 +19,7 @@ from huggingface_hub import is_offline_mode, snapshot_download  # pyright: ignor
 from huggingface_hub.errors import LocalEntryNotFoundError
 
 from hands.voice.clips import LANGUAGE, decoded
+from hands.voice.mlxthread import OnMLX
 
 # The model every clip is transcribed with, fetched from the Hugging Face hub into its cache on the first load, at the
 # revision pinned: the weights a test measured are the weights hands runs, and CI keys its cache of them on it.
@@ -29,8 +30,8 @@ REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 _HANDS_HERE = files("hands.voice") / "hands_here.wav"
 
 
-def load() -> None:
-    """Fetch the model, load it, and run it once.
+def load(on: OnMLX) -> None:
+    """Fetch the model, load it, and run it once, on the MLX thread.
 
     MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was never
     fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26). Once fetched, loading takes
@@ -39,7 +40,7 @@ def load() -> None:
     way it is decoded [LAW:no-ambient-temporal-coupling].
     """
     with wave.open(str(_HANDS_HERE)) as said:
-        _transcribe(decoded(said.readframes(said.getnframes())), None)
+        _transcribe(on, decoded(said.readframes(said.getnframes())), None)
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,8 @@ class Segment:
     avg_logprob: float
 
 
-def segments(samples: np.ndarray, prompt: str | None) -> list[Segment]:
-    """The segments Whisper hears in mono `samples` at RATE, primed with `prompt`. It blocks while the model runs."""
+def segments(on: OnMLX, samples: np.ndarray, prompt: str | None) -> list[Segment]:
+    """The segments Whisper hears in mono `samples` at RATE, primed with `prompt`, on the MLX thread."""
     return [
         Segment(
             str(segment["text"]).strip(),
@@ -64,7 +65,7 @@ def segments(samples: np.ndarray, prompt: str | None) -> list[Segment]:
             float(segment["compression_ratio"]),
             float(segment["avg_logprob"]),
         )
-        for segment in _transcribe(samples, prompt)
+        for segment in _transcribe(on, samples, prompt)
     ]
 
 
@@ -86,7 +87,7 @@ def weights() -> str:
         return snapshot_download(MODEL, revision=REVISION)
 
 
-def _transcribe(audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
+def _transcribe(on: OnMLX, audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
     """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every clip run.
 
     Each 30 s window is decoded on its own, not conditioned on the text of the one before: conditioned, a long clip fell

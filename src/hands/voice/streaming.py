@@ -26,9 +26,9 @@ from loguru import logger
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
-from hands.voice import loads
-from hands.threads import SerialThread
+from hands.voice import loads, mlxthread
 from hands.voice.clips import RATE, Clip, Fate, Heard, Hearings, Samples, Sound, decoded
+from hands.voice.mlxthread import OnMLX
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
 MODEL = "nvidia/nemotron-speech-streaming-en-0.6b"
@@ -126,11 +126,11 @@ class Decoded:
 class Session(Protocol):
     """The pair's one session for the run: fed samples, it says what each speaker's stream decoded in the chunks they
     complete, and where the diarizer heard each speaker; closed, it decodes every stream's last words and ends them, so
-    none comes out in the next clip."""
+    none comes out in the next clip. Both run the pair on the MLX thread."""
 
-    def decoded(self, samples: Samples) -> Decoded: ...
+    def decoded(self, on: OnMLX, samples: Samples) -> Decoded: ...
 
-    def closed(self) -> Closed: ...
+    def closed(self, on: OnMLX) -> Closed: ...
 
 
 def words(text: str) -> str | None:
@@ -212,26 +212,26 @@ class Stream:
         self._session = session
         self._open = _OpenClip(_Extent(0, 0))
 
-    def opened(self, samples: Samples, start: int) -> None:
+    def opened(self, on: OnMLX, samples: Samples, start: int) -> None:
         """A clip opens, `start` samples into the run, with `samples`, what it kept from before it opened: its words start
         with what they decode to."""
         self._open = _OpenClip(_Extent(start, len(samples)))
-        self.heard(samples)
+        self.heard(on, samples)
 
-    def heard(self, samples: Samples) -> None:
+    def heard(self, on: OnMLX, samples: Samples) -> None:
         """More of the clip open."""
         self._open.extent.grew(len(samples))
-        self._decoded(samples)
+        self._decoded(on, samples)
 
-    def silence(self, samples: int) -> None:
+    def silence(self, on: OnMLX, samples: int) -> None:
         """`samples` of silence after the clip open, and its close, so every word in it is decoded before the next clip
         opens."""
-        self._decoded(np.zeros(samples, np.float32))
-        self._open.closed = self._session.closed()
+        self._decoded(on, np.zeros(samples, np.float32))
+        self._open.closed = self._session.closed(on)
         self._added(self._open.closed.words)
 
-    def _decoded(self, samples: Samples) -> None:
-        decoded = self._session.decoded(samples)
+    def _decoded(self, on: OnMLX, samples: Samples) -> None:
+        decoded = self._session.decoded(on, samples)
         self._added(decoded.words)
         for active in decoded.active:
             self._heard(active)
@@ -275,13 +275,13 @@ class Broken:
 
     error: str
 
-    def opened(self, samples: Samples, start: int) -> None:
+    def opened(self, on: OnMLX, samples: Samples, start: int) -> None:
         """A clip no model hears."""
 
-    def heard(self, samples: Samples) -> None:
+    def heard(self, on: OnMLX, samples: Samples) -> None:
         """Samples no model hears."""
 
-    def silence(self, samples: int) -> None:
+    def silence(self, on: OnMLX, samples: int) -> None:
         """Silence no model hears."""
 
     def said(self) -> Since:
@@ -293,30 +293,29 @@ class Broken:
 
 
 class StreamingRecognizer:
-    """The run's stream on a thread of its own: a listener on the clip owner, given each clip's audio as it is spoken and
-    told when it ends, which nothing the owner does waits on.
+    """The run's stream on the MLX thread: a listener on the clip owner, given each clip's audio as it is spoken and told
+    when it ends, which nothing the owner does waits on.
 
-    [LAW:no-ambient-temporal-coupling] what moves the stream is queued on the thread inside the call that brings it, so a
-    clip's end lands behind its last audio and ahead of the next clip's first; a hearing only waits on what the stream says
-    at its place in that line.
+    [LAW:no-ambient-temporal-coupling] what moves the stream is queued on the MLX thread inside the call that brings it, so
+    a clip's end lands behind its last audio and ahead of the next clip's first; a hearing only waits on what the stream
+    says at its place in that line.
     """
 
     name = "streaming"
 
-    # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
+    # The run's stream, set by the first work this gives the MLX thread and read only by the work it queues behind it.
     _stream: Stream | Broken
 
-    def __init__(self, clock: Clock, model: Callable[[int], Session], record: Record) -> None:
+    def __init__(self, clock: Clock, model: Callable[[OnMLX, int], Session], record: Record) -> None:
         self._clock = clock
         self._record = record
-        # The models load on the thread first, so clips spoken while they load wait behind them, and nothing else does.
-        self._thread = SerialThread("Streaming")
-        self._thread.give(lambda: self._load(model))
+        # The models load on the MLX thread first, so clips spoken while they load wait behind them.
+        mlxthread.give(lambda on: self._load(on, model))
         # [LAW:one-source-of-truth] the samples the run's stream has been given, the silence after each clip included:
         # the diarizer's steps they complete are where the stream's words change, and where a frame falls in a clip.
         self._fed = 0
 
-    def _load(self, model: Callable[[int], Session]) -> None:
+    def _load(self, on: OnMLX, model: Callable[[OnMLX, int], Session]) -> None:
         """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each clip with why.
         [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's is."""
         try:
@@ -331,24 +330,24 @@ class StreamingRecognizer:
                     gating=GATING,
                 )
                 # [LAW:one-source-of-truth] the gating the event says is the one the session is made with.
-                self._stream = Stream(model(GATING))
+                self._stream = Stream(model(on, GATING))
         except Exception as error:
             self._stream = Broken(f"the models did not load: {type(error).__name__}: {error}")
 
     def opened(self, clip: Clip, before: Sound) -> Hearings:
         """`clip` opens: what it kept from before it opened is the start of its words."""
         samples, start = decoded(before.heard), self._fed
-        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start)))
+        mlxthread.give(lambda on: self._moved(lambda stream: stream.opened(on, samples, start)))
         return self._fed_with(len(samples))
 
     def heard(self, sound: Sound) -> Hearings:
-        """More of the clip open, decoded on the thread behind everything given before it."""
+        """More of the clip open, decoded on the MLX thread behind everything given before it."""
         samples = decoded(sound.heard)
-        self._thread.give(lambda: self._moved(lambda stream: stream.heard(samples)))
+        mlxthread.give(lambda on: self._moved(lambda stream: stream.heard(on, samples)))
         return self._fed_with(len(samples))
 
     def _moved(self, move: Callable[[Stream | Broken], None]) -> None:
-        """Move the run's stream, on the thread. [LAW:no-silent-failure] decoding that raises leaves the models' caches,
+        """Move the run's stream, on the MLX thread. [LAW:no-silent-failure] decoding that raises leaves the models' caches,
         and the grid hearings are timed on, in a state nothing vouches for: the stream is broken from there, and the clip
         it broke in and every one after it end failed with why."""
         try:
@@ -358,9 +357,9 @@ class StreamingRecognizer:
             logger.opt(exception=error).error("the streaming session's decoding broke; no clip is heard live from here")
             self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
 
-    def _ended(self, silence: int) -> Ended:
-        """The clip open, heard through the silence after it, on the thread."""
-        self._moved(lambda stream: stream.silence(silence))
+    def _ended(self, on: OnMLX, silence: int) -> Ended:
+        """The clip open, heard through the silence after it, on the MLX thread."""
+        self._moved(lambda stream: stream.silence(on, silence))
         return self._stream.ended()
 
     def _fed_with(self, samples: int) -> Hearings:
@@ -372,7 +371,7 @@ class StreamingRecognizer:
             case 0:
                 return ()
             case _:
-                said = self._thread.settles(lambda: self._stream.said())
+                said = mlxthread.settles(lambda _: self._stream.said())
 
                 async def hear() -> Heard:
                     since = await said
@@ -386,7 +385,7 @@ class StreamingRecognizer:
         """The clip open ends, sent or dropped: every word each speaker said in it, the last of them after it closed,
         which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same clip."""
         silence = through(self._fed) - self._fed
-        ended = self._thread.settles(lambda: self._ended(silence))
+        ended = mlxthread.settles(lambda on: self._ended(on, silence))
         self._fed += silence
 
         async def close() -> Heard:
@@ -458,7 +457,7 @@ class Paired:
 
         session._push_features = pushed
 
-    def decoded(self, samples: Samples) -> Decoded:
+    def decoded(self, on: OnMLX, samples: Samples) -> Decoded:
         self._pending.append(samples)
         # [LAW:one-source-of-truth] the run's position is the count the session keeps.
         # [LAW:locality-or-seam] exception: mlx-audio keeps that count only on its private frontend, read here alone, on
@@ -475,12 +474,12 @@ class Paired:
                 active, self._active = tuple(self._active), []
                 return Decoded(words, active)
 
-    def reset(self) -> None:
+    def reset(self, on: OnMLX) -> None:
         """The session afresh, as a run begins one, with nothing kept of a run that stopped part way through a step."""
         self.session.reset()
         self._active, self._pending = [], []
 
-    def closed(self) -> Closed:
+    def closed(self, on: OnMLX) -> Closed:
         """Every speaker's stream given a chunk of silence as its last and ended, its last token decoded, and the gate
         history emptied, so a stream is made again only for a speaker the diarizer marks in a later clip; the diarizer is
         left as it is, so speakers keep their numbers.
@@ -510,7 +509,7 @@ class Paired:
         return Closed(speakers, tuple(last))
 
 
-def diarizer() -> Any:
+def diarizer(on: OnMLX) -> Any:
     """Nemotron 3 Diarization at PRESET, fetched if it never was.
 
     [LAW:parse-dont-validate] a diarizer that cuts the run other than `steps` says is refused here, so no hearing is timed
@@ -527,10 +526,10 @@ def diarizer() -> Any:
     return model
 
 
-def load(gating: int) -> Paired:
+def load(on: OnMLX, gating: int) -> Paired:
     """The run's session of the pair, each speaker's stream stepped `gating` chunks from the last the diarizer heard them
-    in, the models fetched if they never were: a few seconds on this Mac from the cache, on MLX's default device, which
-    is the CPU where there is no Metal."""
+    in, the models fetched if they never were: a few seconds on this Mac from the cache, on the MLX thread, on MLX's
+    default device, which is the CPU where there is no Metal."""
     from mlx_audio.stt import load as loaded  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
     model = cast(Any, loaded(MODEL, revision=REVISION))
@@ -540,7 +539,7 @@ def load(gating: int) -> Paired:
     if model.preprocessor_config.n_fft != N_FFT:
         raise ValueError(f"{MODEL} frames the run with an FFT of {model.preprocessor_config.n_fft}; hands places a clip's last mel frame on {N_FFT}")
     session = model.create_speaker_streaming_session(
-        diarizer(), att_context_size=[model.default_att_context_size[0], LOOKAHEAD], cache_gating_buffer_size=gating
+        diarizer(on), att_context_size=[model.default_att_context_size[0], LOOKAHEAD], cache_gating_buffer_size=gating
     )
     if session.chunk_mel != CHUNK:
         raise ValueError(f"{MODEL}'s session takes chunks of {session.chunk_mel} mel frames; hands gates speakers in chunks of {CHUNK}")

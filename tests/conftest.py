@@ -57,6 +57,7 @@ from hands.sessions.registry import unread as reads_no_panes
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, transcription
+from hands.voice.mlxthread import OnMLX
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 from fixtures import pins
@@ -391,10 +392,10 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
 class Unspoken:
     """The run's streaming session of a pair that hears no speaker say a word in anything it is fed."""
 
-    def decoded(self, samples: streaming.Samples) -> streaming.Decoded:
+    def decoded(self, on: OnMLX, samples: streaming.Samples) -> streaming.Decoded:
         return streaming.Decoded((), ())
 
-    def closed(self) -> streaming.Closed:
+    def closed(self, on: OnMLX) -> streaming.Closed:
         return streaming.Closed(frozenset(), ())
 
 
@@ -459,7 +460,7 @@ def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
 def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building the voice hears holds with a pair that hears no word: its load would fetch 2.5 GB of weights, which no
     test is about but the ones that ask for the real models."""
-    def unspoken(_gating: int) -> Unspoken:
+    def unspoken(_on: OnMLX, _gating: int) -> Unspoken:
         return Unspoken()
 
     monkeypatch.setattr(streaming, "load", unspoken)

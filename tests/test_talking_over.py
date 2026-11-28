@@ -216,7 +216,7 @@ async def recognizing() -> tuple[streaming.StreamingRecognizer, Recorded]:
     whose start a load holding the loop would hold past its bound on CI's VMs; the first frame then waits for nothing it
     does."""
     record = Recorded(asyncio.get_running_loop())
-    recognizer = streaming.StreamingRecognizer(SYSTEM, lambda gating: PAIRS.loaded(lambda: nemotron(gating)), record)
+    recognizer = streaming.StreamingRecognizer(SYSTEM, lambda on, gating: PAIRS.loaded(lambda: nemotron(on, gating)), record)
     await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
     return recognizer, record
 

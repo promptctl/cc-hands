@@ -14,6 +14,7 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import ClipHeard, Entry
 from hands.voice import transcription
 from hands.voice.clips import Clip, Played, Sound
+from hands.voice.mlxthread import OnMLX
 from hands.voice.whisper import Whisper
 
 
@@ -195,7 +196,7 @@ async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Mo
     spoke = len(SPOKEN) / 2 / 16_000
     heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3), transcription.Segment("Thank you.", spoke + 0.1, spoke + 0.5, 0.56, -0.28)]
 
-    def segments(_samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
+    def segments(_on: OnMLX, _samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
         return heard
 
     monkeypatch.setattr(transcription, "segments", segments)

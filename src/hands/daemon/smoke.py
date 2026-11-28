@@ -48,7 +48,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
 from hands.sessions.wrapper import EVERY_RUN
-from hands.voice import clips, transcription
+from hands.voice import clips, mlxthread, transcription
 from hands.voice.phone import quiet_message
 from hands.voice.phoneaddress import PHONE_PORT, phone_key
 
@@ -329,7 +329,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
     annotate(model=transcription.MODEL, revision=transcription.REVISION)
-    await asyncio.to_thread(transcription.load)
+    await mlxthread.run(transcription.load)
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
@@ -492,7 +492,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
 
 async def _transcribed(audio: bytes) -> str:
     """`audio`, as the Whisper hands transcribes with hears it, unprimed."""
-    heard = await asyncio.to_thread(lambda: transcription.segments(clips.decoded(audio), None))
+    heard = await mlxthread.run(lambda on: transcription.segments(on, clips.decoded(audio), None))
     return " ".join(segment.text for segment in heard).strip()
 
 

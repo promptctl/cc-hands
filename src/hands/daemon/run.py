@@ -79,7 +79,7 @@ from hands.voice.phonepage import phone_pages, serve_phone
 from hands.voice.phoneaddress import phone_key, tailnet
 from hands.voice.turnstop import Typed
 from hands.voice.floor import Floor
-from hands.voice import memory
+from hands.voice import memory, mlxthread
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
@@ -482,7 +482,7 @@ async def converse(
         asyncio.create_task(keep_summarising(clock, store, summarise, record, Lit(Children(clock, record), environment)), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
-        asyncio.create_task(keep_beating(partial(memory.sample, clock, record), memory.SAMPLE_SECONDS, clock), name="the memory sampler"),
+        asyncio.create_task(keep_beating(lambda: mlxthread.give(partial(memory.sample, clock=clock, record=record)), memory.SAMPLE_SECONDS, clock), name="the memory sampler"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]
     following = asyncio.create_task(follow_devices(clock, pipeline.started, voice.audio, channel.say, record), name="the audio device follower")

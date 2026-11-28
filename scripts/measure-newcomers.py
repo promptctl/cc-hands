@@ -27,7 +27,8 @@ from typing import Any
 
 import numpy as np
 
-from hands.voice import engaged, streaming
+from hands.voice import engaged, mlxthread, streaming
+from hands.voice.mlxthread import OnMLX
 from hands.voice.streaming import MEL_HOP, SUBSAMPLING, through
 from measuring import AMI_AUDIO, AMI_TEST, LEAD, RATE, fetched, meeting_turns, mono, turn
 
@@ -36,7 +37,7 @@ NEWCOMERS = (1, 3)
 LONGEST = 6.0
 
 
-def decided(session: Any, clips: list[tuple[np.ndarray, ...]]) -> list[list[np.ndarray]]:
+def decided(on: OnMLX, session: Any, clips: list[tuple[np.ndarray, ...]]) -> list[list[np.ndarray]]:
     """Which speakers `session` hears in each encoder frame of each stretch of each clip, the clips fed to its diarizer in
     turn as one run, each a stretch or more joined.
 
@@ -88,7 +89,7 @@ def main() -> None:
     directory = Path(sys.argv[1])
     directory.mkdir(parents=True, exist_ok=True)
     # The run's session as hands builds it, so its diarizer and threshold are hands'; its recognizer is left unused.
-    session = streaming.load(streaming.GATING).session
+    session = mlxthread.call(lambda on: streaming.load(on, streaming.GATING)).session
     # (user's turns, newcomer's turns, order) -> how each joined clip came out; and the joined clips each pair got wrong.
     tally: dict[tuple[int, int, str], Counter[str]] = {}
     missed: Counter[tuple[str, str, str]] = Counter()
@@ -104,7 +105,7 @@ def main() -> None:
                 first, second = shared if order == "newcomer first" else shared[::-1]
                 joined = (turn(audio, first.start, first.end, 0.0), turn(audio, second.start, second.end, engaged.STOP_SECS))
                 earlier = [(turn(audio, t.start, t.end, engaged.STOP_SECS),) for t in (*mine[:users], *theirs[:newcomers])]
-                *each, together = decided(session, [*earlier, joined])
+                *each, together = mlxthread.call(lambda on: decided(on, session, [*earlier, joined]))
                 got_new, got_user = map(speaker, together if order == "newcomer first" else together[::-1])
                 outcome = judged({speaker(e) for e, in each[:users]}, {speaker(e) for e, in each[users:]}, got_user, got_new)
                 tally.setdefault((users, newcomers, order), Counter())[outcome] += 1
