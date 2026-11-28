@@ -2,7 +2,7 @@
 and another triple tap disengages."""
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 
 import pytest
@@ -18,6 +18,7 @@ from hands.voice.handsvoice import HandsQuiet, HandsSpeaking, HandsVoice
 from hands.voice.listening import Level, Levels
 from hands.voice.clips import Trigger
 from hands.voice.engaged import Hears, drive
+from hands.voice.mlxthread import OnMLX
 from hands.voice.turnlife import Ears
 from hands.voice import voiceturn
 from hands.voice.shortcut import KeyEvent, Move, Pressed, Released, Ripe
@@ -481,15 +482,25 @@ async def test_off_a_window_closed_and_opened_again_between_two_buffers_is_heard
     (desk,) = (event for event in rig.events if event.event == "desk")
     assert {name: desk.counts[name] for name in ("hands_quiet", "windows", "no_window_phone", "closed_hands")} == {"hands_quiet": 3, "windows": 2, "no_window_phone": 1, "closed_hands": 1}
 
-async def test_ears_that_cannot_be_loaded_fail_as_the_unit_they_were_loaded_for_whoever_hears_with_them(monkeypatch: pytest.MonkeyPatch) -> None:
+def unfetchable() -> Callable[[OnMLX], object]:
+    raise OSError("no Smart Turn in the hub's cache, and no network")
+
+
+def fetched_already() -> Callable[[OnMLX], object]:
+    return lambda _on: None
+
+
+class Unloadable:
+    def __init__(self, on: OnMLX, port: Callable[[OnMLX], object], clock: Clock, sample_rate: int) -> None:
+        raise OSError("no Smart Turn weights the port can read")
+
+
+@pytest.mark.parametrize("patched", [{"fetched": unfetchable}, {"fetched": fetched_already, "SmartTurn": Unloadable}], ids=["fetch", "load"])
+async def test_ears_that_cannot_be_loaded_fail_as_the_unit_they_were_loaded_for_whoever_hears_with_them(patched: Mapping[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
     """The phone's ears are loaded as the daemon starts and before its page is answered, so a load that fails is the start's failure,
-    named `phone.loaded`; the desk's is `desk.loaded`."""
-
-    class Unloadable:
-        def __init__(self, clock: Clock, sample_rate: int) -> None:
-            raise OSError("no Smart Turn in the hub's cache, and no network")
-
-    monkeypatch.setattr(engaged, "Models", Unloadable)
+    named `phone.loaded`; the desk's is `desk.loaded`: their port fetched off the MLX thread or loaded on it."""
+    for attribute, value in patched.items():
+        monkeypatch.setattr(engaged, attribute, value)
     for name in ("phone.loaded", "desk.loaded"):
         events: list[WideEvent] = []
         with pytest.raises(OSError, match="no Smart Turn"):

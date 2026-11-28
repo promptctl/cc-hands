@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from hands.voice.mlxthread import OnMLX
 from hands.voice.streaming import Active, Closed, Decoded, Said, Samples, Session
 
 RECORDINGS = Path(__file__).parent / "fixtures" / "decodes"
@@ -84,16 +85,16 @@ class Recorder:
         self._feeds: list[Feed] = []
         self._closes: list[Close] = []
 
-    def decoded(self, samples: Samples) -> Decoded:
+    def decoded(self, on: OnMLX, samples: Samples) -> Decoded:
         self._total += len(samples)
         self._audio.add(samples)
-        decoded = self._session.decoded(samples)
+        decoded = self._session.decoded(on, samples)
         if decoded.words or decoded.active:
             self._feeds.append(Feed(self._total, decoded))
         return decoded
 
-    def closed(self) -> Closed:
-        closed = self._session.closed()
+    def closed(self, on: OnMLX) -> Closed:
+        closed = self._session.closed(on)
         self._closes.append(Close(self._total, self._audio.digest(), closed))
         return closed
 
@@ -117,7 +118,7 @@ class Replay:
     def _stale(self, why: str) -> AssertionError:
         return AssertionError(f"the recording {self._name!r} is not of this run: {why}; run `pytest --record-decodes -k real` to make it again")
 
-    def decoded(self, samples: Samples) -> Decoded:
+    def decoded(self, on: OnMLX, samples: Samples) -> Decoded:
         self._total += len(samples)
         self._audio.add(samples)
         if self._total > self._recording.total:
@@ -128,7 +129,7 @@ class Replay:
             return self._feeds.popleft().decoded
         return Decoded((), ())
 
-    def closed(self) -> Closed:
+    def closed(self, on: OnMLX) -> Closed:
         if not self._closes:
             raise self._stale(f"the run closes at {self._total} samples, past the recording's last close")
         close = self._closes.popleft()

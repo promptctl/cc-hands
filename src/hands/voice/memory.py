@@ -12,24 +12,33 @@ running daemon shared.
 
 [LAW:nothing-unseen] the sample is a `memory.sampled` wide event: the footprint, and MLX's own split of the GPU memory it
 holds, live and cached. It goes where every wide event goes, to the audit log and to the collector where one is set, so a
-footprint that grows past its size after the loads shows in hands' own telemetry, and which of the two grew with it.
+footprint that grows past its size after the loads shows in hands' own telemetry, and which of the two grew with it. The
+split is read on the MLX thread, so the sample is that thread's pulse too: the work waiting there as it was taken, and
+how long the thread took to answer, the event's own time; a thread that does not answer within SPLIT_SECONDS is said to
+have not, so one that hangs is seen within a minute, and the footprint is never held up behind it.
 """
 
+import asyncio
 from collections.abc import Callable, Mapping
 
 from hands import footprint
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import Fact, annotate, begun, unit
+from hands.voice import mlxthread
+from hands.voice.mlxthread import OnMLX
 
 # The most MLX keeps cached of the Metal buffers its arrays free, in bytes.
 CACHE_LIMIT = 2**30
 # How often `hands run` samples the memory.
 SAMPLE_SECONDS = 60.0
+# How long a sample waits for MLX's split behind the work the MLX thread has: one model's piece is a third of a second, a
+# load a few seconds.
+SPLIT_SECONDS = 10.0
 SAMPLED = "memory.sampled"
 
 
-def limit_cache() -> int:
+def limit_cache(on: OnMLX) -> int:
     """Bound MLX's cache of freed buffers at CACHE_LIMIT, for every model the process runs on MLX, and say the bound
     it had before."""
     import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
@@ -37,15 +46,52 @@ def limit_cache() -> int:
     return mx.set_cache_limit(CACHE_LIMIT)
 
 
-def mlx_held() -> Mapping[str, float]:
+def mlx_held(on: OnMLX) -> Mapping[str, float]:
     """MLX's split of the GPU memory it holds: its live arrays, and its cache of freed buffers."""
     import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
 
     return {"mlx_active_mb": footprint.megabytes(mx.get_active_memory()), "mlx_cache_mb": footprint.megabytes(mx.get_cache_memory())}
 
 
-def sample(clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[], Mapping[str, Fact]] = mlx_held) -> None:
-    """One sample of the process's memory, as one event. A footprint the kernel refuses is on the event as
-    `footprint_error`."""
-    with unit(SAMPLED, record, begun(clock)):
-        annotate(**footprint.size(footprint.measured(read)), **held())
+class Sampler:
+    """The run's memory, sampled as one `memory.sampled` event at a time: the footprint and the MLX work waiting, now, and
+    MLX's split, as the MLX thread reads it, or that it did not within SPLIT_SECONDS. A footprint the kernel refuses is on
+    the event as `footprint_error`. A split the thread has yet to answer is the one the next sample waits on, never asked
+    for again, so the sampler keeps one piece of work waiting there at most, however long the thread is held; one the
+    thread answers after its sample gave up is let go of, so every split an event says was read as that sample waited."""
+
+    def __init__(self, clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[OnMLX], Mapping[str, Fact]] = mlx_held, waiting: Callable[[], int] = mlxthread.waiting) -> None:
+        self._clock = clock
+        self._record = record
+        self._read = read
+        self._held = held
+        self._waiting = waiting
+        # The split last asked of the MLX thread, until a sample has its answer.
+        self._asked: asyncio.Future[Mapping[str, Fact]] | None = None
+
+    async def keep_sampling(self) -> None:
+        """Sample now and SAMPLE_SECONDS after each sample ends, until cancelled."""
+        while True:
+            await self.sample()
+            await self._clock.sleep(SAMPLE_SECONDS)
+
+    async def sample(self) -> None:
+        with unit(SAMPLED, self._record, begun(self._clock)):
+            annotate(**footprint.size(footprint.measured(self._read)), mlx_waiting=self._waiting())
+            if self._asked is not None and self._asked.done():
+                # Answered after the sample that asked for it gave up: its split is old, so it is let go of and asked for
+                # anew, and a failure in it is this sample's.
+                self._asked.result()
+                self._asked = None
+            if self._asked is None:
+                self._asked = mlxthread.settles(self._held)
+            bound = self._clock.timeout(SPLIT_SECONDS)
+            try:
+                async with bound:
+                    # Shielded: the bound ends this sample's wait, and the split stays asked for the next.
+                    split = await asyncio.shield(self._asked)
+            except TimeoutError:
+                annotate(mlx_split_error=f"the MLX thread did not answer in {SPLIT_SECONDS:g} s")
+            else:
+                self._asked = None
+                annotate(**split)

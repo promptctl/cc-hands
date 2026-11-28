@@ -114,12 +114,11 @@ def build_voice(
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
     # Whisper says what each clip sent held; the streaming recognizer hears each clip's words while it is open, each with
-    # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each clip in a
+    # who said it, on a line of its own that its models' fetch and load hold up alone. The recorder keeps each clip in a
     # directory of the run's own, named by when the voice was built: a clip's number is the run's.
     recorder = Recorder(clock, clips, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), record)
-    # [LAW:no-ambient-temporal-coupling] finish Whisper's MLX warmup before the streaming worker can start loading its pair.
     whisper = Whisper(clock=clock, prompt=prompt, record=record)
-    listeners = (streaming.StreamingRecognizer(clock, streaming.load, record), recorder)
+    listeners = (streaming.StreamingRecognizer(clock, streaming.fetched, record), recorder)
     stt = ClipOwner(clock, whisper, listeners, record)
 
     start = TriggerTurnStart(clock, record)

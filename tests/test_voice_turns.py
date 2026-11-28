@@ -16,7 +16,6 @@ from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from functools import partial
 from typing import Literal
 
 import pytest
@@ -39,9 +38,9 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from conftest import events, model_facts, patiently, running, unprimed
 from hands.brain import pinned
 from hands.virtualclock import VirtualClock
-from hands.clock import Clock, SYSTEM
+from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Record, Replied, Transcribed, TurnStart, UserTurn
+from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, UserTurn
 from hands.voice import voicechoice
 from hands.sessions.wide import Fact, WideEvent, begun
 from hands.voice import pipeline as built
@@ -61,12 +60,12 @@ from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import clipowner, desk, dtln, shortcut, streaming, transcription, voiceturn, whisper
+from hands.voice import clipowner, desk, shortcut, streaming, voiceturn
 from hands.voice.desk import Act
 from hands.voice.clipowner import ClipOwner
 from hands.voice.shortcut import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.whisper import Whisper
-from test_microphone import Room
+from hands.voice.mlxthread import OnMLX
 from test_narrator import heard
 from test_playback import ended, spoken
 from hands.voice import voices
@@ -161,7 +160,7 @@ class Streamed:
     def __post_init__(self) -> None:
         self.flowing.set()
 
-    def decoded(self, samples: streaming.Samples) -> streaming.Decoded:
+    def decoded(self, on: OnMLX, samples: streaming.Samples) -> streaming.Decoded:
         assert self.flowing.wait(timeout=60), "the test never let the words through"
         self.fed += len(samples)
         if self.fed // streaming.FRAME == self.marked:
@@ -182,7 +181,7 @@ class Streamed:
         frames, self.marked = range(self.marked, self.fed // streaming.FRAME), self.fed // streaming.FRAME
         return streaming.Decoded((said,), tuple(streaming.Active(said.speaker, frame) for frame in frames))
 
-    def closed(self) -> streaming.Closed:
+    def closed(self, on: OnMLX) -> streaming.Closed:
         """No stream to close: every word is decoded as it is said."""
         return streaming.Closed(frozenset(), ())
 
@@ -306,10 +305,10 @@ async def rigged(
     primed: list[None] = []
     streamed = Streamed()
 
-    def load(_gating: int) -> Streamed:
-        return streamed
+    def fetched(_gating: int) -> Callable[[OnMLX], Streamed]:
+        return lambda _on: streamed
 
-    monkeypatch.setattr(streaming, "load", load)
+    monkeypatch.setattr(streaming, "fetched", fetched)
 
     async def vocabulary() -> None:
         primed.append(None)
@@ -348,30 +347,6 @@ async def rigged(
 async def test_pocket_tts_loading_as_the_voice_is_built_is_a_load_of_its_own(rig: Rig) -> None:
     [load] = events(rig.recorded, "tts.loaded")
     assert (load.outcome, model_facts(load)) == ("ok", {"voice": voicechoice.DEFAULT})
-
-
-async def test_whisper_finishes_warming_before_the_streaming_load_is_queued(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    startup: list[str] = []
-    recognizer = streaming.StreamingRecognizer
-
-    def warm_whisper() -> None:
-        startup.append("Whisper warmed")
-
-    def without_silero(_path: str) -> None:
-        pass
-
-    def queue_streaming(clock: Clock, model: Callable[[int], streaming.Session], record: Record) -> streaming.StreamingRecognizer:
-        # The worker may start as soon as construction queues its load.
-        startup.append("streaming load queued")
-        return recognizer(clock, model, record)
-
-    monkeypatch.setattr(transcription, "load", warm_whisper)
-    monkeypatch.setattr(whisper, "SileroOnnxModel", without_silero)
-    monkeypatch.setattr(dtln, "weights", lambda: (tmp_path / "mask", tmp_path / "refine"))
-    monkeypatch.setattr(built, "KeyedAudioTransport", partial(built.KeyedAudioTransport, echo=Room))
-    monkeypatch.setattr(streaming, "StreamingRecognizer", queue_streaming)
-    async with rigged(monkeypatch, tmp_path, FrameProcessor(), []):
-        assert startup == ["Whisper warmed", "streaming load queued"]
 
 
 async def test_a_spoken_clip_is_sent(rig: Rig) -> None:
@@ -600,6 +575,17 @@ def overheard(rig: Rig) -> list[Fact]:
     return [event.facts["heard"] for event in hearings(rig)]
 
 
+def ends(rig: Rig) -> list[WideEvent]:
+    """The streaming recognizer's hearing of each clip as it ended."""
+    return [event for event in hearings(rig) if "fate" in event.facts]
+
+
+def end_of(rig: Rig, clip: int) -> list[WideEvent]:
+    """The streaming recognizer's hearing of `clip` as it ended, once it is recorded. One listener's hearings are run in
+    the order it gave them, so every hearing of the clip is recorded by then; nothing in the turn waits on them."""
+    return [event for event in ends(rig) if event.facts["clip"] == clip]
+
+
 async def test_words_said_over_hands_in_a_clip_the_voice_opened_cut_it_off_while_the_user_is_still_speaking(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # As the audit log had it (hands-voice-o6o): engaged conversation, hands reading a reply, and the user speaking over
     # it for seconds; hands was cut off only once end-of-turn detection closed the clip and Whisper heard it whole.
@@ -616,6 +602,7 @@ async def test_words_said_over_hands_in_a_clip_the_voice_opened_cut_it_off_while
         assert await rig.everything_sent(clips=1) == ["wait, not yet, read me the diff first"]
         assert user_turns(rig)[0] == ("on a person", True)
         # What cut hands off is on the hearing's event, to be looked into where the clip heard whole says nothing.
+        await rig.until(lambda: bool(end_of(rig, 1)))
         [first, *_] = hearings(rig)
         assert (first.facts["clip"], first.facts["heard"], first.facts["barge_in"], first.facts["added"]) == (1, "words", True, (streaming.Said(0, "wait, not"),))
 
@@ -626,6 +613,7 @@ async def test_a_clip_the_voice_opened_cuts_nothing_off_where_no_words_are_heard
         await rig.clip(["listening", "arming", *SPEAKING, "listening"], by="engaged conversation")
         await rig.texts.put("")
         await rig.until(lambda: user_turns(rig) == [("on a person", False)])
+        await rig.until(lambda: bool(end_of(rig, 1)))
         assert set(overheard(rig)) == {"nothing"}
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
 
@@ -674,7 +662,8 @@ async def test_a_clip_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         assert line.result() is False
         assert cut == [BargeIn("The parser is fixed.", 1)]
         await rig.until(lambda: user_turns(rig) == [("on a person", True)])
-        *_, whole = hearings(rig)
+        await rig.until(lambda: bool(end_of(rig, 1)))
+        [whole] = end_of(rig, 1)
         assert (whole.outcome, whole.error, whole.facts["clip"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
         assert [(event.facts["clip"], event.facts.get("cut")) for event in rig.recorded if isinstance(event, WideEvent) and event.event == "clip"] == [(1, "at close")]
 
@@ -1225,11 +1214,6 @@ async def test_each_clip_the_key_sent_or_dropped_is_told_with_each_speakers_word
         sent, dropped = ends(rig)
         assert (sent.facts["clip"], sent.facts["fate"], sent.facts["words"]) == (1, "sent", (streaming.Said(0, "what time"), streaming.Said(1, "is it")))
         assert (dropped.facts["clip"], dropped.facts["fate"], dropped.facts["words"]) == (2, "dropped", (streaming.Said(1, "never mind"),))
-
-
-def ends(rig: Rig) -> list[WideEvent]:
-    """The streaming recognizer's hearing of each clip as it ended."""
-    return [event for event in hearings(rig) if "fate" in event.facts]
 
 
 async def test_a_clip_whose_streaming_breaks_still_sends_its_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ from hands.sessions import heartbeat
 from hands.sessions.audit import ClipHeard, Typing, TypingConfirmed, TypingFailed, TypingUnconfirmed, Unsaid, encoded, segment
 from hands.sessions.home import Home
 from hands.voice import transcription
+from hands.voice.mlxthread import OnMLX
 from hands.sessions.wide import Fact, Outcome, WideEvent
 from fixtures.fakemachine import UNMANAGED
 from fakeprocesses import FakeProcesses, Running, processes
@@ -260,7 +261,10 @@ def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
     real.write_text("#!/bin/sh\n")
     real.chmod(0o755)
     monkeypatch.setenv("PATH", str(real.parent))
-    monkeypatch.setattr(transcription, "load", lambda: None)
+    def unloaded(_on: OnMLX, _weights: Path) -> None:
+        pass
+
+    monkeypatch.setattr(transcription, "load", unloaded)
 
     async def synthesized(_clock: Clock, _text: str) -> bytes:
         return b""

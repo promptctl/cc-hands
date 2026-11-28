@@ -24,7 +24,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from hands.voice import engaged, streaming
+from hands.voice import engaged, mlxthread, streaming
 from measuring import AMI_AUDIO, AMI_TEST, RATE, SHAPES, Live, fetched, mono, turn
 from turntaking import Stretch, turns
 
@@ -77,12 +77,12 @@ def scored(known: tuple[str, ...], ended: streaming.Ended) -> Counter[str]:
 
 def measured(gating: int, meetings: list[list[tuple[tuple[str, ...], dict[str, np.ndarray]]]]) -> None:
     """Every meeting's clips at `gating`, on a pair loaded for it alone, let go as it ends: no two pairs are held at once."""
-    pair = streaming.load(gating)
+    pair = mlxthread.call(streaming.fetched(gating))
     for shape in SHAPES:
         total = Counter[str]()
         for clips in meetings:
             # A run per meeting, as hands has one: its session afresh, nobody heard yet, as the real-pair tests reset it.
-            pair.reset()
+            mlxthread.call(pair.reset)
             run = Live(pair)
             for words, clip in clips:
                 total += scored(words, run.spoken(clip[shape])[1])

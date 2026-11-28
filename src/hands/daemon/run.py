@@ -482,7 +482,7 @@ async def converse(
         asyncio.create_task(keep_summarising(clock, store, summarise, record, Lit(Children(clock, record), environment)), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
-        asyncio.create_task(keep_beating(partial(memory.sample, clock, record), memory.SAMPLE_SECONDS, clock), name="the memory sampler"),
+        asyncio.create_task(memory.Sampler(clock, record).keep_sampling(), name="the memory sampler"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]
     following = asyncio.create_task(follow_devices(clock, pipeline.started, voice.audio, channel.say, record), name="the audio device follower")

@@ -8,7 +8,8 @@ from typing import Any
 
 import numpy as np
 
-from hands.voice import engaged, streaming
+from hands.voice import engaged, mlxthread, streaming
+from hands.voice.mlxthread import OnMLX
 from hands.voice.streaming import RATE, Ended, Samples, Session, Spoken, through
 
 # A turn's clip opens LEAD before its first word and ends `after` past its last, in one of the two shapes a clip takes:
@@ -29,8 +30,8 @@ def turn(audio: Samples, start: float, end: float, after: float) -> Samples:
 
 
 class Live:
-    """One stream of the real pair, fed clips as the listener feeds it: 20 ms at a time, each followed by the silence
-    `through` says, and closed."""
+    """One stream of the real pair, fed clips as the listener feeds it: on the MLX thread, 20 ms at a time, each followed
+    by the silence `through` says, and closed."""
 
     def __init__(self, paired: Session) -> None:
         self.stream = streaming.Stream(paired)
@@ -38,13 +39,16 @@ class Live:
 
     def spoken(self, samples: Samples) -> tuple[Spoken, Ended]:
         """A clip of `samples`: each speaker's words heard while it was open, and the clip as it ended."""
-        self.stream.opened(np.zeros(0, np.float32), self.fed)
+        return mlxthread.call(lambda on: self._spoken(on, samples))
+
+    def _spoken(self, on: OnMLX, samples: Samples) -> tuple[Spoken, Ended]:
+        self.stream.opened(on, np.zeros(0, np.float32), self.fed)
         for start in range(0, len(samples), 320):
-            self.stream.heard(samples[start : start + 320])
+            self.stream.heard(on, samples[start : start + 320])
         self.fed += len(samples)
         live = self.stream.said().added
         silence = through(self.fed) - self.fed
-        self.stream.silence(silence)
+        self.stream.silence(on, silence)
         self.fed += silence
         return live, self.stream.ended()
 

@@ -31,6 +31,7 @@ import echoes
 import numpy as np
 from listening import Live, tapped
 
+from hands.voice import mlxthread
 from hands.voice.clips import RATE, SLOT, Playhead, decoded
 from hands.voice.streaming import CHUNK, MEL_HOP, Said
 
@@ -146,7 +147,7 @@ def words_of(tokens: Iterable[tuple[int, float, str]], closing: Iterable[Said], 
 def heard_words(pair: Any, samples: np.ndarray) -> tuple[Word, ...]:
     """What the pair, begun afresh, decodes from `samples` fed as one clip, as hands' listener feeds a clip, each word dated.
     The words decoded as the clip closed follow every token the session dated, so none is dated before the last of them."""
-    pair.reset()
+    mlxthread.call(pair.reset)
     with tapped(pair) as tap:
         _, ended = Live(pair).spoken(samples.astype(np.float32))
     closed_at = max((start for _, start, _ in tap.tokens), default=ended.seconds)

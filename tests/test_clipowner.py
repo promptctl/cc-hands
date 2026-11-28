@@ -7,6 +7,7 @@ import threading
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ from hands.voice.clips import Clip, Fate, Heard, Hearing, Hearings, Recording, R
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger, by_hand
 from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeechHeard, TurnOpened, TurnResolved, TurnUnheard, Typed, Words
+from hands.voice.mlxthread import OnMLX
 from hands.voice.whisper import Whisper
 
 
@@ -523,7 +525,7 @@ async def test_a_clip_the_voice_opened_whose_transcription_does_not_return_is_gi
 async def test_a_transcription_given_up_on_is_not_run_beside_the_next(monkeypatch: pytest.MonkeyPatch) -> None:
     returns, ran_on = threading.Event(), list[threading.Thread]()
 
-    def stuck(samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
+    def stuck(_on: OnMLX, _weights: Path, samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
         ran_on.append(threading.current_thread())
         returns.wait()
         return []
@@ -547,7 +549,7 @@ async def test_a_transcription_given_up_on_is_not_run_beside_the_next(monkeypatc
             await rig.clip([frame_of(5)])
             await rig.until(lambda: ("resolved", 3) in rig.seen.seen)
             assert [event.facts["transcript"] for event in rig.events("clip")] == ["failed", "failed", "none"]
-            # The model ran on the first clip and the third on its one thread, and never on the second, which failed in
+            # The model ran on the first clip and the third on the MLX thread, and never on the second, which failed in
             # its own time behind the first.
             assert ran_on == [ran_on[0]] * 2
     finally:

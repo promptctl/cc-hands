@@ -16,14 +16,14 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent / "tests"))
 from echoscore import CHAINS, TAKES, heard_words, recorded, scored, summary  # noqa: E402
 
-from hands.voice import streaming  # noqa: E402
+from hands.voice import mlxthread, streaming  # noqa: E402
 
 
 def main(names: list[str]) -> None:
     unknown = [name for name in names if name not in CHAINS]
     if unknown:
         sys.exit(f"no chain {', '.join(unknown)}; the chains are {', '.join(CHAINS)}")
-    pair = streaming.load(streaming.GATING)
+    pair = mlxthread.call(streaming.fetched(streaming.GATING))
     takes = [recorded(fixture) for fixture in TAKES]
     for name in names or list(CHAINS):
         print(f"chain {name}")

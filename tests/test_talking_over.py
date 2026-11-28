@@ -40,9 +40,6 @@ from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.listening import Levels
 from hands.voice.turnstop import SpeechHeard
 
-# The real load, bound before conftest stands a pair that hears nothing in for it.
-from hands.voice.streaming import load as nemotron
-
 
 pytestmark = pytest.mark.outside
 
@@ -216,7 +213,7 @@ async def recognizing() -> tuple[streaming.StreamingRecognizer, Recorded]:
     whose start a load holding the loop would hold past its bound on CI's VMs; the first frame then waits for nothing it
     does."""
     record = Recorded(asyncio.get_running_loop())
-    recognizer = streaming.StreamingRecognizer(SYSTEM, lambda gating: PAIRS.loaded(lambda: nemotron(gating)), record)
+    recognizer = streaming.StreamingRecognizer(SYSTEM, PAIRS.fetched, record)
     await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
     return recognizer, record
 
