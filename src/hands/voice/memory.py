@@ -57,7 +57,8 @@ class Sampler:
     """The run's memory, sampled as one `memory.sampled` event at a time: the footprint and the MLX work waiting, now, and
     MLX's split, as the MLX thread reads it, or that it did not within SPLIT_SECONDS. A footprint the kernel refuses is on
     the event as `footprint_error`. A split the thread has yet to answer is the one the next sample waits on, never asked
-    for again, so the sampler keeps one piece of work waiting there at most, however long the thread is held."""
+    for again, so the sampler keeps one piece of work waiting there at most, however long the thread is held; one the
+    thread answers after its sample gave up is let go of, so every split an event says was read as that sample waited."""
 
     def __init__(self, clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[OnMLX], Mapping[str, Fact]] = mlx_held, waiting: Callable[[], int] = mlxthread.waiting) -> None:
         self._clock = clock
@@ -65,7 +66,7 @@ class Sampler:
         self._read = read
         self._held = held
         self._waiting = waiting
-        # The split last asked of the MLX thread, until a sample has its answer: one answered late is the next sample's.
+        # The split last asked of the MLX thread, until a sample has its answer.
         self._asked: asyncio.Future[Mapping[str, Fact]] | None = None
 
     async def keep_sampling(self) -> None:
@@ -77,6 +78,11 @@ class Sampler:
     async def sample(self) -> None:
         with unit(SAMPLED, self._record, begun(self._clock)):
             annotate(**footprint.size(footprint.measured(self._read)), mlx_waiting=self._waiting())
+            if self._asked is not None and self._asked.done():
+                # Answered after the sample that asked for it gave up: its split is old, so it is let go of and asked for
+                # anew, and a failure in it is this sample's.
+                self._asked.result()
+                self._asked = None
             if self._asked is None:
                 self._asked = mlxthread.settles(self._held)
             bound = self._clock.timeout(SPLIT_SECONDS)

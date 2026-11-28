@@ -3,6 +3,7 @@ memory is one event saying what it holds."""
 
 import asyncio
 import contextlib
+import itertools
 import threading
 from collections.abc import Generator, Mapping
 
@@ -125,8 +126,9 @@ async def test_an_mlx_thread_that_does_not_answer_in_time_is_said_on_the_sample_
 async def test_a_split_the_mlx_thread_has_yet_to_answer_is_the_one_the_next_sample_waits_on() -> None:
     clock = VirtualClock()
     kept = list[Entry]()
-    held = {"mlx_active_mb": 2587.0, "mlx_cache_mb": 1024.0}
-    sampler = Sampler(clock, kept.append, read=lambda: 6354 * MEGABYTE, held=lambda _: held, waiting=lambda: 0)
+    # Each read of the split numbered, so the event that says one shows which.
+    reads = itertools.count(1)
+    sampler = Sampler(clock, kept.append, read=lambda: 6354 * MEGABYTE, held=lambda _: {"mlx_read": next(reads)}, waiting=lambda: 0)
     go = threading.Event()
     holding = await held_up(go)
     try:
@@ -137,9 +139,32 @@ async def test_a_split_the_mlx_thread_has_yet_to_answer_is_the_one_the_next_samp
     finally:
         go.set()
     await holding
+    # The thread has answered the split the samples gave up on: the next sample reads its own.
+    await mlxthread.settles(lambda _: None)
     await sampler.sample()
     timed_out = {"footprint_mb": 6354.0, "mlx_waiting": 0, "mlx_split_error": "the MLX thread did not answer in 10 s"}
-    assert [event.facts for event in sampled(kept)] == [timed_out] * 3 + [{"footprint_mb": 6354.0, "mlx_waiting": 0, **held}]
+    assert [event.facts for event in sampled(kept)] == [timed_out] * 3 + [{"footprint_mb": 6354.0, "mlx_waiting": 0, "mlx_read": 2}]
+
+
+async def test_a_split_that_fails_once_its_sample_gave_up_on_it_fails_the_next_sample() -> None:
+    clock = VirtualClock()
+    kept = list[Entry]()
+
+    def gone(_: OnMLX) -> Mapping[str, float]:
+        raise RuntimeError("the Metal device is gone")
+
+    sampler = Sampler(clock, kept.append, read=lambda: 6354 * MEGABYTE, held=gone, waiting=lambda: 0)
+    go = threading.Event()
+    holding = await held_up(go)
+    try:
+        await unanswered(clock, sampler)
+    finally:
+        go.set()
+    await holding
+    await mlxthread.settles(lambda _: None)
+    with pytest.raises(RuntimeError, match="the Metal device is gone"):
+        await sampler.sample()
+    assert [(event.outcome, event.error) for event in sampled(kept)] == [("ok", None), ("failed", "RuntimeError: the Metal device is gone")]
 
 
 async def test_the_memory_is_sampled_at_once_and_again_a_period_after_each_sample() -> None:

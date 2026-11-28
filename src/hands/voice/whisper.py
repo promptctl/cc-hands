@@ -82,8 +82,8 @@ class Whisper:
         # The vocabulary each clip is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
         self._record = record
-        # [LAW:single-enforcer] the one line a clip is heard on, Silero's passes around its decoding on the MLX thread: a
-        # transcription given up on is still running, and the next must not run beside it.
+        # [LAW:single-enforcer] the one line a clip is heard on: Silero's passes run here, and each decode is handed from
+        # here to the MLX thread. A transcription given up on is still running, and the next must not run beside it.
         self._line = SerialThread("Whisper")
 
     async def transcribed(self, clip: Clip, sound: Sound) -> str | None:

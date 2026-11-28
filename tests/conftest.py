@@ -384,7 +384,7 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     def transcribe(_audio: object, **_options: object) -> dict[str, object]:
         return {"segments": []}
 
-    monkeypatch.setattr(transcription, "weights", lambda: f"{transcription.MODEL}@{transcription.REVISION}")
+    monkeypatch.setattr(transcription, "weights", lambda: Path(f"{transcription.MODEL}@{transcription.REVISION}"))
     monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
 
 
