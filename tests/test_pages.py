@@ -77,9 +77,7 @@ class Hands:
     voices: Voicing
     # The path of every request hands took, in the order it took them.
     requests: list[str]
-    # The path of every request hands has finished with, however it ended, in the order they ended.
-    ended: list[str]
-    # What the phone recorded, as its calls end.
+    # What hands recorded: each call the phone ends, and the event of each request a page made.
     recorded: list[Entry]
     # The gate the phone moves, which a test moves as the desk's key or the pipeline would.
     gate: PushToTalk
@@ -111,20 +109,17 @@ async def hands(tmp_path: Path, wake_models: WakeModels, onnx_runtime: Path) -> 
 
     gallery = Gallery(voices=voices, levels=Listening(), desk=Desk(), own=Own(), switches=Switches(Speaker(VirtualClock())), wake=Pretrained(), models=MODELS)
     # The environment hands was started in, as it stood: one a test changes after does not reach the page's writes.
-    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, lambda _: None, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
-    requests, ended = list[str](), list[str]()
+    pages = phone_pages(SYSTEM, phone, brain, typing, SummaryStore(Summaries(home.summaries)), home.audit, key, recorded.append, dict(os.environ), gallery, wake_models, Release(onnx_runtime, SYSTEM))
+    requests = list[str]()
 
     @web.middleware
     async def taken(request: web.Request, handler: Handler) -> web.StreamResponse:
         requests.append(request.path)
-        try:
-            return await handler(request)
-        finally:
-            ended.append(request.path)
+        return await handler(request)
 
     pages.middlewares.append(taken)
     async with TestServer(pages) as server:
-        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, ended, recorded, gate)
+        yield Hands(server, key, phone, brain, typed, a_log(home.audit), voices, requests, recorded, gate)
         await phone.stop()
 
 
@@ -705,19 +700,23 @@ async def test_every_path_of_the_app_opened_is_the_app_and_a_reload_ends_the_cal
 
 
 async def test_the_brain_read_waiting_at_hands_ends_as_the_call_view_is_left_and_is_started_again_as_it_is_shown(browser: Opened, hands: Hands) -> None:
+    def reads() -> tuple[list[bool], int]:
+        # Of each read of the brain hands ended, whether the page had seen nothing yet; and how many reads hands holds.
+        ended = [entry.facts["seen"] is None for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "brain.read"]
+        return ended, hands.requests.count("/brain") - len(ended)
+
     page = await browser.open(hands.address("/"))
-    # The first read is answered at once, and the second waits at hands for the brain to do something else.
-    await patiently(lambda: hands.requests.count("/brain") == 2, lambda: len(hands.requests))
-    assert hands.ended.count("/brain") == 1
+    # [LAW:no-ambient-temporal-coupling] each wait is for the reads a view rests on, not for a count of requests, which a
+    # view passes through unseen as it reads twice at once: the read of a page that has seen nothing, answered at once,
+    # and the next, held at hands until the brain moves or the page closes it.
+    await patiently(lambda: reads() == ([True], 1), reads)
     await page.get_by_role("link", name="Sessions").click()
     await expect(page.locator("#sessions-note")).to_be_visible()
-    # hands sees the page close the connection of the read it was holding, which ends, and no read follows it.
-    await patiently(lambda: hands.ended.count("/brain") == 2, lambda: len(hands.ended))
-    assert hands.requests.count("/brain") == 2
+    # Left, the view closes the read hands holds, and no read follows it.
+    await patiently(lambda: reads() == ([True, False], 0), reads)
     await page.get_by_role("link", name="Call").click()
-    # Shown again, the view reads as it did first: a read answered at once, and the next waiting at hands.
-    await patiently(lambda: hands.requests.count("/brain") == 4, lambda: len(hands.requests))
-    assert hands.ended.count("/brain") == 3
+    # Shown again, the view reads as it did when first shown.
+    await patiently(lambda: reads() == ([True, False, True], 1), reads)
 
 
 # The button's shape as the Call view draws it from the scroll (views/call.js, "The button that melts into the bar" in
